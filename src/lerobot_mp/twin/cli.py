@@ -9,6 +9,7 @@
     lerobot-twin calib-sim --robot a1x       # ... na ramieniu A1X
     lerobot-twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
     lerobot-twin train --task reach          # polityka PPO na GPU (MuJoCo Warp) + ewaluacja na CPU
+    lerobot-twin train --task pickplace      # ... kostka przeniesiona na cel na blacie
     lerobot-twin eval <policy.pt> --rand     # ewaluacja polityki w zwyklym MuJoCo
     lerobot-twin policies                    # zapisane polityki i ich wyniki
     lerobot-twin ui                          # panel w przegladarce: http://localhost:8080
@@ -507,7 +508,7 @@ def parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=_workspace)
 
     p = sub.add_parser("train", help="naucz polityke PPO na GPU (MuJoCo Warp)")
-    p.add_argument("--task", choices=("reach", "lift"), default="reach")
+    p.add_argument("--task", choices=("reach", "lift", "pickplace"), default="reach")
     p.add_argument("--envs", type=int, default=4096, help="ile swiatow naraz")
     p.add_argument("--iters", type=int, default=300)
     p.add_argument("--seed", type=int, default=0)

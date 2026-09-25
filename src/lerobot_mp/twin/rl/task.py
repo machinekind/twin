@@ -21,6 +21,11 @@ Akcja ma `n_joints` liczb w [-1, 1] (6 dla SO-101: piec stawow ramienia i chwyta
   limitow, ktore stosuje `SafetySupervisor` na prawdziwym ramieniu;
 * chwytak - cel BEZWZGLEDNY (-1 zamkniety, +1 otwarty), ograniczony co do
   predkosci tak, jak ogranicza go nadzor (`grip_step` zakresu na takt).
+
+Zadania: `reach` (TCP do punktu), `lift` (chwyt i podniesienie kostki) i `pickplace`
+(kostka przeniesiona na cel na blacie i puszczona). W pickplace sukcesem jest tylko
+kostka NIESIONA (zatrzask `carry_latch`: chwycona i uniesiona ponad `lift_height`),
+potem lezaca na celu, puszczona i nieruchoma - dopchniecie jej po blacie sie nie liczy.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ import numpy as np
 from ..kinematics import RobotKinematics
 from ..robots import RobotSpec, robot_config
 
-TASKS = ("reach", "lift")
+TASKS = ("reach", "lift", "pickplace")
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class TaskConfig:
     cube_radius: tuple[float, float] = (0.15, 0.25)
     cube_bearing: tuple[float, float] = (-0.8, 0.8)
     #: lift: sukces, gdy spod kostki jest wyzej nad blatem niz tyle [m].
+    #: pickplace: kostka chwycona wyzej niz tyle jest "niesiona" (`carry_latch`).
     lift_height: float = 0.06
     #: Start ramienia: poza domowa plus/minus tyle stopni na kazdym stawie ramienia.
     start_noise_deg: float = 8.0
@@ -83,6 +89,18 @@ class TaskConfig:
     #: Liczba stawow ramienia razem z chwytakiem (chwytak ostatni) - wymiar akcji.
     #: Polityki zapisane przed tym polem to SO-101, czyli 6.
     n_joints: int = 6
+    #: pickplace: kostka "na celu", gdy jej srodek jest blizej srodka celu (w xy) niz
+    #: `place_radius` [m], a spod kostki nizej nad blatem niz `place_height` [m].
+    place_radius: float = 0.03
+    place_height: float = 0.01
+    #: pickplace: cel co najmniej tyle [m] (w xy) od kostki na starcie.
+    target_min_sep: float = 0.10
+    #: pickplace: kostka "lezy", gdy jej predkosc jest mniejsza niz tyle [m/s].
+    settle_speed: float = 0.02
+    #: pickplace: skad losowany jest cel na blacie - jak kostka (`make_task(spec=)` bierze
+    #: pierscien kostki ze `spec.desk`).
+    target_radius: tuple[float, float] = (0.15, 0.25)
+    target_bearing: tuple[float, float] = (-0.8, 0.8)
 
     @property
     def obs_dim(self) -> int:
@@ -98,12 +116,18 @@ class TaskConfig:
 
     @property
     def cube(self) -> str | None:
-        return "cube" if self.name == "lift" else None
+        return "cube" if self.name in ("lift", "pickplace") else None
+
+    @property
+    def target(self) -> str | None:
+        """Nazwa ciala celu odlozenia (podkladka mocap w scenie) albo None."""
+        return "target" if self.name == "pickplace" else None
 
 
 def obs_dim(name: str, n: int) -> int:
-    """q(n) + cel stawow(n) + TCP(3) + [cel(3) + cel-TCP(3)] + [kostka(3) + kostka-TCP(3) + obrot(6)] + akcja(n)."""
-    return 2 * n + 3 + (6 if name == "reach" else 12) + n
+    """q(n) + cel stawow(n) + TCP(3) + [cel(3) + cel-TCP(3)] + [kostka(3) + kostka-TCP(3) + obrot(6)]
+    + [pickplace: cel odlozenia(3) + cel-kostka(3)] + akcja(n)."""
+    return 2 * n + 3 + (6 if name == "reach" else 12) + (6 if name == "pickplace" else 0) + n
 
 
 #: Wymiary obserwacji SO-101 (6 stawow) - uklad polityk bazowych.
@@ -119,10 +143,13 @@ def make_task(name: str = "reach", spec: RobotSpec | None = None, **overrides) -
         base = replace(base, roll_penalty=0.5)
     if name == "lift":
         base = replace(base, end_on_success=10, limit_penalty=0.5, hold_still=0.5)
+    if name == "pickplace":
+        base = replace(base, episode_steps=300, end_on_success=10, limit_penalty=0.5, hold_still=0.5)
     if spec is not None:
         d = spec.desk
         base = replace(base, n_joints=len(spec.joints), goal_radius=d.goal_radius, goal_height=d.goal_height,
-                       cube_radius=d.cube_radius, cube_bearing=d.cube_bearing)
+                       cube_radius=d.cube_radius, cube_bearing=d.cube_bearing,
+                       target_radius=d.cube_radius, target_bearing=d.cube_bearing)
     return replace(base, **overrides)
 
 
@@ -194,14 +221,19 @@ def normalize_q(xp, limits: Limits, q):
 
 
 def observe(xp, task: TaskConfig, limits: Limits, q, q_cmd, tcp, prev_action, goal=None,
-            cube_pos=None, cube_rot=None):
-    """Wektor obserwacji (N, obs_dim). `cube_rot` to macierze obrotu (N, 3, 3)."""
+            cube_pos=None, cube_rot=None, target=None):
+    """Wektor obserwacji (N, obs_dim). `cube_rot` to macierze obrotu (N, 3, 3).
+
+    `target` (N, 3) - pickplace: cel odlozenia na blacie (z = 0) w ukladzie podstawy.
+    """
     parts = [normalize_q(xp, limits, q), normalize_q(xp, limits, q_cmd), tcp]
     if task.name == "reach":
         parts += [goal, goal - tcp]
     else:
         rot6 = _cat(xp, [cube_rot[..., :, 0], cube_rot[..., :, 1]])
         parts += [cube_pos, cube_pos - tcp, rot6]
+        if task.name == "pickplace":
+            parts += [target, target - cube_pos]
     parts.append(prev_action)
     return _cat(xp, parts)
 
@@ -226,13 +258,45 @@ def limit_cost(xp, task: TaskConfig, limits: Limits, q_cmd):
     return task.limit_penalty * (near * near).sum(-1)
 
 
+def _float(xp, b, like):
+    return b.to(like.dtype) if xp is not np else b.astype(like.dtype)
+
+
+def grasped(xp, jaw_contacts):
+    """(N,) czy kostka dotyka obu szczek naraz (`jaw_contacts` (N, 2))."""
+    return (jaw_contacts[..., 0] > 0.5) & (jaw_contacts[..., 1] > 0.5)
+
+
+def carry_latch(xp, task: TaskConfig, carried, jaw_contacts, cube_pos):
+    """(N,) zatrzask "kostka byla niesiona": chwycona obiema szczekami wyzej nad blatem niz `lift_height`.
+
+    Raz ustawiony trzyma do resetu (wywolujacy zeruje go na starcie epizodu). Liczony
+    PRZED nagroda i do niej podawany - bez niego kostka dopchnieta po blacie na cel
+    bylaby "odlozona", a `reward` zostaje funkcja bez stanu.
+    """
+    height = cube_pos[..., 2] - task.cube_half
+    return carried | (grasped(xp, jaw_contacts) & (height > task.lift_height))
+
+
+def grip_is_open(xp, limits: Limits, q_cmd):
+    """(N,) czy rozkaz chwytaka jest w otwartej polowie zakresu (puszczenie kostki)."""
+    g = limits.grip
+    lo, hi = float(limits.lo[g]), float(limits.hi[g])
+    return q_cmd[..., g] > lo + 0.5 * (hi - lo)
+
+
 def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=None, jaw_contacts=None,
-           q_cmd=None, limits: Limits | None = None):
+           q_cmd=None, limits: Limits | None = None, target=None, cube_vel=None, carried=None,
+           grip_open=None):
     """(nagroda, sukces, porazka) dla kazdego swiata.
 
     `jaw_contacts` (N, 2): czy kostka dotyka szczeki stalej i ruchomej.
     Porazka = kostka spadla ze stolu; epizod sie wtedy konczy.
     `q_cmd` (N, n_joints) i `limits` - do kary za limity (`limit_penalty`); bez nich jej nie ma.
+
+    pickplace: `target` (N, 3) cel na blacie, `cube_vel` (N, 3) predkosc kostki [m/s],
+    `carried` (N,) zatrzask z `carry_latch` (policzony przed nagroda), `grip_open` (N,)
+    rozkaz chwytaka otwarty (domyslnie z `q_cmd` i `limits`, patrz `grip_is_open`).
     """
     cost = task.action_rate * ((action - prev_action) ** 2).sum(-1)
     if task.limit_penalty > 0 and q_cmd is not None and limits is not None:
@@ -248,6 +312,10 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
         success = d < task.success_dist
         failure = d < -1.0                                  # w reach nie ma porazki
         return r - cost, success, failure
+    if task.name == "pickplace":
+        return _reward_pickplace(xp, task, tcp, action, cost, cube_pos, jaw_contacts, limits, target,
+                                 cube_vel, carried,
+                                 grip_open if grip_open is not None else grip_is_open(xp, limits, q_cmd))
     d = _norm(cube_pos - tcp)
     grasped = (jaw_contacts[..., 0] > 0.5) & (jaw_contacts[..., 1] > 0.5)
     height = cube_pos[..., 2] - task.cube_half
@@ -259,6 +327,34 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
     if task.hold_still > 0:
         na = action.shape[-1] - 1 if limits is None else limits.n_arm
         cost = cost + task.hold_still * s * (_clip(xp, action[..., :na], -1.0, 1.0) ** 2).sum(-1)
+    failure = height < -0.05
+    return r - cost, success, failure
+
+
+def _reward_pickplace(xp, task: TaskConfig, tcp, action, cost, cube_pos, jaw_contacts, limits, target,
+                      cube_vel, carried, opened):
+    """pickplace: podejdz, chwyc, unies, przenies nad cel, odloz, pusc.
+
+    Sukces = byla niesiona (`carried`) & lezy na celu (`placed`) & szczeki jej nie
+    trzymaja, a rozkaz chwytaka jest otwarty (`released`) & stoi (`still`). Nagroda
+    za "na celu" tez tylko po niesieniu - inaczej dopychanie po blacie by sie oplacalo.
+    """
+    d = _norm(cube_pos - tcp)
+    g = grasped(xp, jaw_contacts)
+    height = cube_pos[..., 2] - task.cube_half
+    lifted = _clip(xp, height / task.lift_height, 0.0, 1.0)
+    d_t = _norm(cube_pos[..., :2] - target[..., :2])
+    placed = (d_t < task.place_radius) & (height < task.place_height)
+    released = ~g & opened
+    still = _norm(cube_vel) < task.settle_speed
+    success = carried & placed & released & still
+    gf, cf = _float(xp, g, tcp), _float(xp, carried, tcp)
+    pf, sf = _float(xp, placed, tcp), _float(xp, success, tcp)
+    r = ((1.0 - xp.tanh(d / 0.05)) + gf + 2.0 * gf * lifted + 4.0 * cf * (1.0 - xp.tanh(d_t / 0.10))
+         + 4.0 * cf * pf + 4.0 * sf)
+    if task.hold_still > 0:
+        na = action.shape[-1] - 1 if limits is None else limits.n_arm
+        cost = cost + task.hold_still * sf * (_clip(xp, action[..., :na], -1.0, 1.0) ** 2).sum(-1)
     failure = height < -0.05
     return r - cost, success, failure
 
@@ -299,11 +395,11 @@ def sample_goals(kin: RobotKinematics, task: TaskConfig, rng: np.random.Generato
 
 
 def sample_start(task: TaskConfig, limits: Limits, rng: np.random.Generator, n: int) -> np.ndarray:
-    """Katy startowe (n, n_joints): poza domowa z szumem, chwytak otwarty w lift."""
+    """Katy startowe (n, n_joints): poza domowa z szumem, chwytak otwarty w zadaniach z kostka."""
     na, g = limits.n_arm, limits.grip
     q = np.repeat(limits.home[None], n, axis=0)
     q[:, :na] += np.radians(rng.uniform(-task.start_noise_deg, task.start_noise_deg, (n, na)))
-    if task.name == "lift":
+    if task.cube:
         span = limits.hi[g] - limits.lo[g]
         q[:, g] = limits.lo[g] + rng.uniform(0.6, 1.0, n) * span
     return np.clip(q, limits.lo, limits.hi)
@@ -317,3 +413,36 @@ def sample_cubes(task: TaskConfig, rng: np.random.Generator, n: int) -> tuple[np
     yaw = rng.uniform(-np.pi, np.pi, n)
     quat = np.stack([np.cos(yaw / 2), np.zeros(n), np.zeros(n), np.sin(yaw / 2)], axis=1)
     return pos, quat
+
+
+#: Ile razy `sample_targets` losuje od nowa cel za blisko kostki, zanim wezmie zapasowy.
+TARGET_TRIES = 64
+
+
+def sample_targets(task: TaskConfig, rng: np.random.Generator, cube_pos: np.ndarray) -> np.ndarray:
+    """Cele pickplace (n, 3) na blacie (z = 0), co najmniej `target_min_sep` (xy) od kostek `cube_pos` (n, 3).
+
+    Losowanie biegunowe w `target_radius` / `target_bearing`, jak kostki; za bliskie
+    wiersze losujemy od nowa (tylko je), najwyzej `TARGET_TRIES` razy. Wiersz, ktory
+    wciaz nie pasuje, dostaje cel na zewnetrznym promieniu po drugiej stronie pierscienia.
+    Blizniak torch: `batch.BatchEnv._sample_targets` - ta sama regula.
+    """
+    cube = np.asarray(cube_pos, float).reshape(-1, 3)
+    n = len(cube)
+    out = np.zeros((n, 3))
+    bad = np.ones(n, bool)
+    for _ in range(TARGET_TRIES):
+        k = int(bad.sum())
+        if k == 0:
+            break
+        r = rng.uniform(*task.target_radius, k)
+        b = rng.uniform(*task.target_bearing, k)
+        out[bad, 0], out[bad, 1] = r * np.cos(b), r * np.sin(b)
+        bad = np.hypot(*(out[:, :2] - cube[:, :2]).T) <= task.target_min_sep
+    if bad.any():
+        cb = np.arctan2(cube[bad, 1], cube[bad, 0])
+        lo, hi = task.target_bearing
+        far = np.where(cb > 0.5 * (lo + hi), lo, hi)
+        r = task.target_radius[1]
+        out[bad, 0], out[bad, 1] = r * np.cos(far), r * np.sin(far)
+    return out

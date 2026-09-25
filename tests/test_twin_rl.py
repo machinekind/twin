@@ -26,7 +26,7 @@ def cuda(fn):
     return pytest.mark.skipif(not torch.cuda.is_available(), reason="MuJoCo Warp potrzebuje GPU z CUDA")(fn)
 
 
-@pytest.mark.parametrize("name", ["LeRobotMP/TwinReach-v0", "LeRobotMP/TwinLift-v0"])
+@pytest.mark.parametrize("name", ["LeRobotMP/TwinReach-v0", "LeRobotMP/TwinLift-v0", "LeRobotMP/TwinPickPlace-v0"])
 def test_env_passes_the_gymnasium_checker(name):
     from gymnasium.utils.env_checker import check_env
 
@@ -51,6 +51,213 @@ def test_scripted_ik_expert_solves_reach():
                 if term or trunc:
                     break
             assert info["success"], f"epizod {ep}: {info['distance'] * 1000:.1f} mm od celu"
+    finally:
+        env.close()
+
+
+# ------------------------------------------------------------------ pickplace
+def _workspace(robot: str):
+    from lerobot_mp.twin.workspace import Workspace
+
+    return Workspace(robot=robot)
+
+
+def _top_down(spec, yaw: float) -> np.ndarray:
+    """Obrot site'u TCP (uklad podstawy): podejscie pionowo w dol, szczeki zamykaja sie wzdluz `yaw`."""
+    a, c = np.asarray(spec.tcp_approach, float), np.asarray(spec.tcp_closing, float)
+    down, closing = np.array([0.0, 0.0, -1.0]), np.array([np.cos(yaw), np.sin(yaw), 0.0])
+    return np.column_stack([down, closing, np.cross(down, closing)]) @ np.column_stack([a, c, np.cross(a, c)]).T
+
+
+def _grasp_height(env) -> float:
+    """Wysokosc TCP nad blatem przy chwycie: kostka w polowie, ale czubki szczek 6 mm nad blatem.
+
+    Site `tcp` A1X lezy 30 mm przed czubkami (wzdluz podejscia), SO-101 - miedzy nimi.
+    """
+    kin, spec = env.kin, env.kin.spec
+    joints = dict(spec.home, **{spec.gripper: 0.0})
+    T = kin.tcp(joints)                                   # liczy tez kinematyke `kin.data` dla tej pozy
+    m, d = kin.model, kin.data
+    base = m.body(kin.prefix + spec.base_body).id
+    Rb, tb = d.xmat[base].reshape(3, 3), d.xpos[base]
+    reach = 0.0
+    for tip in spec.fingertips:
+        g = m.geom(kin.prefix + tip).id
+        p_base = Rb.T @ (d.geom_xpos[g] - tb)
+        along = float(np.asarray(spec.tcp_approach) @ (T[:3, :3].T @ (p_base - T[:3, 3])))
+        reach = max(reach, along + float(m.geom_size[g].max()))
+    return max(env.task.cube_half, reach + 0.006)
+
+
+def scripted_pickplace(env, seed: int, actions=None):
+    """Ekspert IK: nad kostke -> w dol -> zamknij -> w gore ponad `lift_height` -> nad cel -> w dol ->
+    otworz -> odjazd. Kazdy takt to zwykla akcja w [-1, 1] (najwyzej `arm_step` na staw).
+
+    Zwraca (ostatnie info, liczba taktow, takt pierwszego sukcesu albo None, akcje).
+    `actions` - odtwarza podane akcje zamiast planowac (test zgodnosci GPU/CPU).
+    """
+    env.reset(seed=seed)
+    t, lim, kin = env.task, env.limits, env.kin
+    g = lim.grip
+    log = {"ticks": 0, "first": None, "actions": []}
+
+    def tick(a):
+        _, _, term, trunc, info = env.step(a)
+        log["ticks"] += 1
+        log["actions"].append(np.asarray(a, float).copy())
+        if info["success"] and log["first"] is None:
+            log["first"] = log["ticks"]
+        return info, term or trunc
+
+    if actions is not None:
+        for a in actions:
+            info, end = tick(a)
+            if end:
+                break
+        return info, log["ticks"], log["first"], log["actions"]
+
+    s = env.state()
+    cube, R = s["cube_pos"], s["cube_rot"]
+    yaw = (np.arctan2(R[1, 0], R[0, 0]) + np.pi / 4) % (np.pi / 2) - np.pi / 4
+    z = _grasp_height(env)
+    up, hover = z + t.lift_height + 0.02, z + 0.05
+
+    def solve(p, seed_q):
+        """Obrot szczek z czterech rownowaznych (kostka ma symetrie 90 st.) - trafiony, w limitach, najblizej."""
+        best = None
+        for y in (yaw, yaw + np.pi / 2, yaw - np.pi / 2, yaw + np.pi):
+            sol = kin.ik(p, _top_down(kin.spec, y), seed=kin.from_q(seed_q))
+            q = kin.to_q(sol.joints)
+            inside = bool(np.all(q[:g] >= lim.lo[:g]) and np.all(q[:g] <= lim.hi[:g]))
+            key = (not sol.ok, not inside, sol.rot_err > 0.1, float(np.abs(q[:g] - seed_q[:g]).sum()))
+            if best is None or key < best[0]:
+                best = (key, q)
+        return np.clip(best[1], lim.lo, lim.hi)
+
+    tgt = env.target
+    plan = [(np.r_[cube[:2], hover], 1.0), (np.r_[cube[:2], z], 1.0), (12, -1.0), (np.r_[cube[:2], up], -1.0),
+            (np.r_[tgt[:2], up], -1.0), (np.r_[tgt[:2], z + 0.004], -1.0), (10, 1.0), (np.r_[tgt[:2], hover], 1.0),
+            (40, 1.0)]
+    q_ref = env.q_cmd.copy()
+    for step, grip in plan:
+        if not isinstance(step, int):
+            q_ref = solve(step, q_ref)
+        for k in range(1, 121):
+            a = np.zeros(t.act_dim)
+            a[:g] = np.clip((q_ref[:g] - env.q_cmd[:g]) / t.arm_step, -1.0, 1.0)
+            a[g] = grip
+            info, end = tick(a)
+            if end:
+                return info, log["ticks"], log["first"], log["actions"]
+            if isinstance(step, int):
+                if k >= step:
+                    break
+            elif np.abs(q_ref[:g] - env.q_cmd[:g]).max() < 1e-6 and np.abs(env.state()["q"][:g] - q_ref[:g]).max() < 0.02:
+                break
+    return info, log["ticks"], log["first"], log["actions"]
+
+
+@pytest.mark.parametrize("robot", ["so101", "a1x"])
+def test_scripted_expert_solves_pickplace(robot):
+    """Dowod wykonalnosci pickplace w granicach akcji - na obu ramionach, zanim pojdzie czas GPU.
+
+    Zmierzone (Randomization.none(), seedy 0-4; pierwszy takt sukcesu / koniec po serii 10):
+    so101 105/123, 106/126, 89/98, 90/108, 99/108; a1x 82/91, 85/94, 86/95, 79/88, 86/95
+    - wszystko ponizej `episode_steps` = 300.
+    """
+    env = TwinEnv("pickplace", workspace=_workspace(robot), randomization=Randomization.none())
+    try:
+        for seed in range(5):
+            info, ticks, first, _ = scripted_pickplace(env, seed)
+            where = (f"{robot} seed {seed}: takt {ticks}, kostka {info['dist_target'] * 1000:.1f} mm od celu, "
+                     f"{info['height'] * 1000:.1f} mm nad blatem, niesiona {info['carried']}")
+            assert first is not None and first < env.task.episode_steps, where
+            assert info["finished"] and info["carried"], where
+    finally:
+        env.close()
+
+
+def test_pickplace_obs_dim_is_39_for_so101_and_42_for_a1x():
+    from lerobot_mp.twin.robots import A1X, SO101
+
+    assert tk.make_task("pickplace", SO101).obs_dim == 39 == tk.OBS_DIMS["pickplace"]
+    assert tk.make_task("pickplace", A1X).obs_dim == 42
+    task = tk.make_task("pickplace", A1X)
+    assert (task.episode_steps, task.end_on_success, task.cube, task.target) == (300, 10, "cube", "target")
+    assert task.target_radius == A1X.desk.cube_radius and task.target_bearing == A1X.desk.cube_bearing
+    env = TwinEnv("pickplace", workspace=_workspace("a1x"), randomization=Randomization.none())
+    try:
+        obs, _ = env.reset(seed=0, options={"target": [0.3, -0.1, 0.5]})
+        assert obs.shape == (42,)
+        n = task.n_joints
+        cube = env.state()["cube_pos"]
+        k = 2 * n + 3 + 12                                   # po q, q_cmd, TCP, kostce, kostka-TCP, obrocie
+        assert np.allclose(obs[k:k + 3], [0.3, -0.1, 0.0], atol=1e-6)       # z celu zawsze 0 (blat)
+        assert np.allclose(obs[k + 3:k + 6], np.array([0.3, -0.1, 0.0]) - cube, atol=1e-6)
+    finally:
+        env.close()
+
+
+def test_pickplace_is_not_solved_by_pushing():
+    """Kostka przesunieta po blacie na cel, szczeki otwarte: lezy na celu, ale to nie sukces."""
+    env = TwinEnv("pickplace", randomization=Randomization.none())
+    try:
+        env.reset(seed=0, options={"cube": ([0.2, -0.08, 0.015], [1.0, 0, 0, 0]), "target": [0.2, 0.08, 0.0]})
+        env.set_cube(np.array([0.2, 0.08, 0.015]), np.array([1.0, 0, 0, 0]))
+        mujoco.mj_forward(env.scene.model, env.scene.data)
+        a = np.zeros(env.task.act_dim)
+        a[env.limits.grip] = 1.0                              # chwytak otwarty
+        for _ in range(20):
+            _, r_push, _, _, info = env.step(a)
+        assert info["placed"] and info["released"] and not info["carried"]
+        assert not info["success"]
+        # Ta sama poza, ale po niesieniu - sukces i wyraznie wieksza nagroda.
+        env._carried = True
+        _, r_carried, _, _, info = env.step(a)
+        assert info["success"] and r_carried - r_push > 8.0
+    finally:
+        env.close()
+
+
+def test_pickplace_target_is_at_least_min_sep_from_the_cube():
+    env = TwinEnv("pickplace", randomization=Randomization())
+    try:
+        t = env.task
+        for seed in range(200):
+            env.reset(seed=seed)
+            s = env.state()
+            sep = float(np.linalg.norm(s["target"][:2] - s["cube_pos"][:2]))
+            r, b = np.hypot(*s["target"][:2]), np.arctan2(s["target"][1], s["target"][0])
+            assert sep > t.target_min_sep and s["target"][2] == 0.0, f"seed {seed}: {sep * 1000:.0f} mm"
+            assert t.target_radius[0] <= r <= t.target_radius[1] and t.target_bearing[0] <= b <= t.target_bearing[1]
+            pad = env.scene.data.mocap_pos[env.target_mocap]
+            T = env.scene.T_base2world
+            assert np.allclose(pad, T[:3, :3] @ np.r_[s["target"][:2], 0.002] + T[:3, 3])
+    finally:
+        env.close()
+    # Pierscien za waski na odstep: po `TARGET_TRIES` probach cel po drugiej stronie pierscienia.
+    tight = tk.make_task("pickplace", target_radius=(0.2, 0.2), target_bearing=(-0.3, 0.3), target_min_sep=0.13)
+    cubes = np.array([[0.2 * np.cos(0.25), 0.2 * np.sin(0.25), 0.015], [0.2 * np.cos(-0.25), 0.2 * np.sin(-0.25), 0.015]])
+    got = tk.sample_targets(tight, np.random.default_rng(0), cubes)
+    assert np.allclose(np.arctan2(got[:, 1], got[:, 0]), [-0.3, 0.3])
+    assert np.all(np.hypot(*(got[:, :2] - cubes[:, :2]).T) > 0.1)
+
+
+def test_target_pad_does_not_collide():
+    """Kostka upuszczona na podkladke celu lezy na blacie (z = polowa boku) - `height` znaczy to co w lift."""
+    env = TwinEnv("pickplace", randomization=Randomization.none())
+    try:
+        env.reset(seed=0, options={"target": [0.2, 0.1, 0.0]})
+        env.set_cube(np.array([0.2, 0.1, 0.06]), np.array([1.0, 0, 0, 0]))
+        mujoco.mj_forward(env.scene.model, env.scene.data)
+        for _ in range(30):
+            _, _, _, _, info = env.step(np.zeros(env.task.act_dim))
+        cube = env.state()["cube_pos"]
+        assert cube[2] == pytest.approx(env.task.cube_half, abs=5e-4)
+        assert info["dist_target"] < 1e-3 and abs(info["height"]) < 5e-4
+        m = env.scene.model
+        g = m.geom("target").id
+        assert m.geom_contype[g] == 0 and m.geom_conaffinity[g] == 0 and m.body_mocapid[m.body("target").id] >= 0
     finally:
         env.close()
 
@@ -88,7 +295,7 @@ def test_randomization_is_relative_to_the_nominal_model():
         env.close()
 
 
-@pytest.mark.parametrize("name", ["reach", "lift"])
+@pytest.mark.parametrize("name", ["reach", "lift", "pickplace"])
 def test_observation_and_reward_are_the_same_in_numpy_and_torch(name):
     """Jedna definicja zadania dla CPU, GPU i ramienia - wzory nie moga sie rozjechac."""
     task = tk.make_task(name)
@@ -107,20 +314,38 @@ def test_observation_and_reward_are_the_same_in_numpy_and_torch(name):
     task = tk.make_task(name, limit_penalty=0.5, hold_still=0.5, end_on_success=2, roll_penalty=0.3)
     cube[: n // 2, 2] = 0.09                                   # polowa "podniesiona" - sukces i kara za ruch
     streak = rng.integers(0, 3, n)
+    # pickplace: cel, predkosc kostki, zatrzask i otwarty chwytak - tak, zeby czesc swiatow miala sukces.
+    # Dane reach/lift zostaja takie jak przed pickplace.
+    target = np.c_[rng.normal(0, 0.2, (n, 2)), np.zeros(n)]
+    vel = rng.normal(0, 0.02, (n, 3))
+    carried = rng.integers(0, 2, n).astype(bool)
+    opened = rng.integers(0, 2, n).astype(bool)
+    if name == "pickplace":
+        cube[n // 2:, 2] = task.cube_half + rng.uniform(-0.002, 0.004, n - n // 2)
+        cube[n // 2::2, :2] = target[n // 2::2, :2] + rng.normal(0, 0.01, (len(cube[n // 2::2]), 2))
+        ok = slice(n // 2, n, 4)                               # tu wszystkie warunki sukcesu naraz
+        vel[ok], jaws[ok], carried[ok], opened[ok] = 0.001, 0.0, True, True
 
     def run(xp, conv):
+        b = (lambda x: x) if xp is np else torch.as_tensor
         obs = tk.observe(xp, task, lim, conv(q), conv(q_cmd), conv(tcp), conv(prev), goal=conv(goal),
-                         cube_pos=conv(cube), cube_rot=conv(rot))
+                         cube_pos=conv(cube), cube_rot=conv(rot), target=conv(target))
         r, s, f = tk.reward(xp, task, conv(tcp), conv(act), conv(prev), goal=conv(goal), cube_pos=conv(cube),
-                            jaw_contacts=conv(jaws), q_cmd=conv(q_cmd), limits=lim)
+                            jaw_contacts=conv(jaws), q_cmd=conv(q_cmd), limits=lim, target=conv(target),
+                            cube_vel=conv(vel), carried=b(carried), grip_open=b(opened))
         nxt = tk.apply_action(xp, task, lim, conv(q_cmd), conv(act))
         st, done = tk.success_streak(xp, task, streak if xp is np else torch.as_tensor(streak), s)
-        return [np.asarray(x) for x in (obs, r, s, f, nxt, st, done)]
+        latch = tk.carry_latch(xp, task, b(carried), conv(jaws), conv(cube))
+        grip = tk.grip_is_open(xp, lim, conv(q_cmd))
+        return [np.asarray(x) for x in (obs, r, s, f, nxt, st, done, latch, grip)]
 
     a = run(np, lambda x: x)
     b = run(torch, lambda x: torch.as_tensor(x, dtype=torch.float64))
     for x, y in zip(a, b):
         assert np.allclose(x, y, atol=1e-9)
+    assert a[0].shape == (n, task.obs_dim)
+    if name == "pickplace":
+        assert 0 < a[2].sum() < n                              # sukces w czesci swiatow - obie galezie liczone
 
 
 def test_actions_respect_the_supervisor_limits():
@@ -249,6 +474,7 @@ def test_train_plan_does_not_label_a_nominal_run_as_randomized():
     assert evals[0][2].centre is dyn
     rand, evals = _train_plan(dyn, no_rand=False, spread=1.0)
     assert [e[1] for e in evals] == ["cpu_nominal", "cpu_rand"] and evals[1][2] is rand and rand.randomized
+    assert parser().parse_args(["train", "--task", "pickplace"]).task == "pickplace"
     # panel ruszajacy ramieniem nie wystawia sie domyslnie na siec
     assert parser().parse_args(["ui"]).host == "127.0.0.1"
     assert parser().parse_args(["ui", "--host", "0.0.0.0"]).host == "0.0.0.0"
@@ -422,6 +648,50 @@ def test_gpu_batch_env_matches_the_cpu_env():
 
 
 @cuda
+def test_gpu_pickplace_matches_the_cpu_env():
+    """Ten sam start, kostka, cel i akcje (ekspert ze skryptu): te same obserwacje - razem z celem
+    odlozenia - i ten sam zatrzask "niesiona" w MuJoCo Warp (float32) i MuJoCo CPU."""
+    from lerobot_mp.twin.rl.batch import BatchEnv
+
+    rec = TwinEnv("pickplace", randomization=Randomization.none())
+    try:
+        _, _, first, actions = scripted_pickplace(rec, 0)
+    finally:
+        rec.close()
+    assert first is not None
+    cpu = TwinEnv("pickplace", randomization=Randomization.none())
+    cpu.reset(seed=0)
+    gpu = BatchEnv("pickplace", num_envs=2, randomization=Randomization.none())
+    gpu.reset()
+    dev, f32 = gpu.device, torch.float32
+    gpu.qpos[:] = torch.as_tensor(cpu.scene.data.qpos, dtype=f32, device=dev)
+    gpu.qvel[:] = 0
+    q_cmd = torch.as_tensor(cpu.q_cmd, dtype=f32, device=dev)
+    gpu.ctrl[:, gpu.act] = q_cmd
+    gpu.q_cmd[:] = q_cmd
+    gpu.set_targets(torch.arange(2, device=dev), torch.as_tensor(cpu.target, dtype=f32, device=dev).repeat(2, 1))
+    pos, rot = (torch.as_tensor(x, dtype=f32, device=dev) for x in cpu._cube_seen)
+    gpu.hist_pos[:], gpu.hist_rot[:], gpu.seen_pos[:], gpu.seen_rot[:] = pos, rot, pos, rot
+    gpu.carried[:] = False
+    torch.cuda.synchronize(dev)
+    gpu.mjw.kinematics(gpu.m, gpu.d)
+    gpu.wp.synchronize_device()
+    k = 2 * cpu.task.n_joints + 3 + 12                        # poczatek celu w obserwacji
+    carried = []
+    for a in actions:
+        oc, _, term, trunc, ic = cpu.step(a)
+        og, _, done, ig = gpu.step(torch.as_tensor(a, dtype=f32, device=dev).repeat(2, 1))
+        if bool(done[0]) or term or trunc:                   # GPU zresetowal swiat - dalej inny epizod
+            break
+        og = og[0].cpu().numpy()
+        assert np.abs(og - oc).max() < 5e-3
+        assert np.allclose(og[k:k + 3], cpu.target, atol=1e-6) and cpu.target[2] == 0.0
+        assert bool(ig["carried"][0]) == ic["carried"]
+        carried.append(ic["carried"])
+    assert any(carried)                                       # zatrzask naprawde sie ustawil
+
+
+@cuda
 def test_fine_tuning_waits_for_the_critic_before_moving_the_actor(tmp_path):
     """Douczanie z krytykiem od zera psulo reach-v1 (98% -> 9%): aktor ma stac, dopoki
     krytyk sie nie rozgrzeje, a polityka zapisana z krytykiem rozgrzewki nie potrzebuje."""
@@ -543,7 +813,7 @@ def test_obs_and_act_dims_are_unchanged_for_so101():
 
     reach, lift = tk.make_task("reach"), tk.make_task("lift")
     assert (reach.obs_dim, lift.obs_dim, reach.act_dim, lift.act_dim) == (27, 33, 6, 6)
-    assert tk.OBS_DIMS == {"reach": 27, "lift": 33}
+    assert tk.OBS_DIMS == {"reach": 27, "lift": 33, "pickplace": 39}
     assert tk.make_task("lift", SO101).obs_dim == 33
     assert tk.obs_dim("lift", 7) == 36 and tk.obs_dim("reach", 7) == 30
 

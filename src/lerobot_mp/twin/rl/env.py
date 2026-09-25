@@ -1,4 +1,4 @@
-"""Srodowisko Gymnasium blizniaka na CPU: `LeRobotMP/TwinReach-v0`, `LeRobotMP/TwinLift-v0`.
+"""Srodowisko Gymnasium blizniaka na CPU: `LeRobotMP/TwinReach-v0`, `TwinLift-v0`, `TwinPickPlace-v0`.
 
     import gymnasium as gym, lerobot_mp.twin.rl
     env = gym.make("LeRobotMP/TwinReach-v0")
@@ -29,6 +29,9 @@ from .randomize import Randomization
 
 #: Kamera podgladu, gdy stanowisko nie ma zadnej skalibrowanej.
 VIEW = "widok"
+#: Podkladka celu pickplace: polowy bokow [m] i kolor (niebieski - kostka jest czerwona).
+TARGET_SIZE = (0.035, 0.035, 0.002)
+TARGET_RGBA = (0.2, 0.4, 0.9, 1.0)
 
 
 def look_at(eye, target, up=(0.0, 0.0, 1.0)) -> np.ndarray:
@@ -48,8 +51,15 @@ def scene_config(task: tk.TaskConfig, workspace: Workspace | None = None, view: 
         cfg.objects = [*cfg.objects, sc.Box(task.cube, (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0),
                                             mass=task.cube_mass)]
         cfg.grasp_sensors = [*cfg.grasp_sensors, task.cube]
+    if task.target:
+        # Mocap bez kolizji: kostka lezy na blacie, wiec `height` znaczy to samo co w lift.
+        cfg.objects = [*cfg.objects, sc.Box(task.target, TARGET_SIZE, (0.3, 0.1), rgba=TARGET_RGBA, free=False,
+                                            mocap=True)]
     if view and not cfg.cameras:
-        cfg.cameras = [sc.CameraView.from_fov(VIEW, 480, 360, 50.0, look_at([0.62, -0.42, 0.42], [0.18, 0.0, 0.05]))]
+        # Skala stolu ramienia (SO-101: 0,56 m, mnoznik dokladnie 1).
+        f = ws.spec().desk.map_side / 0.56
+        cfg.cameras = [sc.CameraView.from_fov(VIEW, 480, 360, 50.0, look_at(np.array([0.62, -0.42, 0.42]) * f,
+                                                                           np.array([0.18, 0.0, 0.05]) * f))]
     return cfg
 
 
@@ -113,10 +123,16 @@ class TwinEnv(gym.Env):
             self.cube_qadr = m.jnt_qposadr[m.body_jntadr[self.fields.cube_body]]
             self.cube_dadr = m.jnt_dofadr[m.body_jntadr[self.fields.cube_body]]
             self.jaw_adr = [m.sensor(f"{self.task.cube}_jaw{k}").adr[0] for k in range(2)]
+        if self.task.target:
+            self.target_mocap = int(m.body_mocapid[m.body(self.task.target).id])
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (self.task.obs_dim,), np.float32)
         self.action_space = gym.spaces.Box(-1.0, 1.0, (self.task.act_dim,), np.float32)
         self.goal = np.zeros(3)
+        #: pickplace: cel odlozenia na blacie (z = 0), uklad podstawy.
+        self.target = np.zeros(3)
+        #: pickplace: zatrzask "kostka byla niesiona" (`task.carry_latch`), zerowany w `reset`.
+        self._carried = False
         self.q_cmd = self.limits.home.copy()
         self.prev_action = np.zeros(self.task.act_dim)
         self.t = 0
@@ -138,6 +154,10 @@ class TwinEnv(gym.Env):
             out["cube_pos"] = R @ d.xpos[b] + t
             out["cube_rot"] = R @ d.xmat[b].reshape(3, 3)
             out["jaws"] = np.array([d.sensordata[a] for a in self.jaw_adr])
+            if self.task.target:
+                a = self.cube_dadr
+                out["cube_vel"] = R @ d.qvel[a:a + 3]
+                out["target"] = self.target.copy()
         return out
 
     def _obs(self, s: dict[str, np.ndarray]) -> np.ndarray:
@@ -145,7 +165,7 @@ class TwinEnv(gym.Env):
         cube_pos, cube_rot = self._cube_seen if self.task.cube else (np.zeros(3), np.eye(3))
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], s["tcp"][None],
                          self.prev_action[None], goal=self.goal[None],
-                         cube_pos=cube_pos[None], cube_rot=cube_rot[None])
+                         cube_pos=cube_pos[None], cube_rot=cube_rot[None], target=self.target[None])
         return obs[0].astype(np.float32)
 
     def _perceive(self, s: dict[str, np.ndarray], force: bool = False) -> None:
@@ -194,11 +214,16 @@ class TwinEnv(gym.Env):
                 p, qt = tk.sample_cubes(self.task, rng, 1)
                 pos, quat = p[0], qt[0]
             self.set_cube(pos, quat)
+            if self.task.target:
+                tgt = np.asarray(options["target"], float) if "target" in options else \
+                    tk.sample_targets(self.task, rng, pos[None])[0]
+                self.set_target(tgt)
         mujoco.mj_forward(m, d)
         self.q_cmd = q0.copy()
         self.prev_action = np.zeros(self.task.act_dim)
         self.t = 0
         self._streak = 0
+        self._carried = False
         s0 = self.state()
         self._perceive(s0, force=True)
         return self._obs(s0), {"success": False, "finished": False}
@@ -215,6 +240,13 @@ class TwinEnv(gym.Env):
         d.qpos[a:a + 3] = T[:3, :3] @ pos_base + T[:3, 3]
         d.qpos[a + 3:a + 7] = q_world
         d.qvel[self.cube_dadr:self.cube_dadr + 6] = 0.0
+
+    def set_target(self, pos_base: np.ndarray) -> None:
+        """Cel pickplace w (x, y) ukladu podstawy; z zawsze 0 (blat). Podkladka mocap idzie za nim."""
+        p = np.asarray(pos_base, float)
+        self.target = np.array([p[0], p[1], 0.0])
+        T = self.scene.T_base2world
+        self.scene.data.mocap_pos[self.target_mocap] = T[:3, :3] @ np.array([p[0], p[1], TARGET_SIZE[2]]) + T[:3, 3]
 
     def step(self, action):
         action = np.clip(np.asarray(action, float), -1.0, 1.0)
@@ -234,10 +266,16 @@ class TwinEnv(gym.Env):
         self.t += 1
 
         s = self.state()
+        kw = {}
+        if self.task.target:
+            carried = tk.carry_latch(np, self.task, np.array([self._carried]), s["jaws"][None], s["cube_pos"][None])
+            self._carried = bool(carried[0])
+            kw = dict(target=self.target[None], cube_vel=s["cube_vel"][None], carried=carried,
+                      grip_open=tk.grip_is_open(np, self.limits, self.q_cmd[None]))
         r, success, failure = tk.reward(np, self.task, s["tcp"][None], action[None], self.prev_action[None],
                                         goal=self.goal[None], cube_pos=s.get("cube_pos", np.zeros(3))[None],
                                         jaw_contacts=s.get("jaws", np.zeros(2))[None],
-                                        q_cmd=self.q_cmd[None], limits=self.limits)
+                                        q_cmd=self.q_cmd[None], limits=self.limits, **kw)
         self.prev_action = action
         streak, finished = tk.success_streak(np, self.task, np.array([self._streak]), success)
         self._streak = int(streak[0])
@@ -247,6 +285,12 @@ class TwinEnv(gym.Env):
         else:
             info["height"] = float(s["cube_pos"][2] - self.task.cube_half)
             info["grasped"] = bool(s["jaws"].min() > 0.5)
+        if self.task.target:
+            d_t = float(np.linalg.norm(s["cube_pos"][:2] - self.target[:2]))
+            info["dist_target"] = d_t
+            info["carried"] = self._carried
+            info["placed"] = bool(d_t < self.task.place_radius and info["height"] < self.task.place_height)
+            info["released"] = bool(not info["grasped"] and kw["grip_open"][0])
         terminated = bool(failure[0])
         # Koniec po serii sukcesow to uciecie jak limit czasu (patrz `task.success_streak`).
         truncated = self.t >= self.task.episode_steps or info["finished"]
