@@ -27,6 +27,7 @@ percepcją, którą widziała w symulacji.
 |---|---|
 | **Gotowe i przetestowane w symulacji** | model, kinematyka, scena z kamerami o pełnym K, kolizje, **kalibracja wielu kamer z karty w chwytaku**, **intrynsyki z ChArUco**, mapa stołu na żywo, **wykrywanie kostki z kamer**, **wykrywanie przestawionej kamery**, **środowiska RL CPU i GPU**, **PPO na GPU**, **identyfikacja dynamiki serw**, **runner polityk przez nadzór**, **panel webowy** |
 | **Do sprawdzenia na sprzęcie** | wszystko, co dotyka prawdziwego ramienia i prawdziwych kamer — procedura krok po kroku niżej |
+| **Drugie ramię: Galaxea A1X** | model, kinematyka, kalibracja kamer i środowiska RL na CPU w symulacji; backend `a1x` po CAN-FD przetestowany na symulowanej magistrali — sekcja [Galaxea A1X](#galaxea-a1x) |
 | **Rozpoznanie** | rekonstrukcja 3D przedmiotów z biurka — [RESEARCH_3D.md](RESEARCH_3D.md) |
 
 Szczegóły, decyzje i pułapki: **[HANDOFF.md](../HANDOFF.md)**.
@@ -89,7 +90,8 @@ treningu uruchamiany z panelu). Klucze sekcji `robot:` ważne dla bliźniaka
 i backendu `feetech` (opisane w `configs/default.yaml`): `center_ticks` (tik
 zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
 i 100 w skali aplikacji; domyślne 1986 / 2670 to ramię autora), `baudrate`
-(1 000 000).
+(1 000 000). Galaxea A1X ma własną sekcję `a1x:` — patrz
+[Galaxea A1X](#galaxea-a1x).
 
 ### Na Shadow (maszyna autora)
 
@@ -165,7 +167,7 @@ stanu.
 
 | zakładka | co robi |
 |---|---|
-| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`; wykrywanie przejściówki CH343; sprzęgło; suwaki stawów; uchwyt końcówki w 3D (IK) |
+| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*); wykrywanie przejściówki CH343; sprzęgło; suwaki stawów; uchwyt końcówki w 3D (IK) |
 | **Kamery** | kamery USB i **symulowane** — symulowaną stawiasz w dowolnym miejscu widoku 3D i przeciągasz uchwytem; piramidy z obrazem na żywo (zielona = zaufana, pomarańczowa = niezaufana, czerwona = **przestawiona**); podgląd; błąd kalibracji względem prawdy dla symulowanych |
 | **Kalibracja** | arkusze do druku (tablica ChArUco, karta z tagami); **1.** intrynsyki — tablica w ręku, kadry zapisują się same, gdy wnoszą nowe ujęcie; **2.** położenie wszystkich kamer naraz — fala z kartą w chwytaku; **szybka relokalizacja** jednej przestawionej kamery |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
@@ -290,17 +292,337 @@ z tymi kluczami — reszta bierze wartości domyślne.
 
 ---
 
+## Galaxea A1X
+
+Drugie ramię bliźniaka: 6 stawów i chwytak z wysuwanymi szczękami, sterowane
+po CAN-FD. Ten sam panel, ten sam nadzór i ta sama procedura co przy SO-101.
+Różnice siedzą w trzech miejscach. Stanowisko ma `"robot": "a1x"`
+(`workspace/twin.json`), więc bliźniak bierze model `assets/robots/a1x`
+i opis ramienia `robots.A1X`. Ze sprzętem rozmawia backend `a1x`
+(`src/lerobot_mp/robot/a1x.py`). Protokół i łącze CAN dostarcza pakiet
+`galaxeo` z repozytorium galaxeo-manipulators — to samo źródło, z którego
+korzystają narzędzia galaxeo (`jog_a1x.py`, `so101_bridge.py`). Szczegóły
+protokołu i pomiary: `docs/PROTOCOL.md`, `docs/STEERING.md`, `docs/HARDWARE.md`
+i **`docs/SAFETY.md`** w galaxeo-manipulators. SAFETY.md przeczytaj przed
+pierwszym włączeniem zasilania.
+
+### Sprzęt i łącze CAN
+
+- Zasilacz **24 V** (nie 48 V). W skrzynce CAN przełączniki terminacji
+  **R1 i R2 w górnej pozycji**. Przejściówka XCAN / PEAK USB-CAN FD
+  (USB `0c72:0012`).
+- **Jeden nadawca na magistrali.** Gdy działa panel z ramieniem `a1x`, nie
+  uruchamiaj `ARM_APP`, `so101_bridge.py`, `jog_a1x.py`, `teleop2.py` ani
+  sterownika ROS 2 z nadawaniem. Dwa strumienie na `0x050` przeplatają się
+  i ramię nie jedzie za żadnym.
+
+| system | łącze | pole Port w panelu |
+|---|---|---|
+| Linux | SocketCAN, jądro `peak_usb`; w Pythonie nic więcej | `can0` (pusty = `can0`) |
+| macOS | sterownik w przestrzeni użytkownika (`galaxeo.xcan_usb`, libusb): `brew install libusb` + `pyusb` | `xcan`, przy dwóch przejściówkach `xcan:<adres USB>` (pusty = `xcan`) |
+| Windows | PEAK PCAN-Basic (sterownik PEAK) przez `python-can` | `PCAN_USBBUS1` — **wpisz jawnie**, pusty oznacza `can0` |
+
+**Linux.** Łącze podnosi `./can_up.sh` z galaxeo-manipulators. Skrypt działa
+w kontenerze Dockera tamtego repozytorium (bez `sudo` na hoście) i wybiera przejściówkę po ruchu na magistrali.
+Bez kontenera, ręcznie (czasy producenta):
+
+```bash
+sudo ip link set can0 type can \
+    bitrate 1000000 sample-point 0.875 \
+    dbitrate 5000000 dsample-point 0.875 \
+    fd on restart-ms 100
+sudo ip link set can0 txqueuelen 65535
+sudo ip link set can0 up
+ip -det -s link show can0     # stan łącza, bus-off, liczniki błędów
+```
+
+Nie dodawaj `berr-reporting on`: `pcan_usb_fd` go nie obsługuje i całe
+`ip link set` się nie udaje. **Po każdym przełożeniu wtyczki łącze wstaje
+wyłączone** — trzeba je podnieść od nowa. Dwie przejściówki mają ten sam
+numer seryjny; które ramię wisi na którym łączu, pokaże `python3 which_arm.py
+can0 can1` z galaxeo (tylko odczyt).
+
+**macOS.** Tu nie ma SocketCAN, a biblioteka PCBUSB otwiera przejściówkę, ale
+nie odbiera z niej ramek. Dlatego `galaxeo.xcan_usb` rozmawia z nią wprost
+przez libusb. Sprawdzenie bez nadawania:
+
+```bash
+python -m galaxeo.xcan_usb --normal     # wersja firmware, potem 0x052 z ok. 200 Hz; nic nie wysyła
+```
+
+Bez `--normal` przejściówka słucha bez potwierdzania ramek. Ramię powtarza
+wtedy każdą ramkę i `0x052` przychodzi z ok. 6 kHz z powtórzoną treścią, co
+nie jest usterką. Przejściówkę może mieć otwartą **jeden proces naraz**: zamknij
+sprawdzenie, zanim panel się połączy.
+
+### Instalacja
+
+```bash
+pip install -e ".[twin,a1x,dev]" -c constraints.txt
+```
+
+Extra `a1x` pobiera pakiet `galaxeo` z gita (`galaxeo-manipulators@main`).
+**Pakiet jest na razie tylko na gałęzi `pkg`** — `main` nie ma jeszcze
+`pyproject.toml`, więc dopóki `pkg` nie jest scalona, instalacja z `.[a1x]`
+się nie uda (zainstaluj bez `a1x`). Do tego czasu zainstaluj go z lokalnego
+klonu na gałęzi `pkg`:
+
+```bash
+pip install -e ../galaxeo-manipulators            # Linux: sama biblioteka standardowa
+pip install -e "../galaxeo-manipulators[xcan]"    # macOS: + pyusb (i brew install libusb)
+pip install -e "../galaxeo-manipulators[pcan]"    # Windows: + python-can
+python -c "from galaxeo import protocol; protocol.selftest(); import lerobot_mp.robot.a1x"
+```
+
+Extra `a1x` nie dociąga `pyusb` ani `python-can` — na macOS i Windows doinstaluj
+je jak wyżej albo przez `pip install pyusb` / `pip install python-can`. Bez pakietu
+`galaxeo` bliźniak działa normalnie. Dopiero *Połącz* z ramieniem `a1x`
+odpowiada błędem z poleceniem instalacji.
+
+### Stanowisko i konfiguracja
+
+**Stanowisko.** O ramieniu decyduje pole `robot` pliku stanowiska, a panel go
+nie zmienia. Najprościej zacząć od przykładu:
+
+```bash
+lerobot-twin demo --robot a1x          # examples/twin.a1x.sim.json -> workspace/twin.json (stół 1,2 × 0,8 m, 2 kamery sim)
+lerobot-twin workspace                 # "ramie: a1x, backend: sim, ..."
+```
+
+Na prawdziwe stanowisko usuń potem w zakładce Kamery obie kamery symulowane
+(*Usuń kamerę*) i dodaj kamery USB. Plik stanowiska `{"robot": "a1x"}` też
+wystarczy (pusty stół i bez kamer). Backend i port zapisuje w stanowisku
+dopiero *Połącz*.
+
+**`configs/local.yaml`.** Backend `a1x` czyta sekcję `a1x:`. Skopiuj
+`configs/default.yaml` albo napisz samą sekcję (reszta bierze wartości
+domyślne), a panel uruchamiaj z `lerobot-twin --config configs/local.yaml ui`:
+
+```yaml
+a1x:
+  joint_offsets_deg: [0.0, 0.0, 1.49, 0.0, 0.0, 0.0]   # zmierz swoje (niżej)
+  gripper_fb_closed: null                               # zmierz (niżej); do tego czasu pętla otwarta
+  gripper_fb_open: null
+```
+
+`robot.backend` i `robot.port` z pliku bliźniak **pomija**: backend i port
+wybiera panel (pole Ramię i Port), a zapamiętuje stanowisko. Nie wpisuj
+`robot.backend: a1x` do pliku, którego używa też `lerobot-mp`. Aplikacja
+dłoni ma stawy SO-101, a backend `a1x` odmawia wtedy startu.
+
+| klucz | domyślnie | znaczenie |
+|---|---|---|
+| `kp` | 20,0 | wzmocnienie wysyłane w `0x050`. Na tym łączu ramię go ignoruje (działa tylko `p_des`), ale przy `kp` 0 przestaje słuchać rozkazów — konfiguracja odrzuca `kp <= 0` |
+| `kd` | 1,0 | tłumienie w `0x050` i `0x051`; bez wpływu na ruch |
+| `gripper_kp` | 25,0 | `kp` ramki chwytaka `0x051`; też musi być > 0 |
+| `gripper_open_pdes` | −2,0 | `p_des` chwytaka przy 100 (otwarty); bardziej ujemne = szerzej |
+| `gripper_closed_pdes` | 0,6 | `p_des` przy 0 (zamknięty) |
+| `gripper_fb_closed` / `gripper_fb_open` | brak | pozycja grupy 7 ramki `0x052` [rad] przy 0 i przy 100. Podaj obie albo żadną (różne od siebie). Bez nich panel pokazuje **rozkaz** chwytaka, nie pomiar (ostrzeżenie „sprzężenie niezmierzone”) |
+| `gripper_start` | 100,0 | co backend zgłasza jako chwytak przed pierwszym rozkazem, gdy sprzężenie niezmierzone |
+| `gripper_rate_pdes_s` | 2,0 | największa prędkość `p_des` chwytaka [1/s]; pełny skok 2,6 w 1,3 s |
+| `gripper_force` | 1,2 | \|effort\| grupy 7 przy zamykaniu, powyżej którego cel chwytaka zamarza (chwyta, nie miażdży); jednostka empiryczna, miażdżenie widziane od ok. 6 |
+| `joint_offsets_deg` | 6 × 0,0 | zero stawów ramienia [°]: odejmowane przy odczycie, dodawane przy wysyłce |
+| `stream_hz` | 200,0 | częstotliwość strumienia `0x050` / `0x051`; ramię odpowiada `0x052` co 5 ms |
+| `max_step_deg_s` | 90,0 | własny limit prędkości `p_des` backendu [°/s], druga warstwa pod nadzorem |
+| `stale_ms` | 150,0 | brak `0x052` dłużej niż tyle = łącze milczy: wysyłka staje, cele przepadają, bliźniak robi STOP |
+| `frozen_frames` | 50 | tyle identycznych ramek `0x052` z rzędu = telemetria zamrożona (ramię zwolnione FF 2) |
+| `deaf_err_deg` / `deaf_s` | 3,0 / 1,0 | rozkaz dalej od pomiaru niż `deaf_err_deg` przez `deaf_s` przy stojącym stawie (< 0,3°/s) = ramię głuche na `0x050` albo zablokowane → błąd i STOP |
+| `enable_on_connect` | `false` | sekwencja FF 1 → 5 → 6 zaraz po *Połącz*. Zostaw `false` i używaj przycisku w panelu, bo FF 5 na chwilę puszcza silniki |
+
+**Zero stawów (`joint_offsets_deg`).** Na ramieniu z galaxeo J3 w spoczynku
+czyta ok. +1,49° — o tyle za własnym limitem 0°. To przesunięcie zera, nie błąd
+dekodowania. Zmierz swoje: ramię złożone, oparte na ogranicznikach, zasilone,
+*Połącz* bez jazdy do domu z `joint_offsets_deg` samych zer. Odczytaj kąty
+stawów opartych o ogranicznik (J2 i J3) z suwaków albo z logu (`A1X na …: poza
+startowa …`). Wartość J3 (np. `1.49`) wpisz na trzecie miejsce, a pozostałe
+zostaw 0, chyba że masz dla nich pewne odniesienie. Wpisana wartość jest
+odejmowana od odczytu, więc po restarcie panelu J3 ma czytać ok. 0.
+
+**Sprzężenie chwytaka (`gripper_fb_closed` / `gripper_fb_open`).** Do pomiaru
+służy skrypt, który tylko czyta. Mediana grupy 7 z 50 ramek `0x052`:
+
+```python
+from galaxeo import bus, protocol
+b = bus.open_bus("can0")          # macOS: "xcan", Windows: "PCAN_USBBUS1"
+try:
+    pos = []
+    while len(pos) < 50:          # 50 ramek 0x052 = 0,25 s
+        f = b.recv(0.1)
+        if f is not None and f.can_id == protocol.FB_ID and len(f.data) == protocol.FB_LEN:
+            pos.append(protocol.decode_feedback(bytes(f.data)).pos[6])
+    print(f"grupa 7: {sorted(pos)[25]:.4f} rad")
+finally:
+    b.close()
+```
+
+Pusty chwytak, sprzęgło, suwak chwytaka na 0. Poczekaj, aż szczęki staną,
+i uruchom skrypt: wynik to `gripper_fb_closed`. To samo przy 100 daje
+`gripper_fb_open`. Na Linuksie skrypt może czytać równolegle z panelem
+(czytających może być wielu, nadawca jeden). Na macOS przejściówkę trzyma panel,
+więc przed każdym odczytem daj *Rozłącz* — chwytak zostaje na ostatnim `p_des`.
+Po ponownym *Połącz* backend w pętli otwartej zgłasza chwytak jako 100
+(`gripper_start`). Pierwszy ruch suwaka startuje więc od otwarcia: zamknięte
+szczęki najpierw się otworzą. Sprawdź też kilka punktów pośrednich (np. 50).
+Zależność ma być liniowa, patrz otwarte pytania niżej.
+
+### Pierwsza sesja krok po kroku
+
+Przed sesją: ramię złożone i oparte, miejsce pod nim wolne, pod ręką wyłącznik
+awaryjny zasilacza i STOP panelu, na magistrali nic innego nie nadaje. Łącze
+sprawdzone: na Linuksie `ip -det -s link show can0`, na macOS
+`python -m galaxeo.xcan_usb --normal`, potem je zamknij.
+
+**0. Połączenie.** `lerobot-twin --config configs/local.yaml ui`, zakładka
+Ramię: Ramię = `a1x`, Port jak w tabeli wyżej, **odznacz** „Po połączeniu jedź
+do pozycji domowej”, *Połącz*. Nic nie idzie na magistralę, dopóki czegoś nie
+ruszysz. Suwaki pokazują zmierzoną pozę, a przewodnik podpowiada ten sam krok.
+*Połącz* kończy się błędem, gdy:
+
+- przez 3 s nie przyjdzie żadna ramka `0x052` — łącze nie wstało albo ramię
+  nie ma zasilania;
+- telemetria jest zamrożona — ramię zostało zwolnione (FF 2). Podeprzyj je,
+  wyłącz i włącz zasilanie. FF 1-5-6 tego nie naprawia, bo pozy zwolnionego
+  ramienia nie da się odczytać.
+
+Złożone ramię stoi zwykle **poza limitami bliźniaka** (J2 ok. −0,2°, J3 ok.
++1,5° przy limitach 3…177° i −187…−3°). To normalne: nadzór zostawia staw tam,
+gdzie stoi (miękkie limity, jak ramię nr 2 SO-101). Pierwszy ruch suwakiem J2
+albo J3 wyprowadza staw w zakres z prędkością 15°/s.
+
+**1. Mały ruch.** Sprzęgło, potem jeden suwak (np. J1) o kilka stopni. Strumień
+`p_des` startuje od **zmierzonej** pozy. Jedzie najwyżej 90°/s (backend) i nie
+szybciej niż pozwala nadzór. Sprawdź kierunki i to, że suwaki idą za ramieniem.
+Ramię zgłasza się, ale nie jedzie? Po ok. 1 s pojawia się błąd „… st. od rozkazu
+przez … s i stoi — ramię głuche na 0x050 … albo zablokowane” i STOP. Dopiero
+wtedy (albo po zwolnieniu FF 2 i ponownym zasileniu) użyj **Włącz silniki A1X
+(FF 1-5-6)**. Przycisk jest widoczny tylko przy połączonym `a1x`, wymaga
+zaznaczenia potwierdzenia i odmawia przy włączonym sprzęgle albo gdy ramię ma
+polityka, fala lub identyfikacja. W trakcie sekwencji backend strumieniuje
+`p_des` = zmierzona poza. Świeżo zasilone ramię słucha od razu i przycisku nie
+potrzebuje.
+
+**2. Dom i wyłączenie.** *Pozycja domowa* A1X to uniesiona poza z modelu
+(J2 57°, J3 −92°, J4 34°, szczęki na 60). Pierwszy Dom to więc duży ruch w górę.
+**Przed wyłączeniem zasilania złóż ramię** suwakami (J2 → 3°, J3 → −3°, reszta
+→ 0) i podeprzyj je, bo A1X nie ma hamulców. Ostatnie 3° do ogranicznika to
+zapas limitów bliźniaka. *Rozłącz* nic nie zwalnia: ramię trzyma pozę, w której
+stoi.
+
+**Dalej: kamery, intrynsyki, położenie kamer, Sim-Real, dynamika, polityki** —
+jak kroki 1–8 procedury SO-101 wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach
+wystaje tak samo (ok. 70 mm), a fala losuje pozy z `A1X.wave_ranges`. Polityki
+bazowe (`reach-v3`, `lift-v3`) są uczone na SO-101: runner i ewaluacja odmawiają
+ich na stanowisku A1X („polityka uczona na so101, stanowisko ma a1x”). Politykę
+dla A1X trzeba nauczyć (`lerobot-twin train --task reach` ze stanowiskiem A1X,
+na karcie NVIDIA). Uwaga: MuJoCo Warp z modelem A1X (równość szczęk, bryły
+z siatek) nie był jeszcze sprawdzony na GPU.
+
+### Czym A1X różni się od SO-101 (bezpieczeństwo)
+
+- **Brak hamulców.** Odcięcie zasilania (także wyłącznik awaryjny, wypięty
+  kabel) zrzuca ramię z miejsca, w którym jest. Przed wyłączeniem złóż je albo
+  podeprzyj.
+- **STOP trzyma zmierzoną pozę strumieniem**, nie zwalnia silników. Ramię,
+  do którego nic nie jest wysyłane, też trzyma pozę i nie dryfuje. Zatrzymanie
+  jest bezpieczne; niebezpieczny jest start z celem innym niż poza ramienia,
+  i przed tym chroni start strumienia od pomiaru.
+- **Bliźniak nigdy nie wysyła FF 2** (zwolnienie: ramię wiotczeje, opada
+  i przestaje raportować). `robot.torque_off_on_exit` jest dla `a1x` ignorowane
+  (ostrzeżenie w logu), heartbeat `0x023` nie jest wysyłany nigdy.
+- **FF 5 na ułamek sekundy puszcza silniki.** Przycisk włączenia tylko przy
+  podpartym ramieniu i wyłączonym sprzęgle; nigdy „na wszelki wypadek”.
+- **`t_ff`, `kp`, `kd` nic nie robią** (zmierzone w galaxeo). Nie ma podatności,
+  kompensacji grawitacji ani ustępowania przy kolizji. **Jedyną ochroną są
+  limity i ograniczenie prędkości**: limity bliźniaka (URDF minus 3–5°),
+  limity URDF w backendzie (poszerzone o pozę startową), nadzór i 90°/s
+  backendu. Kolizję łapie dopiero wykrywanie rozjazdu (25° przez 0,5 s w nadzorze,
+  3° przez 1 s przy stojącym stawie w backendzie).
+- **Utrata łącza.** Brak `0x052` przez 150 ms albo zamrożona telemetria:
+  wysyłka staje od razu, cele ramienia i chwytaka przepadają, bliźniak robi
+  STOP. Po powrocie ramek nic nie jedzie do następnego rozkazu, a ten startuje
+  od świeżego pomiaru.
+- **Chwytak.** Celu chwytaka nie da się odczytać z ramienia. Bez zmierzonego
+  sprzężenia backend pracuje w pętli otwartej i panel pokazuje rozkaz. Strumień
+  `0x051` rusza dopiero przy rozkazie różnym od zgłoszonej wartości (o > 0,5),
+  więc *Połącz* niczego nie domyka. Przy zamykaniu cel zamarza, gdy |effort|
+  przekroczy `gripper_force` (1,2). Bez zmierzonego sprzężenia pierwszy ruch
+  chwytaka po *Połącz* zaczyna od `gripper_start` (otwarty), więc przedmiot
+  trzymany w szczękach wypadnie. Wcześniej go wyjmij albo przytrzymaj.
+
+### Jednostki
+
+| | aplikacja | bliźniak (MJCF) | ramię (CAN) |
+|---|---|---|---|
+| stawy ramienia | stopnie | radiany, te same kąty | radiany + `joint_offsets_deg` |
+| chwytak | 0..100 (0 = zamknięty) | wysuw szczęki 0..0,05 m (0 = płytki zsunięte, czubki 3 mm od siebie); druga szczęka lustrzanie | `p_des` liniowo +0,6 (0) … −2,0 (100) |
+
+Chwytak A1X nie ma tików: klucze `robot.center_ticks` i `gripper_*_ticks`
+dotyczą tylko SO-101. Progi szczęk w metrach (`A1X.jaw`): 20 mm wysuwu to
+43 mm między czubkami, więcej niż przekątna kostki 3 cm (42 mm).
+
+### Do sprawdzenia na pierwszej sesji
+
+| pytanie | skąd wątpliwość | jak sprawdzić |
+|---|---|---|
+| Czy chwytak słucha `0x051` przez XCAN (macOS)? | przejściówka wysyła tylko prawidłowe długości FD, więc 10 bajtów idzie jako 12 (DLC 9), a chwytak 12-bajtową ramkę ignorował (galaxeo `bus.py`). SocketCAN wysyła prawdziwe 10 | suwak chwytaka na macOS. Nie rusza? Chwytak tylko z Linuksa. Backend nie zgłasza tego błędem |
+| Czy grupa 7 ramki `0x052` to pozycja chwytaka? | `PROTOCOL.md` („Group 7 is not the gripper position”) kontra liniowa zależność zmierzona w `so101_bridge.py` / `record_a1x.py` (57,1° na jednostkę `p_des`) | pomiar `gripper_fb_*` wyżej + punkt pośredni. Bez tego nie działa rozpoznawanie chwytu (`lift`, „w dłoni”) |
+| Jednostka effort i próg `gripper_force` 1,2 | skala `/600` bez znanej jednostki; próg empiryczny, miażdżenie od ok. 6 | chwyt kostki 3 cm: cel ma zamarznąć przy kontakcie. Sprawdź też, czy effort chwytaka nie stoi na 0,00 (chwytak głuchy — tego backend nie wykrywa) |
+| Czy `kp` 20 nadąża przy 90°/s? | `kp` jest ignorowane (zmierzone przy małych skokach), szybkie ruchy nie były sprawdzane z bliźniakiem | Dom i fala: bez błędu rozjazdu (25° / 0,5 s), suwaki idą za ramieniem |
+| Próg „głuche albo zablokowane” | 3° przez 1 s przy stojącym stawie; staw oparty o przeszkodę też go wyzwoli | czy nie strzela przy spokojnej pracy; w razie potrzeby `deaf_err_deg` / `deaf_s` |
+| Zero J3 i chwytaka | +1,49° z ramienia galaxeo; zero szczęki (0 = płytki zsunięte) nie było mierzone | `joint_offsets_deg` wyżej; przy 0 szczęki mają się stykać |
+
+### A1X w symulacji
+
+Bez sprzętu:
+
+```bash
+lerobot-twin demo --robot a1x               # stanowisko z dwiema kamerami sim, panel: Ramię sim, Połącz
+lerobot-twin calib-sim --robot a1x --n 3 --cameras 2
+```
+
+Model generuje `scripts/import_a1x_model.py` z URDF producenta. Reguły
+przetwarzania są w `assets/robots/a1x/README.md`, każda z testem. Szczęka 2
+idzie za szczęką 1 przez równość w MJCF, usztywnioną regułą 6 (`solref`,
+`solimp`). Wyniki z `tests/test_twin_a1x_sim.py` i `tests/test_twin_calib.py`:
+
+| | wynik |
+|---|---|
+| kalibracja kamer, `calib-sim --robot a1x --n 3 --cameras 2` | 6/6 zaufanych; mediana 0,24 mm / 0,017°, najgorzej 0,82 mm / 0,041°, residuum 0,21 px |
+| sesja kalibracji, ziarno 0, 1 kamera | 16 póz, 0,20 mm, 0,017° |
+| kamera z boku (obrót ~180° względem podstawy), ziarno 1, 2 kamery | 2/2 zaufane (przed poprawką mediany obrotów w `calib/handeye.py`: 0/2) |
+| IK dla celów `reach` w skali A1X | 20/20, najgorzej 0,33 mm |
+| fala kalibracyjna: pozy z kartą nad stołem | 85 % (170/200) |
+| fizyka przy kroku RL 5 ms, losowe akcje przy kostce (2400 taktów) | zero NaN, kostka najwyżej 2,0 m/s i 23 mm nad blatem |
+| symetria szczęk przy gwałtownych akcjach | najgorzej 5,8 mm (z domyślną równością 36 mm) |
+| środowisko `lift` na A1X | przechodzi sprawdzenie Gymnasium |
+
+Nie ma jeszcze polityk dla A1X. Trening na GPU (`lerobot-twin train
+--workspace <stanowisko A1X>`) czeka na sprawdzenie modelu w MuJoCo Warp.
+
+**`pickplace` (w przygotowaniu, na gałęzi `wp4-pickplace`).** Nowe zadanie
+dla obu ramion: chwyć kostkę widzianą z kamer, przenieś ją i odłóż na cel.
+Celem na biurku jest kulka celu z panelu rzucona na blat, a w symulacji —
+płaska podkładka (ciało `mocap`, bez kolizji). Pchanie kostki nie zalicza zadania.
+Sukces wymaga, żeby kostka była wcześniej niesiona (chwycona i uniesiona ponad
+`lift_height`), leżała do 3 cm od celu, stała, a szczęki były otwarte. Na ramieniu
+kostka musi być przy tym świeżo widziana z kamer, nie „w dłoni”. Obserwacja
+`pickplace` ma 39 liczb dla SO-101 i 42 dla A1X. Zanim zadanie dostanie czas
+GPU, ekspert IK musi je rozwiązać na CPU na obu ramionach.
+
+---
+
 ## Polecenia
 
 | | |
 |---|---|
 | `lerobot-twin check` | czy środowisko jest gotowe (bez renderu); osobno gotowość GPU do treningu |
 | `lerobot-twin demo` | przykładowe stanowisko w symulacji → `workspace/twin.json` (`--force`, `--path`) |
+| `lerobot-twin demo --robot a1x` | to samo z ramieniem Galaxea A1X (`examples/twin.a1x.sim.json`) |
 | `lerobot-twin ui` | panel w przeglądarce |
 | `lerobot-twin --config configs/local.yaml <polecenie>` | konfiguracja ramienia z pliku (tiki chwytaka, baudrate) |
 | `lerobot-twin card --tag-mm 50` | arkusz karty kalibracyjnej (PNG, A4) |
 | `lerobot-twin board --square-mm 28` | tablica ChArUco do intrynsyk (PNG, A4) |
-| `lerobot-twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy |
+| `lerobot-twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy; `--robot a1x` na A1X |
 | `lerobot-twin train --task reach --iters 160` | PPO na GPU + ewaluacja na CPU; `--no-rand`, `--spread`, `--init <policy.pt>` (douczanie, np. `--init assets/policies/reach-v3/policy.pt --iters 150`) |
 | `lerobot-twin eval <policy.pt> --rand` | ewaluacja polityki w zwykłym MuJoCo |
 | `lerobot-twin policies` | zapisane polityki i ich wyniki |
@@ -534,4 +856,6 @@ src/lerobot_mp/twin/
     └── watch.py       wykrywanie przestawionej kamery
 
 assets/robots/so101/   model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
+assets/robots/a1x/     Galaxea A1X: URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
+src/lerobot_mp/robot/a1x.py   backend a1x (CAN-FD przez pakiet galaxeo)
 ```

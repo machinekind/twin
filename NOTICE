@@ -30,6 +30,17 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    licencją Apache-2.0 projektu. a1x.xml to przetworzenie URDF wygenerowane
    skryptem scripts/import_a1x_model.py (reguły w assets/robots/a1x/README.md).
 
+5. galaxeo.xcan_usb  (NIE w tym repozytorium - zależność opcjonalna)
+   Backend a1x (src/lerobot_mp/robot/a1x.py) importuje pakiet galaxeo
+   z repozytorium machinekind/galaxeo-manipulators (extra "a1x" w pyproject.toml,
+   instalowany z gita; repozytorium nie ma pliku licencji). Jego moduł
+   galaxeo/xcan_usb.py - sterownik przejściówki XCAN / PCAN-USB FD przez libusb,
+   używany tylko na macOS - zawiera układy komend i rekordów przepisane ze
+   źródeł jądra Linuksa (drivers/net/can/usb/peak_usb/pcan_usb_fd.c,
+   include/linux/can/dev/peak_canfd.h), licencja GPL-2.0. Moduł jest wydzielony
+   w galaxeo i nie jest tu kopiowany ani rozpowszechniany; czy projekt
+   Apache-2.0 może na nim polegać - do decyzji (HANDOFF.md, sekcja 5).
+
 Polityki assets/policies/*/policy.pt zostały wytrenowane w tym projekcie
 (lerobot-twin train) i są objęte licencją projektu.
 

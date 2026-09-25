@@ -43,7 +43,7 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
   rzadko odświeżaną, zaszumioną), a nie tak, jak zna ją fizyka.
 - **Jedna ścieżka kodu dla symulacji i ramienia** — te same wzory obserwacji,
   ten sam nadzór bezpieczeństwa, ta sama percepcja; przejście sim → ramię to
-  zmiana backendu (`sim` → `feetech`).
+  zmiana backendu (`sim` → `feetech`, dla Galaxea A1X `sim` → `a1x`).
 
 ## Co umożliwia
 
@@ -60,6 +60,9 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 - **Bezpieczną pracę z ramieniem** — jeden właściciel ruchu; STOP i Dom
   odbierają ramię każdemu; reakcja na błędy serw, utratę łącza i kolizje;
   ściskający chwytak nie puszcza przy STOP.
+- **Drugie ramię: Galaxea A1X** — ten sam bliźniak, panel i nadzór; w
+  symulacji model, kalibracja kamer i środowiska RL, na sprzęcie backend `a1x`
+  po CAN-FD (Linux, macOS, Windows) — [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.
@@ -86,8 +89,11 @@ zostaje sprawdzenie.
 W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 (inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
 8/8. Kod przeszedł trzy rundy przeglądu z niezależną weryfikacją poprawek;
-567 testów. **Na prawdziwym ramieniu całość nie była jeszcze testowana** —
-to następny krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
+ok. 680 testów. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
+zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
+na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
+ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
+krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
 Decyzje, historia i pułapki: [HANDOFF.md](HANDOFF.md).
 
 ---
@@ -101,9 +107,11 @@ i dane:
 |---|---|---|
 | `models/` | modele MediaPipe: dłoń i poza `lite` ([models/README.md](models/README.md)) | tak; brakujący model pobiera się sam |
 | `assets/robots/so101/` | model ramienia z MuJoCo Menagerie z siatkami STL | tak |
+| `assets/robots/a1x/` | Galaxea A1X: URDF i siatki producenta (licencja producenta, nie Apache-2.0 — `NOTICE`) i `a1x.xml` ze skryptu | tak |
 | `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
 | `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
 | `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
+| `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
 | `workspace/policies/` | polityki, które sam wytrenujesz | nie |
 | `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
@@ -240,9 +248,10 @@ Testy GPU pomijają się same bez CUDA albo bez `mujoco_warp`; testy bliźniaka 
 bez `mujoco`/`torch`. Jeden stary test (`test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`)
 jest oznaczony jako znany problem (`xfail`).
 
-Czysty wynik bez NVIDIA i bez LeRobota: same `passed` poza **7 skipped**
-(4 testy GPU, 3 testy LeRobota) i **1 xfailed**; ok. 2–3 min na CPU. Z kartą
-NVIDIA zostają tylko 3 pominięcia LeRobota (albo żadne, gdy jest zainstalowany).
+Czysty wynik bez NVIDIA i bez LeRobota: same `passed` poza **12 skipped**
+(4 testy GPU, 8 testów LeRobota) i **1 xfailed**; ok. 2–3 min na CPU. Z kartą
+NVIDIA zostają tylko pominięcia LeRobota (albo żadne, gdy jest zainstalowany).
+Bez pakietu `galaxeo` (extra `a1x`) pomijają się dodatkowo testy backendu `a1x`.
 
 ### 5. Trening (tylko NVIDIA)
 
@@ -277,15 +286,19 @@ Backend `a1x` rozmawia z ramieniem po CAN-FD przez pakiet `galaxeo`
 
 ```bash
 pip install -e ".[twin,a1x,dev]" -c constraints.txt   # wymaga scalonej gałęzi `pkg` w galaxeo-manipulators
-# do czasu scalenia: pip install -e <klon galaxeo-manipulators na gałęzi pkg>
+# do czasu scalenia: ".[twin,dev]" i pip install -e ../galaxeo-manipulators   (klon na gałęzi pkg)
 # macOS (dongiel XCAN): dodatkowo pip install pyusb i brew install libusb
+# Windows (PCAN): dodatkowo pip install python-can
+lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji (istniejącego nie nadpisze bez --force)
 ```
 
 W panelu: Ramię = `a1x`, Port = interfejs CAN (`can0` na Linuksie po
-`./can_up.sh`, `xcan` albo `xcan:<adres usb>` na macOS). Parametry (wzmocnienia,
-p_des chwytaka, przesunięcie zera J3) są w sekcji `a1x` konfiguracji. Po
-„Połącz” nic nie idzie na magistralę do pierwszego ruchu; sekwencja włączenia
-FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
+`./can_up.sh`, `xcan` albo `xcan:<adres usb>` na macOS, `PCAN_USBBUS1` na
+Windows). Parametry (zero stawów, sprzężenie chwytaka, progi) są w sekcji
+`a1x` konfiguracji. Po „Połącz” nic nie idzie na magistralę do pierwszego
+ruchu; sekwencja włączenia FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
+**A1X nie ma hamulców** — przed pierwszą sesją przeczytaj
+[docs/TWIN.md](docs/TWIN.md#galaxea-a1x), „Galaxea A1X”.
 
 ### Naprawa OpenCV po LeRobocie
 
@@ -748,10 +761,10 @@ ten sam format, więc działa na obu wersjach.
 pip install -e ".[dev]" -c constraints.txt && pytest -q
 ```
 
-567 testów pokrywa matematykę sterowania (filtry, kinematyka, mapowanie,
+Ok. 680 testów pokrywa matematykę sterowania (filtry, kinematyka, mapowanie,
 nadzór), kąty ramienia w układzie tułowia, wątek podglądu 3D i zgodność modelu
 ze źródłem, cały łańcuch od cech dłoni do symulowanego ramienia oraz bliźniaka
-(kalibracja, percepcja, RL, panel). Bez extra `[twin]` testy bliźniaka się
+(kalibracja, percepcja, RL, panel) i backendu `a1x` na symulowanej magistrali CAN. Bez extra `[twin]` testy bliźniaka się
 pomijają; bez OpenGL: `pytest -q -m "not render"`.
 
 Kilka z nich sprawdza **skutek fizyczny, a nie wartość stawu** — i to nie jest

@@ -132,11 +132,13 @@ robot:
   torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte
 
 # --- tylko backend `a1x`: Galaxea A1X po CAN-FD (lerobot-twin, pip install -e ".[a1x]") ---
-# robot.port to wtedy interfejs CAN: can0 (Linux), xcan albo xcan:<adres usb> (macOS), virtual:x.
+# robot.port to wtedy interfejs CAN: can0 (Linux), xcan albo xcan:<adres usb> (macOS),
+# PCAN_USBBUS1 (Windows, wpisz jawnie), virtual:x. Blizniak bierze backend i port z panelu.
+# Opis kluczy i pomiar zera stawow / sprzezenia chwytaka: docs/TWIN.md, "Galaxea A1X".
 a1x:
   kp: 20.0                   # nigdy 0: przy kp 0 ramie jest gluche; dziala i tak tylko p_des
-  kd: 1.0
-  gripper_kp: 25.0
+  kd: 1.0                    # tlumienie w 0x050/0x051; na ruch nie wplywa
+  gripper_kp: 25.0           # kp ramki chwytaka 0x051; tez > 0
   gripper_open_pdes: -2.0    # p_des chwytaka przy 100 (otwarty); bardziej ujemne = szerzej
   gripper_closed_pdes: 0.6   # p_des przy 0 (zamkniety)
   gripper_fb_closed: null    # grupa 7 z 0x052 [rad] przy 0 i przy 100 - zmierz; null = panel

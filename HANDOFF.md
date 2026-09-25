@@ -28,6 +28,9 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
   prawdzie: 1/8);
 - **polityki bazowe** w `assets/policies/` (`reach-v3`, `lift-v3`) — start do
   douczania na zmierzonej dynamice;
+- **drugie ramię — Galaxea A1X**: opis ramienia i model z URDF producenta,
+  kalibracja kamer, IK, fala i środowiska RL w symulacji; backend `a1x` po CAN-FD
+  (pakiet `galaxeo`) przetestowany na udawanym ramieniu — sprzęt jeszcze nie;
 - **przegląd przed sprzętem**: 53 potwierdzone błędy (z czego 13 poważnych)
   poprawione, sprawdzone przez niezależnych weryfikatorów, luki i nowe
   problemy z weryfikacji poprawione w drugiej rundzie — sekcja 2a.
@@ -44,8 +47,8 @@ README, „Szybki start na nowym komputerze”.
   `lerobot-twin demo`), sprawdzone wersje pakietów (`constraints.txt`),
   licencje plików osób trzecich (`NOTICE`).
 - **Poza repozytorium (per maszyna):** `workspace/` (stanowisko i własne
-  polityki), `configs/local.yaml` (tiki chwytaka i reszta konfiguracji
-  ramienia, `lerobot-twin --config …`), `.claude/`, cache kerneli Warp,
+  polityki), `configs/local.yaml` (tiki chwytaka SO-101, sekcja `a1x` i reszta
+  konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (extra `a1x`), `.claude/`, cache kerneli Warp,
   kalibracja LeRobota (tylko backend `lerobot`).
 - Domyślne ścieżki (`models/…`, `workspace/…`) z klonu liczą się od katalogu
   repozytorium (`src/lerobot_mp/paths.py`), więc katalog uruchomienia nie ma
@@ -87,8 +90,11 @@ czas renderu — zmierzony; PyTorch z CUDA — działa; MJX/Warp — Warp dział
 | `twin/ui/*` | panel (viser), zadania w tle, most sceny, strażnik kamer | test startu panelu + scenariusz w przeglądarce |
 | `twin/runtime.py` | pętla ramienia: jeden właściciel ruchu, STOP/Dom w zmierzonej pozie, reakcja na błędy serw i utratę łącza, render bez blokady pętli | `tests/test_twin_runtime.py` (czas symulowany) |
 | `robot/feetech.py` | + `socket://` (most, `TCP_NODELAY`), SYNC READ z powrotem do odczytów po kolei, suma kontrolna odpowiedzi, bity błędów serw (`faults()`), limity z EEPROM (`joint_limits()`) | testy na symulowanej magistrali |
+| `twin/robots.py` (`RobotSpec`, `A1X`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia; drugi opis — **Galaxea A1X** | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_a1x_sim.py` |
+| `assets/robots/a1x/`, `scripts/import_a1x_model.py` | model A1X z URDF producenta, każda reguła przetworzenia z testem, skrypt odtwarza plik bajt w bajt | kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm), fala 85 % póz z kartą nad stołem, fizyka RL przy 5 ms bez NaN, szczęki symetryczne do 5,8 mm |
+| `robot/a1x.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
 
-Testy: `pytest -q` — wszystko przechodzi; znany, stary `test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`
+Testy: `pytest -q` (ok. 680) — wszystko przechodzi; znany, stary `test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`
 (za sztywny próg w samym teście, sprzed bliźniaka) jest oznaczony `xfail`.
 
 ---
@@ -206,7 +212,19 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
 5. **Rekonstrukcja 3D przedmiotów** — [docs/RESEARCH_3D.md](docs/RESEARCH_3D.md);
    MuJoCo Warp ma render gaussian splats, co pozwala wstawić zeskanowany
    przedmiot do renderu treningowego.
-6. Solver kalibracji bez odpornej funkcji straty — jedna zła obserwacja potrafi
+6. **Pierwsza sesja na Galaxea A1X** według [docs/TWIN.md](docs/TWIN.md#galaxea-a1x),
+   „Pierwsza sesja krok po kroku”: *Połącz* bez domu, zmierzyć `a1x.joint_offsets_deg`
+   i `a1x.gripper_fb_closed/open`, mały ruch, Dom, złożenie przed wyłączeniem, potem
+   kamery i fala. Po drodze rozstrzygnąć tabelę „Do sprawdzenia na pierwszej sesji”
+   (chwytak przez XCAN, grupa 7 jako pozycja chwytaka, jednostka effort, nadążanie
+   przy 90°/s).
+7. **`pickplace` na GPU** (gałąź `wp4-pickplace`, po scaleniu): najpierw 5 linii próby
+   `mujoco_warp.put_model` z `assets/robots/a1x/a1x.xml` (równość szczęk, bryły z siatek)
+   i pomiar `nconmax/njmax` dla A1X, potem krótki przebieg
+   `lerobot-twin train --task pickplace --envs 256 --iters 3` i dopiero pełny trening
+   na SO-101 i A1X. Ekspert IK musi rozwiązać zadanie na CPU na obu ramionach przed
+   czasem GPU.
+8. Solver kalibracji bez odpornej funkcji straty — jedna zła obserwacja potrafi
    podnieść residuum do 1 px (ziarno 4 w `calib-sim`); warto dodać odrzucanie.
 
 ---
@@ -221,6 +239,18 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
    kamery trzeba będzie puścić siecią tak jak ramię.
 4. Czy Shadow widzi komputer przy ramieniu (Tailscale?) — od tego zależy
    wybór: przepuszczenie USB czy most.
+5. **Licencja URDF i siatek A1X** (`assets/robots/a1x/`) — od producenta przez
+   galaxeo-manipulators, `package.xml`: „Proprietary”, warunki nieznane. W repozytorium
+   Apache-2.0 są wydzielone i opisane w `NOTICE`; do decyzji: zgoda Galaxea, albo
+   zamiast kopii ścieżka do zewnętrznego klonu i `scripts/import_a1x_model.py --urdf`.
+6. **`galaxeo.xcan_usb` i GPL-2.0** — układy komend i rekordów sterownika XCAN są
+   przepisane z jądra Linuksa (`peak_usb`, GPL-2.0). Moduł nie jest w tym repozytorium:
+   przychodzi z pakietem `galaxeo` (extra `a1x`) i jest potrzebny tylko na macOS. Do
+   decyzji: licencja galaxeo-manipulators (brak pliku licencji) i czy moduł GPL zostaje
+   w pakiecie importowanym z projektu Apache-2.0.
+7. **Scalenie gałęzi `pkg` w galaxeo-manipulators** — extra `a1x` wskazuje
+   `galaxeo-manipulators@main`, a pakiet `galaxeo` jest na razie tylko na `pkg`. Do
+   scalenia instalacja z lokalnego klonu (`pip install -e ../galaxeo-manipulators`).
 
 ---
 
@@ -232,6 +262,12 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
 | port | COM11 | COM12 |
 | limity serw (EEPROM) | były zawężone (bark −2…+84°); **rozszerzone do 0…4095** 2026-08-31, oryginał w [`docs/hardware/servo_limits_arm1.json`](docs/hardware/servo_limits_arm1.json) | wyglądają na prawdziwą kalibrację LeRobota (±100–125°) |
 | uwagi | chwytak 1986…2670 tików (z jego EEPROM-u) | stał złożony (`shoulder_lift −101°`, poza limitem −95° z konfiguracji — ramię zostaje, gdzie stoi, i wraca w zakres 15°/s dopiero po włączeniu sprzęgła); `wrist_flex` w serwie max +88° przy +95° w konfiguracji — limity bliźniaka zawężane do EEPROM (`joint_limits()`) |
+
+**Galaxea A1X** (6 stawów + chwytak, CAN-FD, sprzęt z galaxeo-manipulators): zasilacz
+24 V, terminacja R1/R2 w górze, przejściówka XCAN / PEAK USB-CAN FD (`0c72:0012`),
+Linux `can0`, macOS `xcan`, Windows `PCAN_USBBUS1`. **Bez hamulców.** J3 czyta w spoczynku
+ok. +1,49° (przesunięcie zera, `a1x.joint_offsets_deg`). Z bliźniakiem jeszcze
+niepodłączony — procedura w [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
 
 Przywrócenie oryginalnych limitów ramienia nr 1: dla każdego serwa zapis
 `Lock`(55)=0 → `Min_Angle_Limit`(9) / `Max_Angle_Limit`(11) → `Lock`=1; przed
@@ -278,6 +314,14 @@ Każda jest pilnowana testem albo poprawiona w kodzie:
 - **Polityka nauczona na prawdziwej pozycji obiektu nie przeżywa opóźnienia
   percepcji** — patrz wyżej; każdy nowy obiekt z kamer musi mieć swój model
   percepcji w treningu.
+- **Mediana obrotów po wektorach Rodriguesa w układzie globalnym** — dla kamery
+  obróconej o ~180° względem podstawy (A1X, kamera z boku) przybliżenia leżą po
+  obu stronach zawinięcia ±π (wektory ~+v i ~−v), a ich mediana to obrót ~180° od
+  każdego z nich. Poza zgrubna w fali wychodziła odwrócona, żadna poza nie trafiała
+  w kadr, 0/2 kamer zaufanych. `calib/handeye.py` liczy teraz medianę w przestrzeni
+  stycznej jednego z wejść, potem drugi raz względem wyniku
+  (`test_calib_session_trusts_a_side_camera_on_the_a1x`). Ten sam błąd jest w
+  `sim/calib/handeye.py` galaxeo-manipulators.
 - **Dopasowanie modelu „obiekt leży na blacie” do obiektu w powietrzu daje
   pewne siebie bzdury** — bramka na jakość dopasowania (IoU), a obiekt w dłoni
   z kinematyki.
