@@ -339,6 +339,44 @@ def test_reach_goal_region_follows_the_workspace_robot(app):
 
 
 @pytest.mark.render
+def test_find_tag_places_the_tag_seen_by_a_simulated_camera_in_the_twin(app):
+    """Tag lezacy na blacie, kamera sim z zaufana poza: Znajdz tag -> poza w podstawie i plytka w 3D."""
+    from lerobot_mp.twin import scene as sc
+    from lerobot_mp.twin.calib import tags
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    size, tag_id = 0.05, 5
+    # Tag poza cieniem ramienia, kamera prawie z gory: glebia (z) to najslabsza os PnP (ok. 3 mm).
+    T_tag = np.eye(4)
+    T_tag[:3, 3] = [0.30, -0.12, 0.0]
+    plate = size / tags.MARKER_FRACTION
+    panel = sc.Panel("tag_na_blacie", tags.render(tag_id, 800), (plate, plate), T_tag)
+    T_cam = _look_at_pose((0.30, 0.05, 0.40), (0.30, -0.12, 0.0))
+    K = [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]]
+    cam = CameraRecord("tagcam", "sim", K=K, dist=[0.0] * 5, T_cam2base=T_cam.tolist(), sim_pose=T_cam.tolist())
+    extras = dict(app.twin.extras)
+    app.ws.add_camera(cam)
+    try:
+        app.twin.configure(**{**extras, "panels": [panel]})
+        app.tag_mm.value, app.tag_id.value = size * 1000, tag_id
+        app._find_tag()
+        fix = app._tag_fix
+        assert fix is not None, app.tag_md.content
+        assert np.linalg.norm(fix.position - T_tag[:3, 3]) < 5e-3, fix.position
+        assert app._body_in_scene("tag")
+        with app.twin.lock:
+            s = app.twin.scene
+            k = int(s.model.body_mocapid[s.model.body("tag").id])
+            p_world = s.T_base2world @ np.r_[T_tag[:3, 3], 1.0]
+            assert np.linalg.norm(np.asarray(s.data.mocap_pos[k]) - p_world[:3]) < 4e-3
+        assert "rozrzut" in app.tag_md.content
+    finally:
+        app.ws.remove_camera("tagcam")
+        app._tag_fix = None
+        app.twin.configure(**{k: v for k, v in extras.items()})
+
+
+@pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
     from lerobot_mp.twin.calib.handeye import CameraFit, Fit
     from lerobot_mp.twin.workspace import CameraRecord

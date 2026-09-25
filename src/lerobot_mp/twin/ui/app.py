@@ -2035,6 +2035,20 @@ class TwinApp:
                                     hint="Tylko w blizniaku: kladzie kostke w losowym miejscu blatu symulacji "
                                          "(dodaje ja do sceny, gdy jej nie ma). Ramieniem nie rusza.")
             self.pol_run_md = g.add_markdown("")
+        with g.add_folder("Tag na biurku"):
+            self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
+                                       hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
+                                            "'Zmierzony bok taga' w zakladce Kamery.")
+            self.tag_above_cm = g.add_number("wysokosc nad tagiem [cm]", 8.0, min=2.0, max=30.0, step=1.0)
+            find_tag = g.add_button("Znajdz tag w kamerach", icon=viser.Icon.TARGET,
+                                    hint="Kadry wlaczonych kamer z zaufana poza -> poza taga w ukladzie "
+                                         "podstawy (mediana z kamer), zielona plytka w 3D. Ramieniem nie rusza.")
+            goto_tag = g.add_button("Jedz nad tag", icon=viser.Icon.PLAYER_PLAY, color="orange",
+                                    hint="RUSZA ramieniem: IK do punktu nad znalezionym tagiem, rampa przez "
+                                         "nadzor. Wymaga wolnego ramienia (sprzeglo wylaczone) i, na prawdziwym "
+                                         "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
+            self.tag_md = g.add_markdown("")
+        self._tag_fix = None
         self.goal_node = self.server.scene.add_icosphere("/cel", radius=0.012, color=(255, 196, 0), visible=False)
         self.goal_gizmo = self.server.scene.add_transform_controls("/cel_uchwyt", scale=0.08, disable_rotations=True,
                                                                    visible=False)
@@ -2069,6 +2083,16 @@ class TwinApp:
         @self._safe
         def _(event):
             self._place_cube_randomly()
+
+        @find_tag.on_click
+        @self._safe
+        def _(event):
+            self._find_tag()
+
+        @goto_tag.on_click
+        @self._safe
+        def _(event):
+            self._goto_tag()
 
         @run.on_click
         @self._safe
@@ -2180,6 +2204,80 @@ class TwinApp:
             k = int(s.model.body_mocapid[s.model.body("target").id])
             T = s.T_base2world
             s.data.mocap_pos[k] = T[:3, :3] @ np.array([target_base[0], target_base[1], TARGET_SIZE[2]]) + T[:3, 3]
+
+    # ------------------------------------------------------------ tag na biurku
+    def _find_tag(self) -> None:
+        """Poza taga z kadrow zaufanych kamer -> zielona plytka w 3D i tekst z rozrzutem miedzy kamerami."""
+        from ..tagreach import tag_from_frames
+        frames = self._grab()
+        fix = tag_from_frames(frames, self.ws.cameras, int(self.tag_id.value), self.tag_mm.value / 1000.0)
+        self._tag_fix = fix
+        if fix is None:
+            trusted = [c.name for c in self.ws.cameras if c.enabled and c.T_cam2base is not None]
+            self.tag_md.content = (f"tag {int(self.tag_id.value)} nie widziany (kamery z zaufana poza: "
+                                   f"{', '.join(trusted) or 'brak - najpierw kalibracja'})")
+            return
+        self._show_tag(fix.T_tag2base)
+        p = fix.position
+        cams = ", ".join(f"{n} {r:.2f} px" for n, r in fix.reproj_px.items())
+        self.tag_md.content = (f"tag {int(self.tag_id.value)}: x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, "
+                               f"z {p[2] * 1000:.0f} mm; kamery: {cams}; rozrzut miedzy kamerami "
+                               f"{fix.spread_mm:.1f} mm")
+
+    def _show_tag(self, T_tag2base: np.ndarray) -> None:
+        """Plytka taga w scenie blizniaka (mocap, bez kolizji) w zmierzonej pozie."""
+        half = self.tag_mm.value / 2000.0
+        if not self._body_in_scene("tag"):
+            objs = [o for o in self.twin.extras.get("objects", []) if o.name != "tag"]
+            objs.append(sc.Box("tag", (half, half, 0.001), (0.0, 0.0), rgba=(0.15, 0.85, 0.35, 1.0),
+                               free=False, mocap=True))
+            self.twin.configure(**{**self.twin.extras, "objects": objs})
+        with self.twin.lock:
+            s = self.twin.scene
+            k = int(s.model.body_mocapid[s.model.body("tag").id])
+            T = s.T_base2world @ np.asarray(T_tag2base, float)
+            q = np.zeros(4)
+            mujoco.mju_mat2Quat(q, np.ascontiguousarray(T[:3, :3]).ravel())
+            s.data.mocap_pos[k] = T[:3, 3] + T[:3, :3] @ np.array([0.0, 0.0, 0.001])
+            s.data.mocap_quat[k] = q
+
+    def _goto_tag(self) -> None:
+        """IK do punktu nad tagiem i rampa przez nadzor - w watku, ramie jako wlasciciel 'tag'."""
+        from ..tagreach import hover_point
+        fix = self._tag_fix
+        if fix is None:
+            raise RuntimeError("najpierw Znajdz tag w kamerach")
+        if not self.twin.connected:
+            raise RuntimeError("ramie nie jest polaczone")
+        if self.twin.owner is not None:
+            raise RuntimeError(f"ramie zajete: {self.twin.owner} - wylacz sprzeglo / zatrzymaj")
+        if not self.twin.status.simulated and not self.pol_confirm.value:
+            raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie w zakladce Polityki")
+        p = hover_point(fix.T_tag2base, self.tag_above_cm.value / 100.0)
+        cmd = {k: float(v) for k, v in (self.twin.status.command or self.twin.joints()).items()}
+        sol = self._kin_gizmo.ik(p, seed=cmd)
+        if not sol.ok:
+            raise RuntimeError(f"punkt nad tagiem poza zasiegiem (blad {sol.pos_err * 1000:.0f} mm)")
+        gripper = self.ws.spec().gripper
+        target = {k: float(v) for k, v in sol.joints.items() if k != gripper}
+        jump = max(abs(target[k] - cmd.get(k, target[k])) for k in target)
+        duration = max(2.0, jump / 20.0)                     # najwyzej 20 st./s, nadzor i tak ogranicza
+        self.pol_confirm.value = False
+        self.tag_md.content = f"jade nad tag: {jump:.0f} st. najwiekszy skok, {duration:.1f} s"
+
+        def run():
+            try:
+                self.twin.move(target, duration, owner="tag")
+                self.tag_md.content = f"nad tagiem: {p[0] * 1000:.0f}, {p[1] * 1000:.0f}, {p[2] * 1000:.0f} mm"
+            except Exception as exc:
+                self.tag_md.content = f"przerwane: {exc}"
+            finally:
+                try:
+                    self.twin.release("tag")
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, name="tag-move", daemon=True).start()
 
     def _place_cube_randomly(self) -> None:
         from ..rl import task as tk
