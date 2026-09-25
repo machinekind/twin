@@ -15,6 +15,7 @@ pytest.importorskip("mujoco")
 from lerobot_mp.twin.calib.card import Card, perturb, pinch_point  # noqa: E402
 from lerobot_mp.twin.calib.handeye import (  # noqa: E402
     Observation,
+    _median_T,
     judge,
     pose_error,
     rotation_spread_R,
@@ -157,7 +158,7 @@ def test_full_session_in_simulation_calibrates_the_camera():
 def test_calib_session_converges_on_the_a1x():
     """Ta sama sesja na A1X: fala z `A1X.wave_ranges`, kamery w skali `A1X.desk`.
 
-    Osiagniete na ziarnie 0: 16 poz, 0,58 mm i 0,037 st. (residuum 0,27 px).
+    Osiagniete na ziarnie 0: 16 poz, 0,20 mm i 0,017 st.
     """
     from lerobot_mp.twin.robots import A1X
 
@@ -165,6 +166,61 @@ def test_calib_session_converges_on_the_a1x():
     for cam, ok in res.trusted.items():
         assert ok, res.reasons[cam]
         assert res.err_mm[cam] < 5.0
+
+
+@pytest.mark.render
+def test_calib_session_trusts_a_side_camera_on_the_a1x():
+    """Ziarno 1, dwie kamery: cam1 stoi z boku, obrot ~180 st. wzgledem podstawy.
+
+    Przy medianie po globalnych wektorach Rodriguesa przyblizenia po obu stronach
+    zawiniecia +-pi dawaly poze zgrubna odwrocona o ~180 st., fala nie znajdowala
+    zadnej pozy w kadrze i stala 90 poz w domu (0/2 zaufanych).
+    Osiagniete: 20 poz, 0,54 mm i 0,17 mm.
+    """
+    from lerobot_mp.twin.robots import A1X
+
+    res = run(seed=1, n_cameras=2, spec=A1X)
+    for cam, ok in res.trusted.items():
+        assert ok, f"{cam}: {res.reasons[cam]}"
+        assert res.err_mm[cam] < 5.0
+    assert res.poses < 60
+
+
+def _rot(axis, deg) -> np.ndarray:
+    import cv2
+
+    T = np.eye(4)
+    T[:3, :3] = cv2.Rodrigues(np.radians(deg) * np.asarray(axis, float) / np.linalg.norm(axis))[0]
+    return T
+
+
+def _angle_deg(A, B) -> float:
+    c = (np.trace(A[:3, :3].T @ B[:3, :3]) - 1.0) / 2.0
+    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
+
+
+@pytest.mark.parametrize("n", [2, 3, 4])
+def test_median_transform_is_continuous_across_the_rotation_wrap(n):
+    """Obroty 178 i -178 st. (4 st. od siebie) - mediana ma lezec miedzy nimi, nie 180 st. dalej."""
+    rng = np.random.default_rng(n)
+    axis = np.array([0.2, -0.3, 1.0])
+    Ts = [_rot(axis, 178.0 if k % 2 == 0 else -178.0) for k in range(n)]
+    for T in Ts:
+        T[:3, 3] = rng.normal(0.0, 0.01, 3) + [0.4, 0.1, 0.3]
+    M = _median_T(Ts)
+    for T in Ts:
+        assert _angle_deg(M, T) < 5.0
+    assert np.allclose(M[:3, :3] @ M[:3, :3].T, np.eye(3), atol=1e-9)
+    assert M[:3, 3] == pytest.approx(np.median([T[:3, 3] for T in Ts], axis=0))
+
+
+def test_median_transform_ignores_one_outlier_even_when_it_comes_first():
+    rng = np.random.default_rng(0)
+    axis = np.array([1.0, 1.0, 0.0])
+    good = [_rot(axis, 175.0 + d) for d in rng.normal(0.0, 1.0, 6)]
+    bad = _rot([0.0, 0.0, 1.0], 60.0)
+    M = _median_T([bad, *good])
+    assert _angle_deg(M, _rot(axis, 175.0)) < 3.0
 
 
 def test_card_nominal_is_the_identity_for_so101():
