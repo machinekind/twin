@@ -125,7 +125,7 @@ TAB_HELP = {
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
         "1. Sprawdz pokrycie blatu pod mapa.\n"
         "2. Wybierz **Kolor kostki**, poloz kostke 3 cm przed ramieniem - ma sie pojawic ramka i polozenie.\n"
-        "3. **lift** z kamer (Polityki) potrzebuje wlaczonych **Mapy na zywo** i **Szukaj kostki**."),
+        "3. **lift** i **pickplace** z kamer (Polityki) potrzebuja wlaczonych **Mapy na zywo** i **Szukaj kostki**."),
     "Trening": (
         "1. **Dynamika serw**: polacz ramie, **Identyfikuj** (~20 s ruchu), **Zapisz jako dynamike stanowiska**.\n"
         "2. Najszybciej douczanie: **Start z polityki** reach-v3 / lift-v3, 100-300 iteracji, **Ucz**.\n"
@@ -135,7 +135,8 @@ TAB_HELP = {
     "Polityki": (
         "1. Wybierz polityke - wyniki GPU i CPU pod lista; **Ewaluuj na CPU** nie rusza ramieniem.\n"
         "2. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
-        "3. reach: przeciagaj zolta kulke celu w 3D. lift na prawdziwym ramieniu: kostka z **kamer**.\n"
+        "3. reach: przeciagaj zolta kulke celu w 3D; pickplace: kulka to cel odlozenia (rzutowany na blat). "
+        "lift i pickplace na prawdziwym ramieniu: kostka z **kamer**.\n"
         "4. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
     "Sim-Real": (
         "1. **Kamera**: prawdziwa, z zaufana poza (Kalibracja).\n"
@@ -1776,8 +1777,9 @@ class TwinApp:
         g = self.server.gui
         self._tab_help("Trening")
         with g.add_folder("Nowy trening (PPO na GPU, MuJoCo Warp)"):
-            self.tr_task = g.add_dropdown("Zadanie", ("reach", "lift"), initial_value="reach",
-                                          hint="reach - koncowka do punktu; lift - chwyt i podniesienie kostki. "
+            self.tr_task = g.add_dropdown("Zadanie", ("reach", "lift", "pickplace"), initial_value="reach",
+                                          hint="reach - koncowka do punktu; lift - chwyt i podniesienie kostki; "
+                                               "pickplace - kostka przeniesiona na cel na blacie i puszczona. "
                                                "Przy Start z polityki zadanie bierze sie z polityki.")
             self.tr_envs = g.add_dropdown("Swiatow naraz", ("1024", "2048", "4096", "8192"), initial_value="4096",
                                           hint="Ile swiatow MuJoCo Warp naraz na GPU; 4096 sprawdzone na A4500, "
@@ -2011,9 +2013,9 @@ class TwinApp:
                                "polityce (bazowych z repozytorium nie nadpisuje). Ramieniem nie rusza.")
         self.pol_eval_md = g.add_markdown("")
         with g.add_folder("Uruchom na blizniaku"):
-            self.pol_cube_src = g.add_dropdown("lift: skad polozenie kostki", ("symulacja", "kamery"),
+            self.pol_cube_src = g.add_dropdown("lift/pickplace: skad polozenie kostki", ("symulacja", "kamery"),
                                                initial_value="symulacja",
-                                               hint="Tylko lift. symulacja - kostka z blizniaka (tylko ramie sim); "
+                                               hint="Tylko lift i pickplace. symulacja - kostka z blizniaka (tylko ramie sim); "
                                                     "kamery - ta sama percepcja co na biurku (zakladka Mapa, zaufana "
                                                     "kamera). Prawdziwe ramie: tylko kamery.")
             self.pol_confirm = g.add_checkbox("Prawdziwe ramie: rozumiem, ze sie ruszy", False,
@@ -2125,8 +2127,15 @@ class TwinApp:
         """
         from ..rl import task as tk
         from ..rl.runner import project_goal
-        runner = self.runner if self.runner is not None and self.runner.task.name == "reach" else None
-        if runner is not None:
+        runner = self.runner if self.runner is not None and self.runner.task.name in ("reach", "pickplace") \
+            else None
+        if runner is not None and runner.task.target:
+            # pickplace: cel odlozenia na blacie (z = 0) i w pierscieniu celow z treningu;
+            # podkladka celu w blizniaku idzie za nim.
+            runner.goal = np.asarray(p_base, float)
+            g = np.asarray(runner.target, float)
+            self._show_target_pad(g)
+        elif runner is not None:
             runner.goal = np.asarray(p_base, float)       # setter rzutuje na obszar zadania tej polityki
             g = np.asarray(runner.goal, float)
         else:
@@ -2140,16 +2149,43 @@ class TwinApp:
             self.goal_gizmo.position = pw
 
     def _cube_in_scene(self) -> bool:
+        return self._body_in_scene("cube")
+
+    def _body_in_scene(self, name: str) -> bool:
         with self.twin.lock:
-            return "cube" in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
+            return name in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
+
+    def _configure_objects(self, cube: bool, pad: bool) -> None:
+        """Kostka i/lub podkladka celu pickplace w scenie blizniaka (przebudowa, stan zostaje)."""
+        from ..rl import task as tk
+        from ..rl.env import TARGET_RGBA, TARGET_SIZE
+        task = tk.make_task("lift", self.ws.spec())
+        h = task.cube_half
+        objs, sensors = [], []
+        if cube:
+            objs.append(sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0), mass=task.cube_mass))
+            sensors.append("cube")
+        if pad:
+            # Tylko do ogladania (mocap, bez kolizji) - kostka przez nia przenika.
+            objs.append(sc.Box("target", TARGET_SIZE, (0.3, 0.1), rgba=TARGET_RGBA, free=False, mocap=True))
+        self.twin.configure(objects=objs, grasp_sensors=sensors)
+
+    def _show_target_pad(self, target_base: np.ndarray) -> None:
+        """Podkladka celu pickplace w blizniaku na `target_base` (uklad podstawy, blat)."""
+        from ..rl.env import TARGET_SIZE
+        if not self._body_in_scene("target"):
+            return
+        with self.twin.lock:
+            s = self.twin.scene
+            k = int(s.model.body_mocapid[s.model.body("target").id])
+            T = s.T_base2world
+            s.data.mocap_pos[k] = T[:3, :3] @ np.array([target_base[0], target_base[1], TARGET_SIZE[2]]) + T[:3, 3]
 
     def _place_cube_randomly(self) -> None:
         from ..rl import task as tk
         task = tk.make_task("lift", self.ws.spec())
         if not self._cube_in_scene():
-            h = task.cube_half
-            self.twin.configure(objects=[sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0),
-                                                mass=task.cube_mass)], grasp_sensors=["cube"])
+            self._configure_objects(cube=True, pad=self._body_in_scene("target"))
         pos, quat = tk.sample_cubes(task, np.random.default_rng(), 1)
         with self.twin.lock:
             s = self.twin.scene
@@ -2237,7 +2273,10 @@ class TwinApp:
             self.runner.stop("nowa polityka")
         pol = Policy.load(self._policy_path())
         provider = None
-        if pol.task.name == "lift":
+        if pol.task.target and not self._body_in_scene("target"):
+            # Podkladka celu (tylko do ogladania); kostka zostaje, jesli juz byla w scenie.
+            self._configure_objects(cube=self._cube_in_scene(), pad=True)
+        if pol.task.cube:
             if self.pol_cube_src.value == "symulacja":
                 if not self.twin.status.simulated:
                     raise RuntimeError("na prawdziwym ramieniu kostka musi pochodzic z kamer")
@@ -2266,7 +2305,16 @@ class TwinApp:
                 p = tk.sample_goals(self.twin.scene.kin, pol.task, np.random.default_rng(), 1)[0]
             self._set_goal(p)
             self.runner.episode_limit = False                # cel przeciagany na zywo - bez limitu epizodu
-        self.goal_node.visible = self.goal_gizmo.visible = pol.task.name == "reach"
+        elif pol.task.target:
+            # pickplace: cel odlozenia z uchwytu celu (rzutowany na blat), a gdy go nie widac -
+            # losowany jak w treningu, co najmniej `target_min_sep` od kostki.
+            p = (inverse(self.T_b2w) @ np.r_[self.goal_gizmo.position, 1.0])[:3]
+            if not self.goal_node.visible:
+                from ..rl import task as tk
+                cube = self._sim_cube()[0] if self._cube_in_scene() else np.array([0.2, 0.0, pol.task.cube_half])
+                p = tk.sample_targets(pol.task, np.random.default_rng(), cube[None])[0]
+            self._set_goal(p)
+        self.goal_node.visible = self.goal_gizmo.visible = pol.task.name in ("reach", "pickplace")
         try:
             # Bierze ramie ("polityka") albo RuntimeError: zajete, aktywny STOP, odebrane od `mark`.
             self.runner.start(**self._claim_kw(mark))
@@ -2283,9 +2331,14 @@ class TwinApp:
                 txt += f", do celu **{rs.distance * 1000:.0f} mm**" + (" (w celu)" if rs.success else "")
                 if rs.goal_clamped:
                     txt += " - cel przyciety do obszaru z treningu"
+            if self.runner.task.target and np.isfinite(rs.distance):
+                # pickplace: odleglosc kostki od celu odlozenia (xy)
+                txt += f", kostka do celu **{rs.distance * 1000:.0f} mm**" + (" (niesiona)" if rs.carried else "")
+                if rs.goal_clamped:
+                    txt += " - cel przesuniety na obszar z treningu"
             if self.runner.cube_provider == self._vision_cube:
                 txt += f", kostka: **{self.cube_tracker.source}**"
-            if self.runner.task.name == "lift" and self.twin.status.simulated and self._cube_in_scene():
+            if self.runner.task.cube and self.twin.status.simulated and self._cube_in_scene():
                 pos, _ = self._sim_cube()
                 txt += f"  \nprawda symulacji: kostka **{100 * (pos[2] - self.runner.task.cube_half):.1f} cm** nad blatem"
             if not rs.running and rs.stopped_because:

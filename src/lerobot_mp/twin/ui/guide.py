@@ -122,7 +122,7 @@ class GuideSnapshot:
     policies: tuple[tuple[str, str, bool], ...] = ()
     #: Zadania w tle: "fala kalibracyjna", "intrynsyki", "identyfikacja", "trening", "ewaluacja".
     jobs: tuple[str, ...] = ()
-    #: Zadanie jadacej polityki ("reach"/"lift"), "" = nie jedzie.
+    #: Zadanie jadacej polityki ("reach"/"lift"/"pickplace"), "" = nie jedzie.
     policy_running: str = ""
     policy_from_cameras: bool = False
     calib_result_pending: bool = False
@@ -131,7 +131,7 @@ class GuideSnapshot:
     dyn_result_useful: bool = True
     #: Postep fali kalibracyjnej 0..1 (None = nie jedzie).
     calib_progress: float | None = None
-    #: Co juz jechalo na tym backendzie w tej sesji panelu: "reach", "lift-kamery".
+    #: Co juz jechalo na tym backendzie w tej sesji panelu: "reach", "lift-kamery", "pickplace-kamery".
     ran: frozenset[str] = field(default_factory=frozenset)
     #: Kamera, z ktorej zbierane sa kadry intrynsyk ("" = nie trwa).
     intr_camera: str = ""
@@ -417,6 +417,10 @@ def _now(s: GuideSnapshot, steps: list[Step]) -> str:
     if s.policy_running == "reach":
         return ("Jedzie reach - przeciagaj zolta kulke celu w 3D, reka przy STOP; Polityki > **Zatrzymaj**, "
                 "gdy wystarczy.")
+    if s.policy_running == "pickplace":
+        src = " (kostka z kamer)" if s.policy_from_cameras else ""
+        return (f"Jedzie pickplace{src} - cel odlozenia to zolta kulka rzutowana na blat (mozna ja przeciagac), "
+                f"reka przy STOP; konczy sama, gdy kostka lezy na celu, albo Polityki > **Zatrzymaj**.")
     if s.policy_running or s.owner == "polityka":
         src = " (kostka z kamer)" if s.policy_from_cameras else ""
         return (f"Jedzie polityka {s.policy_running}{src} - reka przy STOP; konczy sama albo Polityki > "

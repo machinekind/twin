@@ -18,7 +18,7 @@ torch = pytest.importorskip("torch")
 
 from lerobot_mp.twin.rl import task as tk  # noqa: E402
 from lerobot_mp.twin.rl.policy import Policy, PolicyMeta  # noqa: E402
-from lerobot_mp.twin.rl.runner import PolicyRunner, project_goal  # noqa: E402
+from lerobot_mp.twin.rl.runner import PolicyRunner, project_goal, project_target  # noqa: E402
 from lerobot_mp.twin.robots import SO101  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -176,6 +176,128 @@ def test_lift_success_counts_from_a_fresh_pose_given_by_the_provider(twin, monke
     runner.start(threaded=False)
     drive(twin, runner, 2.0)
     assert runner.status.stopped_because == "zadanie wykonane"
+
+
+# ------------------------------------------------------------ pickplace
+#: Cel odlozenia w testach: wewnatrz pierscienia celow SO-101, na blacie.
+TARGET = np.array([0.2, 0.1, 0.0])
+
+
+def pickplace_runner(twin, cube: dict, grip: float = 1.0) -> PolicyRunner:
+    """Polityka pickplace ze stala akcja chwytaka `grip` (+1 otwiera) i kostka z `cube`.
+
+    `cube` - zmienny slownik {"pos": (3,), "source": str}; dostawca podaje (polozenie, obrot, zrodlo),
+    jak `CubeTracker` z kamer. Cel odlozenia = `TARGET` (uchwyt celu z panelu).
+    """
+    runner = PolicyRunner(twin, constant_policy(tk.make_task("pickplace"), {5: grip}),
+                          cube_provider=lambda: (np.asarray(cube["pos"], float), np.eye(3), cube["source"]))
+    runner.goal = TARGET + np.array([0.0, 0.0, 0.12])       # uchwyt nad blatem - cel i tak na blacie
+    return runner
+
+
+def carry_then_put_down(twin, runner, cube: dict, source: str, seconds: float = 2.0, pos=None) -> None:
+    """Faza "niesiona" (w dloni, 8 cm nad celem), potem kostka lezaca na celu ze zrodlem `source`."""
+    half = runner.task.cube_half
+    cube.update(pos=TARGET + np.array([0.0, 0.0, half + 0.08]), source="w dloni")
+    t = drive(twin, runner, 1.0)
+    assert runner.status.running and runner.status.carried
+    cube.update(pos=TARGET + np.array([0.004, -0.003, half]) if pos is None else pos, source=source)
+    drive(twin, runner, seconds, t)
+
+
+def test_pickplace_ends_when_the_cube_rests_on_the_target_and_the_jaw_is_open(twin, monkeypatch):
+    connect_fake(twin, monkeypatch, FakeArm())                # szczeka wolna - jedzie za rozkazem otwarcia
+    cube = {}
+    runner = pickplace_runner(twin, cube)
+    assert runner.end_on_success == 10
+    assert np.allclose(runner.target, TARGET)
+    runner.start(threaded=False)
+    carry_then_put_down(twin, runner, cube, "kamery")
+    assert runner.status.stopped_because == "zadanie wykonane"
+    assert runner.status.distance == pytest.approx(0.005, abs=1e-6)    # kostka do celu (xy), nie TCP
+    assert twin.owner is None
+
+
+@pytest.mark.parametrize("source,block,grip", [("w dloni", 30.0, -1.0), ("kamery", 30.0, -1.0),
+                                               ("kamery", 90.0, 0.3)])
+def test_pickplace_does_not_end_while_the_jaw_still_holds(twin, monkeypatch, source, block, grip):
+    """Kostka na celu, ale wciaz w szczekach (szczeka stoi na niej, rozkaz ciasniej) - nie odlozona.
+
+    Ostatni przypadek: rozkaz chwytaka juz w otwartej polowie (65%), a szczeka stoi szerzej (90) -
+    sam "rozkaz otwarty" nie wystarcza, szczeka musi puscic.
+    """
+    arm = FakeArm()
+    arm.blocked["gripper"] = block
+    connect_fake(twin, monkeypatch, arm)
+    cube = {}
+    runner = pickplace_runner(twin, cube, grip=grip)
+    runner.start(threaded=False)
+    carry_then_put_down(twin, runner, cube, source)
+    assert runner.status.running and not runner.status.success
+    if grip > 0:
+        assert tk.grip_is_open(np, runner.limits, runner.q_cmd[None])[0]
+
+
+def test_pickplace_does_not_end_from_a_stale_cube(twin, monkeypatch):
+    """"ostatnie widziane" na celu to poza sprzed chwili - moze juz lezec gdzie indziej."""
+    connect_fake(twin, monkeypatch, FakeArm())
+    cube = {}
+    runner = pickplace_runner(twin, cube)
+    runner.start(threaded=False)
+    carry_then_put_down(twin, runner, cube, "ostatnie widziane")
+    assert runner.status.running and not runner.status.success
+
+
+def test_pickplace_does_not_end_while_the_cube_still_moves(twin, monkeypatch):
+    """Kostka na celu, ale skacze o 6 mm z taktu na takt (toczy sie, kamera widzi ja w ruchu)."""
+    connect_fake(twin, monkeypatch, FakeArm())
+    k = {"n": 0}
+    half = tk.make_task("pickplace").cube_half
+
+    def provider():
+        k["n"] += 1
+        if k["n"] <= 20:
+            return TARGET + np.array([0.0, 0.0, half + 0.08]), np.eye(3), "w dloni"
+        return TARGET + np.array([0.003 * (-1) ** k["n"], 0.0, half]), np.eye(3), "kamery"
+
+    runner = PolicyRunner(twin, constant_policy(tk.make_task("pickplace"), {5: 1.0}), cube_provider=provider)
+    runner.goal = TARGET
+    runner.start(threaded=False)
+    drive(twin, runner, 3.0)
+    assert runner.status.carried and runner.status.running and runner.status.success_streak <= 1
+
+
+def test_pickplace_needs_a_carried_phase(twin, monkeypatch):
+    """Kostka od poczatku na celu (albo dopchnieta po blacie) - bez niesienia to nie sukces."""
+    connect_fake(twin, monkeypatch, FakeArm())
+    half = tk.make_task("pickplace").cube_half
+    cube = {"pos": TARGET + np.array([0.0, 0.0, half]), "source": "kamery"}
+    runner = pickplace_runner(twin, cube)
+    runner.start(threaded=False)
+    drive(twin, runner, 3.0)
+    assert runner.status.running and not runner.status.success and not runner.status.carried
+
+
+@pytest.mark.parametrize("goal", [
+    (0.20, 0.10, 0.12),         # w pierscieniu, nad blatem - tylko z = 0
+    (0.25, 0.05, -0.05),        # pod blatem
+    (-0.20, 0.00, 0.10),        # za podstawa
+    (0.02, 0.01, 0.10),         # w podstawie
+    (0.60, 0.40, 0.40),         # za daleko i za bardzo w bok
+])
+def test_target_projection_keeps_it_on_the_table_annulus(twin, goal):
+    task = tk.make_task("pickplace")
+    runner = PolicyRunner(twin, constant_policy(task))
+    runner.goal = goal
+    t = runner.target
+    assert t[2] == 0.0
+    assert task.target_radius[0] - 1e-9 <= np.hypot(t[0], t[1]) <= task.target_radius[1] + 1e-9
+    assert task.target_bearing[0] - 1e-9 <= np.arctan2(t[1], t[0]) <= task.target_bearing[1] + 1e-9
+    assert runner.status.goal_clamped == (goal != (0.20, 0.10, 0.12))
+    # Cele losowane w treningu leza w pierscieniu - rzutowanie ich nie rusza.
+    cubes, _ = tk.sample_cubes(task, np.random.default_rng(0), 100)
+    for g in tk.sample_targets(task, np.random.default_rng(1), cubes):
+        assert np.allclose(project_target(task, g), g, atol=1e-9)
 
 
 # ------------------------------------------------------------ wyscigi przy starcie

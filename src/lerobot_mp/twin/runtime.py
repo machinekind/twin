@@ -1571,5 +1571,17 @@ def _copy_state(old: sc.Scene, new: sc.Scene) -> None:
             nd.ctrl[a] = od.ctrl[om.actuator(name).id]
         except KeyError:
             continue
+    # Ciala mocap (np. podkladka celu pickplace) - po nazwie; bez tego wracaly na poze z `Box`.
+    for b in range(nm.nbody):
+        k = int(nm.body_mocapid[b])
+        if k < 0:
+            continue
+        try:
+            ok = int(om.body_mocapid[om.body(nm.body(b).name).id])
+        except KeyError:
+            continue
+        if ok >= 0:
+            nd.mocap_pos[k] = od.mocap_pos[ok]
+            nd.mocap_quat[k] = od.mocap_quat[ok]
     nd.time = od.time
     mujoco.mj_forward(nm, nd)
