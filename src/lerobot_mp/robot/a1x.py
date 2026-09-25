@@ -190,8 +190,8 @@ class A1XArm(RobotBackend):
                 break
             if time.monotonic() - t0 > self._connect_timeout:
                 raise RuntimeError(
-                    f"brak ramek 0x052 na {where} - lacze CAN stoi (Linux: ./can_up.sh albo ip link set "
-                    f"{where} up type can bitrate 1000000 dbitrate 5000000 fd on) albo ramie bez zasilania")
+                    f"brak ramek 0x052 na {where} - lacze CAN stoi (Linux: ./can_up.sh albo "
+                    + self._B.IP_LINK_UP.format(iface=where) + ") albo ramie bez zasilania")
             time.sleep(0.002)
         # `_identical` liczy POWTORZENIA, wiec z n ramek wychodzi najwyzej n - 1: werdykt "zamrozona"
         # (> frozen_frames) wymaga frozen_frames + 2 ramek. Na sprzecie przychodza pojedynczo (co 5 ms).

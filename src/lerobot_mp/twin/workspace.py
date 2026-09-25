@@ -162,7 +162,8 @@ class CameraRecord:
 @dataclass
 class Workspace:
     robot: str = "so101"
-    #: "sim" - blizniak bez sprzetu, "feetech" - serwa wprost, "lerobot" - przez LeRobota.
+    #: "sim" - blizniak bez sprzetu, "feetech" - serwa wprost, "lerobot" - przez LeRobota,
+    #: "a1x" - Galaxea A1X po CAN.
     backend: str = "sim"
     port: str | None = None
     table: dict[str, Any] = field(default_factory=lambda: asdict(Table()))
