@@ -1012,10 +1012,12 @@ class TwinApp:
                                   hint="Usuwa wybrana kamere razem z jej kalibracja - od razu, bez pytania.")
         with g.add_folder("Dodaj kamere", expand_by_default=False):
             probe = g.add_button("Szukaj kamer USB", icon=viser.Icon.SEARCH,
-                                 hint="Szuka kamer USB, ktorych nie ma jeszcze w stanowisku. Na maszynie "
-                                      "wirtualnej/zdalnej (np. Shadow) kamera musi byc przepuszczona w kliencie USB.")
+                                 hint="Szuka kamer USB (i IDS uEye, gdy jest pyueye), ktorych nie ma "
+                                      "jeszcze w stanowisku. Na maszynie wirtualnej/zdalnej (np. Shadow) "
+                                      "kamera musi byc przepuszczona w kliencie USB.")
             self.usb_pick = g.add_dropdown("Znalezione", ("-",), initial_value="-",
-                                           hint="Kamera z ostatniego Szukaj kamer USB: indeks i rozdzielczosc.")
+                                           hint="Kamera z ostatniego Szukaj kamer USB: zrodlo i "
+                                                "rozdzielczosc.")
             add_usb = g.add_button("Dodaj kamere USB", icon=viser.Icon.PLUS,
                                    hint="Dodaje wybrana kamere USB z nominalnym K - potem Kalibracja, krok 1.")
             self.sim_fov = g.add_slider("Pole widzenia kamery sym. [st.]", 40.0, 90.0, 1.0, 62.0,
@@ -1104,10 +1106,10 @@ class TwinApp:
         @probe.on_click
         @self._safe
         def _(event):
-            from ..cameras import probe_devices
+            from ..cameras import probe_all
             used = {c.source for c in self.ws.cameras}
-            self._found_usb = [d for d in probe_devices() if str(d["index"]) not in used]
-            opts = tuple(f"{d['index']}: {d['width']}x{d['height']}" for d in self._found_usb) or ("-",)
+            self._found_usb = [d for d in probe_all() if d["source"] not in used]
+            opts = tuple(d["label"] for d in self._found_usb) or ("-",)
             self.usb_pick.options = opts
             self.usb_pick.value = opts[0]
             if not self._found_usb:
@@ -1119,10 +1121,9 @@ class TwinApp:
         def _(event):
             if not self._found_usb or self.usb_pick.value == "-":
                 raise RuntimeError("najpierw wyszukaj kamery")
-            d = self._found_usb[[f"{x['index']}: {x['width']}x{x['height']}" for x in self._found_usb]
-                                .index(self.usb_pick.value)]
-            rec = self.ws.add_camera(CameraRecord(self.ws.free_name("kamera"), str(d["index"]), d["width"],
-                                                  d["height"]))
+            d = self._found_usb[[x["label"] for x in self._found_usb].index(self.usb_pick.value)]
+            stem = "ueye" if d["source"].startswith("ueye") else "kamera"
+            rec = self.ws.add_camera(CameraRecord(self.ws.free_name(stem), d["source"], d["width"], d["height"]))
             self._save()
             self.twin.cameras.sync()
             self._refresh_cameras(select=rec.name)

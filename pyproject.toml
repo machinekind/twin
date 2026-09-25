@@ -36,6 +36,8 @@ train = ["mujoco>=3.14,<3.15", "mujoco-warp>=3.14,<3.15", "torch>=2.7,<2.12"]
 # Backend `a1x`: Galaxea A1X po CAN-FD. Protokol i lacze sa w pakiecie galaxeo (repozytorium
 # galaxeo-manipulators; wymaga scalonej galezi `pkg`). macOS (dongiel XCAN): do tego pyusb + brew install libusb.
 a1x = ["galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"]
+# Kamera IDS uEye w blizniaku (zrodlo "ueye[:id]"): pyueye + IDS Software Suite (ueyeusbd, libueye_api).
+ueye = ["pyueye>=4.96"]
 # Skrypty z research/3d (otoczki wypukle, dobor chwytu).
 research = ["trimesh>=4,<6"]
 dev = ["pytest>=7.4"]

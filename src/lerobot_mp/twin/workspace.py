@@ -62,7 +62,7 @@ def same_intrinsics(a: tuple[Any, Any], b: tuple[Any, Any]) -> bool:
 @dataclass
 class CameraRecord:
     name: str
-    #: Indeks kamery ("0", "1"), plik wideo, adres strumienia albo "sim".
+    #: Indeks kamery ("0", "1"), plik wideo, adres strumienia, IDS uEye ("ueye", "ueye:<id>") albo "sim".
     source: str = "0"
     width: int = 640
     height: int = 480

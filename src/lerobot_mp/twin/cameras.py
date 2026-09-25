@@ -3,7 +3,9 @@
 `CameraHub.grab()` pasuje do `calib.session.Cameras`, wiec ta sama sesja
 kalibracji jedzie na prawdziwych kamerach i na symulowanych.
 
-Kamery prawdziwe uzywaja watku `vision.camera.CameraStream` (zawsze najnowsza
+Kamery IDS uEye (zrodlo `ueye[:id]`) ida przez `twin.ueye` (pyueye), bo sterownik
+IDS nie daje urzadzenia V4L2. Pozostale kamery prawdziwe uzywaja watku
+`vision.camera.CameraStream` (zawsze najnowsza
 klatka, bez kolejki), z JEDNA roznica: bez lustrzanego odbicia. Aplikacja
 sterowania dlonia odbija obraz, zeby ruch reki zgadzal sie z ekranem - dla
 kalibracji lustrzany kadr to inna geometria i poza kamery wyszlaby z blednym
@@ -46,10 +48,26 @@ def probe_devices(max_index: int = 6) -> list[dict]:
                 continue
             ok, img = cap.read()
             if ok and img is not None:
-                found.append(dict(index=index, width=int(img.shape[1]), height=int(img.shape[0])))
+                w, h = int(img.shape[1]), int(img.shape[0])
+                found.append(dict(index=index, source=str(index), label=f"{index}: {w}x{h}",
+                                  width=w, height=h))
         finally:
             cap.release()
     return found
+
+
+def probe_all() -> list[dict]:
+    """Kamery USB (OpenCV) i IDS uEye (pyueye) do dodania: kazda z `source`, `label`, `width`, `height`."""
+    from . import ueye
+    return probe_devices() + ueye.probe_devices()
+
+
+def open_live(record: CameraRecord):
+    """Strumien dla rekordu: `ueye[:id]` przez pyueye, reszta przez OpenCV (`_Live`)."""
+    from . import ueye
+    if ueye.is_ueye(record.source):
+        return ueye.UEyeLive(record)
+    return _Live(record)
 
 
 class _Live:
@@ -78,6 +96,14 @@ class _Live:
 
     def rgb(self) -> np.ndarray | None:
         return self.rgb_t()[0]
+
+    @property
+    def error(self) -> str | None:
+        return self.stream.error
+
+    @property
+    def is_running(self) -> bool:
+        return self.stream.is_running
 
     def close(self) -> None:
         self.stream.close()
@@ -116,13 +142,13 @@ class CameraHub:
             for name, rec in wanted.items():
                 live = self._live.get(name)
                 if live is not None:
-                    if live.stream.error is None and live.stream.is_running:
+                    if live.error is None and live.is_running:
                         continue
                     live.close()                          # strumien padl - sync otwiera go od nowa
                     self._live.pop(name)
                     self._stream_errors.pop(name, None)
                 try:
-                    self._live[name] = _Live(rec)
+                    self._live[name] = open_live(rec)
                     self._errors.pop(name, None)
                 except Exception as exc:                  # brak urzadzenia, zajete, zly indeks
                     self._errors[name] = str(exc)
