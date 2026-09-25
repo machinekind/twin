@@ -386,3 +386,13 @@ def test_a1x_is_a_real_backend_with_its_own_connect_hint_and_a_no_brakes_warning
     text = gd.render(g)
     assert "a1x" in text and text == gd.render(gd.build(GuideSnapshot(connected=True, backend="a1x",
                                                                         simulated=False, policies=BUNDLED)))
+
+
+def test_running_pickplace_names_the_target_and_counts_as_run():
+    g = gd.build(GuideSnapshot(connected=True, backend="sim", owner="polityka", policy_running="pickplace",
+                               policy_from_cameras=True, policies=BUNDLED + (("pickplace-v1", "pickplace", True),)))
+    assert "Jedzie pickplace (kostka z kamer)" in g.now and "blat" in g.now and "Zatrzymaj" in g.now
+    assert not any(b.startswith("ramie ma") for b in g.blockers) and not g.background
+    # "pickplace-kamery" w `ran` nie zalicza kroku lift - to inne zadanie.
+    s = GuideSnapshot(connected=True, backend="sim", policies=BUNDLED, ran=frozenset({"reach", "pickplace-kamery"}))
+    assert next(st for st in gd.build(s).steps if st.title == "lift z kamer").status != DONE

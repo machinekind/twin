@@ -74,6 +74,9 @@ class Box:
     rgba: tuple[float, float, float, float] = (0.85, 0.25, 0.2, 1.0)
     mass: float = 0.05
     free: bool = True
+    #: Cialo mocap bez kolizji (tylko do ogladania) - np. cel odlozenia pickplace. Poze
+    #: ustawia sie przez `data.mocap_pos` / `mocap_quat`; obiekty przez nie przenikaja.
+    mocap: bool = False
 
 
 @dataclass
@@ -377,7 +380,9 @@ def build(cfg: SceneConfig) -> Scene:
         body = world.add_body()
         body.name = obj.name
         body.pos = p[:3]
-        if obj.free:
+        if obj.mocap:
+            body.mocap = True
+        elif obj.free:
             body.add_freejoint()
         g = body.add_geom()
         g.name = obj.name
@@ -385,6 +390,10 @@ def build(cfg: SceneConfig) -> Scene:
         g.size = list(obj.size)
         g.rgba = list(obj.rgba)
         g.mass = obj.mass
+        if obj.mocap:
+            g.contype = g.conaffinity = 0
+            g.group = 1
+            continue
         g.condim = 4
         g.friction = [1.0, 0.02, 0.002]
 
