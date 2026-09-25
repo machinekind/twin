@@ -790,3 +790,44 @@ def test_cube_tracker_gets_the_gripper_command_really_sent(app, monkeypatch):
         assert seen[-1] == pytest.approx(kin.to_q(dict(home, gripper=5.0))[5])
     finally:
         app.runner = old
+
+
+def test_arm_tab_offers_a1x_and_its_enable_button_only_for_a_connected_a1x(app, monkeypatch):
+    """Ramie = a1x w liscie; "Wlacz silniki A1X" tylko z polaczonym a1x, z potwierdzeniem, bez sprzegla."""
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    assert "a1x" in app.arm_backend.options
+    assert "can0" in app.arm_port.hint and "xcan" in app.arm_port.hint
+    app.arm_backend.value = "sim"
+    _click(app, "Polacz")
+    assert app.twin.status.backend == "sim" and app.a1x_folder.visible is False
+    ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    assert ev.client.notes and "tylko dla polaczonego ramienia a1x" in ev.client.notes[-1][1]
+    _click(app, "Rozlacz")
+
+    class FakeA1X:
+        calls = 0
+
+        def enable(self):
+            FakeA1X.calls += 1
+            return "wyslano FF 1 -> 5 -> 6"
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(app.twin, "_backend", FakeA1X())
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    assert "zaznacz potwierdzenie" in ev.client.notes[-1][1] and FakeA1X.calls == 0
+    app.a1x_confirm.value = True
+    app.arm_engage.value = True
+    ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    assert "wylacz sprzeglo" in ev.client.notes[-1][1] and FakeA1X.calls == 0
+    app.arm_engage.value = False
+    _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    deadline = time.monotonic() + 2.0
+    while "wyslano" not in app.a1x_md.content and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert FakeA1X.calls == 1 and "wyslano FF 1 -> 5 -> 6" in app.a1x_md.content
+    assert app.a1x_confirm.value is False                 # nastepne wlaczenie - nowe potwierdzenie
+    app.twin._backend = None
