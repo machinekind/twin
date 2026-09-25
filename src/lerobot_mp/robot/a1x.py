@@ -20,7 +20,8 @@ Zasady bezpieczenstwa (galaxeo docs/SAFETY.md, docs/PROTOCOL.md):
 * Strumien p_des startuje od ZMIERZONEJ pozy i jedzie najwyzej `max_step_deg_s`,
   wiec zly pierwszy rozkaz nie skacze. Strumien leci z `stream_hz` i powtarza ostatni cel.
 * Stara telemetria (> `stale_ms`) albo zamrozona (FF 2) = wysylka stoi, `link_silent`
-  i blad w `faults()` - blizniak robi STOP i startuje potem od pomiaru.
+  i blad w `faults()` - blizniak robi STOP i startuje potem od pomiaru. Cele ramienia
+  i chwytaka przepadaja: po powrocie ramek nic nie idzie do nastepnego `send_joints`.
 * Nigdy FF 2 (zwolnienie: ramie bez hamulcow opada), nigdy kp 0 (ramie gluche),
   nigdy heartbeat 0x023. Wlaczenie FF 1 -> 5 -> 6 tylko na zyczenie (`enable`),
   z p_des = pomiar przed, miedzy i po kazdym kodzie.
@@ -47,8 +48,11 @@ GRIP_START_DELTA = 0.5
 STILL_DEG_S = 0.3
 #: Ile czekac przy Polacz na pierwsza ramke 0x052 [s].
 CONNECT_TIMEOUT_S = 3.0
-#: Ile po pierwszej ramce zbierac kolejne, zeby rozpoznac zamrozona telemetrie [s].
+#: Ile po pierwszej ramce zbierac kolejne, zeby rozpoznac zamrozona telemetrie [s] (co najmniej;
+#: przy duzym `frozen_frames` okno rosnie do dwoch okresow 0x052 na ramke).
 SETTLE_S = 0.4
+#: Okres ramek 0x052 [s] (ramie odpowiada z 200 Hz).
+FB_PERIOD_S = 0.005
 #: Czas miedzy kodami sekwencji wlaczenia [s] - caly czas strumien p_des = pomiar.
 ENABLE_STEP_S = 0.3
 
@@ -189,11 +193,15 @@ class A1XArm(RobotBackend):
                     f"brak ramek 0x052 na {where} - lacze CAN stoi (Linux: ./can_up.sh albo ip link set "
                     f"{where} up type can bitrate 1000000 dbitrate 5000000 fd on) albo ramie bez zasilania")
             time.sleep(0.002)
+        # `_identical` liczy POWTORZENIA, wiec z n ramek wychodzi najwyzej n - 1: werdykt "zamrozona"
+        # (> frozen_frames) wymaga frozen_frames + 2 ramek. Na sprzecie przychodza pojedynczo (co 5 ms).
+        frozen = self.acfg.frozen_frames
+        settle = max(SETTLE_S, 2.0 * (frozen + 2) * FB_PERIOD_S)
         t1 = time.monotonic()
-        while self._n_fb <= self.acfg.frozen_frames and time.monotonic() - t1 < SETTLE_S:
+        while self._n_fb < frozen + 2 and time.monotonic() - t1 < settle:
             if not self._drain(self._clock()):
                 time.sleep(0.002)
-        if self._identical > self.acfg.frozen_frames:
+        if self._identical > frozen:
             raise RuntimeError("telemetria zamrozona - ramie zwolnione (FF 2), wylacz i wlacz zasilanie")
 
     def _start_thread(self) -> None:
@@ -285,10 +293,15 @@ class A1XArm(RobotBackend):
                   else min(max(now - self._last_io, 0.0), 2.0 / self.acfg.stream_hz))
             self._last_io = now
             if self._fb is None or self._stale_now(now) or self._frozen():
-                # Stara albo zamrozona telemetria: nic nie wysylamy, a po powrocie strumien ramienia
-                # startuje od nowego pomiaru (blizniak i tak robi STOP i reseed). p_des chwytaka nie da
-                # sie odczytac - zostaje ostatni wyslany, bo ten ramie trzyma.
-                self._p_stream, self._deaf_since, self._deaf = None, {}, ""
+                # Stara albo zamrozona telemetria: nic nie wysylamy i cele przepadaja. Blizniak robi
+                # STOP i rusza dopiero od potwierdzonego pomiaru - backend nie moze w tym czasie sam
+                # jechac do celu sprzed przerwy (ramie po wylacz/wlacz albo zablokowane stoi gdzie
+                # indziej, a A1X nie ma hamulcow). Po powrocie ramek nic nie idzie do nastepnego
+                # `send_joints`: ramie trzyma poze, w ktorej stoi, chwytak ostatni p_des.
+                self._p_target = self._p_stream = None
+                self._g_target = self._g_stream = None
+                self._g_frozen = False
+                self._deaf_since, self._deaf = {}, ""
                 return
             if self._pinned:
                 self._p_target = self._measured_rad()
@@ -462,7 +475,11 @@ class A1XArm(RobotBackend):
             self._wait(ENABLE_STEP_S)
         finally:
             with self._lock:
-                self._p_target = self._measured_rad() if self._fb is not None else None
+                # Po zerwaniu lacza w trakcie - bez celu (ostatni pomiar sprzed przerwy to juz nie poza ramienia).
+                fresh = self._fb is not None and not self._stale_now(self._clock()) and not self._frozen()
+                self._p_target = self._measured_rad() if fresh else None
+                if not fresh:
+                    self._p_stream = None
                 self._pinned = False
         return "wyslano FF 1 -> 5 -> 6; ramie trzyma zmierzona poze"
 

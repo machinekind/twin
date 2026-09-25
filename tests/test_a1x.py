@@ -177,6 +177,38 @@ def test_connect_refuses_frozen_telemetry():
     assert bus.tx == []
 
 
+class TrickleBus(FakeA1XBus):
+    """Jak na sprzecie: ramki 0x052 przychodza pojedynczo - kazde oproznianie kolejki widzi najwyzej jedna."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._gave = False
+
+    def recv(self, timeout: float = 0.0):
+        if self._gave:
+            self._gave = False
+            return None
+        if not self.rx:
+            self.tick()
+        self._gave = True
+        return self.rx.popleft() if self.rx else None
+
+
+def test_connect_refuses_frozen_telemetry_arriving_one_frame_at_a_time():
+    arm, bus, clock = make_arm(bus=TrickleBus())
+    bus.frozen = True
+    with pytest.raises(RuntimeError, match="zamrozona"):
+        arm.connect()
+    assert not arm.is_connected and bus.tx == []
+    assert arm._identical == arm.acfg.frozen_frames + 1
+
+
+def test_connect_accepts_live_telemetry_arriving_one_frame_at_a_time():
+    arm, bus, clock = make_arm(bus=TrickleBus())
+    arm.connect()
+    assert arm.is_connected and arm.faults() == [] and bus.tx == []
+
+
 def test_backend_refuses_a_so101_joint_table():
     with pytest.raises(ValueError, match="6 stawow ramienia"):
         A1XArm(load_config(), bus=FakeA1XBus(), threaded=False)
@@ -227,13 +259,52 @@ def test_stale_feedback_sets_link_silent_stops_transmit_and_reports_a_fault():
     run(arm, bus, clock, 0.3)
     assert len(bus.tx) == n                                                      # wysylka stoi
     assert arm.send_joints({"arm_joint1": 25.0}) == {}
-    # powrot: nastepna ramka konczy cisze, strumien startuje od nowego pomiaru
+    # powrot: nastepna ramka konczy cisze, ale cel sprzed przerwy przepadl - nic nie idzie,
+    # dopoki blizniak (po STOP i potwierdzeniu pomiaru) nie wysle nowego rozkazu
     bus.silent = False
-    run(arm, bus, clock, 0.05)
+    run(arm, bus, clock, 0.3)
     assert not arm.link_silent and arm.faults() == []
-    assert len(bus.tx) > n
+    assert len(bus.tx) == n
+    q0 = math.degrees(bus.q[0])
+    arm.send_joints({"arm_joint1": 25.0})
+    run(arm, bus, clock, 0.05)
     first = bus.pdes_deg(bus.tx[n][1])
-    assert abs(first[0] - math.degrees(bus.q[0])) <= 90.0 * STEP * 2 + 2 * LSB_DEG
+    assert abs(first[0] - q0) <= 90.0 * STEP * 2 + 2 * LSB_DEG                  # strumien od pomiaru
+
+
+def test_after_an_outage_the_backend_does_not_drive_back_to_the_pre_outage_target():
+    # Ramie po wylacz/wlacz (FF 2) albo zablokowane: po przerwie stoi daleko od celu sprzed niej.
+    arm, bus, clock = connected()
+    arm.send_joints({"arm_joint1": 60.0, "gripper": 40.0})
+    run(arm, bus, clock, 0.2)
+    bus.silent = True
+    run(arm, bus, clock, 0.3)
+    bus.p_des = bus.g_des = None                         # ramie bez strumienia trzyma sie tam, gdzie stoi
+    bus.q[0] = math.radians(-5.0)                        # i opadlo / zostalo przestawione
+    n, q = len(bus.tx), list(bus.q)
+    bus.silent = False
+    run(arm, bus, clock, 1.0)
+    assert arm.faults() == [] and not arm.link_silent
+    assert len(bus.tx) == n                              # ani 0x050, ani 0x051 bez nowego rozkazu
+    assert bus.q == pytest.approx(q)
+    # nowy rozkaz blizniaka (trzymaj pomiar) - strumien stoi w miejscu
+    arm.send_joints({"arm_joint1": arm.read_joints()["arm_joint1"]})
+    run(arm, bus, clock, 0.3)
+    assert bus.q[0] == pytest.approx(math.radians(-5.0), abs=math.radians(0.1))
+
+
+def test_after_frozen_telemetry_clears_the_backend_waits_for_a_new_command():
+    arm, bus, clock = connected()
+    arm.send_joints({"arm_joint1": 50.0})
+    run(arm, bus, clock, 0.1)
+    bus.frozen = True
+    run(arm, bus, clock, 0.4)
+    assert arm.link_silent
+    n = len(bus.tx)
+    bus.frozen = False
+    run(arm, bus, clock, 0.5)
+    assert not arm.link_silent and arm.faults() == []
+    assert len(bus.tx) == n
 
 
 def test_frozen_payloads_are_reported_and_stop_transmit():
@@ -399,6 +470,27 @@ def test_enable_sequence_streams_before_between_and_after_each_code():
     assert len(set(bus.frames(P.CMD_ID))) == 1                                   # p_des = pomiar, caly czas
     assert bus.pdes_deg(bus.frames(P.CMD_ID)[0]) == pytest.approx(measured, abs=LSB_DEG + 1e-9)
     assert not bus.frames(P.GRIP_ID)
+
+
+def test_link_lost_during_enable_leaves_no_target_to_resume_to():
+    arm, bus, clock = connected()
+    sleep, calls = arm._sleep, [0]
+
+    def sleep_then_go_silent(secs):
+        calls[0] += 1
+        if calls[0] == 70:                               # w trakcie czekania przed drugim kodem FF
+            bus.silent = True
+        sleep(secs)
+
+    arm._sleep = sleep_then_go_silent
+    with pytest.raises(RuntimeError, match="zamilklo"):
+        arm.enable()
+    arm._sleep = sleep
+    bus.p_des = None
+    n = len(bus.tx)
+    bus.silent = False
+    run(arm, bus, clock, 0.5)
+    assert len(bus.tx) == n and arm.faults() == []
 
 
 def test_send_joints_is_refused_while_enabling_and_enable_refuses_a_silent_link():
