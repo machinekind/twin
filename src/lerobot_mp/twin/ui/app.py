@@ -263,7 +263,7 @@ class TwinApp:
         #: (`_motion_mark`, `_take_arm`) - STOP wcisniety w trakcie ladowania polityki ginal.
         self._motion_gen = 0
         self.cube_det = CubeDetector()
-        self.cube_tracker = CubeTracker()
+        self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
         self.last_cube = None
         #: Chwila kadrow ostatniej detekcji podanej polityce - ta sama detekcja nie idzie drugi raz.
         self._cube_used_t = 0.0
@@ -2088,7 +2088,7 @@ class TwinApp:
 
     def _place_cube_randomly(self) -> None:
         from ..rl import task as tk
-        task = tk.make_task("lift")
+        task = tk.make_task("lift", self.ws.spec())
         if not self._cube_in_scene():
             h = task.cube_half
             self.twin.configure(objects=[sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0),
@@ -2132,11 +2132,12 @@ class TwinApp:
         # tracker nie widzial "sciska" i nie bral kostki "w dloni" - polityka stawala z
         # "kamery jej nie widza" (verify2, s1).
         grip = kin.spec.gripper
+        k = kin.spec.joints.index(grip)
         sent = (getattr(st, "command", None) or {}).get(grip)
         if sent is not None:
-            cmd = kin.to_q({**joints, grip: float(sent)})[kin.spec.joints.index(grip)]
+            cmd = kin.to_q({**joints, grip: float(sent)})[k]
         else:
-            cmd = self.runner.q_cmd[5] if self.runner is not None else q[5]
+            cmd = self.runner.q_cmd[k] if self.runner is not None else q[k]
         now = time.monotonic()
         det = self.last_cube
         if det is not None and (det.confidence <= 0.4 or not det.t or det.t <= self._cube_used_t
@@ -2144,7 +2145,7 @@ class TwinApp:
             det = None
         if det is not None:
             self._cube_used_t = det.t
-        return self.cube_tracker.update(det, kin.tcp(joints), q[5], cmd, self._grip_closed_q(), now)
+        return self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
 
     def _grip_closed_q(self) -> float:
         """Kat szczeki [rad] pustego, zamknietego chwytaka (chwytak 0) - `grip_closed` trackera.
@@ -2156,7 +2157,7 @@ class TwinApp:
         """
         runner = self.runner
         if runner is not None and getattr(runner, "limits", None) is not None:
-            return float(runner.limits.lo[5])
+            return float(runner.limits.lo[runner.limits.grip])
         kin = self._kin_vision
         return float(kin.to_q({kin.spec.gripper: 0.0})[kin.spec.joints.index(kin.spec.gripper)])
 
@@ -2191,7 +2192,7 @@ class TwinApp:
                     raise RuntimeError("kostka z kamer wymaga co najmniej jednej skalibrowanej kamery (zakladka Mapa)")
                 if not (self.map_on.value and self.cube_on.value):
                     raise RuntimeError("kostka z kamer wymaga wlaczonej mapy i szukania kostki (zakladka Mapa)")
-                self.cube_tracker = CubeTracker()
+                self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
                 self._cube_used_t = 0.0
                 provider = self._vision_cube
         self._release_panel()

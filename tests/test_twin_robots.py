@@ -16,8 +16,13 @@ import pytest
 # bez [twin]) caly plik ma sie pominac, a nie przerwac zbieranie testow.
 mujoco = pytest.importorskip("mujoco")
 
+from lerobot_mp.config import JOINT_NAMES, load_config  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics, inverse  # noqa: E402
-from lerobot_mp.twin.robots import SO101, get_spec  # noqa: E402
+from lerobot_mp.twin.robots import REGISTRY, SO101, get_spec, joint_configs, robot_config  # noqa: E402
+
+
+#: Cialo nadgarstka kazdego ramienia - tylko dla testu kierunku podejscia (bez pola w opisie).
+WRIST = {"so101": "wrist", "a1x": "arm_link6"}
 
 
 @pytest.fixture(scope="module")
@@ -25,12 +30,19 @@ def kin() -> RobotKinematics:
     return RobotKinematics(SO101)
 
 
+@pytest.fixture
+def spec_kin(spec) -> RobotKinematics:
+    return RobotKinematics(spec)
+
+
 def random_joints(kin: RobotKinematics, rng: np.random.Generator) -> dict[str, float]:
+    spec = kin.spec
     joints = {
         name: float(rng.uniform(np.degrees(lo), np.degrees(hi)))
-        for name, lo, hi in zip(SO101.joints, kin.lo, kin.hi)
+        for name, lo, hi in zip(spec.joints, kin.lo, kin.hi)
     }
-    joints["gripper"] = float(rng.uniform(0.0, 100.0))
+    if spec.gripper:
+        joints[spec.gripper] = float(rng.uniform(0.0, 100.0))
     return joints
 
 
@@ -53,12 +65,13 @@ def test_mjcf_matches_the_articulus_reference_in_every_pose(kin):
     assert worst < 1e-5, f"czlony rozjezdzaja sie o {worst * 1000:.3f} mm"
 
 
-def test_units_round_trip(kin):
+def test_units_round_trip(spec_kin):
+    kin = spec_kin
     rng = np.random.default_rng(1)
     for _ in range(20):
         joints = random_joints(kin, rng)
         back = kin.from_q(kin.to_q(joints))
-        for name in SO101.joints:
+        for name in kin.spec.joints:
             assert back[name] == pytest.approx(joints[name], abs=1e-9)
 
 
@@ -86,25 +99,28 @@ def test_gripper_angle_is_the_servo_angle_of_the_feetech_backend(kin):
     assert kin.to_q({"gripper": -1000.0})[k] == pytest.approx(kin.lo[k])
 
 
-def test_approach_axis_points_out_of_the_jaws(kin):
+def test_approach_axis_points_out_of_the_jaws(spec_kin):
     """Krok wzdluz podejscia ma oddalac TCP od nadgarstka - inaczej karta
     kalibracyjna sterczalaby w strone ramienia."""
-    joints = dict(SO101.home)
+    kin = spec_kin
+    joints = dict(kin.spec.home)
     tcp = kin.tcp(joints)
-    wrist = kin.body("wrist", joints)[:3, 3]
+    wrist = kin.body(WRIST[kin.spec.name], joints)[:3, 3]
     approach, _ = kin.tool_axes(joints)
     before = np.linalg.norm(tcp[:3, 3] - wrist)
     after = np.linalg.norm(tcp[:3, 3] + 0.05 * approach - wrist)
     assert after > before + 0.045
 
 
-def test_closing_axis_separates_the_jaw_tips(kin):
+def test_closing_axis_separates_the_jaw_tips(spec_kin):
     """Os zamykania to kierunek, w ktorym rozchodza sie czubki szczek."""
-    joints = dict(SO101.home, gripper=50.0)
+    kin = spec_kin
+    spec = kin.spec
+    joints = dict(spec.home, **{spec.gripper: 50.0})
     _, closing = kin.tool_axes(joints)
     d = kin.data
-    fixed = d.geom_xpos[kin.model.geom("fixed_jaw_sph_tip1").id]
-    moving = d.geom_xpos[kin.model.geom("moving_jaw_sph_tip1").id]
+    fixed = d.geom_xpos[kin.model.geom(spec.fingertips[0]).id]
+    moving = d.geom_xpos[kin.model.geom(spec.fingertips[1]).id]
     gap = (moving - fixed) / np.linalg.norm(moving - fixed)
     assert float(gap @ closing) > 0.9
 
@@ -160,3 +176,82 @@ def test_ik_matches_orientation_when_the_arm_can_take_it(kin):
 def test_unknown_robot_is_reported_with_the_known_ones():
     with pytest.raises(KeyError, match="so101"):
         get_spec("ur5")
+
+
+def test_so101_spec_limits_equal_the_hand_app_defaults():
+    """Limity SO-101 sa w dwoch miejscach (opis blizniaka, aplikacja dloni) - maja byc te same."""
+    hand = load_config()
+    twin = joint_configs(SO101)
+    assert tuple(twin) == JOINT_NAMES
+    for n in JOINT_NAMES:
+        assert (twin[n].min, twin[n].max, twin[n].max_vel) == (
+            hand.joint(n).min, hand.joint(n).max, hand.joint(n).max_vel)
+
+
+def test_robot_config_uses_spec_joints_and_home():
+    cfg = robot_config(SO101)
+    assert tuple(cfg.joints) == SO101.joints
+    assert cfg.safety.home == SO101.home == load_config().safety.home
+    over = robot_config(SO101, overrides={"joints": {"gripper": {"max_vel": 42}}})
+    assert over.joint("gripper").max_vel == 42
+    assert robot_config(SO101).joint("gripper").max_vel == 300.0     # opis nietkniety
+    with pytest.raises(ValueError, match="Nieznany staw"):
+        robot_config(SO101, overrides={"joints": {"knee": {"min": 0}}})
+
+
+@pytest.mark.parametrize("name", sorted(REGISTRY))
+def test_every_registry_entry_declares_limits_and_max_vel_for_all_joints(name):
+    spec = REGISTRY[name]
+    assert set(spec.limits) == set(spec.joints)
+    assert set(spec.max_vel) == set(spec.joints)
+    for n in spec.joints:
+        lo, hi = spec.limits[n]
+        assert lo < hi and spec.max_vel[n] > 0
+    assert set(spec.home) == set(spec.joints)
+    for n, v in spec.home.items():
+        assert spec.limits[n][0] <= v <= spec.limits[n][1]
+
+
+def test_linear_gripper_spec_maps_0_100_onto_its_declared_range(monkeypatch):
+    from dataclasses import replace
+
+    from lerobot_mp.twin import kinematics
+
+    def no_ticks():
+        raise AssertionError("opis liniowy nie moze czytac tikow serwa")
+
+    monkeypatch.setattr(kinematics, "backend_gripper_ticks", no_ticks)
+    lin = RobotKinematics(replace(SO101, gripper_range_q=(-0.1, 0.9)))
+    k = SO101.joints.index("gripper")
+    assert lin.gripper_ticks is None
+    assert lin.to_q({"gripper": 0.0})[k] == pytest.approx(max(-0.1, lin.lo[k]))
+    assert lin.to_q({"gripper": 100.0})[k] == pytest.approx(min(0.9, lin.hi[k]))
+    assert lin.to_q({"gripper": 50.0})[k] == pytest.approx(0.4)
+    assert lin.to_q({"gripper": 1000.0})[k] == pytest.approx(min(0.9, lin.hi[k]))
+    for v in (5.0, 37.5, 50.0, 90.0):
+        assert lin.from_q(lin.to_q({"gripper": v}))["gripper"] == pytest.approx(v, abs=1e-9)
+
+
+def test_mirror_joint_is_written_by_kinematics_scene_and_collision_checker(toy_spec):
+    from lerobot_mp.twin import scene as sc
+    from lerobot_mp.twin.collision import CollisionChecker
+
+    kin = RobotKinematics(toy_spec)
+    k = toy_spec.joints.index("gripper")
+    m = kin.model
+    adr_m = m.jnt_qposadr[m.joint("gripper_m").id]
+    joints = {"j1": 10.0, "j2": 15.0, "gripper": 70.0}
+    q = kin.to_q(joints)
+    assert q[k] == pytest.approx(0.014)
+    kin.tcp(joints)
+    assert kin.data.qpos[adr_m] == -q[k]
+
+    scene = sc.build(sc.SceneConfig(toy_spec))
+    adr_s = scene.model.jnt_qposadr[scene.model.joint(sc.PREFIX + "gripper_m").id]
+    scene.set_joints(joints)
+    assert scene.data.qpos[adr_s] == -q[k]
+    assert scene.joints()["gripper"] == pytest.approx(70.0)
+
+    checker = CollisionChecker(scene)
+    checker._contacts(dict(joints, gripper=30.0))
+    assert checker.data.qpos[adr_s] == -kin.to_q({"gripper": 30.0})[k]

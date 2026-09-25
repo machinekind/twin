@@ -2,7 +2,7 @@
 
     env = BatchEnv("reach", num_envs=4096)
     obs = env.reset()                                  # (N, obs_dim) na cuda
-    obs, rew, done, info = env.step(actions)           # actions (N, 6) w [-1, 1]
+    obs, rew, done, info = env.step(actions)           # actions (N, act_dim) w [-1, 1]
 
 Ta sama scena, te same wzory (`task`) co `env.TwinEnv` na CPU - roznica to
 tylko, gdzie liczy sie fizyka. Na RTX A4500 w Shadow scena z kostka robi ok.
@@ -50,7 +50,8 @@ class BatchEnv:
                  device: str = "cuda:0", seed: int = 0):
         wp, mjw = _warp()
         self.wp, self.mjw = wp, mjw
-        self.task = task if isinstance(task, tk.TaskConfig) else tk.make_task(task)
+        self.task = task if isinstance(task, tk.TaskConfig) else \
+            tk.make_task(task, spec=(workspace or Workspace()).spec())
         self.num_envs = N = int(num_envs)
         self.device = torch.device(device)
         self.rand = randomization if randomization is not None else Randomization()
@@ -114,13 +115,13 @@ class BatchEnv:
 
         self.goal = torch.zeros(N, 3, **f32)
         self.q_cmd = self.home.repeat(N, 1)
-        self.prev_action = torch.zeros(N, 6, **f32)
+        self.prev_action = torch.zeros(N, self.task.act_dim, **f32)
         # Opoznienie akcji: ostatnie akcje w buforze pierscieniowym, dla kazdego swiata
         # wlasne {min_delay .. max_delay} taktow - jak kolejka w TwinEnv. Wczesniej byl tu
         # jeden slot i opoznienie sciete do 0/1 taktu: po identyfikacji (1,4 taktu,
         # max_delay 3) trening nie widzial nigdy 2-3 taktow, a ewaluacja na CPU - tak.
         self.Hd = int(self.rand.max_delay) + 1
-        self.act_hist = torch.zeros(self.Hd, N, 6, **f32)
+        self.act_hist = torch.zeros(self.Hd, N, self.task.act_dim, **f32)
         self.delay_n = torch.zeros(N, dtype=torch.long, device=dev)
         self.ar = torch.arange(N, device=dev)
         self.t = torch.zeros(N, dtype=torch.long, device=dev)
@@ -220,13 +221,16 @@ class BatchEnv:
         tsk = self.task
         q0 = self.home.repeat(n, 1)
         noise = np.radians(tsk.start_noise_deg)
-        q0[:, :5] += self._u(n, 5, lo=-noise, hi=noise)
+        na, g = self.limits.n_arm, self.limits.grip
+        q0[:, :na] += self._u(n, na, lo=-noise, hi=noise)
         if tsk.cube:
-            q0[:, 5] = self.lo[5] + self._u(n, lo=0.6, hi=1.0) * (self.hi[5] - self.lo[5])
+            q0[:, g] = self.lo[g] + self._u(n, lo=0.6, hi=1.0) * (self.hi[g] - self.lo[g])
         q0 = torch.clamp(q0, self.lo, self.hi)
 
         qpos = self.qpos0.repeat(n, 1)
         qpos[:, self.qadr] = q0
+        for k, adr, g in self.kin.mirror:               # stawy sprzezone (druga szczeka A1X)
+            qpos[:, adr] = g * q0[:, k]
         if tsk.cube:
             r = self._u(n, lo=tsk.cube_radius[0], hi=tsk.cube_radius[1])
             b = self._u(n, lo=tsk.cube_bearing[0], hi=tsk.cube_bearing[1])

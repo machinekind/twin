@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -284,7 +285,7 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
     # Bok taga i K, z ktorymi liczone jest dopasowanie - zapis wyniku bierze je stad,
     # nie z pol panelu w chwili klikniecia "Zapisz".
     job.data["tag_size"] = float(card.tag_size)
-    nominal = card.nominal(pinch_point(RobotKinematics(ws.spec())))
+    nominal = card.nominal(pinch_point(RobotKinematics(ws.spec())), ws.spec())
     simulated = twin.status.simulated
     before = dict(twin.extras)                           # np. kostka polozona wczesniej - wroci po fali
     try:
@@ -296,7 +297,9 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
         checker = CollisionChecker(sc.build(ws.scene_config(with_card=True, card_pose=nominal, card_collider=0.012)))
         intr = {n: ws.camera(n).intrinsics() for n in cameras}
         job.data["intrinsics"] = intr
-        cfg = WaveConfig(min_obs=10, min_poses=6, max_poses=36) if quick else WaveConfig()
+        cfg = WaveConfig.for_spec(ws.spec())
+        if quick:
+            cfg = replace(cfg, min_obs=10, min_poses=6, max_poses=36)
         session = Session(_OwnedArm(twin, job), _CameraSubset(twin.cameras, cameras), intr, twin.scene.kin, card,
                           nominal, checker, cfg, seed=int(time.time()) % 10_000)
         while not session.done:
@@ -381,11 +384,12 @@ def run_sysid(job: Job, twin) -> Any:
 
     job.message = "ruch pobudzajacy (ramie sie rusza)"
     job.data["backend"] = str(getattr(twin.status, "backend", "") or "")
-    home = dict(twin.workspace.spec().home)
+    spec = twin.workspace.spec()
+    home = dict(spec.home)
     try:
         # take=False: ramie wzial panel przed startem zadania; odebrane w tym czasie
         # (Dom, STOP, Polacz) nie jest brane z powrotem.
-        rec = record(twin, excitation(home), on_tick=lambda p: setattr(job, "progress", 0.4 * p),
+        rec = record(twin, excitation(home, joints=spec.arm_joints), on_tick=lambda p: setattr(job, "progress", 0.4 * p),
                      should_stop=job.cancel.is_set, take=False)
     except RuntimeError as exc:
         why = interrupted_by_operator(job, twin, SYSID_OWNER)
@@ -409,7 +413,7 @@ def run_sysid(job: Job, twin) -> Any:
     def prog(n, c):
         job.progress = min(0.99, 0.4 + 0.6 * n / 610)          # identify: ok. 609 symulacji
         job.message = f"dopasowanie: {n} symulacji, blad {c:.3f} st."
-    res = identify(rec, on_progress=prog)
+    res = identify(rec, spec=spec, on_progress=prog)
     useful, why = fit_verdict(res)
     job.data.update(base=float(res.base), band=dict(getattr(res, "band", None) or {}), useful=useful,
                     useless_why=why)

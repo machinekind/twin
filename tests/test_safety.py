@@ -261,3 +261,20 @@ def test_hand_app_homing_is_unchanged_by_the_outside_rule(supervisor, cfg):
         supervisor.step(None, DT, hand_present=True, engaged=False)
         n += 1
     assert n * DT == pytest.approx(cfg.safety.startup_ramp_s, abs=DT + 1e-9)
+
+
+def test_supervisor_takes_its_joint_list_from_the_config():
+    from lerobot_mp.config import JointConfig
+
+    cfg = load_config(
+        joints={"a": JointConfig(-10.0, 10.0, 50.0), "b": JointConfig(0.0, 100.0, 300.0)},
+        overrides={"safety": {"home": {"a": 1.0, "b": 5.0}}},
+    )
+    sup = SafetySupervisor(cfg)
+    assert sup.names == ("a", "b")
+    sup.start({"a": 0.0, "b": 0.0})
+    command, _ = sup.step(None, DT, hand_present=False, engaged=False)
+    assert command.keys() == {"a", "b"}
+    assert 0.0 < command["a"] < 1.0 and 0.0 < command["b"] < 5.0   # rampa rusza oba
+    command = settle(sup, seconds=cfg.safety.startup_ramp_s + 0.5, hand=False, engaged=False)
+    assert command == pytest.approx({"a": 1.0, "b": 5.0})

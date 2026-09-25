@@ -14,7 +14,7 @@ uczy sie na jednej, a jezdzi na drugiej.
 Wszystkie polozenia sa w ukladzie PODSTAWY ramienia (blat na z = 0), katy
 stawow w radianach MJCF, w kolejnosci `RobotSpec.joints` (chwytak ostatni).
 
-Akcja ma 6 liczb w [-1, 1]:
+Akcja ma `n_joints` liczb w [-1, 1] (6 dla SO-101: piec stawow ramienia i chwytak):
 
 * stawy ramienia - PRZYROST celu o najwyzej `arm_step` rad na takt, liczony od
   poprzedniego celu (jak `runtime.Twin.set_target`), przyciety do tych samych
@@ -29,8 +29,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...config import load_config
 from ..kinematics import RobotKinematics
+from ..robots import RobotSpec, robot_config
 
 TASKS = ("reach", "lift")
 
@@ -80,14 +80,17 @@ class TaskConfig:
     #: nagroda liczy tylko polozenie TCP, a obrot nadgarstka go nie zmienia - reach-v2
     #: krecila nim do limitu +150 st. w kazdym epizodzie (643 z 2000 taktow przy limicie).
     roll_penalty: float = 0.0
+    #: Liczba stawow ramienia razem z chwytakiem (chwytak ostatni) - wymiar akcji.
+    #: Polityki zapisane przed tym polem to SO-101, czyli 6.
+    n_joints: int = 6
 
     @property
     def obs_dim(self) -> int:
-        return OBS_DIMS[self.name]
+        return obs_dim(self.name, self.n_joints)
 
     @property
     def act_dim(self) -> int:
-        return 6
+        return self.n_joints
 
     @property
     def substeps(self) -> int:
@@ -98,11 +101,17 @@ class TaskConfig:
         return "cube" if self.name == "lift" else None
 
 
-#: q(6) + cel stawow(6) + TCP(3) + [cel(3) + cel-TCP(3)] + [kostka(3) + kostka-TCP(3) + obrot(6)] + akcja(6)
-OBS_DIMS = {"reach": 6 + 6 + 3 + 3 + 3 + 6, "lift": 6 + 6 + 3 + 3 + 3 + 6 + 6}
+def obs_dim(name: str, n: int) -> int:
+    """q(n) + cel stawow(n) + TCP(3) + [cel(3) + cel-TCP(3)] + [kostka(3) + kostka-TCP(3) + obrot(6)] + akcja(n)."""
+    return 2 * n + 3 + (6 if name == "reach" else 12) + n
 
 
-def make_task(name: str = "reach", **overrides) -> TaskConfig:
+#: Wymiary obserwacji SO-101 (6 stawow) - uklad polityk bazowych.
+OBS_DIMS = {name: obs_dim(name, 6) for name in TASKS}
+
+
+def make_task(name: str = "reach", spec: RobotSpec | None = None, **overrides) -> TaskConfig:
+    """Zadanie `name`; ze `spec` - w skali tego ramienia (liczba stawow, pierscienie celow i kostek)."""
     if name not in TASKS:
         raise ValueError(f"nieznane zadanie {name!r}; dostepne: {', '.join(TASKS)}")
     base = TaskConfig(name=name, episode_steps=100 if name == "reach" else 200)
@@ -110,6 +119,10 @@ def make_task(name: str = "reach", **overrides) -> TaskConfig:
         base = replace(base, roll_penalty=0.5)
     if name == "lift":
         base = replace(base, end_on_success=10, limit_penalty=0.5, hold_still=0.5)
+    if spec is not None:
+        d = spec.desk
+        base = replace(base, n_joints=len(spec.joints), goal_radius=d.goal_radius, goal_height=d.goal_height,
+                       cube_radius=d.cube_radius, cube_bearing=d.cube_bearing)
     return replace(base, **overrides)
 
 
@@ -121,17 +134,25 @@ class Limits:
     lo: np.ndarray
     hi: np.ndarray
     home: np.ndarray
+    #: Liczba stawow ramienia (bez chwytaka) - to one ida przyrostem `arm_step`.
+    n_arm: int
+    #: Indeks chwytaka (ostatni staw).
+    grip: int
+    #: Indeks stawu obrotu narzedzia (`spec.roll_joint`) - kara `roll_penalty`; None = brak.
+    roll: int | None
 
     @staticmethod
     def of(kin: RobotKinematics) -> Limits:
         spec = kin.spec
         if spec.gripper != spec.joints[-1]:
             raise ValueError("zadania RL zakladaja chwytak jako ostatni staw")
-        cfg = load_config()
+        cfg = robot_config(spec)
         lo = kin.to_q({n: cfg.joint(n).min for n in spec.joints})
         hi = kin.to_q({n: cfg.joint(n).max for n in spec.joints})
         lo, hi = np.maximum(lo, kin.lo), np.minimum(hi, kin.hi)
-        return Limits(lo, hi, np.clip(kin.to_q(spec.home), lo, hi))
+        grip = len(spec.joints) - 1
+        roll = spec.joints.index(spec.roll_joint) if spec.roll_joint else None
+        return Limits(lo, hi, np.clip(kin.to_q(spec.home), lo, hi), n_arm=grip, grip=grip, roll=roll)
 
 
 # -------------------------------------------------------- numpy / torch
@@ -154,14 +175,15 @@ def _as(xp, a, like):
 
 # ---------------------------------------------------------------- akcja
 def apply_action(xp, task: TaskConfig, limits: Limits, q_cmd, action):
-    """Nowy cel stawow (N, 6) z poprzedniego celu i akcji w [-1, 1]."""
+    """Nowy cel stawow (N, n_joints) z poprzedniego celu i akcji w [-1, 1]."""
+    na = limits.n_arm
     lo, hi = _as(xp, limits.lo, q_cmd), _as(xp, limits.hi, q_cmd)
     a = _clip(xp, action, -1.0, 1.0)
-    arm = _clip(xp, q_cmd[..., :5] + a[..., :5] * task.arm_step, lo[:5], hi[:5])
-    span = hi[5:] - lo[5:]
-    want = lo[5:] + (a[..., 5:] + 1.0) * 0.5 * span
+    arm = _clip(xp, q_cmd[..., :na] + a[..., :na] * task.arm_step, lo[:na], hi[:na])
+    span = hi[na:] - lo[na:]
+    want = lo[na:] + (a[..., na:] + 1.0) * 0.5 * span
     step = task.grip_step * span
-    grip = q_cmd[..., 5:] + _clip(xp, want - q_cmd[..., 5:], -step, step)
+    grip = q_cmd[..., na:] + _clip(xp, want - q_cmd[..., na:], -step, step)
     return _cat(xp, [arm, grip])
 
 
@@ -197,8 +219,9 @@ def fold_yaw(xp, R):
 # ---------------------------------------------------------------- nagroda
 def limit_cost(xp, task: TaskConfig, limits: Limits, q_cmd):
     """(N,) kara za cele stawow ramienia blizej limitu niz `limit_margin` (0 w srodku zakresu)."""
-    lo, hi = _as(xp, limits.lo[:5], q_cmd), _as(xp, limits.hi[:5], q_cmd)
-    room = xp.minimum(q_cmd[..., :5] - lo, hi - q_cmd[..., :5])
+    na = limits.n_arm
+    lo, hi = _as(xp, limits.lo[:na], q_cmd), _as(xp, limits.hi[:na], q_cmd)
+    room = xp.minimum(q_cmd[..., :na] - lo, hi - q_cmd[..., :na])
     near = _clip(xp, 1.0 - room / task.limit_margin, 0.0, 1.0)
     return task.limit_penalty * (near * near).sum(-1)
 
@@ -209,13 +232,14 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
 
     `jaw_contacts` (N, 2): czy kostka dotyka szczeki stalej i ruchomej.
     Porazka = kostka spadla ze stolu; epizod sie wtedy konczy.
-    `q_cmd` (N, 6) i `limits` - do kary za limity (`limit_penalty`); bez nich jej nie ma.
+    `q_cmd` (N, n_joints) i `limits` - do kary za limity (`limit_penalty`); bez nich jej nie ma.
     """
     cost = task.action_rate * ((action - prev_action) ** 2).sum(-1)
     if task.limit_penalty > 0 and q_cmd is not None and limits is not None:
         cost = cost + limit_cost(xp, task, limits, q_cmd)
-    if task.roll_penalty > 0 and q_cmd is not None and limits is not None:
-        roll = (q_cmd[..., 4] - float(limits.home[4])) / np.pi
+    if task.roll_penalty > 0 and q_cmd is not None and limits is not None and limits.roll is not None:
+        k = limits.roll
+        roll = (q_cmd[..., k] - float(limits.home[k])) / np.pi
         cost = cost + task.roll_penalty * roll * roll
     if task.name == "reach":
         d = _norm(goal - tcp)
@@ -233,7 +257,8 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
     s = success.to(tcp.dtype) if xp is not np else success.astype(tcp.dtype)
     r = (1.0 - xp.tanh(d / 0.05)) + g + 4.0 * g * lifted + 2.0 * s
     if task.hold_still > 0:
-        cost = cost + task.hold_still * s * (_clip(xp, action[..., :5], -1.0, 1.0) ** 2).sum(-1)
+        na = action.shape[-1] - 1 if limits is None else limits.n_arm
+        cost = cost + task.hold_still * s * (_clip(xp, action[..., :na], -1.0, 1.0) ** 2).sum(-1)
     failure = height < -0.05
     return r - cost, success, failure
 
@@ -274,12 +299,13 @@ def sample_goals(kin: RobotKinematics, task: TaskConfig, rng: np.random.Generato
 
 
 def sample_start(task: TaskConfig, limits: Limits, rng: np.random.Generator, n: int) -> np.ndarray:
-    """Katy startowe (n, 6): poza domowa z szumem, chwytak otwarty w lift."""
+    """Katy startowe (n, n_joints): poza domowa z szumem, chwytak otwarty w lift."""
+    na, g = limits.n_arm, limits.grip
     q = np.repeat(limits.home[None], n, axis=0)
-    q[:, :5] += np.radians(rng.uniform(-task.start_noise_deg, task.start_noise_deg, (n, 5)))
+    q[:, :na] += np.radians(rng.uniform(-task.start_noise_deg, task.start_noise_deg, (n, na)))
     if task.name == "lift":
-        span = limits.hi[5] - limits.lo[5]
-        q[:, 5] = limits.lo[5] + rng.uniform(0.6, 1.0, n) * span
+        span = limits.hi[g] - limits.lo[g]
+        q[:, g] = limits.lo[g] + rng.uniform(0.6, 1.0, n) * span
     return np.clip(q, limits.lo, limits.hi)
 
 

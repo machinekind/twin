@@ -54,3 +54,17 @@ def test_cli_overrides_win_over_file(tmp_path):
 
 def test_config_is_a_dataclass():
     assert isinstance(load_config(), AppConfig)
+
+
+def test_joints_argument_replaces_the_default_joint_table():
+    from lerobot_mp.config import JointConfig
+
+    table = {"a": JointConfig(min=-10.0, max=10.0, max_vel=50.0), "b": JointConfig(min=0.0, max=100.0)}
+    cfg = load_config(joints=table)
+    assert list(cfg.joints) == ["a", "b"]
+    assert cfg.joint("a").max_vel == 50.0
+    assert cfg.joints["a"] is not table["a"]        # kopia, nie wspolny obiekt
+    merged = load_config(joints=table, overrides={"joints": {"b": {"max": 50.0}}})
+    assert merged.joint("b").max == 50.0 and table["b"].max == 100.0
+    with pytest.raises(ValueError, match="Nieznany staw"):
+        load_config(joints=table, overrides={"joints": {"gripper": {"max_vel": 1.0}}})

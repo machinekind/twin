@@ -26,6 +26,9 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     nie mowilo nic o zmierzonym ramieniu. W wyniku `randomized` mowi, czy dynamika byla
     losowana naprawde, a `centre` - wokol czego.
     """
+    spec = (workspace or Workspace()).spec()
+    if policy.meta.robot != spec.name:
+        raise RuntimeError(f"polityka uczona na {policy.meta.robot}, stanowisko ma {spec.name}")
     task = policy.task
     rand = randomization if randomization is not None else \
         Randomization.nominal(Dynamics.from_dict(workspace.dynamics) if workspace is not None else None)

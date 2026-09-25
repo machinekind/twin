@@ -28,7 +28,7 @@ from test_twin_runtime import FakeArm, connect_fake  # noqa: E402
 
 def constant_policy(task: tk.TaskConfig, action: dict[int, float] | None = None) -> Policy:
     """Polityka, ktora zawsze daje te sama akcje (zera + `action`)."""
-    pol = Policy(PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=6))
+    pol = Policy(PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=task.act_dim))
     with torch.no_grad():
         for p in pol.actor.parameters():
             p.zero_()
@@ -307,3 +307,22 @@ def test_restart_with_the_cube_in_the_jaws_keeps_the_squeeze_and_can_succeed(twi
     drive(twin, runner, 2.0)
     assert max(s["gripper"] for s in arm.sent[n:]) <= 5.0 + 0.5
     assert runner.status.stopped_because == "zadanie wykonane"
+
+
+def test_runner_refuses_a_policy_trained_for_another_robot(twin, monkeypatch):
+    """Polityka z innego ramienia (inne stawy, inne jednostki chwytaka) nie rusza ramienia."""
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    claims = []
+    monkeypatch.setattr(twin, "claim", lambda *a, **kw: claims.append(a))
+    task = tk.make_task("reach")
+    pol = constant_policy(task)
+    pol.meta.robot = "a1x"
+    with pytest.raises(RuntimeError, match="uczona na a1x"):
+        PolicyRunner(twin, pol)
+    pol = constant_policy(task)
+    pol.meta.act_dim = 7
+    with pytest.raises(RuntimeError, match="7 wyjsc"):
+        PolicyRunner(twin, pol)
+    assert claims == [] and twin.owner is None
+    PolicyRunner(twin, constant_policy(task))                 # SO-101 na SO-101 - bez zmian

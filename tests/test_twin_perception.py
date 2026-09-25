@@ -525,3 +525,29 @@ def test_lifted_cube_on_the_edges_is_never_a_two_camera_detection():
         passed = [(round(x, 3), round(y, 3), round(d.confidence, 2))
                   for (x, y, _), d in zip(spots, dets) if d is not None and d.n_cameras >= 2]
         assert not passed, f"podniesiona o {lift * 100:.0f} cm przeszla jako dwie kamery: {passed}"
+
+
+def test_cube_tracker_for_so101_equals_the_defaults():
+    a, b = CubeTracker(), CubeTracker.for_spec(SO101)
+    for key in ("grip_margin", "block_margin", "open_q", "still", "hold_s", "grab_radius", "near_radius"):
+        assert getattr(a, key) == getattr(b, key), key
+    assert CubeTracker.for_spec(SO101, hold_s=1.0).hold_s == 1.0
+
+
+def test_table_mapper_from_workspace_takes_the_spec_desk(toy_spec, monkeypatch):
+    from dataclasses import replace
+
+    from lerobot_mp.twin import robots
+    from lerobot_mp.twin.robots import Desk
+    from lerobot_mp.twin.workspace import Workspace
+
+    m = TableMapper.from_workspace(Workspace())
+    assert (m.centre, m.side) == (SO101.desk.map_centre, SO101.desk.map_side)
+    d = TableMapper({})
+    assert (m.centre, m.side) == (d.centre, d.side)              # SO-101 = domyslne konstruktora
+    toy = replace(toy_spec, desk=Desk(map_centre=(0.1, 0.02), map_side=0.3))
+    monkeypatch.setitem(robots.REGISTRY, "toy", toy)
+    m = TableMapper.from_workspace(Workspace(robot="toy"), n=32)
+    assert (m.centre, m.side, m.n) == ((0.1, 0.02), 0.3, 32)
+    m = TableMapper.from_workspace(Workspace(robot="toy"), centre_xy=(0.2, 0.0), n=32)
+    assert m.centre == (0.2, 0.0)                                # jawny argument wygrywa

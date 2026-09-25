@@ -38,12 +38,12 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-from ..config import JOINT_NAMES, load_config
 from ..control.safety import SafetyState, SafetySupervisor
 from ..robot import create_backend
 from ..robot.base import RobotBackend, RobotInfo
 from . import scene as sc
 from .cameras import CameraHub
+from .robots import robot_config
 from .workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -295,6 +295,12 @@ class Twin:
 
     def __init__(self, workspace: Workspace, loop_hz: float = 50.0):
         self.workspace = workspace
+        #: Opis ramienia stanowiska. Ramie stanowiska nie zmienia sie po zbudowaniu
+        #: blizniaka (scena powstaje z niego tutaj) - nowe ramie = nowy `Twin`.
+        self.spec = workspace.spec()
+        #: Stawy aplikacji w kolejnosci opisu i staw chwytaka (0 = zamkniety, 100 = otwarty).
+        self._names: tuple[str, ...] = self.spec.joints
+        self._grip: str | None = self.spec.gripper
         self.lock = threading.RLock()
         self.loop_hz = loop_hz
         #: Dodatki sceny ponad stanowisko: karta w szczekach (`with_card`, `card_pose`),
@@ -305,7 +311,7 @@ class Twin:
         self.renderer = RenderWorker()
         self.scene: sc.Scene = sc.build(workspace.scene_config())
         with self.lock:
-            self.scene.set_joints(workspace.spec().home)
+            self.scene.set_joints(self.spec.home)
         #: (scena zrodlowa, kopia do renderu) - kopia ma wlasne MjData, render idzie poza blokada.
         self._view: tuple[sc.Scene, sc.Scene] | None = None
         self.cameras = CameraHub(workspace, sim_render=self.render)
@@ -418,6 +424,11 @@ class Twin:
     @property
     def owner(self) -> str | None:
         return self._owner
+
+    @property
+    def backend(self) -> RobotBackend | None:
+        """Polaczony backend ramienia (None bez polaczenia) - tylko do odczytu."""
+        return self._backend
 
     @property
     def preempt_reason(self) -> str:
@@ -549,7 +560,7 @@ class Twin:
             return
         if measured is None:
             measured = self._measured_now()
-        measured = {k: float(v) for k, v in measured.items() if k in JOINT_NAMES}
+        measured = {k: float(v) for k, v in measured.items() if k in self._names}
         if not measured:
             return
         with self._sup_lock:
@@ -563,11 +574,11 @@ class Twin:
         """Poza do trzymania: stawy ramienia jak podane, sciskajacy chwytak przy swoim rozkazie."""
         pose = dict(measured)
         sup = self._supervisor
-        if GRIPPER in pose and sup is not None and not self._grip_release:
-            if self._grip_squeezing(pose[GRIPPER]):
-                pose[GRIPPER] = sup.command[GRIPPER]
+        if self._grip in pose and sup is not None and not self._grip_release:
+            if self._grip_squeezing(pose[self._grip]):
+                pose[self._grip] = sup.command[self._grip]
             if self._grip_floor is not None:
-                pose[GRIPPER] = max(pose[GRIPPER], self._grip_floor)
+                pose[self._grip] = max(pose[self._grip], self._grip_floor)
         return pose
 
     def _grip_squeezing(self, measured: float) -> bool:
@@ -579,7 +590,7 @@ class Twin:
         chwytak w przypadkowym rozwarciu. Ustalony, nieruchomy chwyt zostaje jak dotad.
         """
         sup, ls = self._supervisor, self._ls
-        cmd = None if sup is None else sup.command.get(GRIPPER)
+        cmd = None if sup is None else sup.command.get(self._grip)
         if cmd is None or measured - cmd <= self.grip_squeeze_margin:
             return False
         if ls is None:
@@ -587,7 +598,7 @@ class Twin:
         now = self._clock if self._manual else time.monotonic()
         if ls.grip_tight_since is None or now - ls.grip_tight_since < self.grip_block_s:
             return False
-        a, b = ls.measured.get(GRIPPER), ls.prev_measured.get(GRIPPER)
+        a, b = ls.measured.get(self._grip), ls.prev_measured.get(self._grip)
         return a is None or b is None or abs(float(a) - float(b)) <= self.grip_still
 
     def _measured_now(self) -> dict[str, float]:
@@ -624,7 +635,7 @@ class Twin:
             if k not in ls.prev_measured or k not in ls.last_sent:
                 continue
             vel = (v - ls.prev_measured[k]) / span * self.vel_margin
-            if k == GRIPPER and vel < 0:
+            if k == self._grip and vel < 0:
                 continue
             est = v + vel * horizon + vel * abs(vel) / (2.0 * self.servo_accel)
             c = ls.last_sent[k]
@@ -641,11 +652,11 @@ class Twin:
             return {}
         b = self._backend
         measured = self.joints() if b is not None and b.info.simulated else dict(self._latest)
-        cmd = sup.command.get(GRIPPER)
-        if cmd is None or GRIPPER not in measured:
+        cmd = sup.command.get(self._grip)
+        if cmd is None or self._grip not in measured:
             return {}
-        if self._grip_squeezing(float(measured[GRIPPER])):
-            return {GRIPPER: cmd}
+        if self._grip_squeezing(float(measured[self._grip])):
+            return {self._grip: cmd}
         return {}
 
     # ----------------------------------------------------------- ramie
@@ -666,8 +677,8 @@ class Twin:
         # zadzialac, a serwo dociskalo do przeszkody bez konca (zmierzone na prawdziwym stosie
         # LeRobota nad emulatorem; bez limitu STOP po 0,78 s). Nadzor blizniaka i tak ogranicza
         # predkosc. Aplikacja dloni ma wlasna konfiguracje - bez zmian.
-        cfg = load_config(overrides={"robot": {"backend": "sim" if backend == "sim" else backend,
-                                               "port": port, "max_relative_target": None}})
+        cfg = robot_config(self.spec, overrides={"robot": {"backend": "sim" if backend == "sim" else backend,
+                                                          "port": port, "max_relative_target": None}})
         b: RobotBackend | None = None
         try:
             b = SceneBackend(self) if backend == "sim" else create_backend(cfg)
@@ -686,7 +697,7 @@ class Twin:
         # Nadzor dostaje WLASNA kopie konfiguracji: limity backendu (`cfg`, ta sama,
         # ktora przycina `send_joints`) poszerzamy chwilowo dla stawu spoza zakresu
         # (`_sync_backend_limits`), a nadzor musi dalej znac prawdziwe limity.
-        self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in JOINT_NAMES}
+        self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
         self._supervisor = SafetySupervisor(copy.deepcopy(cfg))
         # Staw poza limitami nie jest przycinany na starcie - patrz `SafetySupervisor.start`.
         self._supervisor.start(measured, go_home=go_home, keep_outside=True)
@@ -749,13 +760,13 @@ class Twin:
         except Exception:                                  # diagnostyka nie moze psuc polaczenia
             logger.exception("goal_positions() backendu rzucilo wyjatek")
             return {}
-        if not goal or GRIPPER not in goal or GRIPPER not in measured:
+        if not goal or self._grip not in goal or self._grip not in measured:
             return {}
-        g, m = float(goal[GRIPPER]), float(measured[GRIPPER])
+        g, m = float(goal[self._grip]), float(measured[self._grip])
         if not np.isfinite(g) or m - g <= self.grip_squeeze_margin:
             return {}
         logger.info("Chwytak sciska przy polaczeniu (cel %.1f, pomiar %.1f) - rozkaz od celu serwa.", g, m)
-        return {GRIPPER: g}
+        return {self._grip: g}
 
     def disconnect(self) -> None:
         if self._backend is not None:
@@ -787,8 +798,8 @@ class Twin:
     def joint_limits(self) -> dict[str, tuple[float, float]]:
         """Limity stawow, ktore naprawde obowiazuja [jednostki aplikacji]: konfiguracja
         przecieta z limitami backendu (EEPROM serw) przy polaczeniu."""
-        cfg = self._supervisor.cfg if self._supervisor is not None else load_config()
-        return {n: (cfg.joint(n).min, cfg.joint(n).max) for n in JOINT_NAMES}
+        cfg = self._supervisor.cfg if self._supervisor is not None else robot_config(self.spec)
+        return {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
 
     def set_engaged(self, engaged: bool, owner: str | None = None) -> bool:
         """Sprzeglo: bez niego cele z UI sa ignorowane, a ramie trzyma pozycje.
@@ -953,7 +964,7 @@ class Twin:
             return "lacze z serwami niepotwierdzone", cmd
         if prev_cmd is None:
             return "sprawdzanie", cmd
-        arm = [k for k in cmd if k != GRIPPER]
+        arm = [k for k in cmd if k != self._grip]
         going = [k for k in arm if abs(cmd[k] - prev_cmd.get(k, cmd[k])) > 0.2]
         if going:
             return f"rozkaz jeszcze jedzie ({', '.join(going)})", cmd
@@ -961,7 +972,7 @@ class Twin:
         if far:
             return ", ".join(f"{k} {abs(e):.0f} st. od rozkazu" for k, e in far), cmd
         speed = self._joint_speed()
-        fast = [(k, v) for k, v in speed.items() if k != GRIPPER and abs(v) > self.move_still_speed]
+        fast = [(k, v) for k, v in speed.items() if k != self._grip and abs(v) > self.move_still_speed]
         if fast:
             return ", ".join(f"{k} jeszcze jedzie ({abs(v):.0f} st./s)" for k, v in fast), cmd
         return "", cmd
@@ -1075,7 +1086,7 @@ class Twin:
                         self._confirm_after_silence(sup, ls, now)
                 else:
                     ls.silent, ls.confirm = True, None
-            g, c = ls.measured.get(GRIPPER), sup.command.get(GRIPPER)
+            g, c = ls.measured.get(self._grip), sup.command.get(self._grip)
             if g is not None and c is not None and float(g) - c > self.grip_squeeze_margin:
                 if ls.grip_tight_since is None:
                     ls.grip_tight_since = now
@@ -1083,8 +1094,8 @@ class Twin:
                 ls.grip_tight_since = None
 
             faults = _backend_faults(b)
-            grip_faults = [f for f in faults if _fault_joint(f) == GRIPPER]
-            arm_faults = [f for f in faults if _fault_joint(f) != GRIPPER]
+            grip_faults = [f for f in faults if _fault_joint(f, self._names) == self._grip]
+            arm_faults = [f for f in faults if _fault_joint(f, self._names) != self._grip]
             if grip_faults:
                 ls.grip_ok_since = None
                 grip_faults_long = self._ease_gripper(sup, ls, now, grip_faults)
@@ -1095,10 +1106,10 @@ class Twin:
                 # STOP od bledu chwytaka: szczeka staje na zmierzonym rozwarciu. Docisk (nawet
                 # odciazony) podtrzymywal przeciazenie, ktore do tego STOP-u doprowadzilo.
                 self._grip_release = True
-                g = ls.measured.get(GRIPPER)
+                g = ls.measured.get(self._grip)
                 if sup.estopped and g is not None:     # STOP juz byl - tylko chwytak bez docisku
                     with self._sup_lock:
-                        sup.reseed({GRIPPER: float(g)})
+                        sup.reseed({self._grip: float(g)})
             if arm_faults or grip_faults_long:
                 # Blad serwa ramienia (albo chwytaka, ktory mimo odciazenia trwa) = STOP.
                 msg = "; ".join(faults)
@@ -1145,8 +1156,8 @@ class Twin:
                 # Obecnosc operatora w blizniaku to sprzeglo z UI, nie dlon w kadrze.
                 command, report = sup.step(desired, 0.0 if frozen else dt, hand_present=True, engaged=engaged)
                 floor = self._grip_floor
-                if floor is not None and command.get(GRIPPER, floor) < floor:
-                    sup.reseed({GRIPPER: floor})           # chwytak odciazony: nie ciasniej niz prog
+                if floor is not None and command.get(self._grip, floor) < floor:
+                    sup.reseed({self._grip: floor})           # chwytak odciazony: nie ciasniej niz prog
                     command = sup.command
                 outside = sup.outside
             if engaged or report.state in _MOVING:
@@ -1266,7 +1277,7 @@ class Twin:
         pose = {k: float(v) for k, v in ls.measured.items()}
         for k, v in pose.items():
             c = ls.last_sent.get(k)
-            if k == GRIPPER or c is None or k not in sup.cfg.joints:
+            if k == self._grip or c is None or k not in sup.cfg.joints:
                 continue
             step = sup.cfg.joint(k).max_vel * sup.cfg.safety.velocity_scale * 1.5 / self.loop_hz
             toward = 0.0 if first is None or k not in first else (v - float(first[k])) * (1.0 if c >= v else -1.0)
@@ -1292,7 +1303,7 @@ class Twin:
             return
         if ls.grip_ok_since is None:
             ls.grip_ok_since = now
-        g, cmd = ls.measured.get(GRIPPER), sup.command.get(GRIPPER)
+        g, cmd = ls.measured.get(self._grip), sup.command.get(self._grip)
         if g is None or cmd is None or now - ls.grip_ok_since < self.grip_clear_s:
             return
         if float(g) - cmd <= self.grip_squeeze_margin:
@@ -1312,14 +1323,14 @@ class Twin:
         if ls.grip_fault_since is None:
             ls.grip_fault_since = now
             logger.warning("Blad serwa chwytaka - docisk zmniejszony: %s", "; ".join(faults))
-        measured = ls.measured.get(GRIPPER)
+        measured = ls.measured.get(self._grip)
         if measured is not None:
             floor = float(measured) - self.grip_ease
             if self._grip_floor is None or floor > self._grip_floor:
                 self._grip_floor = floor
             with self._sup_lock:
-                if sup.command.get(GRIPPER, floor) < self._grip_floor:
-                    sup.reseed({GRIPPER: self._grip_floor})
+                if sup.command.get(self._grip, floor) < self._grip_floor:
+                    sup.reseed({self._grip: self._grip_floor})
             self._warnings["grip_eased"] = (f"{'; '.join(faults)} - docisk chwytaka zmniejszony (rozkaz nie ciasniej "
                                             f"niz {self._grip_floor:.0f}); STOP, jesli blad potrwa "
                                             f"{self.grip_fault_s:.0f} s")
@@ -1347,8 +1358,8 @@ class Twin:
                 break
             past = (t_h, pose)
         late = []
-        for name in JOINT_NAMES:
-            if name == GRIPPER or name in stale or name not in ls.measured or name not in ls.last_sent:
+        for name in self._names:
+            if name == self._grip or name in stale or name not in ls.measured or name not in ls.last_sent:
                 continue
             err = ls.last_sent[name] - ls.measured[name]
             if abs(err) <= self.track_err_deg:
@@ -1411,14 +1422,10 @@ class Twin:
 #: Stany nadzoru, w ktorych cos rusza ramieniem (STOP i bezczynnosc - nie).
 _MOVING = (SafetyState.ACTIVE, SafetyState.STARTING, SafetyState.HOMING)
 
-#: Staw chwytaka w jednostkach aplikacji (0 = zamkniety, 100 = otwarty).
-GRIPPER = "gripper"
-
-
-def _fault_joint(fault: str) -> str | None:
-    """Staw, ktorego dotyczy zdanie z `faults()` ("gripper (serwo 6): ..." albo "gripper: ...")."""
+def _fault_joint(fault: str, names: tuple[str, ...]) -> str | None:
+    """Staw z `names`, ktorego dotyczy zdanie z `faults()` ("gripper (serwo 6): ..." albo "gripper: ...")."""
     head = fault.split(":", 1)[0].split(" (", 1)[0].strip()
-    return head if head in JOINT_NAMES else None
+    return head if head in names else None
 
 
 def _read_silent(b: RobotBackend) -> bool:

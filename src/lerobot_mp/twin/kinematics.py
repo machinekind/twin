@@ -87,8 +87,15 @@ class RobotKinematics:
     def __init__(self, spec: RobotSpec, model: mujoco.MjModel | None = None, prefix: str = "",
                  gripper_ticks: tuple[float, float, float] | None = None):
         self.spec = spec
-        #: (zamkniety, otwarty, zero) chwytaka w tikach serwa - patrz `to_q`.
-        self.gripper_ticks = gripper_ticks if gripper_ticks is not None else backend_gripper_ticks()
+        if spec.gripper_range_q is None:
+            #: (zamkniety, otwarty, zero) chwytaka w tikach serwa - patrz `to_q`.
+            self.gripper_ticks = gripper_ticks if gripper_ticks is not None else backend_gripper_ticks()
+            self._grip_lin: tuple[float, float] | None = None
+        else:
+            # Chwytak liniowo na (zamkniety, otwarty) w jednostkach MJCF - tiki serwa
+            # nic tu nie znacza, wiec konfiguracji backendu `feetech` nawet nie czytamy.
+            self.gripper_ticks = None
+            self._grip_lin = tuple(float(v) for v in spec.gripper_range_q)
         self.prefix = prefix
         self.model = model if model is not None else mujoco.MjModel.from_xml_path(str(spec.mjcf_path))
         self.data = mujoco.MjData(self.model)
@@ -105,6 +112,12 @@ class RobotKinematics:
         self.base_id = m.body(prefix + spec.base_body).id
         self._approach = np.asarray(spec.tcp_approach, float)
         self._closing = np.asarray(spec.tcp_closing, float)
+        #: Stawy sprzezone (`spec.mirror_joints`): (indeks stawu opisu, adres qpos, przelozenie).
+        #: Wpisuje je `write_qpos` - przy kazdym zapisie pozy, nie tylko tutaj.
+        self.mirror: list[tuple[int, int, float]] = [
+            (spec.joints.index(src), int(m.jnt_qposadr[m.joint(prefix + slaved).id]), float(gain))
+            for slaved, (src, gain) in spec.mirror_joints.items()
+        ]
 
     # ------------------------------------------------------------ jednostki
     def to_q(self, joints: Mapping[str, float]) -> np.ndarray:
@@ -129,6 +142,10 @@ class RobotKinematics:
         return q
 
     def _grip_to_q(self, k: int, value: float) -> float:
+        if self._grip_lin is not None:
+            closed, opened = self._grip_lin
+            q = closed + min(max(value / 100.0, 0.0), 1.0) * (opened - closed)
+            return float(min(max(q, self.lo[k]), self.hi[k]))
         closed, opened, center = self.gripper_ticks
         if abs(opened - closed) < 1e-9:                    # konfiguracja bez zakresu - liniowo na MJCF
             fraction = min(max(value / 100.0, 0.0), 1.0)
@@ -138,6 +155,9 @@ class RobotKinematics:
         return float(min(max(q, self.lo[k]), self.hi[k]))
 
     def _grip_from_q(self, k: int, q: float) -> float:
+        if self._grip_lin is not None:
+            closed, opened = self._grip_lin
+            return float((q - closed) * 100.0 / (opened - closed)) if opened != closed else 0.0
         closed, opened, center = self.gripper_ticks
         if abs(opened - closed) < 1e-9:
             span = self.hi[k] - self.lo[k]
@@ -160,8 +180,19 @@ class RobotKinematics:
         return self.from_q(np.clip(self.to_q(joints), self.lo, self.hi))
 
     # ------------------------------------------------------------ kinematyka
+    def write_qpos(self, qpos: np.ndarray, q: np.ndarray) -> None:
+        """Wpisuje poze `q` (kolejnosc opisu, jednostki MJCF) do `qpos` modelu razem ze stawami sprzezonymi.
+
+        Kazde miejsce, ktore ustawia poze ramienia wprost (bez dynamiki), idzie tedy:
+        inaczej staw sprzezony rownoscia (druga szczeka A1X) zostawalby w starym miejscu,
+        a solver szarpalby go do pary dopiero w nastepnym kroku.
+        """
+        qpos[self.qadr] = q
+        for k, adr, g in self.mirror:
+            qpos[adr] = g * q[k]
+
     def _apply(self, q: np.ndarray) -> None:
-        self.data.qpos[self.qadr] = q
+        self.write_qpos(self.data.qpos, q)
         mujoco.mj_kinematics(self.model, self.data)
 
     def _base_inv(self) -> np.ndarray:

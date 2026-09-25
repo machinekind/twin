@@ -451,3 +451,25 @@ def test_record_under_real_arm_timing_keeps_the_documented_accuracy(listeners, m
         assert abs(errs[name]) <= out.band[name], (name, errs[name], out.band[name])
     assert abs(errs["delay_ms"]) / 1000 <= out.band["delay"]
     assert out.useful, out.reasons
+
+
+def test_excitation_default_joints_are_the_non_gripper_home_keys():
+    plan = excitation(SO101.home)
+    old = excitation(SO101.home, joints=("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"))
+    assert plan == old
+    assert excitation(SO101.home, joints=SO101.arm_joints) == old
+    toy = excitation({"a": 0.0, "gripper": 50.0, "b": 10.0}, hold=0.5)
+    moved = {k for _, target in toy for k, v in target.items() if v != {"a": 0.0, "gripper": 50.0, "b": 10.0}[k]}
+    assert moved == {"a", "b"}
+
+
+def test_recording_without_joint_meta_is_so101(tmp_path):
+    rec = Recording(np.arange(3.0), np.ones((3, 6)), np.full((3, 6), np.nan), {"a": 1})
+    assert rec.joints == SO101.joints
+    path = tmp_path / "old.npz"
+    np.savez_compressed(path, t=rec.t, command=rec.command, measured=rec.measured, meta='{"a": 1}')
+    back = Recording.load(path)
+    assert back.joints == SO101.joints and back.meta == {"a": 1}
+    two = Recording(np.arange(3.0), np.ones((3, 3)), np.full((3, 3), np.nan), {"b": 2}, ("j1", "j2", "gripper"))
+    back = Recording.load(two.save(tmp_path / "toy.npz"))
+    assert back.joints == ("j1", "j2", "gripper") and back.meta == {"b": 2}

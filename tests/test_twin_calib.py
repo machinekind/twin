@@ -151,3 +151,38 @@ def test_full_session_in_simulation_calibrates_the_camera():
     assert res.err_mm[cam] < 2.0
     assert res.err_deg[cam] < 0.25
     assert res.poses < 40, "fala ma sie zmiescic w kilkudziesieciu pozach, nie w maksimum"
+
+
+def test_card_nominal_is_the_identity_for_so101():
+    """Obrot karty z osi opisu - dla SO-101 dokladnie ta sama macierz co wczesniejsza stala."""
+    card = Card()
+    pinch = np.array([0.0123, -0.0045, 0.0067])
+    old = np.eye(4)
+    old[:3, 3] = pinch + np.array([card.out / 2, 0.0, 0.0])
+    assert np.array_equal(card.nominal(pinch), old)
+    assert np.array_equal(card.nominal(pinch, SO101), old)
+
+
+def test_card_normal_is_the_closing_axis_for_every_robot(spec, toy_spec):
+    for s in (spec, toy_spec):
+        T = Card().nominal(np.zeros(3), s)
+        a = np.asarray(s.tcp_approach, float)
+        c = np.asarray(s.tcp_closing, float)
+        assert T[:3, 0] == pytest.approx(a / np.linalg.norm(a))
+        assert T[:3, 2] == pytest.approx(c / np.linalg.norm(c))
+        assert T[:3, :3] @ T[:3, :3].T == pytest.approx(np.eye(3))
+        assert np.linalg.det(T[:3, :3]) == pytest.approx(1.0)
+        assert T[:3, 3] == pytest.approx(a / np.linalg.norm(a) * Card().out / 2)
+
+
+def test_wave_config_for_so101_equals_the_defaults():
+    from lerobot_mp.twin.calib.session import WaveConfig
+
+    assert WaveConfig.for_spec(SO101) == WaveConfig()
+
+
+def test_sample_cameras_for_so101_are_the_default_ones():
+    a = sample_cameras(np.random.default_rng(7), 2)
+    b = sample_cameras(np.random.default_rng(7), 2, SO101)
+    for va, vb in zip(a, b):
+        assert np.array_equal(va.K, vb.K) and np.array_equal(va.T_cam2base, vb.T_cam2base)

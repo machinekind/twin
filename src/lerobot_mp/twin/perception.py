@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from .calib import topdown
+from .robots import RobotSpec
 from .workspace import Workspace
 
 
@@ -77,6 +78,10 @@ class TableMapper:
                 continue
             K, dist = c.intrinsics()
             cams[c.name] = (K, dist, np.asarray(c.T_cam2base, float))
+        # Mapa w skali stolu ramienia stanowiska (dla SO-101 = domyslne konstruktora).
+        desk = ws.spec().desk
+        kw.setdefault("centre_xy", desk.map_centre)
+        kw.setdefault("side", desk.map_side)
         return TableMapper(cams, **kw)
 
     def at_height(self, z: float) -> TableMapper:
@@ -197,7 +202,8 @@ class CubeTracker:
     def __init__(self, hold_s: float = 6.0, grab_radius: float = 0.06, grip_margin: float = 0.05,
                  block_margin: float = 0.05, near_radius: float = 0.10, confirm_dist: float = 0.01,
                  settle_n: int = 3, settle_spread: float = 0.01, settle_move: float = 0.015,
-                 settle_window: float = 1.5, drop_height: float = 0.01, open_q: float = 0.40):
+                 settle_window: float = 1.5, drop_height: float = 0.01, open_q: float = 0.40,
+                 still: float = 0.02):
         self.hold_s, self.grab_radius = hold_s, grab_radius
         self.grip_margin, self.block_margin = grip_margin, block_margin
         #: "Przy dloni": TCP blizej kostki (ostatniej albo wykrytej) niz tyle [m].
@@ -215,6 +221,8 @@ class CubeTracker:
         #: Kat szczeki [rad, jak `grip_q`], powyzej ktorego szczeka na pewno nie trzyma kostki:
         #: pojedynczy swiadek przy STOJACEJ dloni jest wtedy przyjmowany (patrz opis klasy).
         self.open_q = open_q
+        #: Szczeka "stoi": zmiana `grip_q` miedzy aktualizacjami mniejsza niz tyle [jak `grip_q`].
+        self.still = still
         self.last: tuple[np.ndarray, np.ndarray] | None = None
         self.t_last = -np.inf
         self.in_hand: np.ndarray | None = None          # poza kostki w ukladzie TCP
@@ -230,6 +238,13 @@ class CubeTracker:
         #: wcale ("brak"), panel mowi DLACZEGO - wczesniej runner konczyl "kamery jej nie
         #: widza", choc kamera widziala ja z pewnoscia 0,99 (tylko tracker jej nie przyjal).
         self._rejected: tuple[float, str] | None = None
+
+    @classmethod
+    def for_spec(cls, spec: RobotSpec, **kw) -> CubeTracker:
+        """Tracker z progami szczeki ramienia (`spec.jaw`, jednostki MJCF chwytaka); SO-101 = domyslne."""
+        jaw = spec.jaw
+        kw = dict(grip_margin=jaw.margin, block_margin=jaw.margin, open_q=jaw.open, still=jaw.still) | kw
+        return cls(**kw)
 
     def _single_camera_near_hand(self, det: CubeDetection, T_tcp: np.ndarray, squeezing: bool) -> bool:
         """Czy detekcja moze byc podniesiona kostka, ktora jedna kamera "polozyla" na blacie."""
@@ -290,7 +305,7 @@ class CubeTracker:
         # Zablokowana = nie dojezdza do rozkazu I STOI. Szczeka w trakcie zamykania tez
         # odstaje od rozkazu, ale jeszcze jedzie - bez warunku postoju "trzymanie"
         # wlaczalo sie, zanim szczeka w ogole dotknela kostki.
-        still = self._grip_prev is not None and abs(grip_q - self._grip_prev) < 0.02
+        still = self._grip_prev is not None and abs(grip_q - self._grip_prev) < self.still
         self._grip_prev = grip_q
         squeezing = grip_q - grip_cmd > self.block_margin and grip_q > grip_closed + self.grip_margin
         holding = still and squeezing

@@ -96,13 +96,22 @@ class PolicyRunner:
                  episode_limit: bool = True, cube_source: Callable[[], str] | None = None):
         from ..kinematics import RobotKinematics
 
+        spec = twin.workspace.spec()
+        robot = getattr(policy.meta, "robot", "so101")
+        if robot != spec.name:
+            raise RuntimeError(f"polityka uczona na {robot}, stanowisko ma {spec.name}")
+        if policy.meta.act_dim != len(spec.joints):
+            raise RuntimeError(f"polityka ma {policy.meta.act_dim} wyjsc, a ramie {spec.name} "
+                               f"{len(spec.joints)} stawow")
         self.twin = twin
         self.policy = policy
         self.task = policy.task
         # Wlasna kinematyka (wlasne MjData): ta ze sceny liczy tez panel (IK uchwytu)
         # z innego watku, a `tcp()` pisze do swojego MjData.
-        self.kin = RobotKinematics(twin.workspace.spec())
+        self.kin = RobotKinematics(spec)
         self.limits = tk.Limits.of(self.kin)
+        #: Indeks chwytaka i liczba stawow ramienia (chwytak ostatni, `Limits.of`).
+        self.g, self.na = self.limits.grip, self.limits.n_arm
         self.status = RunnerStatus()
         self._goal = np.array([0.22, 0.0, 0.12])
         #: lift: (polozenie (3,), obrot (3, 3)) kostki w ukladzie podstawy - z wizji albo z symulacji.
@@ -123,16 +132,18 @@ class PolicyRunner:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.q_cmd = self.limits.home.copy()
-        self.prev_action = np.zeros(6)
+        self.prev_action = np.zeros(self.task.act_dim)
         self._hw_lo, self._hw_hi = self.limits.lo, self.limits.hi
         self._t_start: float | None = None
         self._t_hz, self._ticks = 0.0, 0
         self._cube: np.ndarray | None = None
-        #: Szczeka "trzyma" (sukces lift): jak w `CubeTracker` - stoi (< `grip_still` rad miedzy
+        #: Szczeka "trzyma" (sukces lift): jak w `CubeTracker` - stoi (< `grip_still` miedzy
         #: taktami), szerzej niz rozkaz o `grip_block_margin` i niz zamknieta o `grip_open_margin`.
-        self.grip_still, self.grip_block_margin, self.grip_open_margin = 0.02, 0.05, 0.05
-        #: W trakcie serii sukcesu szczeka nie domyka sie o wiecej niz tyle [rad] (~3 jednostki).
-        self.grip_creep = 0.03
+        #: Jednostki MJCF chwytaka (`spec.jaw`; SO-101: rad).
+        jaw = spec.jaw
+        self.grip_still, self.grip_block_margin, self.grip_open_margin = jaw.still, jaw.margin, jaw.margin
+        #: W trakcie serii sukcesu szczeka nie domyka sie o wiecej niz tyle (SO-101: 0,03 rad ~ 3 jednostki).
+        self.grip_creep = jaw.creep
         self._grip_prev: float | None = None
         self._streak_grip = 0.0
 
@@ -191,8 +202,8 @@ class PolicyRunner:
         self.q_cmd = np.clip(self.kin.to_q(measured), self._hw_lo, self._hw_hi)
         grip = self._squeezing_grip_cmd(measured)
         if grip is not None:
-            self.q_cmd[5] = grip
-        self.prev_action = np.zeros(6)
+            self.q_cmd[self.g] = grip
+        self.prev_action = np.zeros(self.task.act_dim)
         self.status = RunnerStatus(running=True, goal_clamped=self.status.goal_clamped)
         self._cube, self._cube_src = None, None
         self._grip_prev = None
@@ -225,10 +236,11 @@ class PolicyRunner:
         cmd = (getattr(self.twin.status, "command", None) or {}).get(name)
         if cmd is None or name not in measured:
             return None
-        q_cmd = float(self.kin.to_q({**measured, name: float(cmd)})[5])
-        if float(self.kin.to_q(measured)[5]) - q_cmd <= self.grip_block_margin:
+        g = self.g
+        q_cmd = float(self.kin.to_q({**measured, name: float(cmd)})[g])
+        if float(self.kin.to_q(measured)[g]) - q_cmd <= self.grip_block_margin:
             return None
-        return float(np.clip(q_cmd, self._hw_lo[5], self._hw_hi[5]))
+        return float(np.clip(q_cmd, self._hw_lo[g], self._hw_hi[g]))
 
     def _hardware_limits(self) -> tuple[np.ndarray, np.ndarray]:
         """Limity treningu przeciete z limitami, ktore naprawde obowiazuja na ramieniu (`Twin.joint_limits`).
@@ -291,12 +303,12 @@ class PolicyRunner:
                 return False
             measured = dict(self.twin.status.measured) or self.twin.joints()
             q = self.kin.to_q(measured)
-            lag = np.abs(q[:5] - self.q_cmd[:5]).max()
+            lag = np.abs(q[:self.na] - self.q_cmd[:self.na]).max()
             if lag > self.max_tracking:
                 self._halt(f"ramie nie nadaza za celem ({np.degrees(lag):.0f} st.) - kolizja albo blokada",
                            hold_measured=True)
                 return False
-            holding = self._jaw_holding(q[5])
+            holding = self._jaw_holding(q[self.g])
             obs = self.observation(measured)
             action = self.policy.act(obs)
             q_cmd = tk.apply_action(np, self.task, self.limits, self.q_cmd[None], action[None])[0]
@@ -320,12 +332,12 @@ class PolicyRunner:
                 # Szczeka "stoi" z taktu na takt nawet przy powolnym domykaniu (9 jednostek/s
                 # to 0,005 rad na takt) - dlatego tez: w trakcie serii nie domyka sie o wiecej
                 # niz `grip_creep` od jej poczatku.
-                if holding and st.success_streak > 0 and q[5] < self._streak_grip - self.grip_creep:
+                if holding and st.success_streak > 0 and q[self.g] < self._streak_grip - self.grip_creep:
                     holding = False
                 st.success = (self._cube is not None and self._cube_fresh() and holding
                               and self._cube[2] - self.task.cube_half > self.task.lift_height)
                 if st.success and st.success_streak == 0:
-                    self._streak_grip = float(q[5])
+                    self._streak_grip = float(q[self.g])
             st.success_streak = st.success_streak + 1 if st.success else 0
             self._ticks += 1
             if now - self._t_hz >= 1.0:
@@ -360,8 +372,8 @@ class PolicyRunner:
         """
         prev, self._grip_prev = self._grip_prev, float(grip_q)
         still = prev is not None and abs(grip_q - prev) < self.grip_still
-        squeezing = (grip_q - self.q_cmd[5] > self.grip_block_margin
-                     and grip_q > self.limits.lo[5] + self.grip_open_margin)
+        squeezing = (grip_q - self.q_cmd[self.g] > self.grip_block_margin
+                     and grip_q > self.limits.lo[self.g] + self.grip_open_margin)
         return bool(still and squeezing)
 
     def _cube_fresh(self) -> bool:

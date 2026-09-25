@@ -28,13 +28,14 @@ na symulacji i na prawdziwym sprzecie.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 import numpy as np
 
 from ..collision import CollisionChecker
 from ..kinematics import RobotKinematics
+from ..robots import RobotSpec
 from .card import Card
 from .handeye import Fit, Observation, _median_T, judge, rotation_spread_R, solve
 from .tags import detect, tag_pose
@@ -75,6 +76,12 @@ class WaveConfig:
     search_bearing: tuple[float, float] = (-1.8, 1.8)
     search_height: tuple[float, float] = (0.05, 0.5)
     search_centre: tuple[float, float, float] = (0.2, 0.0, 0.05)
+
+    @classmethod
+    def for_spec(cls, spec: RobotSpec) -> WaveConfig:
+        """Nastawy fali w skali stolu tego ramienia (`spec.desk`); dla SO-101 = domyslne."""
+        d = spec.desk
+        return replace(cls(), radius=d.wave_radius, search_centre=d.search_centre, search_dist=d.search_dist)
 
 
 @dataclass
@@ -145,7 +152,7 @@ class Session:
         self.card, self.card_nominal = card, np.asarray(card_nominal, float)
         self.tags = card.tag_poses()
         self.checker = checker
-        self.cfg = cfg or WaveConfig()
+        self.cfg = cfg or WaveConfig.for_spec(kin.spec)
         self.rng = np.random.default_rng(seed)
         self.keep_frames = keep_frames
         self.obs: list[Observation] = []

@@ -107,22 +107,26 @@ def test_camera_lands_in_the_scene_where_the_config_put_it():
     assert np.abs(got[:3, :3] - T[:3, :3]).max() < 1e-9
 
 
-def test_scene_takes_the_physics_options_the_robot_was_tuned_with():
-    """Menagerie stroi SO-101 pod manipulacje - scena nie moze tego zgubic."""
-    robot = mujoco.MjSpec.from_file(str(SO101.mjcf_path))
-    with sc.build(sc.SceneConfig(SO101)) as scene:
+def test_scene_takes_the_physics_options_the_robot_was_tuned_with(spec):
+    """Menagerie stroi SO-101 pod manipulacje - scena nie moze tego zgubic (zadnego ramienia)."""
+    robot = mujoco.MjSpec.from_file(str(spec.mjcf_path))
+    with sc.build(sc.SceneConfig(spec)) as scene:
         opt = scene.model.opt
         assert opt.cone == robot.option.cone
         assert opt.impratio == pytest.approx(robot.option.impratio)
         assert opt.timestep == pytest.approx(robot.option.timestep)
 
 
-def test_servos_hold_and_reach_commanded_joints():
-    with sc.build(sc.SceneConfig(SO101)) as scene:
-        scene.set_joints(SO101.home)
-        target = dict(SO101.home, shoulder_pan=25.0, elbow_flex=30.0)
+def test_servos_hold_and_reach_commanded_joints(spec):
+    # Dwa stawy ramienia (pierwszy i trzeci) w pol drogi od domu do gornego skraju zakresu fali.
+    moved = [spec.arm_joints[0], spec.arm_joints[2]]
+    target = dict(spec.home)
+    for name in moved:
+        target[name] = 0.5 * (spec.home[name] + spec.wave_ranges[name][1])
+    with sc.build(sc.SceneConfig(spec)) as scene:
+        scene.set_joints(spec.home)
         scene.command(target)
         scene.step(2.0)
         got = scene.joints()
-    for name in ("shoulder_pan", "elbow_flex"):
+    for name in moved:
         assert got[name] == pytest.approx(target[name], abs=2.0)

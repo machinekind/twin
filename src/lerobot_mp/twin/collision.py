@@ -44,7 +44,7 @@ class CollisionChecker:
 
     def _contacts(self, joints: Mapping[str, float]) -> set[tuple[int, int]]:
         d = self.data
-        d.qpos[self.kin.qadr] = self.kin.to_q(joints)
+        self.kin.write_qpos(d.qpos, self.kin.to_q(joints))
         mujoco.mj_fwdPosition(self.model, d)
         out = set()
         for c in d.contact[: d.ncon]:

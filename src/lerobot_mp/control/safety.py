@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..config import AppConfig, JOINT_NAMES
+from ..config import AppConfig
 from .filters import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,9 @@ class SafetySupervisor:
         self._no_hand_for = 0.0
         self._estop = False
         self._was_active = False
+        #: Stawy nadzorowane - te z konfiguracji, w jej kolejnosci (SO-101 w aplikacji
+        #: dloni, stawy ramienia z opisu w blizniaku, `robots.robot_config`).
+        self.names: tuple[str, ...] = tuple(cfg.joints)
         self.home = self._clamped_home()
         #: Tryb blizniaka (`start(..., keep_outside=True)`): staw, ktory stoi poza
         #: limitami konfiguracji, dostaje wlasne, poszerzone limity az do miejsca,
@@ -79,7 +82,7 @@ class SafetySupervisor:
     # ------------------------------------------------------------- pomocnicze
     def _clamped_home(self) -> dict[str, float]:
         home = {}
-        for name in JOINT_NAMES:
+        for name in self.names:
             jc = self.cfg.joint(name)
             value = self.cfg.safety.home.get(name, 0.0)
             home[name] = min(max(value, jc.min), jc.max)
@@ -107,7 +110,7 @@ class SafetySupervisor:
         self._limiters = {}
         self._soft = {}
         self._keep_outside = keep_outside
-        for name in JOINT_NAMES:
+        for name in self.names:
             jc = self.cfg.joint(name)
             value = float(measured.get(name, self.home[name]))
             if keep_outside and not jc.min <= value <= jc.max:
@@ -150,7 +153,7 @@ class SafetySupervisor:
 
         report = SafetyReport(state=self.state, seconds_without_hand=self._no_hand_for)
         command: dict[str, float] = {}
-        for name in JOINT_NAMES:
+        for name in self.names:
             jc = self.cfg.joint(name)
             raw = float(target.get(name, self._command[name]))
             outside = name in self._soft
@@ -208,7 +211,7 @@ class SafetySupervisor:
         if self.state in (SafetyState.STARTING, SafetyState.HOMING):
             self._ramp_t += dt
             target = {}
-            for name in JOINT_NAMES:
+            for name in self.names:
                 alpha = _smoothstep((self._ramp_t - self._ramp_start.get(name, 0.0)) / self._ramp_duration)
                 target[name] = self._ramp_from[name] + alpha * (self._ramp_to[name] - self._ramp_from[name])
             # Staw spoza limitow (tylko blizniak, `keep_outside`) konczy rampe dopiero po

@@ -59,10 +59,12 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from ...config import GRIPPER
 from .. import scene as sc
 from ..robots import SO101, RobotSpec
 from .randomize import UNFITTED_RANGES, Dynamics
 
+#: Stawy SO-101 - kolumny nagran sprzed `Recording.joints` (i nazwa dla testow).
 JOINTS = SO101.joints
 #: Nazwa wlasciciela ramienia (`Twin.claim`) na czas nagrania.
 OWNER = "identyfikacja"
@@ -71,24 +73,29 @@ OWNER = "identyfikacja"
 @dataclass
 class Recording:
     t: np.ndarray                 # (T,) [s] od poczatku
-    command: np.ndarray           # (T, 6) rozkaz, ktory POSZEDL do serw [jednostki aplikacji]
-    measured: np.ndarray          # (T, 6) zmierzone katy; NaN, gdy w tym takcie nie czytano
+    command: np.ndarray           # (T, n) rozkaz, ktory POSZEDL do serw [jednostki aplikacji]
+    measured: np.ndarray          # (T, n) zmierzone katy; NaN, gdy w tym takcie nie czytano
     meta: dict[str, Any] = field(default_factory=dict)
+    #: Stawy kolumn `command`/`measured` (kolejnosc opisu ramienia, chwytak ostatni).
+    #: Na dysku w `meta["joints"]`; nagrania sprzed tego pola to SO-101.
+    joints: tuple[str, ...] = SO101.joints
 
     def save(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(path, t=self.t, command=self.command, measured=self.measured,
-                            meta=json.dumps(self.meta))
+                            meta=json.dumps({**self.meta, "joints": list(self.joints)}))
         return path
 
     @staticmethod
     def load(path: str | Path) -> Recording:
         z = np.load(path, allow_pickle=False)
-        return Recording(z["t"], z["command"], z["measured"], json.loads(str(z["meta"])))
+        meta = json.loads(str(z["meta"]))
+        joints = tuple(meta.pop("joints", SO101.joints))
+        return Recording(z["t"], z["command"], z["measured"], meta, joints)
 
 
-def check_recording(rec: Recording, max_gap: float = 0.5, joints=range(5)) -> None:
+def check_recording(rec: Recording, max_gap: float = 0.5, joints=None) -> None:
     """ValueError, gdy nagranie nie pokrywa calego pobudzenia.
 
     Zmierzone: petla ramienia padla po 4 s z 20 s nagrania, `record` oddal
@@ -98,6 +105,8 @@ def check_recording(rec: Recording, max_gap: float = 0.5, joints=range(5)) -> No
     """
     if len(rec.t) < 10:
         raise ValueError("nagranie za krotkie")
+    if joints is None:
+        joints = range(len(rec.joints) - 1)                  # stawy ramienia (chwytak ostatni)
     if not np.isfinite(rec.command[:, list(joints)]).all():
         bad = rec.t[~np.isfinite(rec.command[:, list(joints)]).all(axis=1)]
         raise ValueError(f"nagranie bez rozkazu od {bad[0]:.2f} s - petla ramienia przerwana?")
@@ -105,24 +114,26 @@ def check_recording(rec: Recording, max_gap: float = 0.5, joints=range(5)) -> No
     for k in idx:
         ok = np.isfinite(rec.measured[:, k])
         if not ok.any():
-            raise ValueError(f"brak pomiarow stawu {JOINTS[k]}")
+            raise ValueError(f"brak pomiarow stawu {rec.joints[k]}")
         t_ok = np.r_[rec.t[0], rec.t[ok], rec.t[-1]]
         gap = float(np.diff(t_ok).max())
         if gap > max_gap:
             at = float(t_ok[int(np.argmax(np.diff(t_ok)))])
-            raise ValueError(f"{JOINTS[k]}: {gap:.2f} s bez pomiaru od {at:.2f} s - nagranie niepelne")
+            raise ValueError(f"{rec.joints[k]}: {gap:.2f} s bez pomiaru od {at:.2f} s - nagranie niepelne")
 
 
 # ------------------------------------------------------------ pobudzenie
 def excitation(home: dict[str, float], amplitude: float = 12.0, hold: float = 0.9,
-               joints: tuple[str, ...] = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"),
-               ) -> list[tuple[float, dict[str, float]]]:
+               joints: tuple[str, ...] | None = None) -> list[tuple[float, dict[str, float]]]:
     """Plan (czas [s], cel) - skoki po kolei na kazdym stawie, potem ruch wszystkimi naraz.
 
     Skok pokazuje wzmocnienie i opoznienie, powrot z przeciwnej strony -
     tarcie suche (histereza), ruch wszystkimi naraz - sprzezenia miedzy
     stawami. Amplituda mala (12 st.), zeby ramie nie wyjechalo nad stol.
+    `joints=None` - wszystkie stawy `home` poza chwytakiem, w kolejnosci `home`.
     """
+    if joints is None:
+        joints = tuple(n for n in home if n != GRIPPER)
     plan: list[tuple[float, dict[str, float]]] = [(0.0, dict(home))]
     t = hold
     for j in joints:
@@ -188,6 +199,9 @@ def record(twin, plan: list[tuple[float, dict[str, float]]], settle: float = 1.0
     """
     if not twin.connected:
         raise RuntimeError("ramie nie jest polaczone")
+    # Opis ramienia blizniaka (`Twin.spec`); obiekt bez niego (atrapy w testach) - SO-101.
+    spec = getattr(twin, "spec", None) or SO101
+    joints = tuple(spec.joints)
     stop = should_stop or (lambda: False)
     t_end = time.monotonic() + ramp_timeout
     while True:
@@ -209,7 +223,7 @@ def record(twin, plan: list[tuple[float, dict[str, float]]], settle: float = 1.0
         reason = getattr(twin, "preempt_reason", "") or f"ramie ma: {twin.owner or 'nikt'}"
         raise RuntimeError(f"identyfikacja przerwana - ramie odebrane ({reason})")
     add = getattr(twin, "add_tick_listener", None)
-    log = _TickLog() if callable(add) else _StatusLog()
+    log = _TickLog(joints) if callable(add) else _StatusLog(joints)
     handle = None
     try:
         if stop():
@@ -272,16 +286,17 @@ def record(twin, plan: list[tuple[float, dict[str, float]]], settle: float = 1.0
     stamp_err = {"tick": 0.0, "measured_t": nap}.get(log.stamps, period)
     rec = Recording(ts, cmds, meas,
                     {"backend": twin.status.backend, "loop_hz": twin.loop_hz, "stamps": log.stamps,
-                     "stamp_err": float(stamp_err), "time": time.strftime("%Y-%m-%dT%H:%M:%S")})
+                     "stamp_err": float(stamp_err), "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     "robot": spec.name}, joints)
     check_recording(rec)
     return rec
 
 
-def _measurement(meas) -> list[float] | None:
-    """Katy stawow z odczytu albo None, gdy odczytu nie ma lub nie jest pelny (NaN)."""
+def _measurement(meas, joints: tuple[str, ...] = JOINTS) -> list[float] | None:
+    """Katy stawow `joints` z odczytu albo None, gdy odczytu nie ma lub nie jest pelny (NaN)."""
     if not meas:
         return None
-    m = [float(meas.get(j, np.nan)) for j in JOINTS]
+    m = [float(meas.get(j, np.nan)) for j in joints]
     return m if np.isfinite(m).all() else None
 
 
@@ -294,23 +309,25 @@ class _TickLog:
 
     stamps = "tick"
 
-    def __init__(self):
+    def __init__(self, joints: tuple[str, ...] = JOINTS):
+        self.joints = joints
         self.samples: list[tuple[float, dict, list[float] | None, float]] = []
         self.fresh = 0
         self.start_cmd: dict[str, float] = {}
 
     def __call__(self, s) -> None:
-        m = _measurement(s.measured) if s.fresh else None
+        m = _measurement(s.measured, self.joints) if s.fresh else None
         mt = s.measured_t if s.measured_t is not None else s.t
         self.samples.append((float(s.t), dict(s.sent or {}), m, float(mt)))
         if m is not None:
             self.fresh += 1
 
     def rows(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return _rows_from_ticks(self.samples, self.start_cmd)
+        return _rows_from_ticks(self.samples, self.start_cmd, self.joints)
 
 
-def _rows_from_ticks(samples, start_cmd: dict[str, float]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _rows_from_ticks(samples, start_cmd: dict[str, float],
+                     joints: tuple[str, ...] = JOINTS) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(t, rozkaz, pomiar) z taktow petli: (chwila taktu, wyslane w nim, odczyt albo None, measured_t).
 
     Wiersz = takt. Odczyt w takcie idzie PRZED wysylka (`Twin._tick`), wiec w wierszu pomiar
@@ -318,8 +335,8 @@ def _rows_from_ticks(samples, start_cmd: dict[str, float]) -> tuple[np.ndarray, 
     Takt bez wysylki (`sent == {}`, np. lacze wstrzymane) - rozkaz trzyma poprzednia wartosc.
     Odczyt z `measured_t` wczesniejszym niz takt dostaje wlasny wiersz z rozkazem sprzed taktu.
     """
-    cur = np.array([float(start_cmd.get(j, np.nan)) for j in JOINTS])
-    nan = [np.nan] * len(JOINTS)
+    cur = np.array([float(start_cmd.get(j, np.nan)) for j in joints])
+    nan = [np.nan] * len(joints)
     ts: list[float] = []
     cs: list[np.ndarray] = []
     ms: list[list[float]] = []
@@ -331,16 +348,16 @@ def _rows_from_ticks(samples, start_cmd: dict[str, float]) -> tuple[np.ndarray, 
                 ms.append(m)
             m = None
         for k, v in sent.items():
-            if k in JOINTS:
-                cur[JOINTS.index(k)] = float(v)
+            if k in joints:
+                cur[joints.index(k)] = float(v)
         if ts and t <= ts[-1]:
             t = ts[-1] + 1e-6
         ts.append(t)
         cs.append(cur.copy())
         ms.append(m if m is not None else nan)
     t_arr = np.array(ts, float)
-    return (t_arr - t_arr[0] if len(t_arr) else t_arr, np.array(cs, float).reshape(-1, len(JOINTS)),
-            np.array(ms, float).reshape(-1, len(JOINTS)))
+    return (t_arr - t_arr[0] if len(t_arr) else t_arr, np.array(cs, float).reshape(-1, len(joints)),
+            np.array(ms, float).reshape(-1, len(joints)))
 
 
 class _StatusLog:
@@ -356,7 +373,8 @@ class _StatusLog:
     Petla i rejestrator licza na tym samym `time.monotonic` - gdy `measured_t` jest z innego zegara (`connect(threaded=False)`), zostaje zegar rejestratora.
     """
 
-    def __init__(self):
+    def __init__(self, joints: tuple[str, ...] = JOINTS):
+        self.joints = joints
         self.fresh = 0
         self.start_cmd: dict[str, float] = {}
         self._rows: list[tuple[float, list[float], list[float] | None]] = []
@@ -373,17 +391,17 @@ class _StatusLog:
         if st is self._last:
             return
         self._last = st
-        raw = [st.measured.get(j, np.nan) for j in JOINTS]
+        raw = [st.measured.get(j, np.nan) for j in self.joints]
         mt = getattr(st, "measured_t", None)
         new = (mt != self._last_mt) if mt is not None else (self._last_meas is None or raw != self._last_meas)
         self._last_mt, self._last_meas = mt, raw
-        m = _measurement(st.measured) if new else None
+        m = _measurement(st.measured, self.joints) if new else None
         if m is not None:
             self.fresh += 1
             if self._loop_clock is None and mt is not None:
                 self._loop_clock = abs(now - float(mt)) < 1.0
         stamp = float(mt) if (m is not None and self._loop_clock) else now
-        self._rows.append((stamp, [st.command.get(j, np.nan) for j in JOINTS], m))
+        self._rows.append((stamp, [st.command.get(j, np.nan) for j in self.joints], m))
 
     def rows(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rows = self._rows
@@ -395,9 +413,10 @@ class _StatusLog:
         for i in range(1, len(t)):                   # nadal nie rosnie (odczyty nie w kolejnosci) - rzadkie
             if t[i] <= t[i - 1]:
                 t[i] = t[i - 1] + 1e-6
-        cmds = np.array([r[1] for r in rows], float).reshape(-1, len(JOINTS))
-        meas = np.array([r[2] if r[2] is not None else [np.nan] * len(JOINTS) for r in rows],
-                        float).reshape(-1, len(JOINTS))
+        n = len(self.joints)
+        cmds = np.array([r[1] for r in rows], float).reshape(-1, n)
+        meas = np.array([r[2] if r[2] is not None else [np.nan] * n for r in rows],
+                        float).reshape(-1, n)
         return (t - t[0] if len(t) else t), cmds, meas
 
 
@@ -452,12 +471,12 @@ class Replayer:
         mujoco.mj_resetData(m, d)
         first = np.where(~np.isnan(rec.measured[:, 0]))[0]
         start = rec.measured[first[0]] if len(first) else rec.command[0]
-        s.set_joints(dict(zip(JOINTS, start)))
+        s.set_joints(dict(zip(rec.joints, start)))
         spec_state = mujoco.mjtState.mjSTATE_FULLPHYSICS
         init = np.zeros(mujoco.mj_stateSize(m, spec_state))
         mujoco.mj_getState(m, d, init, spec_state)
         cmd_q = self._to_q(rec.command)
-        start_q = kin.to_q(dict(zip(JOINTS, start)))
+        start_q = kin.to_q(dict(zip(rec.joints, start)))
         cmd_q = np.vstack([start_q[None], cmd_q])            # indeks 0 = zanim przyszedl pierwszy rozkaz
         dt = m.opt.timestep
         prep = {"init": init, "start_q": start_q, "cmd_q": cmd_q,
@@ -481,15 +500,15 @@ class Replayer:
         return cmd_q[k0] + alpha[:, None] * (cmd_q[k1] - cmd_q[k0])
 
     def run(self, rec: Recording, dyn: Dynamics, delay_s: float) -> np.ndarray:
-        """Katy (T, 6) w jednostkach aplikacji w chwilach `rec.t`."""
+        """Katy (T, n) w jednostkach aplikacji w chwilach `rec.t`."""
         return self.run_many(rec, [(dyn, delay_s)])[0]
 
     def run_many(self, rec: Recording, sets: list[tuple[Dynamics, float]]) -> np.ndarray:
-        """Katy (N, T, 6) w jednostkach aplikacji dla N par (dynamika, opoznienie [s])."""
+        """Katy (N, T, n) w jednostkach aplikacji dla N par (dynamika, opoznienie [s])."""
         return np.stack([self._from_q(q) for q in self.run_q(rec, sets)])
 
     def run_q(self, rec: Recording, sets: list[tuple[Dynamics, float]]) -> np.ndarray:
-        """Katy stawow (N, T, 6) w radianach MuJoCo - jedno wywolanie rolloutu. Stawy ramienia
+        """Katy stawow (N, T, n) w radianach MuJoCo - jedno wywolanie rolloutu. Stawy ramienia
         to po prostu stopnie; przeliczenie chwytaka (w Pythonie, probka po probce) kosztowalo
         20 % dopasowania, ktore chwytaka nie uzywa."""
         from mujoco import rollout
@@ -515,23 +534,23 @@ class Replayer:
                         prep["init"][qcol][None, None, :])
 
     def _to_q(self, units: np.ndarray) -> np.ndarray:
-        """`kin.to_q` dla calej tablicy (T, 6) naraz - wiersz po wierszu to polowa czasu dopasowania."""
+        """`kin.to_q` dla calej tablicy (T, n) naraz - wiersz po wierszu to polowa czasu dopasowania."""
         kin = self.scene.kin
-        g = JOINTS.index(kin.spec.gripper)
+        g = kin.spec.joints.index(kin.spec.gripper)
         q = np.radians(np.asarray(units, float))
         q[:, g] = [kin._grip_to_q(g, float(v)) for v in units[:, g]]
         return q
 
     def _from_q(self, q: np.ndarray) -> np.ndarray:
         kin = self.scene.kin
-        g = JOINTS.index(kin.spec.gripper)
+        g = kin.spec.joints.index(kin.spec.gripper)
         out = np.degrees(q)
         out[:, g] = [kin._grip_from_q(g, float(v)) for v in q[:, g]]
         return out
 
 
-def error_deg(rec: Recording, pred: np.ndarray, joints=range(5)) -> float:
-    idx = list(joints)
+def error_deg(rec: Recording, pred: np.ndarray, joints=None) -> float:
+    idx = list(joints) if joints is not None else list(range(len(rec.joints) - 1))
     m = rec.measured[:, idx]
     ok = ~np.isnan(m)
     return float(np.sqrt(np.mean((pred[:, idx][ok] - m[ok]) ** 2)))
@@ -649,8 +668,10 @@ def identify(rec: Recording, spec: RobotSpec = SO101, control_hz: float = 20.0, 
     unknown = set(free) - set(PARAMS)
     if unknown:
         raise ValueError(f"nieznane parametry: {sorted(unknown)}")
+    if tuple(rec.joints) != tuple(spec.joints):
+        raise ValueError(f"nagranie ma stawy {list(rec.joints)}, a ramie {spec.name} {list(spec.joints)}")
     rp = Replayer(spec)
-    idx = list(range(5))
+    idx = list(range(len(spec.arm_joints)))
     meas = rec.measured[:, idx]
     ok = ~np.isnan(meas)
     target = meas[ok]

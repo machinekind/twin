@@ -96,7 +96,8 @@ class TwinEnv(gym.Env):
     def __init__(self, task: str | tk.TaskConfig = "reach", *, workspace: Workspace | None = None,
                  randomization: Randomization | None = None, render_mode: str | None = None,
                  render_camera: str | None = None):
-        self.task = task if isinstance(task, tk.TaskConfig) else tk.make_task(task)
+        self.task = task if isinstance(task, tk.TaskConfig) else \
+            tk.make_task(task, spec=(workspace or Workspace()).spec())
         self.render_mode = render_mode
         self.scene = sc.build(scene_config(self.task, workspace, view=render_mode is not None))
         self.render_camera = render_camera or (self.scene.cfg.cameras[0].name if self.scene.cfg.cameras else None)
@@ -117,7 +118,7 @@ class TwinEnv(gym.Env):
         self.action_space = gym.spaces.Box(-1.0, 1.0, (self.task.act_dim,), np.float32)
         self.goal = np.zeros(3)
         self.q_cmd = self.limits.home.copy()
-        self.prev_action = np.zeros(6)
+        self.prev_action = np.zeros(self.task.act_dim)
         self.t = 0
         self._streak = 0                     # takty sukcesu z rzedu (`task.end_on_success`)
         self._delay: list[np.ndarray] = []
@@ -140,7 +141,7 @@ class TwinEnv(gym.Env):
         return out
 
     def _obs(self, s: dict[str, np.ndarray]) -> np.ndarray:
-        q = s["q"] + np.radians(self.np_random.normal(0.0, self._noise, 6)) if self._noise > 0 else s["q"]
+        q = s["q"] + np.radians(self.np_random.normal(0.0, self._noise, self.task.n_joints)) if self._noise > 0 else s["q"]
         cube_pos, cube_rot = self._cube_seen if self.task.cube else (np.zeros(3), np.eye(3))
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], s["tcp"][None],
                          self.prev_action[None], goal=self.goal[None],
@@ -175,13 +176,13 @@ class TwinEnv(gym.Env):
         s = {k: float(v[0]) for k, v in self.rand.sample(rng, 1).items()}
         self.fields.apply(m, d, s)
         self._noise = self.rand.obs_noise_deg
-        self._delay = [np.zeros(6)] * int(s["delay"])
+        self._delay = [np.zeros(self.task.act_dim)] * int(s["delay"])
         self._cube_delay, self._cube_period = int(s["cube_delay"]), int(s["cube_period"])
         self._cube_hist = []
 
         mujoco.mj_resetData(m, d)
         q0 = np.asarray(options["q"], float) if "q" in options else tk.sample_start(self.task, self.limits, rng, 1)[0]
-        d.qpos[self.kin.qadr] = q0
+        self.kin.write_qpos(d.qpos, q0)
         d.ctrl[self.scene.act_ids] = q0
         if self.task.name == "reach":
             self.goal = np.asarray(options["goal"], float) if "goal" in options else \
@@ -195,7 +196,7 @@ class TwinEnv(gym.Env):
             self.set_cube(pos, quat)
         mujoco.mj_forward(m, d)
         self.q_cmd = q0.copy()
-        self.prev_action = np.zeros(6)
+        self.prev_action = np.zeros(self.task.act_dim)
         self.t = 0
         self._streak = 0
         s0 = self.state()

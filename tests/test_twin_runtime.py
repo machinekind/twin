@@ -1207,3 +1207,24 @@ def test_scene_backend_reports_the_goal_its_actuators_hold(twin):
     run(twin, 0.1)
     goal = twin._backend.goal_positions()
     assert goal["gripper"] == pytest.approx(twin.status.command["gripper"], abs=1e-6)
+
+
+def test_twin_limits_and_command_keys_follow_the_workspace_spec(toy_spec, monkeypatch):
+    """Blizniak bierze stawy, limity i chwytak z opisu ramienia stanowiska, nie z SO-101."""
+    from lerobot_mp.twin import robots
+
+    monkeypatch.setitem(robots.REGISTRY, "toy", toy_spec)
+    tw = Twin(Workspace(robot="toy"))
+    try:
+        assert tw.spec is toy_spec
+        assert tuple(tw.joint_limits()) == toy_spec.joints           # przed polaczeniem
+        tw.connect("sim", threaded=False)
+        for _ in range(50):
+            tw.step(DT)
+        assert tuple(tw.joint_limits()) == toy_spec.joints
+        assert tw.joint_limits()["j2"] == toy_spec.limits["j2"]
+        assert tw.status.command.keys() == set(toy_spec.joints)
+        assert tw.status.measured.keys() == set(toy_spec.joints)
+        assert tw.backend is not None and tw.backend.info.simulated
+    finally:
+        tw.close()

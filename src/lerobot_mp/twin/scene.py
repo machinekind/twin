@@ -131,7 +131,7 @@ class Scene:
     def set_joints(self, joints: dict[str, float], *, hold: bool = True) -> None:
         """Ustawia poze ramienia natychmiast (bez dynamiki) i - domyslnie - trzyma ja serwami."""
         q = self.kin.to_q(joints)
-        self.data.qpos[self.kin.qadr] = q
+        self.kin.write_qpos(self.data.qpos, q)
         self.data.qvel[self.kin.dadr] = 0.0
         if hold:
             self.data.ctrl[self.act_ids] = q
@@ -361,7 +361,7 @@ def build(cfg: SceneConfig) -> Scene:
 
         T_card = cfg.card_pose
         if T_card is None:
-            T_card = cfg.card.nominal(pinch_point(RobotKinematics(cfg.robot)))
+            T_card = cfg.card.nominal(pinch_point(RobotKinematics(cfg.robot)), cfg.robot)
         _add_card(spec, robot, cfg.robot, cfg.card, T_card, cfg.card_collider)
 
     c, s = np.cos(t.base_yaw), np.sin(t.base_yaw)

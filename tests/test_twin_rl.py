@@ -45,7 +45,7 @@ def test_scripted_ik_expert_solves_reach():
             env.reset(seed=ep)
             q_goal = env.kin.to_q(env.kin.ik(env.goal, seed=env.kin.from_q(env.q_cmd)).joints)
             for _ in range(env.task.episode_steps):
-                a = np.zeros(6)
+                a = np.zeros(env.task.act_dim)
                 a[:5] = np.clip((q_goal[:5] - env.q_cmd[:5]) / env.task.arm_step, -1, 1)
                 _, _, term, trunc, info = env.step(a)
                 if term or trunc:
@@ -97,11 +97,11 @@ def test_observation_and_reward_are_the_same_in_numpy_and_torch(name):
     env.close()
     rng = np.random.default_rng(0)
     n = 16
-    q = rng.uniform(lim.lo, lim.hi, (n, 6))
-    q_cmd = rng.uniform(lim.lo, lim.hi, (n, 6))
+    q = rng.uniform(lim.lo, lim.hi, (n, task.act_dim))
+    q_cmd = rng.uniform(lim.lo, lim.hi, (n, task.act_dim))
     tcp, goal, cube = rng.normal(0, 0.2, (n, 3)), rng.normal(0, 0.2, (n, 3)), rng.normal(0, 0.2, (n, 3))
     rot = np.array([np.linalg.qr(rng.normal(size=(3, 3)))[0] for _ in range(n)])
-    act, prev = rng.uniform(-1, 1, (n, 6)), rng.uniform(-1, 1, (n, 6))
+    act, prev = rng.uniform(-1, 1, (n, task.act_dim)), rng.uniform(-1, 1, (n, task.act_dim))
     jaws = rng.integers(0, 2, (n, 2)).astype(float)
 
     task = tk.make_task(name, limit_penalty=0.5, hold_still=0.5, end_on_success=2, roll_penalty=0.3)
@@ -128,12 +128,12 @@ def test_actions_respect_the_supervisor_limits():
     try:
         env.reset(seed=0)
         for _ in range(60):
-            env.step(np.ones(6))
+            env.step(np.ones(env.task.act_dim))
         assert np.all(env.q_cmd <= env.limits.hi + 1e-9)
         # chwytak: najwyzej `grip_step` zakresu na takt
         env.reset(seed=0)
         g0 = env.q_cmd[5]
-        env.step(-np.ones(6))
+        env.step(-np.ones(env.task.act_dim))
         span = env.limits.hi[5] - env.limits.lo[5]
         assert g0 - env.q_cmd[5] == pytest.approx(min(env.task.grip_step * span, g0 - env.limits.lo[5]))
     finally:
@@ -144,7 +144,7 @@ def test_policy_file_roundtrip(tmp_path):
     task = tk.make_task("reach")
     from dataclasses import asdict
 
-    pol = Policy(PolicyMeta(task=asdict(task), hidden=[32, 32], obs_dim=task.obs_dim, act_dim=6))
+    pol = Policy(PolicyMeta(task=asdict(task), hidden=[32, 32], obs_dim=task.obs_dim, act_dim=task.act_dim))
     pol.norm.update(torch.randn(100, task.obs_dim) * 3 + 1)
     obs = np.random.default_rng(0).normal(size=(4, task.obs_dim)).astype(np.float32)
     path = pol.save(tmp_path / "p" / "policy.pt")
@@ -261,7 +261,7 @@ def test_nominal_evaluation_runs_on_the_identified_arm():
     from lerobot_mp.twin.workspace import Workspace
 
     task = tk.make_task("reach", episode_steps=5)
-    pol = Policy(PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=6))
+    pol = Policy(PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=task.act_dim))
     ws = Workspace()
     ws.dynamics = Dynamics(kp=0.8, delay=1.0, source="identyfikacja").to_dict()
     res = evaluate(pol, 1, workspace=ws)
@@ -285,14 +285,14 @@ def test_lift_episode_ends_after_the_success_streak(monkeypatch):
     try:
         env.reset(seed=0)
         for k in range(1, 11):
-            _, _, term, trunc, info = env.step(np.zeros(6))
+            _, _, term, trunc, info = env.step(np.zeros(task.act_dim))
             assert not term and trunc == (k == 10) and info["finished"] == (k == 10)
     finally:
         env.close()
     env = TwinEnv(tk.make_task("reach", episode_steps=15), randomization=Randomization.none())
     try:
         env.reset(seed=0)
-        ends = [env.step(np.zeros(6))[3] for _ in range(15)]
+        ends = [env.step(np.zeros(env.task.act_dim))[3] for _ in range(15)]
         assert ends == [False] * 14 + [True]                  # reach: tylko limit czasu
     finally:
         env.close()
@@ -315,7 +315,7 @@ def test_reach_reward_keeps_the_wrist_roll_near_home():
     lim = env.limits
     env.close()
     tcp = goal = np.zeros((2, 3))
-    act = prev = np.zeros((2, 6))
+    act = prev = np.zeros((2, task.act_dim))
     q = np.repeat(lim.home[None], 2, axis=0)
     q[1, 4] = np.radians(150.0)
     r, s, _ = tk.reward(np, task, tcp, act, prev, goal=goal, q_cmd=q, limits=lim)
@@ -333,7 +333,7 @@ def test_lift_reward_pushes_away_from_joint_limits_and_holds_still_after_success
     tcp = np.array([[0.2, 0.0, 0.1]])
     cube = tcp.copy()
     jaws = np.ones((1, 2))
-    a0 = np.zeros((1, 6))
+    a0 = np.zeros((1, task.act_dim))
 
     def r(q_cmd, action=a0, cube_pos=cube):
         return tk.reward(np, task, tcp, action, action, cube_pos=cube_pos, jaw_contacts=jaws,
@@ -361,7 +361,7 @@ def test_observed_tcp_matches_the_joint_angles():
         rng = np.random.default_rng(0)
         worst = 0.0
         for _ in range(40):
-            env.step(np.sign(rng.uniform(-1, 1, 6)))
+            env.step(np.sign(rng.uniform(-1, 1, env.task.act_dim)))
             s = env.state()
             fk = env.kin.tcp(env.kin.from_q(s["q"]))[:3, 3]
             worst = max(worst, float(np.linalg.norm(fk - s["tcp"])))
@@ -385,7 +385,7 @@ def test_policy_sees_the_cube_as_the_cameras_would():
         mujoco.mj_forward(env.scene.model, env.scene.data)
         seen = []
         for _ in range(3):
-            obs, *_ = env.step(np.zeros(6))
+            obs, *_ = env.step(np.zeros(env.task.act_dim))
             seen.append(obs[15:18].copy())
         assert np.allclose(seen[0], start, atol=2e-3)           # jeszcze stara poza (opoznienie)
         assert np.allclose(seen[2], env.state()["cube_pos"], atol=2e-3)
@@ -413,7 +413,7 @@ def test_gpu_batch_env_matches_the_cpu_env():
     gpu.goal[:] = torch.as_tensor(cpu.goal, dtype=torch.float32, device=dev)
     rng = np.random.default_rng(0)
     for _ in range(20):
-        a = rng.uniform(-1, 1, 6)
+        a = rng.uniform(-1, 1, cpu.task.act_dim)
         oc, rc, *_ = cpu.step(a)
         og, rg, _, _ = gpu.step(torch.as_tensor(a, device=dev).repeat(2, 1))
         assert np.abs(og[0].cpu().numpy() - oc).max() < 1e-3
@@ -469,7 +469,7 @@ def test_gpu_applies_the_same_multi_tick_action_delay_as_the_cpu():
     gpu.goal[:] = torch.as_tensor(cpu.goal, dtype=torch.float32, device=dev)
     rng = np.random.default_rng(1)
     for _ in range(12):
-        a = rng.uniform(-1, 1, 6)
+        a = rng.uniform(-1, 1, cpu.task.act_dim)
         oc, *_ = cpu.step(a)
         og, *_ = gpu.step(torch.as_tensor(a, device=dev).repeat(2, 1))
         assert np.abs(gpu.q_cmd[0].cpu().numpy() - cpu.q_cmd).max() < 1e-5
@@ -491,7 +491,7 @@ def test_gpu_ends_episodes_after_the_success_streak(monkeypatch):
     gpu = BatchEnv(tk.make_task("reach", end_on_success=3), num_envs=4, randomization=Randomization.none())
     gpu.reset()
     for k in range(1, 4):
-        _, _, done, info = gpu.step(torch.zeros(4, 6, device=gpu.device))
+        _, _, done, info = gpu.step(torch.zeros(4, gpu.task.act_dim, device=gpu.device))
         assert bool(done.all()) == (k == 3) and bool(info["finished"].all()) == (k == 3)
     assert bool(info["time_outs"].all())                     # PPO dolicza wartosc stanu
     assert gpu.t.tolist() == [0] * 4 and gpu.streak.tolist() == [0] * 4
@@ -507,7 +507,7 @@ def test_runner_drives_the_simulated_arm_through_the_supervisor():
     from lerobot_mp.twin.workspace import Workspace
 
     task = tk.make_task("reach", episode_steps=12)
-    pol = Policy(PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=6))
+    pol = Policy(PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=task.act_dim))
     with torch.no_grad():
         for p in pol.actor.parameters():
             p.zero_()
@@ -536,3 +536,70 @@ def test_policy_metadata_stays_strict_json_with_an_infinite_band():
 
     dyn = Dynamics(damping=1.2, fitted=("damping",), band={"damping": float("inf")}, source="identyfikacja")
     json.dumps(_rand_dict(Randomization.around(dyn)), allow_nan=False)
+
+
+def test_obs_and_act_dims_are_unchanged_for_so101():
+    from lerobot_mp.twin.robots import SO101
+
+    reach, lift = tk.make_task("reach"), tk.make_task("lift")
+    assert (reach.obs_dim, lift.obs_dim, reach.act_dim, lift.act_dim) == (27, 33, 6, 6)
+    assert tk.OBS_DIMS == {"reach": 27, "lift": 33}
+    assert tk.make_task("lift", SO101).obs_dim == 33
+    assert tk.obs_dim("lift", 7) == 36 and tk.obs_dim("reach", 7) == 30
+
+
+def test_make_task_with_so101_spec_equals_the_defaults():
+    from lerobot_mp.twin.robots import SO101
+
+    for name in tk.TASKS:
+        assert tk.make_task(name, SO101) == tk.make_task(name)
+        assert tk.make_task(name, SO101, episode_steps=7) == tk.make_task(name, episode_steps=7)
+
+
+def test_make_task_takes_the_joint_count_and_desk_from_the_spec(toy_spec):
+    from dataclasses import replace
+
+    from lerobot_mp.twin.robots import Desk
+
+    toy = replace(toy_spec, desk=Desk(goal_radius=(0.1, 0.2), cube_radius=(0.12, 0.18)))
+    task = tk.make_task("lift", toy)
+    assert task.n_joints == 3 and task.act_dim == 3 and task.obs_dim == tk.obs_dim("lift", 3)
+    assert task.goal_radius == (0.1, 0.2) and task.cube_radius == (0.12, 0.18)
+    assert tk.make_task("lift", toy, cube_radius=(0.1, 0.11)).cube_radius == (0.1, 0.11)   # nadpisanie wygrywa
+
+
+def test_limits_expose_arm_count_gripper_and_roll_indices(toy_spec):
+    from lerobot_mp.twin.kinematics import RobotKinematics
+    from lerobot_mp.twin.robots import SO101
+
+    lim = tk.Limits.of(RobotKinematics(SO101))
+    assert (lim.n_arm, lim.grip, lim.roll) == (5, 5, 4)
+    toy = tk.Limits.of(RobotKinematics(toy_spec))
+    assert (toy.n_arm, toy.grip, toy.roll) == (2, 2, None)
+    assert toy.hi[2] == pytest.approx(0.02) and toy.lo[2] == pytest.approx(0.0)
+    task = tk.make_task("reach", toy_spec, roll_penalty=0.5)
+    q = toy.home[None].copy()
+    r, _, _ = tk.reward(np, task, np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3)), goal=np.zeros((1, 3)),
+                        q_cmd=q, limits=toy)                      # bez stawu obrotu - bez kary za obrot
+    nxt = tk.apply_action(np, task, toy, q, np.ones((1, 3)))
+    assert nxt.shape == (1, 3) and nxt[0, 0] == pytest.approx(min(q[0, 0] + task.arm_step, toy.hi[0]))
+    assert np.isfinite(r).all()
+
+
+def test_old_policy_meta_without_n_joints_and_robot_loads(tmp_path):
+    """Pliki polityk sprzed `n_joints`/`robot` to SO-101: 6 stawow, obserwacja jak dotad."""
+    from dataclasses import asdict
+
+    old_task = asdict(tk.make_task("lift"))
+    old_task.pop("n_joints")
+    blob = {"task": old_task, "hidden": [8], "obs_dim": 33, "act_dim": 6}
+    meta = PolicyMeta(**blob)
+    assert meta.robot == "so101"
+    assert meta.task_config().n_joints == 6 and meta.task_config() == tk.make_task("lift")
+    pol = Policy(meta)
+    path = pol.save(tmp_path / "old" / "policy.pt")
+    raw = torch.load(path, weights_only=False)
+    raw["meta"].pop("robot")
+    torch.save(raw, path)
+    back = Policy.load(path)
+    assert back.meta.robot == "so101" and back.task.act_dim == 6 and back.task.obs_dim == 33

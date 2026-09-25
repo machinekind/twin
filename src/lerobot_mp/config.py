@@ -7,7 +7,9 @@ robota do wlasnej kamery i wlasnej kalibracji sprowadzalo sie do edycji
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
@@ -485,13 +487,24 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
-def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None = None) -> AppConfig:
+def load_config(
+    path: str | Path | None = None,
+    overrides: dict[str, Any] | None = None,
+    *,
+    joints: Mapping[str, JointConfig] | None = None,
+    defaults: dict[str, Any] | None = None,
+) -> AppConfig:
     """Wczytuje konfiguracje: domyslne wartosci <- plik YAML <- nadpisania CLI.
 
     Bez `path` plik bierze sie ze zmiennej srodowiskowej `LEROBOT_MP_CONFIG`
     (jesli jest ustawiona). Tak blizniak - ktory wola `load_config()` w kilku
     miejscach, takze w procesie treningu - dostaje tiki chwytaka i port z pliku
     podanego raz w `lerobot-twin --config ...`.
+
+    `joints` zastepuje domyslna tabele stawow SO-101 (blizniak podaje stawy
+    swojego ramienia, `robots.robot_config`); sekcja `joints` z YAML i nadpisan
+    scala sie juz z nia, wiec staw spoza niej to blad. `defaults` to wartosci
+    pod plikiem YAML (np. poza domowa ramienia) - plik i nadpisania wygrywaja.
     """
     data: dict[str, Any] = {}
     if path is None:
@@ -503,6 +516,8 @@ def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None
         if not isinstance(raw, dict):
             raise ValueError(f"Plik konfiguracyjny {path} musi zawierac mapowanie YAML")
         data = raw
+    if defaults:
+        data = _deep_merge(defaults, data)
     if overrides:
         data = _deep_merge(data, overrides)
 
@@ -510,6 +525,8 @@ def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None
     # zeby mozna bylo nadpisac tylko jeden limit bez przepisywania calosci.
     joints_override = data.pop("joints", None)
     cfg = _from_dict(AppConfig, data)
+    if joints is not None:
+        cfg.joints = {k: copy.deepcopy(v) for k, v in joints.items()}
     if joints_override:
         for joint_name, joint_data in joints_override.items():
             if joint_name not in cfg.joints:
