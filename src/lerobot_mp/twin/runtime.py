@@ -686,6 +686,9 @@ class Twin:
         if ws.home:                                    # "Ustaw dom = tu" tego stanowiska
             overrides["safety"] = {"home": {k: float(v) for k, v in ws.home.items()}}
         cfg = robot_config(self.spec, overrides=overrides)
+        if ws.home:                                    # dom moze lezec na ograniczniku - poza limitami
+            self._base_limits = {}
+            self._widen_limits_for_home(cfg, ws.home)
         b: RobotBackend | None = None
         try:
             b = SceneBackend(self) if backend == "sim" else create_backend(cfg)
@@ -879,10 +882,11 @@ class Twin:
     def set_home_here(self) -> dict[str, float]:
         """Zmierzona poza staje sie domem stanowiska (zapis do twin.json) i nadzoru - od razu.
 
-        Jak "Set home = here" w jog_a1x: dom w pozie, w ktorej ramie naprawde spoczywa,
-        zamiast zer albo pozy z modelu. Poza jest przycieta do limitow konfiguracji:
-        staw oparty o ogranicznik (J2/J3 zlozonego A1X, 0,2 st. za limitem) dostaje dom
-        3 st. od ogranicznika, wiec rozkaz nigdy nie dociska go do stopu.
+        Jak "Set home = here" w jog_a1x: dom dokladnie tam, gdzie ramie naprawde spoczywa
+        (zlozony A1X: J2 ~2,5 st., J3 0,0 st., czyli na ograniczniku), nie w pozie z modelu
+        ani przycietej do limitow - przyciecie o 3 st. trzymalo ramie kilka cm nad podstawa.
+        Limity stawow poszerzaja sie tak, zeby dom w nich lezal (`_widen_limits_for_home`);
+        rozkaz do pozy, w ktorej ramie samo stoi, nie dociska go do stopu.
         """
         if not self.connected or self._supervisor is None:
             raise RuntimeError("ramie nie jest polaczone")
@@ -891,14 +895,27 @@ class Twin:
             raise RuntimeError("brak swiezego pomiaru - lacze milczy")
         home = {}
         for name in self._names:
-            lo, hi = self._base_limits.get(name, (-float("inf"), float("inf")))
-            home[name] = float(min(max(measured.get(name, self.spec.home.get(name, 0.0)), lo), hi))
+            v = float(measured.get(name, self.spec.home.get(name, 0.0)))
+            home[name] = min(max(v, 0.0), 100.0) if name == self._grip else v
         self.workspace.home = home
         self.workspace.save()
         with self._sup_lock:
+            self._widen_limits_for_home(self._supervisor.cfg, home)
             self._supervisor.home = dict(home)
         logger.info("Dom stanowiska = tu: %s", ", ".join(f"{k}={v:.1f}" for k, v in home.items()))
         return home
+
+    def _widen_limits_for_home(self, cfg, home: Mapping[str, float]) -> None:
+        """Limity konfiguracji (i bazowe, z ktorych korzysta backend) obejmuja poze domowa."""
+        for name, v in home.items():
+            try:
+                jc = cfg.joint(name)
+            except KeyError:
+                continue
+            jc.min, jc.max = min(jc.min, float(v)), max(jc.max, float(v))
+            if name in self._base_limits:
+                lo, hi = self._base_limits[name]
+                self._base_limits[name] = (min(lo, float(v)), max(hi, float(v)))
 
     def set_speed(self, deg_s: float | None) -> None:
         """Gorna granica predkosci stawow ramienia [st./s] dla suwakow i uchwytu (jak 'speed' w jog_a1x).

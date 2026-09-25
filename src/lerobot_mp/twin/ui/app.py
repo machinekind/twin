@@ -716,9 +716,9 @@ class TwinApp:
                                      "bark), kazdy etap sprawdzony na kolizje w blizniaku; kolizja = ramie stoi, "
                                      "powod nizej. Sciskajacy chwytak zostaje zamkniety. Przy STOP-ie nie rusza.")
             set_home = g.add_button("Ustaw dom = tu", icon=viser.Icon.MAP_PIN,
-                                    hint="Zmierzona poza staje sie domem tego stanowiska (zapis w twin.json), "
-                                         "przycieta do limitow (staw na ograniczniku dostaje dom 3 st. od niego). "
-                                         "Zrob to w pozie, w ktorej ramie naprawde spoczywa. Niczym nie rusza.")
+                                    hint="Zmierzona poza, dokladnie ta, staje sie domem tego stanowiska (zapis "
+                                         "w twin.json); limity poszerzaja sie, zeby ja objac. Zrob to w pozie, "
+                                         "w ktorej ramie naprawde spoczywa (zlozone na podstawie). Niczym nie rusza.")
             clear = g.add_button("Skasuj STOP", icon=viser.Icon.RESTORE,
                                  hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne; ramie "
                                       "samo nie rusza, ale nastepne polecenia juz przejda.")

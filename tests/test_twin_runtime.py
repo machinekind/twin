@@ -1249,13 +1249,30 @@ def test_set_home_here_persists_in_the_workspace_and_becomes_the_supervisor_home
     assert twin.home_pose == home
     lo, hi = twin.joint_limits()["shoulder_pan"]
     assert lo <= home["shoulder_pan"] <= hi
+    # Dom na ograniczniku (poza limitami konfiguracji) zostaje dokladnie taki i poszerza limity.
+    twin.claim("test")
+    twin.set_engaged(True)
+    twin.set_target({"wrist_roll": 160.0}, owner="test")     # limit konfiguracji 150 - nadzor przytnie
+    for _ in range(100):
+        twin.step(0.02)
+    twin.set_engaged(False)
+    twin.release("test")
+    fake_rest = dict(twin.status.measured)
+    fake_rest["wrist_roll"] = 152.0                          # ramie "stoi" 2 st. za limitem
+    monkeypatch.setattr(twin, "joints", lambda: fake_rest)
+    home2 = twin.set_home_here()
+    assert home2["wrist_roll"] == pytest.approx(152.0)
+    assert twin.joint_limits()["wrist_roll"][1] >= 152.0
+    assert twin._supervisor.home["wrist_roll"] == pytest.approx(152.0)
+    monkeypatch.undo()
     twin.disconnect()
     twin.connect("sim", threaded=False)                    # nowy nadzor czyta dom ze stanowiska
-    assert twin.home_pose == pytest.approx(home)
+    assert twin.home_pose == pytest.approx(ws.home)
+    assert twin.joint_limits()["wrist_roll"][1] >= 152.0    # poszerzenie przezylo Polacz
     twin.home()
     for _ in range(300):
         twin.step(0.02)
-    assert abs(twin.status.measured["shoulder_pan"] - home["shoulder_pan"]) < 2.0
+    assert abs(twin.status.measured["shoulder_pan"] - ws.home["shoulder_pan"]) < 2.0
 
 
 def test_set_speed_caps_every_arm_joint_at_the_given_rate(twin):
