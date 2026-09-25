@@ -882,7 +882,7 @@ def test_arm_tab_offers_a1x_and_its_enable_button_only_for_a_connected_a1x(app, 
     app.a1x_confirm.value = True
     app.arm_engage.value = True
     ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
-    assert "wylacz sprzeglo" in ev.client.notes[-1][1] and FakeA1X.calls == 0
+    assert "rozbroj" in ev.client.notes[-1][1] and FakeA1X.calls == 0
     app.arm_engage.value = False
     _click(app, "Wlacz silniki A1X (FF 1-5-6)")
     deadline = time.monotonic() + 2.0

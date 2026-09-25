@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..config import AppConfig
+from ..config import GRIPPER, AppConfig
 from .filters import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -88,8 +88,23 @@ class SafetySupervisor:
             home[name] = min(max(value, jc.min), jc.max)
         return home
 
+    def set_speed_cap(self, deg_s: float | None) -> None:
+        """Gorna granica predkosci kazdego stawu ramienia [jednostki/s] - jak 'speed' w jog_a1x.
+
+        None = bez granicy (tylko `max_vel` x `velocity_scale`). Chwytak bez zmian.
+        Ograniczniki dostaja nowe tempo od razu, bez skoku (krok liczy sie od ostatniego
+        rozkazu). Staw spoza limitow dalej wraca co najwyzej `outside_vel` (`step`).
+        """
+        self.speed_cap = None if deg_s is None else max(float(deg_s), 1e-3)
+        for name, limiter in self._limiters.items():
+            limiter.max_rate = self._max_vel(name)
+
     def _max_vel(self, name: str) -> float:
-        return max(self.cfg.joint(name).max_vel * self.cfg.safety.velocity_scale, 1e-3)
+        v = max(self.cfg.joint(name).max_vel * self.cfg.safety.velocity_scale, 1e-3)
+        cap = getattr(self, "speed_cap", None)
+        if cap is not None and name != GRIPPER:
+            v = min(v, cap)
+        return v
 
     # ------------------------------------------------------------------ start
     def start(self, measured: dict[str, float], go_home: bool = True, *, keep_outside: bool = False) -> None:

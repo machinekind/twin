@@ -61,7 +61,7 @@ def test_real_arm_connected_without_cameras_asks_for_usb_cameras():
 
 def test_real_arm_without_connection_points_to_feetech():
     g = gd.build(GuideSnapshot(backend="feetech", simulated=False, arm_error="brak odpowiedzi serw"))
-    assert g.current.number == 0 and "feetech" in g.now and "Wykryj porty" in g.now
+    assert g.current.number == 0 and "feetech" in g.now and "Port" in g.now
     assert "brak odpowiedzi serw" in g.current.detail
 
 

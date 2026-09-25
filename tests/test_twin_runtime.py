@@ -1228,3 +1228,53 @@ def test_twin_limits_and_command_keys_follow_the_workspace_spec(toy_spec, monkey
         assert tw.backend is not None and tw.backend.info.simulated
     finally:
         tw.close()
+
+
+def test_set_home_here_persists_in_the_workspace_and_becomes_the_supervisor_home(twin, monkeypatch):
+    """Ustaw dom = tu: zmierzona poza (przycieta do limitow) trafia do twin.json i do nadzoru, takze po Polacz."""
+    ws = twin.workspace
+    saved = {}
+    monkeypatch.setattr(ws, "save", lambda path=None: saved.setdefault("n", 0) or saved.update(n=saved.get("n", 0) + 1))
+    twin.connect("sim", threaded=False)
+    twin.claim("test")
+    twin.set_engaged(True)
+    twin.set_target({"shoulder_pan": 40.0, "elbow_flex": 60.0}, owner="test")
+    for _ in range(150):
+        twin.step(0.02)
+    twin.set_engaged(False)
+    twin.release("test")
+    home = twin.set_home_here()
+    assert abs(home["shoulder_pan"] - 40.0) < 2.0 and abs(home["elbow_flex"] - 60.0) < 2.0
+    assert ws.home == home and saved.get("n", 0) >= 1
+    assert twin.home_pose == home
+    lo, hi = twin.joint_limits()["shoulder_pan"]
+    assert lo <= home["shoulder_pan"] <= hi
+    twin.disconnect()
+    twin.connect("sim", threaded=False)                    # nowy nadzor czyta dom ze stanowiska
+    assert twin.home_pose == pytest.approx(home)
+    twin.home()
+    for _ in range(300):
+        twin.step(0.02)
+    assert abs(twin.status.measured["shoulder_pan"] - home["shoulder_pan"]) < 2.0
+
+
+def test_set_speed_caps_every_arm_joint_at_the_given_rate(twin):
+    """Predkosc [st./s] jak w jog_a1x: kazdy staw ramienia najwyzej tyle, chwytak bez zmian."""
+    twin.connect("sim", threaded=False)
+    twin.set_speed(30.0)
+    spec = twin.spec
+    sup = twin._supervisor
+    for n in spec.arm_joints:
+        assert sup._limiters[n].max_rate == pytest.approx(min(spec.max_vel[n], 30.0))
+    assert sup._limiters[spec.gripper].max_rate == pytest.approx(spec.max_vel[spec.gripper])
+    twin.claim("test")
+    twin.set_engaged(True)
+    before = twin.status.command["shoulder_pan"]
+    twin.set_target({"shoulder_pan": before + 60.0}, owner="test")
+    for _ in range(50):                                     # 1 s
+        twin.step(0.02)
+    assert twin.status.command["shoulder_pan"] - before == pytest.approx(30.0, abs=3.0)
+    twin.set_engaged(False)
+    twin.release("test")
+    twin.set_speed(None)
+    assert sup._limiters["shoulder_pan"].max_rate == pytest.approx(spec.max_vel["shoulder_pan"])

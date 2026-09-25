@@ -308,6 +308,8 @@ class Twin:
         self.extras: dict = {}
         #: Ostatni komunikat domu etapami (`home_stages`): pusty = w porzadku, inaczej dlaczego stanal.
         self.home_note: str = ""
+        #: Granica predkosci z `set_speed` [st./s] (przywracana przy Polacz).
+        self._speed_cap: float | None = None
         #: Zwiekszany przy kazdej przebudowie - widoki (panel) wiedza, ze trzeba odswiezyc siatki.
         self.version = 0
         self.renderer = RenderWorker()
@@ -679,8 +681,11 @@ class Twin:
         # zadzialac, a serwo dociskalo do przeszkody bez konca (zmierzone na prawdziwym stosie
         # LeRobota nad emulatorem; bez limitu STOP po 0,78 s). Nadzor blizniaka i tak ogranicza
         # predkosc. Aplikacja dloni ma wlasna konfiguracje - bez zmian.
-        cfg = robot_config(self.spec, overrides={"robot": {"backend": "sim" if backend == "sim" else backend,
-                                                          "port": port, "max_relative_target": None}})
+        overrides = {"robot": {"backend": "sim" if backend == "sim" else backend,
+                               "port": port, "max_relative_target": None}}
+        if ws.home:                                    # "Ustaw dom = tu" tego stanowiska
+            overrides["safety"] = {"home": {k: float(v) for k, v in ws.home.items()}}
+        cfg = robot_config(self.spec, overrides=overrides)
         b: RobotBackend | None = None
         try:
             b = SceneBackend(self) if backend == "sim" else create_backend(cfg)
@@ -749,6 +754,8 @@ class Twin:
             self._thread = threading.Thread(target=self._loop, name="blizniak-petla", daemon=True)
             self._thread.start()
         logger.info("Polaczono z ramieniem: %s", b.info.name)
+        if self._speed_cap is not None:
+            self._supervisor.set_speed_cap(self._speed_cap)
         if staged_home:
             self.home()
 
@@ -860,6 +867,49 @@ class Twin:
 
     HOME_STAGE_DEG_S = 20.0
 
+    @property
+    def home_pose(self) -> dict[str, float]:
+        """Poza domowa [jednostki aplikacji]: stanowiska (`workspace.home`), inaczej z opisu ramienia."""
+        sup = self._supervisor
+        if sup is not None:
+            return dict(sup.home)
+        ws_home = self.workspace.home
+        return {k: float(ws_home.get(k, v)) for k, v in self.spec.home.items()} if ws_home else dict(self.spec.home)
+
+    def set_home_here(self) -> dict[str, float]:
+        """Zmierzona poza staje sie domem stanowiska (zapis do twin.json) i nadzoru - od razu.
+
+        Jak "Set home = here" w jog_a1x: dom w pozie, w ktorej ramie naprawde spoczywa,
+        zamiast zer albo pozy z modelu. Poza jest przycieta do limitow konfiguracji:
+        staw oparty o ogranicznik (J2/J3 zlozonego A1X, 0,2 st. za limitem) dostaje dom
+        3 st. od ogranicznika, wiec rozkaz nigdy nie dociska go do stopu.
+        """
+        if not self.connected or self._supervisor is None:
+            raise RuntimeError("ramie nie jest polaczone")
+        measured = dict(self._latest) if not self.status.simulated else self.joints()
+        if self._ls is not None and self._ls.frozen:
+            raise RuntimeError("brak swiezego pomiaru - lacze milczy")
+        home = {}
+        for name in self._names:
+            lo, hi = self._base_limits.get(name, (-float("inf"), float("inf")))
+            home[name] = float(min(max(measured.get(name, self.spec.home.get(name, 0.0)), lo), hi))
+        self.workspace.home = home
+        self.workspace.save()
+        with self._sup_lock:
+            self._supervisor.home = dict(home)
+        logger.info("Dom stanowiska = tu: %s", ", ".join(f"{k}={v:.1f}" for k, v in home.items()))
+        return home
+
+    def set_speed(self, deg_s: float | None) -> None:
+        """Gorna granica predkosci stawow ramienia [st./s] dla suwakow i uchwytu (jak 'speed' w jog_a1x).
+
+        None = bez granicy. Chwytak bez zmian. Zapamietana - Polacz buduje nowy nadzor z ta sama granica.
+        """
+        self._speed_cap = None if deg_s is None else float(deg_s)
+        with self._sup_lock:
+            if self._supervisor is not None:
+                self._supervisor.set_speed_cap(self._speed_cap)
+
     def _home_staged(self) -> None:
         """Dom etapami: grupy stawow z `spec.home_stages` po kolei, kazda po sprawdzeniu drogi w blizniaku.
 
@@ -874,17 +924,41 @@ class Twin:
         try:
             checker = CollisionChecker(self.scene)
             keep = self._squeeze_keep()
-            for stage in self.spec.home_stages:
-                current = {k: float(v) for k, v in (self.status.command or self.joints()).items()}
-                target = dict(current)
-                for name in stage:
-                    target[name] = float(keep.get(name, self.spec.home.get(name, current[name])))
-                why = checker.path_clear(current, target)
-                if why:
-                    self.home_note = f"Dom zatrzymany przed etapem {'+'.join(stage)}: {why}"
-                    logger.error(self.home_note)
-                    return
-                travel = max((abs(target[k] - current[k]) for k in stage), default=0.0)
+            home = self.home_pose
+            start = {k: float(v) for k, v in (self.status.command or self.joints()).items()}
+
+            def plan(stages):
+                """[(etap, cel)] po kolei, albo opis pierwszej kolizji."""
+                cur, out = dict(start), []
+                for stage in stages:
+                    target = dict(cur)
+                    for name in stage:
+                        target[name] = float(keep.get(name, home.get(name, cur[name])))
+                    why = checker.path_clear(cur, target)
+                    if why:
+                        return f"etap {'+'.join(stage)}: {why}"
+                    out.append((stage, target))
+                    cur = target
+                return out
+
+            # Kolejnosc etapow jest dla rozkladania (ze spoczynku do gory); do skladania
+            # (z gory do spoczynku) pasuje odwrotna. Pierwsza w calosci czysta droga wygrywa.
+            stages = tuple(self.spec.home_stages)
+            steps, why = None, ""
+            for order in (stages, stages[::-1]):
+                got = plan(order)
+                if isinstance(got, list):
+                    steps = got
+                    break
+                why = why or got
+            if steps is None:
+                self.home_note = f"Dom zatrzymany - droga przez kolizje ({why}); przejedz suwakami"
+                logger.error(self.home_note)
+                return
+            cur = dict(start)
+            for stage, target in steps:
+                travel = max((abs(target[k] - cur[k]) for k in stage), default=0.0)
+                cur = target
                 if travel < 1e-3:
                     continue
                 self.move(target, max(1.5, travel / self.HOME_STAGE_DEG_S), owner=owner)

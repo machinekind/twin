@@ -602,6 +602,9 @@ class TwinApp:
             intr_camera=str(self.intr_job.data.get("camera", "")) if self.intr_job.running else "")
 
     def _tick_guide(self) -> None:
+        note = getattr(self.twin, "home_note", "")
+        if note and self.home_md.content != f"**{note}**":
+            self.home_md.content = f"**{note}**"
         # Przypisanie tej samej tresci nic nie wysyla (`_skip_unchanged_markdown`).
         guide = gd.build(self._guide_snapshot())
         self.guide_md.content = gd.render_head(guide)
@@ -609,6 +612,7 @@ class TwinApp:
 
     # ================================================================== ramie
     def _build_arm(self) -> None:
+        """Zakladka Ramie jak jog_a1x: Polacz, UZBROJ/rozbroj, predkosc, Dom, Ustaw dom = tu, suwaki."""
         g = self.server.gui
         self._tab_help("Ramie")
         with g.add_folder("Polaczenie"):
@@ -616,31 +620,21 @@ class TwinApp:
             self.arm_backend = g.add_dropdown("Ramie", backends, initial_value=self.ws.backend
                                               if self.ws.backend in backends else "sim",
                                               hint="sim - blizniak jest ramieniem (proba bez sprzetu); feetech - "
-                                                   "serwa SO-101 wprost przez port (do blizniaka ten); lerobot - "
-                                                   "przez kalibracje LeRobota (katy przesuniete); a1x - Galaxea "
-                                                   "A1X po CAN (stanowisko z robot: a1x, pakiet galaxeo). Dziala "
-                                                   "po Polacz.")
+                                                   "serwa SO-101 wprost przez port; lerobot - przez kalibracje "
+                                                   "LeRobota; a1x - Galaxea A1X po CAN (stanowisko robot: a1x). "
+                                                   "Dziala po Polacz.")
             self.arm_port = g.add_text("Port", self.ws.port or "",
-                                       hint="Port dla feetech/lerobot: COMx (Windows), /dev/ttyACM0 (Linux) albo "
-                                            "socket://adres:5555 (most lerobot-mp-bridge). Dla a1x interfejs CAN: "
-                                            "can0 (Linux), xcan albo xcan:6 (macOS), pusty = domyslny - Wykryj "
-                                            "porty go nie pokaze. Dla sim nieuzywany.")
-            self.ports_md = g.add_markdown("")
-            scan = g.add_button("Wykryj porty", icon=viser.Icon.SEARCH,
-                                hint="Wypisuje porty USB-serial; pierwsza przejsciowke CH34x (WCH, typowa w "
-                                     "plytkach serw SO-101) wpisuje w pole Port, gdy jest puste. Niczym nie rusza.")
-            self.arm_home_on_connect = g.add_checkbox(
-                "Po polaczeniu jedz do pozycji domowej", False,
-                hint="Zaznaczone: zaraz po Polacz ramie jedzie rampa do domu. Przy pierwszym polaczeniu "
-                     "prawdziwego ramienia zostaw odznaczone - ramie zostaje tam, gdzie stoi.")
+                                       hint="feetech/lerobot: COMx, /dev/ttyACM0 albo socket://adres:5555 "
+                                            "(`lerobot-twin check` wypisuje porty). a1x: can0 (Linux), xcan "
+                                            "albo xcan:6 (macOS), PCAN_USBBUS1 (Windows); pusty = domyslny. "
+                                            "sim: nieuzywany.")
             connect = g.add_button("Polacz", icon=viser.Icon.PLUG_CONNECTED, color="green",
-                                   hint="Konczy wszystko, co jezdzi (polityka, fala, nagranie identyfikacji), "
-                                        "kasuje potwierdzenia i laczy wybrane ramie; bez jazdy do domu ramie "
-                                        "stoi. Sciskajacy chwytak sciska dalej, gdy backend zna cel serwa (sim; "
-                                        "inaczej pierwszy ruch go puszcza). Backend i port zapisuje w stanowisku.")
+                                   hint="Laczy wybrane ramie BEZ ruchu: ramie zostaje tam, gdzie stoi, suwaki "
+                                        "pokazuja zmierzona poze. Konczy wszystko, co jezdzi, i kasuje "
+                                        "potwierdzenia. Backend i port zapisuje w stanowisku.")
             disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X,
-                                      hint="Konczy polityke, fale i nagranie identyfikacji, odbiera ramie "
-                                           "wszystkim i rozlacza backend. Potwierdzenia trzeba potem dac od nowa.")
+                                      hint="Konczy polityke, fale i identyfikacje, odbiera ramie wszystkim i "
+                                           "rozlacza backend. Silnikow nie zwalnia - ramie trzyma poze.")
         # Galaxea A1X: sekwencja wlaczenia FF 1-5-6 tylko recznie (zasilone od nowa ramie slucha od razu,
         # a FF 5 na chwile puszcza silniki). Widoczne tylko z polaczonym backendem a1x.
         self.a1x_folder = g.add_folder("Silniki A1X")
@@ -652,7 +646,7 @@ class TwinApp:
             a1x_enable = g.add_button("Wlacz silniki A1X (FF 1-5-6)", icon=viser.Icon.BOLT,
                                       hint="Tylko gdy ramie zglasza sie, ale nie slucha rozkazow (blad 'gluche "
                                            "na 0x050'). Wysyla FF 1 -> 5 -> 6 z celem = zmierzona poza przed, "
-                                           "miedzy i po kazdym kodzie. Odmowa przy wlaczonym sprzegle albo gdy "
+                                           "miedzy i po kazdym kodzie. Odmowa, gdy panel jest uzbrojony albo "
                                            "ramie ma polityka / fala / identyfikacja.")
             self.a1x_md = g.add_markdown("")
 
@@ -671,7 +665,7 @@ class TwinApp:
             if not (st.connected and st.backend == "a1x") or not hasattr(b, "enable"):
                 raise RuntimeError("wlaczenie silnikow tylko dla polaczonego ramienia a1x")
             if self.arm_engage.value:
-                raise RuntimeError("najpierw wylacz sprzeglo panelu")
+                raise RuntimeError("najpierw rozbroj panel (odznacz UZBROJ)")
             busy = self._busy(PANEL_OWNER)
             if busy:
                 raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
@@ -688,30 +682,11 @@ class TwinApp:
                     self.a1x_md.content = f"**Silniki A1X:** odmowa - {exc}"
             threading.Thread(target=work, name="a1x-wlacz", daemon=True).start()
 
-        @scan.on_click
-        @self._safe
-        def _(event):
-            import serial.tools.list_ports as lp
-            lines = []
-            for p in lp.comports():
-                if p.vid is None:
-                    continue
-                # 0x1A86 = WCH (CH340/CH343/CH9102) - na nim jest typowa plytka serw SO-101, ale
-                # nie jedyna mozliwa; inne przejsciowki wpisuje sie recznie.
-                tag = " **(WCH CH34x - typowa dla SO-101)**" if p.vid == 0x1A86 else ""
-                lines.append(f"- `{p.device}` {p.description}{tag}")
-                if p.vid == 0x1A86 and not self.arm_port.value:
-                    self.arm_port.value = p.device
-            self.ports_md.content = "\n".join(lines) or (
-                "Brak przejsciowek USB-serial. Na maszynie wirtualnej/zdalnej (np. Shadow): przepusc urzadzenie "
-                "USB w kliencie albo uzyj mostu `lerobot-mp-bridge` i portu `socket://adres:5555`.")
-
         @connect.on_click
         @self._safe
         def _(event):
             try:
-                self._connect(self.arm_backend.value, self.arm_port.value.strip() or None,
-                              self.arm_home_on_connect.value)
+                self._connect(self.arm_backend.value, self.arm_port.value.strip() or None, False)
             finally:
                 show_a1x()
             self._notify(event, "Polaczono", f"{self.twin.status.backend}: {self.twin.status.state}")
@@ -725,20 +700,31 @@ class TwinApp:
             show_a1x()
 
         with g.add_folder("Sterowanie"):
-            self.arm_engage = g.add_checkbox("Sprzeglo: panel steruje ramieniem", False,
-                                             hint="Panel bierze ramie: suwaki i uchwyt koncowki RUSZAJA ramieniem. "
-                                                  "Odmowa przy aktywnym STOP-ie albo gdy ramie ma polityka, fala albo "
-                                                  "identyfikacja; STOP, Dom i Polacz je gasza. Bez sprzegla suwaki "
-                                                  "tylko pokazuja katy.")
-            home = g.add_button("Pozycja domowa", icon=viser.Icon.HOME,
-                                hint="Odbiera ramie kazdemu (panel, polityka, fala, identyfikacja) i jedzie rampa "
-                                     "do domu - RUSZA ramieniem. Sciskajacy chwytak zostaje zamkniety. Przy "
-                                     "aktywnym STOP-ie nie rusza - najpierw Skasuj STOP.")
+            self.arm_engage = g.add_checkbox("UZBROJ (ARM): panel steruje ramieniem", False,
+                                             hint="Uzbrojony panel RUSZA ramieniem: suwaki i uchwyt koncowki "
+                                                  "ustawiaja cel od ZMIERZONEJ pozy. Odznacz = rozbroj (ramie "
+                                                  "trzyma poze). Odmowa przy STOP-ie albo gdy ramie ma polityka, "
+                                                  "fala, identyfikacja; STOP, Dom i Polacz rozbrajaja.")
+            top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
+            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
+                                          hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "
+                                               "w jog_a1x). Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
+                                               "rampa nadzoru.")
+            home = g.add_button("Dom", icon=viser.Icon.HOME,
+                                hint="Jedzie do pozycji domowej stanowiska (Ustaw dom = tu) albo z modelu - "
+                                     "RUSZA ramieniem, odbiera je kazdemu. A1X: etapami (lokiec, nadgarstek, "
+                                     "bark), kazdy etap sprawdzony na kolizje w blizniaku; kolizja = ramie stoi, "
+                                     "powod nizej. Sciskajacy chwytak zostaje zamkniety. Przy STOP-ie nie rusza.")
+            set_home = g.add_button("Ustaw dom = tu", icon=viser.Icon.MAP_PIN,
+                                    hint="Zmierzona poza staje sie domem tego stanowiska (zapis w twin.json), "
+                                         "przycieta do limitow (staw na ograniczniku dostaje dom 3 st. od niego). "
+                                         "Zrob to w pozie, w ktorej ramie naprawde spoczywa. Niczym nie rusza.")
             clear = g.add_button("Skasuj STOP", icon=viser.Icon.RESTORE,
                                  hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne; ramie "
                                       "samo nie rusza, ale nastepne polecenia juz przejda.")
+            self.home_md = g.add_markdown("")
             self.tcp_gizmo_on = g.add_checkbox("Uchwyt koncowki w 3D", False,
-                                               hint="Strzalki na koncowce w 3D. Ze sprzeglem przeciaganie rusza "
+                                               hint="Strzalki na koncowce w 3D. Uzbrojony panel: przeciaganie rusza "
                                                     "ramieniem (IK, sama pozycja); skok stawu > 15 st. jest "
                                                     "odrzucany - ciagnij malymi krokami.")
             self.tcp_md = g.add_markdown("")
@@ -755,26 +741,31 @@ class TwinApp:
                     hi = float(np.floor(np.degrees(kin.hi[k]) * 2) / 2)
                 if name == spec.gripper:
                     tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (SO-101: tiki serwa jak w "
-                           "feetech; A1X: skok palca 0..5 cm). Ze "
-                           "sprzeglem ustawia cel. Chwytak, ktory po STOP-ie dalej sciska: Skasuj STOP, "
-                           "sprzeglo, potem ten suwak (przy STOP-ie sprzeglo sie nie wlacza).")
+                           "feetech; A1X: skok palca 0..5 cm). Uzbrojony panel ustawia cel. Chwytak, ktory po "
+                           "STOP-ie dalej sciska: Skasuj STOP, UZBROJ, potem ten suwak.")
                 else:
-                    tip = (f"Kat stawu [st.], suwak {lo:g}..{hi:g} (zakres modelu). Ze sprzeglem ustawia cel - "
-                           f"nadzor przycina go do limitow z konfiguracji i EEPROM serwa, wiec ostatnie stopnie "
-                           f"suwaka moga nic nie dawac; bez sprzegla pokazuje zmierzony kat.")
+                    tip = (f"Kat stawu [st.], suwak {lo:g}..{hi:g} (zakres modelu). Uzbrojony panel ustawia cel - "
+                           f"nadzor przycina go do limitow z konfiguracji i EEPROM serwa; rozbrojony pokazuje "
+                           f"zmierzony kat.")
                 s = g.add_slider(name, lo, hi, 0.5, float(np.clip(spec.home.get(name, 0.0), lo, hi)), hint=tip)
                 self.sliders[name] = s
                 self.slider_range[name] = (lo, hi)
 
                 def on_slide(event, name=name):
                     if event.client is None or not self.arm_engage.value:
-                        return                          # zmiana z petli (sprzezenie zwrotne) albo bez sprzegla
+                        return                          # zmiana z petli (sprzezenie zwrotne) albo bez uzbrojenia
                     self._gizmo_seed = None             # cel zmienil sie obok uchwytu TCP
                     try:
                         self.twin.set_target({name: float(self.sliders[name].value)}, owner=PANEL_OWNER)
                     except RuntimeError:                # ramie odebrane panelowi w miedzyczasie
                         self.arm_engage.value = False
                 s.on_update(on_slide)
+
+        self.twin.set_speed(self.arm_speed.value)
+
+        @self.arm_speed.on_update
+        def _(event):
+            self.twin.set_speed(float(self.arm_speed.value))
 
         @self.arm_engage.on_update
         def _(event):
@@ -783,7 +774,14 @@ class TwinApp:
         @home.on_click
         @self._safe
         def _(event):
+            self.home_md.content = ""
             self._go_home()
+
+        @set_home.on_click
+        @self._safe
+        def _(event):
+            h = self.twin.set_home_here()
+            self.home_md.content = "dom = " + ", ".join(f"{k} {v:.1f}" for k, v in h.items())
 
         @clear.on_click
         def _(event):

@@ -165,6 +165,9 @@ class Workspace:
     #: "sim" - blizniak bez sprzetu, "feetech" - serwa wprost, "lerobot" - przez LeRobota,
     #: "a1x" - Galaxea A1X po CAN.
     backend: str = "sim"
+    #: Poza domowa tego stanowiska [jednostki aplikacji] ("Ustaw dom = tu" w panelu);
+    #: None = poza domowa z opisu ramienia (`RobotSpec.home`).
+    home: dict[str, float] | None = None
     port: str | None = None
     table: dict[str, Any] = field(default_factory=lambda: asdict(Table()))
     card: dict[str, Any] = field(default_factory=lambda: asdict(Card()))

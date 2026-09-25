@@ -184,12 +184,11 @@ def _step_arm(s: GuideSnapshot) -> Step:
     if s.simulated:
         act = "Ramie > Polaczenie: Ramie = sim, **Polacz**"
     elif s.backend == "a1x":
-        # A1X po CAN: interfejs, nie port szeregowy - "Wykryj porty" go nie pokaze.
-        act = ("Ramie > Polaczenie: Ramie = a1x, Port = can0 (macOS: xcan), odznacz 'Po polaczeniu jedz do "
-               "pozycji domowej', **Polacz**")
+        # A1X po CAN: interfejs, nie port szeregowy.
+        act = "Ramie > Polaczenie: Ramie = a1x, Port = can0 (macOS: xcan), **Polacz** (bez ruchu)"
     else:
-        act = ("Ramie > Polaczenie: Ramie = feetech, **Wykryj porty** (albo socket://adres:5555 z mostu), "
-               "odznacz 'Po polaczeniu jedz do pozycji domowej', **Polacz**")
+        act = ("Ramie > Polaczenie: Ramie = feetech, Port = COMx / /dev/ttyACM0 (`lerobot-twin check` wypisuje "
+               "porty; albo socket://adres:5555 z mostu), **Polacz** (bez ruchu)")
     det = "rozlaczone" + (f" ({s.arm_error})" if s.arm_error else "")
     return Step(0, title, TODO, det, act)
 
