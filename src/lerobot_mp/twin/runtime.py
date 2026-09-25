@@ -306,6 +306,8 @@ class Twin:
         #: Dodatki sceny ponad stanowisko: karta w szczekach (`with_card`, `card_pose`),
         #: obiekty zadania (`objects`, `grasp_sensors`). Przezywaja przebudowe sceny.
         self.extras: dict = {}
+        #: Ostatni komunikat domu etapami (`home_stages`): pusty = w porzadku, inaczej dlaczego stanal.
+        self.home_note: str = ""
         #: Zwiekszany przy kazdej przebudowie - widoki (panel) wiedza, ze trzeba odswiezyc siatki.
         self.version = 0
         self.renderer = RenderWorker()
@@ -700,14 +702,17 @@ class Twin:
         self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
         self._supervisor = SafetySupervisor(copy.deepcopy(cfg))
         # Staw poza limitami nie jest przycinany na starcie - patrz `SafetySupervisor.start`.
-        self._supervisor.start(measured, go_home=go_home, keep_outside=True)
+        # Ramie z domem etapami (`home_stages`) nie jedzie rampa nadzoru: start bez ruchu,
+        # a dom etapami rusza po polaczeniu (na koncu tej metody) - patrz `_home_staged`.
+        staged_home = bool(go_home and self.spec.home_stages)
+        self._supervisor.start(measured, go_home=go_home and not staged_home, keep_outside=True)
         keep = self._squeeze_at_connect(b, measured)
         if keep:
             # Chwytak, ktory sciskal przed "Polacz", sciska dalej: rozkaz od celu serwa, nie od
             # zmierzonego kata szczeki. Zmierzone (verify2, s1): po Polacz w trakcie lift pierwsze
             # sprzeglo wysylalo zmierzony kat jako cel i kostka zsuwala sie 3,8 -> 2,3 cm.
             self._supervisor.reseed(keep)
-            if go_home:                                    # rampa startowa nie otwiera szczek po drodze
+            if go_home and not staged_home:                # rampa startowa nie otwiera szczek po drodze
                 self._supervisor.begin_homing(keep=keep)
                 self._supervisor.state = SafetyState.STARTING
         self._target, self._engaged = None, False
@@ -744,6 +749,8 @@ class Twin:
             self._thread = threading.Thread(target=self._loop, name="blizniak-petla", daemon=True)
             self._thread.start()
         logger.info("Polaczono z ramieniem: %s", b.info.name)
+        if staged_home:
+            self.home()
 
     def _squeeze_at_connect(self, b: RobotBackend, measured: Mapping[str, float]) -> dict[str, float]:
         """{chwytak: cel serwa}, gdy przy polaczeniu serwo chwytaka sciska (cel ciasniejszy od pomiaru).
@@ -834,14 +841,62 @@ class Twin:
             self._target = target
 
     def home(self) -> None:
-        """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa."""
+        """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa.
+
+        Ramie z `spec.home_stages` jedzie etapami (watek `dom`, `_home_staged`), kazdy
+        etap sprawdzony na kolizje w blizniaku; reszta - jedna synchroniczna rampa nadzoru.
+        """
         if self._supervisor is None:
             return
         self.preempt("pozycja domowa")
+        if self.spec.home_stages:
+            self.home_note = ""
+            threading.Thread(target=self._home_staged, name="dom", daemon=True).start()
+            return
         with self._sup_lock:
             # Chwytak sciskajacy kostke jedzie do domu zamkniety: otwarcie w rampie
             # upuszczalo ja z wysokosci, na ktora ja podniesiono.
             self._supervisor.begin_homing(keep=self._squeeze_keep())
+
+    HOME_STAGE_DEG_S = 20.0
+
+    def _home_staged(self) -> None:
+        """Dom etapami: grupy stawow z `spec.home_stages` po kolei, kazda po sprawdzeniu drogi w blizniaku.
+
+        Etap, ktorego droga w przestrzeni stawow przechodzi przez kolizje (stol, podstawa,
+        wlasne ogniwa), zatrzymuje dom - ramie zostaje tam, gdzie stoi, a powod trafia do
+        `home_note` i logu. Ruch jak w fali kalibracyjnej: `move` z wlascicielem "dom",
+        rampa smoothstep najwyzej `HOME_STAGE_DEG_S`, STOP / Dom / Polacz przerywaja.
+        Chwytak sciskajacy kostke zostaje zamkniety (`_squeeze_keep`).
+        """
+        from .collision import CollisionChecker
+        owner = "dom"
+        try:
+            checker = CollisionChecker(self.scene)
+            keep = self._squeeze_keep()
+            for stage in self.spec.home_stages:
+                current = {k: float(v) for k, v in (self.status.command or self.joints()).items()}
+                target = dict(current)
+                for name in stage:
+                    target[name] = float(keep.get(name, self.spec.home.get(name, current[name])))
+                why = checker.path_clear(current, target)
+                if why:
+                    self.home_note = f"Dom zatrzymany przed etapem {'+'.join(stage)}: {why}"
+                    logger.error(self.home_note)
+                    return
+                travel = max((abs(target[k] - current[k]) for k in stage), default=0.0)
+                if travel < 1e-3:
+                    continue
+                self.move(target, max(1.5, travel / self.HOME_STAGE_DEG_S), owner=owner)
+            logger.info("Dom etapami: ramie w pozycji domowej")
+        except Exception as exc:
+            self.home_note = f"Dom przerwany: {exc}"
+            logger.warning(self.home_note)
+        finally:
+            try:
+                self.release(owner)
+            except Exception:
+                pass
 
     def estop(self, reason: str = "STOP awaryjny") -> None:
         sup = self._supervisor

@@ -142,6 +142,11 @@ class RobotSpec:
     jaw: JawThresholds = JawThresholds()
     #: Skala stolu, na ktorym ramie pracuje.
     desk: Desk = Desk()
+    #: Dom etapami: grupy stawow jadace do pozy domowej jedna po drugiej (reszta stoi),
+    #: kazdy etap sprawdzony w blizniaku na kolizje przed ruchem. Puste = jedna rampa
+    #: wszystkich stawow naraz. Dla ramienia zlozonego na podstawie (A1X) prosta rampa
+    #: ze wszystkimi stawami naraz obracala nadgarstek w kolumne barku.
+    home_stages: tuple[tuple[str, ...], ...] = ()
 
     @property
     def mjcf_path(self) -> Path:
@@ -270,6 +275,11 @@ A1X = RobotSpec(
         map_centre=(0.36, 0.0),
         map_side=0.9,
     ),
+    # Ze zlozonego spoczynku (J2 ~0, J3 ~0): najpierw lokiec rozklada przedramie w gore,
+    # potem nadgarstek, potem bark i podstawa - kolejnosc sprawdzona w blizniaku (path_clear);
+    # nadgarstek przed lokciem uderza chwytakiem w kolumne barku (arm_link1) po 7 % drogi.
+    home_stages=(("arm_joint3",), ("arm_joint4", "arm_joint5", "arm_joint6"),
+                 ("arm_joint2", "arm_joint1"), ("gripper",)),
 )
 
 REGISTRY: dict[str, RobotSpec] = {SO101.name: SO101, A1X.name: A1X}
