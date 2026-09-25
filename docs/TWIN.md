@@ -599,15 +599,19 @@ idzie za szczęką 1 przez równość w MJCF, usztywnioną regułą 6 (`solref`,
 Nie ma jeszcze polityk dla A1X. Trening na GPU (`lerobot-twin train
 --workspace <stanowisko A1X>`) czeka na sprawdzenie modelu w MuJoCo Warp.
 
-**`pickplace` (w przygotowaniu, na gałęzi `wp4-pickplace`).** Nowe zadanie
-dla obu ramion: chwyć kostkę widzianą z kamer, przenieś ją i odłóż na cel.
-Celem na biurku jest kulka celu z panelu rzucona na blat, a w symulacji —
-płaska podkładka (ciało `mocap`, bez kolizji). Pchanie kostki nie zalicza zadania.
-Sukces wymaga, żeby kostka była wcześniej niesiona (chwycona i uniesiona ponad
-`lift_height`), leżała do 3 cm od celu, stała, a szczęki były otwarte. Na ramieniu
-kostka musi być przy tym świeżo widziana z kamer, nie „w dłoni”. Obserwacja
-`pickplace` ma 39 liczb dla SO-101 i 42 dla A1X. Zanim zadanie dostanie czas
-GPU, ekspert IK musi je rozwiązać na CPU na obu ramionach.
+**`pickplace`.** Trzecie zadanie, dla obu ramion: chwyć kostkę widzianą
+z kamer, przenieś ją i odłóż na cel. Celem na biurku jest kulka celu z panelu
+rzutowana na blat (z = 0) i na pierścień celów z treningu, a w symulacji —
+płaska podkładka (ciało `mocap`, bez kolizji). Pchanie kostki nie zalicza
+zadania. Sukces wymaga, żeby kostka była wcześniej niesiona (chwycona
+i uniesiona ponad `lift_height`), leżała do 3 cm od celu, stała, a szczęki
+były otwarte. Na ramieniu kostka musi być przy tym świeżo widziana z kamer,
+nie „w dłoni”. Obserwacja `pickplace` ma 39 liczb dla SO-101 i 42 dla A1X.
+Ekspert IK rozwiązuje zadanie na CPU na obu ramionach (5 ziaren: SO-101 sukces
+po 89–106 taktach, A1X po 79–86 taktach z limitu 300; `tests/test_twin_rl.py`).
+Polityki `pickplace` jeszcze nie ma — trening na GPU
+(`lerobot-twin train --task pickplace`) to następny krok; do tego czasu
+`tests/test_twin_pickplace_from_cameras.py` się pomija.
 
 ---
 

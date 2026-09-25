@@ -218,12 +218,17 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
    kamery i fala. Po drodze rozstrzygnąć tabelę „Do sprawdzenia na pierwszej sesji”
    (chwytak przez XCAN, grupa 7 jako pozycja chwytaka, jednostka effort, nadążanie
    przy 90°/s).
-7. **`pickplace` na GPU** (gałąź `wp4-pickplace`, po scaleniu): najpierw 5 linii próby
-   `mujoco_warp.put_model` z `assets/robots/a1x/a1x.xml` (równość szczęk, bryły z siatek)
-   i pomiar `nconmax/njmax` dla A1X, potem krótki przebieg
-   `lerobot-twin train --task pickplace --envs 256 --iters 3` i dopiero pełny trening
-   na SO-101 i A1X. Ekspert IK musi rozwiązać zadanie na CPU na obu ramionach przed
-   czasem GPU.
+7. **`pickplace` na GPU** (zadanie scalone, ekspert IK rozwiązuje je na CPU na obu
+   ramionach): najpierw 5 linii próby `mujoco_warp.put_model` z
+   `assets/robots/a1x/a1x.xml` (równość szczęk, bryły z siatek) i pomiar
+   `nconmax/njmax` dla A1X (w `batch.py` wpisano nie zmierzone 64/384; na CPU szczyt
+   12 kontaktów / 49 wierszy), potem `pytest -q tests/test_twin_rl.py -k gpu`
+   (test `test_gpu_pickplace_matches_the_cpu_env` ma tolerancję 5e-3 dobraną bez
+   sprawdzenia; `mocap_pos` per świat przez `wp.to_torch` też nie był sprawdzony),
+   krótki przebieg `lerobot-twin train --task pickplace --envs 256 --iters 3
+   --eval-episodes 2` i dopiero pełny trening na SO-101 i A1X. Z polityką
+   `pickplace-v1` w `assets/policies/` przestaje się pomijać
+   `tests/test_twin_pickplace_from_cameras.py`.
 8. Solver kalibracji bez odpornej funkcji straty — jedna zła obserwacja potrafi
    podnieść residuum do 1 px (ziarno 4 w `calib-sim`); warto dodać odrzucanie.
 
