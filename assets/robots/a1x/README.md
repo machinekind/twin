@@ -25,6 +25,11 @@ Model ramienia Galaxea A1X dla MuJoCo, wygenerowany skryptem
    z `sim/scene.xml` galaxeo, stozek i impratio jak SO-101 z Menagerie. `noslip_iterations`
    z galaxeo celowo pominiete (scena blizniaka go nie kopiuje, MuJoCo Warp go nie wspiera).
 5. Site `tcp` jak z generatora: `x` - kierunek podejscia, `y` - os zamykania szczek.
+6. Rownosc sprzegajaca szczeki sztywniejsza niz domyslna: `solref="0.01 1"`,
+   `solimp="0.99 0.999 0.001 0.5 2"`. Prawdziwy A1X ma jeden sztywny stopien swobody
+   chwytaka; przy domyslnej rownosci szczeki rozjezdzaly sie w RL (krok 5 ms, gwaltowne
+   akcje ramienia, kontakt z blatem) do ~36 mm, teraz najgorzej ok. 12 mm, zwykle 2-5 mm.
+   Krotsza stala czasu niz 0.01 s przy kroku 5 ms nic nie daje (MuJoCo podnosi ja do 2 x krok).
 
 Kazda regula ma test w `tests/test_twin_a1x_sim.py`, podobnie jak to, ze skrypt odtwarza
 zatwierdzony `a1x.xml` bajt w bajt.

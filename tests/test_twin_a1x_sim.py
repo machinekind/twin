@@ -72,6 +72,8 @@ def test_a1x_mjcf_compiles_under_the_pinned_mujoco(model):
     assert len(eq) == m.neq == 1
     pair = {m.joint(m.eq_obj1id[eq[0]]).name, m.joint(m.eq_obj2id[eq[0]]).name}
     assert pair == {"gripper_finger_joint2", "gripper"}
+    assert m.eq_solref[eq[0]] == pytest.approx([0.01, 1.0])                        # regula 6
+    assert m.eq_solimp[eq[0]] == pytest.approx([0.99, 0.999, 0.001, 0.5, 2.0])
 
 
 def test_a1x_import_script_is_idempotent(tmp_path):
@@ -190,14 +192,48 @@ def test_a1x_mirror_finger_follows_in_scene_and_env_reset():
             assert _mirror_err(env.kin, d.qpos) == 0.0
             for _ in range(5):
                 env.step(np.zeros(env.task.act_dim))
-            # Rownosc jest miekka: przy zamykaniu (serwo tylko na szczece 1) druga szczeka
-            # zostaje do 3 mm z tylu, a gdy szczeka stoi - dochodzi (< 0,1 mm po 25 taktach).
+            # Rownosc jest miekka (regula 6 ja usztywnia, ale nie do zera): przy zamykaniu
+            # (serwo tylko na szczece 1) druga szczeka moze zostac kilka mm z tylu, a gdy
+            # szczeka stoi - dochodzi (< 0,2 mm po 25 taktach).
             assert _mirror_err(env.kin, d.qpos) < 0.004
             for _ in range(20):
                 env.step(np.zeros(env.task.act_dim))
             assert _mirror_err(env.kin, d.qpos) < 2e-4
     finally:
         env.close()
+
+
+def test_a1x_jaws_stay_symmetric_under_violent_arm_actions():
+    """Regula 6: akcje ramienia +-1 co takt przy kostce nie rozsuwaja szczek.
+
+    Epizody startuja ze szczekami wokol kostki (IK), wiec szczeki trzaskaja o blat
+    i kostke. Zmierzone (ziarna 200-202): najgorzej 5,8 mm; z domyslna rownoscia
+    (solref 0.02, solimp 0.9/0.95) 36 mm.
+    """
+    from lerobot_mp.twin.rl.env import TwinEnv
+
+    env = TwinEnv("lift", workspace=Workspace(robot="a1x"))
+    d = env.scene.data
+    worst = 0.0
+    try:
+        for ep in range(3):
+            env.reset(seed=200 + ep)
+            cube = env.state()["cube_pos"]
+            sol = env.kin.ik(cube + np.array([0.0, 0.0, 0.04]), DOWN, seed=dict(A1X.home))
+            assert sol.ok
+            q = env.kin.to_q(dict(sol.joints, gripper=float(np.random.default_rng(ep).uniform(0.0, 100.0))))
+            env.reset(seed=200 + ep, options={"q": q, "cube": (cube, np.array([1.0, 0.0, 0.0, 0.0]))})
+            rng = np.random.default_rng(ep)
+            for _ in range(env.task.episode_steps):
+                a = rng.choice([-1.0, 1.0], size=env.task.act_dim).astype(np.float32)
+                _, _, term, trunc, _ = env.step(a)
+                assert np.isfinite(d.qpos).all()
+                worst = max(worst, _mirror_err(env.kin, d.qpos))
+                if term or trunc:
+                    break
+    finally:
+        env.close()
+    assert worst < 0.015, f"szczeki rozjechaly sie o {worst * 1000:.1f} mm"
 
 
 def test_a1x_twin_in_sim_moves_a_joint():

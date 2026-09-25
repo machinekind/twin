@@ -5,7 +5,8 @@
      2. actuators named exactly like their joints
      3. curled finger-tip collision boxes named finger1_tip / finger2_tip
      4. option: implicitfast, timestep 0.002, cone elliptic, impratio 10 (no noslip_iterations)
-     5. site tcp as generated: x = approach, y = jaw closing -->
+     5. site tcp as generated: x = approach, y = jaw closing
+     6. jaw mirror equality stiffened: solref 0.01 1, solimp 0.99 0.999 0.001 0.5 2 -->
 <mujoco model="a1x">
   <compiler angle="radian" eulerseq="XYZ" meshdir="assets" autolimits="true"/>
   <option integrator="implicitfast" timestep="0.002" cone="elliptic" impratio="10"/>
@@ -106,7 +107,7 @@
     <position name="gripper" joint="gripper" kp="1000" kv="50.0" ctrlrange="0 0.05" forcerange="-100 100"/>
   </actuator>
   <equality>
-    <joint joint1="gripper_finger_joint2" joint2="gripper" polycoef="0 -1 0 0 0"/>
+    <joint joint1="gripper_finger_joint2" joint2="gripper" polycoef="0 -1 0 0 0" solref="0.01 1" solimp="0.99 0.999 0.001 0.5 2"/>
   </equality>
   <keyframe>
     <key name="home" qpos="0 1 -1.6 0.6 0 0 0.03 -0.03" ctrl="0 1 -1.6 0.6 0 0 0.03"/>
