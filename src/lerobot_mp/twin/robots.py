@@ -21,14 +21,17 @@ konfiguracje aplikacji dla danego ramienia.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..config import AppConfig, JointConfig, load_config
+from ..config import AppConfig, JointConfig, config_from_data, read_config_data
 
 #: Korzen repozytorium (wspolny dla calego pakietu, patrz `lerobot_mp.paths`).
 from ..paths import REPO_ROOT
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_asset(path: str | Path) -> Path:
@@ -219,18 +222,58 @@ def joint_configs(spec: RobotSpec) -> dict[str, JointConfig]:
     }
 
 
+#: Pliki, z ktorych juz ostrzezono o pominietych tabelach SO-101 (raz na proces).
+_SKIP_WARNED: set[tuple[str, str]] = set()
+
+
 def robot_config(
     spec: RobotSpec, path: str | Path | None = None, overrides: dict[str, Any] | None = None
 ) -> AppConfig:
     """`load_config()` dla tego ramienia: stawy z opisu, poza domowa z opisu.
 
     Plik YAML (`path` albo `LEROBOT_MP_CONFIG`) i `overrides` leza na wierzchu,
-    jak w `load_config` - dla SO-101 wynik rozni sie od `load_config()` tylko
-    `gain` stawow, ktorego blizniak nie czyta.
+    jak w `load_config`. Dwie zasady:
+
+    * Sekcje `joints` i `safety.home` pliku to tabele aplikacji dloni, kluczowane
+      stawami SO-101 (`configs/default.yaml`, kopiowany do `configs/local.yaml`).
+      Stosuja sie tylko do ramienia o stawach SO-101 (te same co w aplikacji dloni);
+      innemu ramieniu plik ich nie daje - limity i poze domowa bierze z opisu
+      (nazwa `gripper` jest wspolna, wiec nawet pojedynczy wpis SO-101 dalby
+      mu zly zakres albo dom). `overrides` dzialaja zawsze i scisle.
+    * Poza domowa z opisu wchodzi tylko wtedy, gdy ani plik, ani `overrides` nie
+      maja `safety.home`. Czesciowa `home` z pliku zastepuje ja w calosci, tak
+      jak w `load_config` (brakujace stawy uzupelnia potem `SafetySupervisor`).
+
+    Dla SO-101 wynik rozni sie wiec od `load_config(path, overrides)` - w kazdym
+    przypadku - tylko `gain` stawow, ktorego blizniak nie czyta.
     """
-    return load_config(
-        path,
-        overrides,
-        joints=joint_configs(spec),
-        defaults={"safety": {"home": dict(spec.home)}},
-    )
+    data = read_config_data(path)
+    if tuple(spec.joints) != SO101.joints:
+        data = _without_hand_app_tables(data, spec, path)
+    if not (_has_home(data) or _has_home(overrides or {})):
+        safety = data.get("safety")
+        data = dict(data, safety=dict(safety if isinstance(safety, dict) else {}, home=dict(spec.home)))
+    return config_from_data(data, overrides, joints=joint_configs(spec))
+
+
+def _has_home(data: dict[str, Any]) -> bool:
+    safety = data.get("safety")
+    return isinstance(safety, dict) and "home" in safety
+
+
+def _without_hand_app_tables(data: dict[str, Any], spec: RobotSpec, path: str | Path | None) -> dict[str, Any]:
+    """Zawartosc pliku bez sekcji `joints` i `safety.home` (tabel SO-101)."""
+    data = dict(data)
+    skipped = []
+    if "joints" in data:
+        del data["joints"]
+        skipped.append("joints")
+    if _has_home(data):
+        data["safety"] = {k: v for k, v in data["safety"].items() if k != "home"}
+        skipped.append("safety.home")
+    key = (str(path), spec.name)
+    if skipped and key not in _SKIP_WARNED:
+        _SKIP_WARNED.add(key)
+        logger.warning("Konfiguracja: sekcje %s pliku sa dla stawow SO-101 - ramie %s bierze je z opisu",
+                       ", ".join(skipped), spec.name)
+    return data

@@ -118,6 +118,9 @@ class RobotKinematics:
             (spec.joints.index(src), int(m.jnt_qposadr[m.joint(prefix + slaved).id]), float(gain))
             for slaved, (src, gain) in spec.mirror_joints.items()
         ]
+        #: Adresy qvel stawow sprzezonych - zeruje je `stop_qvel` razem ze stawami opisu.
+        self.mirror_dadr = np.array(
+            [m.jnt_dofadr[m.joint(prefix + slaved).id] for slaved in spec.mirror_joints], dtype=int)
 
     # ------------------------------------------------------------ jednostki
     def to_q(self, joints: Mapping[str, float]) -> np.ndarray:
@@ -190,6 +193,15 @@ class RobotKinematics:
         qpos[self.qadr] = q
         for k, adr, g in self.mirror:
             qpos[adr] = g * q[k]
+
+    def stop_qvel(self, qvel: np.ndarray) -> None:
+        """Zeruje predkosci stawow ramienia i stawow sprzezonych - para do `write_qpos`.
+
+        Poza wpisana bez dynamiki ma stac: staw sprzezony z predkoscia z poprzedniego
+        kroku odjezdzalby od wpisanej pozy i przez rownosc ciagnal za soba chwytak.
+        """
+        qvel[self.dadr] = 0.0
+        qvel[self.mirror_dadr] = 0.0
 
     def _apply(self, q: np.ndarray) -> None:
         self.write_qpos(self.data.qpos, q)

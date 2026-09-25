@@ -9,6 +9,8 @@ wpisane w symulacje daja w niej te sama poze. Bez tego blizniak klamie.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -19,6 +21,7 @@ mujoco = pytest.importorskip("mujoco")
 from lerobot_mp.config import JOINT_NAMES, load_config  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics, inverse  # noqa: E402
 from lerobot_mp.twin.robots import REGISTRY, SO101, get_spec, joint_configs, robot_config  # noqa: E402
+from lerobot_mp.paths import REPO_ROOT  # noqa: E402
 
 
 #: Cialo nadgarstka kazdego ramienia - tylko dla testu kierunku podejscia (bez pola w opisie).
@@ -197,6 +200,68 @@ def test_robot_config_uses_spec_joints_and_home():
     assert robot_config(SO101).joint("gripper").max_vel == 300.0     # opis nietkniety
     with pytest.raises(ValueError, match="Nieznany staw"):
         robot_config(SO101, overrides={"joints": {"knee": {"min": 0}}})
+
+
+def _without_joints(cfg) -> dict:
+    d = dataclasses.asdict(cfg)
+    d.pop("joints")
+    return d
+
+
+def test_robot_config_equals_load_config_for_so101_with_a_partial_home_in_the_file(tmp_path, monkeypatch):
+    """Czesciowa `safety.home` z pliku zastepuje poze domowa w calosci - jak w aplikacji dloni.
+
+    Opis nie moze uzupelniac brakujacych stawow: ten sam plik dawalby blizniakowi
+    inna poze startowa (rampa po polaczeniu) niz `lerobot-mp`.
+    """
+    from lerobot_mp.control.safety import SafetySupervisor
+
+    path = tmp_path / "local.yaml"
+    path.write_text("safety:\n  home:\n    shoulder_pan: 10.0\n", encoding="utf-8")
+    assert robot_config(SO101, path).safety.home == {"shoulder_pan": 10.0}
+    assert _without_joints(robot_config(SO101, path)) == _without_joints(load_config(path))
+    monkeypatch.setenv("LEROBOT_MP_CONFIG", str(path))
+    assert SafetySupervisor(robot_config(SO101)).home == SafetySupervisor(load_config()).home
+    assert SafetySupervisor(robot_config(SO101)).home["elbow_flex"] == 0.0
+    monkeypatch.delenv("LEROBOT_MP_CONFIG")
+    over = {"safety": {"home": {"gripper": 50.0}}}
+    assert robot_config(SO101, overrides=over).safety.home == {"gripper": 50.0}
+    assert _without_joints(robot_config(SO101, path, over)) == _without_joints(load_config(path, over))
+    default_yaml = REPO_ROOT / "configs" / "default.yaml"
+    assert _without_joints(robot_config(SO101, default_yaml)) == _without_joints(load_config(default_yaml))
+
+
+def test_robot_config_skips_the_so101_tables_of_the_file_for_another_robot(toy_spec):
+    """`configs/default.yaml` (kopiowany do `local.yaml`) nie moze wywrocic ani przestawic innego ramienia."""
+    default_yaml = REPO_ROOT / "configs" / "default.yaml"
+    cfg = robot_config(toy_spec, default_yaml)
+    assert tuple(cfg.joints) == toy_spec.joints
+    assert cfg.safety.home == toy_spec.home                     # nie gripper 35 z tabeli SO-101
+    assert cfg.joint("gripper").max_vel == toy_spec.max_vel["gripper"]
+    hand = load_config(default_yaml)
+    assert cfg.safety.startup_ramp_s == hand.safety.startup_ramp_s    # reszta pliku dziala
+    assert cfg.robot == hand.robot
+    over = robot_config(toy_spec, default_yaml, {"joints": {"j1": {"max_vel": 7.0}},
+                                                  "safety": {"home": {"j1": 5.0}}})
+    assert over.joint("j1").max_vel == 7.0
+    assert over.safety.home == {"j1": 5.0}
+    with pytest.raises(ValueError, match="Nieznany staw"):
+        robot_config(toy_spec, overrides={"joints": {"shoulder_pan": {"min": 0}}})
+
+
+def test_scene_set_joints_leaves_the_mirror_joint_at_rest(toy_spec):
+    """Poza wpisana bez dynamiki stoi - takze staw sprzezony, nie tylko stawy opisu."""
+    from lerobot_mp.twin import scene as sc
+
+    scene = sc.build(sc.SceneConfig(toy_spec))
+    dadr_m = scene.model.jnt_dofadr[scene.model.joint(sc.PREFIX + "gripper_m").id]
+    scene.set_joints({"j1": 0.0, "j2": 20.0, "gripper": 0.0})
+    scene.command({"j1": 0.0, "j2": 20.0, "gripper": 100.0})
+    scene.step(0.05)
+    assert abs(scene.data.qvel[dadr_m]) > 1e-3                   # szczeka w ruchu
+    scene.set_joints({"j1": 0.0, "j2": 20.0, "gripper": 0.0})
+    assert scene.data.qvel[dadr_m] == 0.0
+    assert np.all(scene.data.qvel[scene.kin.dadr] == 0.0)
 
 
 @pytest.mark.parametrize("name", sorted(REGISTRY))

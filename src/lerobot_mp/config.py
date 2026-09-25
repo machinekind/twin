@@ -487,12 +487,29 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+def read_config_data(path: str | Path | None = None) -> dict[str, Any]:
+    """Surowa zawartosc pliku YAML konfiguracji, `{}` bez pliku.
+
+    Bez `path` plik bierze sie ze zmiennej srodowiskowej `LEROBOT_MP_CONFIG`
+    (jesli jest ustawiona).
+    """
+    if path is None:
+        path = config_from_env()
+        if path is not None and not path.is_file():
+            raise FileNotFoundError(f"{CONFIG_ENV}={path}: nie ma takiego pliku konfiguracji")
+    if path is None:
+        return {}
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Plik konfiguracyjny {path} musi zawierac mapowanie YAML")
+    return raw
+
+
 def load_config(
     path: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
     *,
     joints: Mapping[str, JointConfig] | None = None,
-    defaults: dict[str, Any] | None = None,
 ) -> AppConfig:
     """Wczytuje konfiguracje: domyslne wartosci <- plik YAML <- nadpisania CLI.
 
@@ -503,21 +520,19 @@ def load_config(
 
     `joints` zastepuje domyslna tabele stawow SO-101 (blizniak podaje stawy
     swojego ramienia, `robots.robot_config`); sekcja `joints` z YAML i nadpisan
-    scala sie juz z nia, wiec staw spoza niej to blad. `defaults` to wartosci
-    pod plikiem YAML (np. poza domowa ramienia) - plik i nadpisania wygrywaja.
+    scala sie juz z nia, wiec staw spoza niej to blad.
     """
-    data: dict[str, Any] = {}
-    if path is None:
-        path = config_from_env()
-        if path is not None and not path.is_file():
-            raise FileNotFoundError(f"{CONFIG_ENV}={path}: nie ma takiego pliku konfiguracji")
-    if path is not None:
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-        if not isinstance(raw, dict):
-            raise ValueError(f"Plik konfiguracyjny {path} musi zawierac mapowanie YAML")
-        data = raw
-    if defaults:
-        data = _deep_merge(defaults, data)
+    return config_from_data(read_config_data(path), overrides, joints=joints)
+
+
+def config_from_data(
+    data: Mapping[str, Any],
+    overrides: dict[str, Any] | None = None,
+    *,
+    joints: Mapping[str, JointConfig] | None = None,
+) -> AppConfig:
+    """`load_config` dla juz wczytanej zawartosci pliku (`read_config_data`)."""
+    data = dict(data)
     if overrides:
         data = _deep_merge(data, overrides)
 

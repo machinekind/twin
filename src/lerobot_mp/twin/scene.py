@@ -132,7 +132,7 @@ class Scene:
         """Ustawia poze ramienia natychmiast (bez dynamiki) i - domyslnie - trzyma ja serwami."""
         q = self.kin.to_q(joints)
         self.kin.write_qpos(self.data.qpos, q)
-        self.data.qvel[self.kin.dadr] = 0.0
+        self.kin.stop_qvel(self.data.qvel)
         if hold:
             self.data.ctrl[self.act_ids] = q
         mujoco.mj_forward(self.model, self.data)
