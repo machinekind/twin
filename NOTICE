@@ -22,6 +22,14 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    według kart modeli MediaPipe. Skopiowane bez zmian; źródła i sumy SHA-256
    w models/README.md.
 
+4. assets/robots/a1x/  (a1x.urdf, siatki STL w assets/, a1x.xml)
+   URDF i siatki ramienia Galaxea A1X od producenta (Galaxea), przez pakiet
+   ros2_ws/src/galaxea_a1xy_description repozytorium galaxeo-manipulators
+   (package.xml: licencja "Proprietary", źródło "userguide-galaxea/URDF").
+   Warunki licencji producenta nie są podane - te pliki NIE są objęte
+   licencją Apache-2.0 projektu. a1x.xml to przetworzenie URDF wygenerowane
+   skryptem scripts/import_a1x_model.py (reguły w assets/robots/a1x/README.md).
+
 Polityki assets/policies/*/policy.pt zostały wytrenowane w tym projekcie
 (lerobot-twin train) i są objęte licencją projektu.
 
