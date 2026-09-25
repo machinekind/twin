@@ -2,8 +2,11 @@
 
 Czysta logika bez visera - `GuideSnapshot` (stan panelu i ramienia) na wejsciu,
 `Guide` (kroki 0-8 z docs/TWIN.md, jedna nastepna akcja, blokady) na wyjsciu.
-Panel (`app.TwinApp._tick_guide`) tylko sklada migawke i wyswietla `render_head`
-(zawsze widoczne "Teraz" i uwagi) oraz `render_steps` (zwinieta lista krokow).
+Panel (`app.TwinApp._tick_guide`) tylko sklada migawke i wyswietla `render_now`
+(zawsze widoczne "Teraz" i uwagi, ktorych nie wolno schowac: brak hamulcow, blad
+ramienia, backend lerobot) oraz - w zwinietym folderze "Uwagi (n) i kroki 0-8" -
+`render_notes` (pozostale uwagi, tryb) i `render_steps`. `render_head` sklada obie
+czesci (uzywa go `render`).
 
 Kroki sa te same w symulacji i na prawdziwym ramieniu - w symulacji z kamerami
 symulowanymi (znaja swoje K, wiec krok 2 odpada; Sim-Real zastepuje blad
@@ -33,8 +36,8 @@ DONE_DETAIL_MAX = 48
 HOW_TO_STOP = {
     "fala kalibracyjna": "Kalibracja > Przerwij",
     "kalibracja": "Kalibracja > Przerwij",
-    "identyfikacja dynamiki": "~20 s nagrania; przerywa je STOP albo Pozycja domowa",
-    "identyfikacja": "~20 s nagrania; przerywa je STOP albo Pozycja domowa",
+    "identyfikacja dynamiki": "~20 s nagrania; przerywa je STOP albo Dom",
+    "identyfikacja": "~20 s nagrania; przerywa je STOP albo Dom",
     "polityka": "Polityki > Zatrzymaj",
 }
 WAVE_OWNERS = ("fala kalibracyjna", "kalibracja")
@@ -182,13 +185,13 @@ def _step_arm(s: GuideSnapshot) -> Step:
         det = f"polaczone: {s.backend}" + (" (blizniak jest ramieniem)" if s.simulated else "")
         return Step(0, title, DONE, det)
     if s.simulated:
-        act = "Ramie > Polaczenie: Ramie = sim, **Polacz**"
+        act = "Ramie: zestaw symulacja, **Polacz**"
     elif s.backend == "a1x":
         # A1X po CAN: interfejs, nie port szeregowy.
-        act = "Ramie > Polaczenie: Ramie = a1x, Port = can0 (macOS: xcan), **Polacz** (bez ruchu)"
+        act = "Ramie: zestaw Galaxea A1X dla tego systemu (port wpisuje sie sam), **Polacz** (bez ruchu)"
     else:
-        act = ("Ramie > Polaczenie: Ramie = feetech, Port = COMx / /dev/ttyACM0 (`lerobot-twin check` wypisuje "
-               "porty; albo socket://adres:5555 z mostu), **Polacz** (bez ruchu)")
+        act = ("Ramie: zestaw SO-101 przez port (feetech), Port = COMx / /dev/ttyACM0 (`lerobot-twin check` "
+               "wypisuje porty; albo socket://adres:5555 z mostu), **Polacz** (bez ruchu)")
     det = "rozlaczone" + (f" ({s.arm_error})" if s.arm_error else "")
     return Step(0, title, TODO, det, act)
 
@@ -374,10 +377,10 @@ def blockers(s: GuideSnapshot) -> list[str]:
         # Przy STOP-ie "Teraz" mowi o STOP-ie - kto ma ramie, trzeba powiedziec osobno.
         how = HOW_TO_STOP.get(s.owner, "STOP")
         if s.owner == "polityka":
-            out.append(f"ramie ma: polityka - sprzeglo, fala i identyfikacja sa odrzucane, Uruchom zastapi "
+            out.append(f"ramie ma: polityka - UZBROJ, fala i identyfikacja sa odrzucane, Uruchom zastapi "
                        f"jadaca polityke ({how})")
         else:
-            out.append(f"ramie ma: {s.owner} - sprzeglo, fala, identyfikacja i polityka sa odrzucane, "
+            out.append(f"ramie ma: {s.owner} - UZBROJ, fala, identyfikacja i polityka sa odrzucane, "
                        f"dopoki nie skonczy ({how})")
     elif not s.estop and s.connected and s.arm_error:
         out.append(f"ramie: {s.arm_error}")
@@ -409,7 +412,7 @@ def _step_now(st: Step) -> str:
 def _now(s: GuideSnapshot, steps: list[Step]) -> str:
     if s.estop:
         why = f" ({s.arm_error})" if s.arm_error else ""
-        return f"**aktywny STOP**{why} - usun przyczyne, potem Ramie > Sterowanie: **Skasuj STOP**."
+        return f"**aktywny STOP**{why} - usun przyczyne, potem **Skasuj STOP** (zolty, pod STOP-em)."
     cur = next((x for x in steps if x.status == CURRENT), None)
     if not s.connected:
         return _step_now(steps[0])
@@ -430,7 +433,7 @@ def _now(s: GuideSnapshot, steps: list[Step]) -> str:
                 f"wynik kalibracji** (przerwac: **Przerwij**).")
     if s.owner in SYSID_OWNERS:
         return ("Identyfikacja nagrywa ruch (~20 s) - nie wchodz w obszar ramienia (przerywa ja STOP albo "
-                "Pozycja domowa).")
+                "Dom).")
     if s.owner and s.owner != PANEL:
         return f"Ramie ma: {s.owner} - poczekaj na koniec albo STOP."
     if s.calib_result_pending:
@@ -467,15 +470,31 @@ def build(s: GuideSnapshot) -> Guide:
     return Guide(tuple(steps), _now(s, steps), tuple(blockers(s)), tuple(bg), mode)
 
 
-def render_head(g: Guide) -> str:
-    """Zawsze widoczna czesc: "Teraz", uwagi, tryb (ten sam tekst dla tego samego stanu)."""
+def _always_visible(blocker: str) -> bool:
+    """Uwagi, ktore musza byc na wierzchu: brak hamulcow (A1X), blad ramienia, inne katy
+    backendu lerobot (suwak uzbrojonego panelu moze zadac inna poze niz widac)."""
+    return "hamul" in blocker or blocker.startswith("ramie:") or "lerobot" in blocker
+
+
+def render_now(g: Guide) -> str:
+    """Zawsze widoczna linia "Teraz" (ten sam tekst dla tego samego stanu); uwaga o braku hamulcow
+    (A1X) tez tu - nie wolno jej schowac."""
     lines = [f"**Teraz:** {g.now}"]
-    if g.blockers:
-        lines.append("")
-        lines += [f"- **Uwaga:** {b}" for b in g.blockers]
-    lines.append("")
-    lines.append(f"Tryb: {g.mode}" + (f" | w tle: {', '.join(g.background)}" if g.background else ""))
+    lines += [f"- **Uwaga:** {b}" for b in g.blockers if _always_visible(b)]
     return "\n".join(lines)
+
+
+def render_notes(g: Guide) -> str:
+    """Zwijana czesc: pozostale uwagi i tryb (tryb tylko poza symulacja)."""
+    lines = [f"- **Uwaga:** {b}" for b in g.blockers if not _always_visible(b)]
+    if not g.mode.startswith("symulacja") or g.background:
+        lines.append(f"Tryb: {g.mode}" + (f" | w tle: {', '.join(g.background)}" if g.background else ""))
+    return "\n".join(lines)
+
+
+def render_head(g: Guide) -> str:
+    """"Teraz", uwagi, tryb - obie czesci razem."""
+    return "\n".join(x for x in (render_now(g), render_notes(g)) if x)
 
 
 def render_steps(g: Guide) -> str:

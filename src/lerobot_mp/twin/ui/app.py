@@ -15,6 +15,7 @@ zawsze widoczny.
 
 from __future__ import annotations
 
+import html as _html
 import logging
 import threading
 import time
@@ -98,13 +99,6 @@ CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 
 
 #: "Jak uzywac" na gorze kazdej zakladki: kolejnosc dzialan w tej zakladce.
 TAB_HELP = {
-    "Ramie": (
-        "1. **Polaczenie**: Ramie = sim (proba bez sprzetu) albo feetech (SO-101), Port, **Polacz** - przy "
-        "pierwszym polaczeniu bez jazdy do domu.\n"
-        "2. Suwaki pokazuja zmierzone katy. Ruch: zaznacz **Sprzeglo** i przesun jeden suwak o kilka stopni.\n"
-        "3. **Uchwyt koncowki w 3D** - to samo myszka (tez tylko ze sprzeglem).\n"
-        "4. **Pozycja domowa** i **STOP** odbieraja ramie kazdemu; po STOP-ie **Skasuj STOP**.\n"
-        "5. **Stanowisko (stol)**: zmierz blat i polozenie podstawy, **Zastosuj**."),
     "Kamery": (
         "1. **Dodaj kamere**: USB (**Szukaj kamer USB**, **Dodaj kamere USB**) albo symulowana "
         "(przed ramieniem / w miejscu widoku 3D).\n"
@@ -234,6 +228,185 @@ def smear_mask(mask: np.ndarray, shifts: list[tuple[float, float]]) -> np.ndarra
     return out
 
 
+#: Suwaki stawow: krotka etykieta i pelna nazwa (do podpowiedzi) zamiast nazw z MJCF.
+JOINT_LABELS: dict[str, dict[str, tuple[str, str]]] = {
+    "so101": {"shoulder_pan": ("Podstawa", "Obrot podstawy"), "shoulder_lift": ("Bark", "Bark"),
+              "elbow_flex": ("Lokiec", "Lokiec"), "wrist_flex": ("Nadg. zgiecie", "Nadgarstek - zgiecie"),
+              "wrist_roll": ("Nadg. obrot", "Nadgarstek - obrot"), "gripper": ("Chwytak", "Chwytak")},
+    "a1x": {"arm_joint1": ("J1 Podstawa", "J1 - obrot podstawy"), "arm_joint2": ("J2 Bark", "J2 - bark"),
+            "arm_joint3": ("J3 Lokiec", "J3 - lokiec"), "arm_joint4": ("J4 Nadg. gora", "J4 - nadgarstek gora/dol"),
+            "arm_joint5": ("J5 Nadg. bok", "J5 - nadgarstek na bok"), "arm_joint6": ("J6 Obrot", "J6 - obrot chwytaka"),
+            "gripper": ("Chwytak", "Chwytak")},
+}
+
+#: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
+ARM_OVERRIDES = {
+    "off": lambda who: ("UZBROJ - najpierw Polacz", "gray", viser.Icon.PLUG_CONNECTED_X),
+    "estop": lambda who: ("UZBROJ - najpierw Skasuj STOP", "gray", viser.Icon.HAND_STOP),
+    "busy": lambda who: (f"UZBROJ - ramie ma: {who}", "gray", viser.Icon.LOCK),
+    "homing": lambda who: ("UZBROJ - czekaj, jedzie do domu", "gray", viser.Icon.HOME),
+    "lost": lambda who: ("UZBROJ - petla padla: Rozlacz, Polacz", "gray", viser.Icon.PLUG_CONNECTED_X),
+}
+GIZMO_ON_ARMED = ("Uchwyt 3D: wl. - ciagnij strzalki", "blue", viser.Icon.ARROWS_MOVE)
+GIZMO_ON_IDLE = ("Uchwyt 3D: wl. (bez UZBROJ nie rusza)", "blue", viser.Icon.ARROWS_MOVE)
+GIZMO_OFF = ("Uchwyt 3D: wyl.", "gray", viser.Icon.ARROWS_MOVE)
+GIZMO_ESTOP = ("Uchwyt 3D: STOP aktywny", "gray", viser.Icon.ARROWS_MOVE)
+
+#: Styl panelu: STOP i plakietka stanu przyklejone u gory (widoczne przy kazdym przewinieciu), Skasuj STOP pod nimi,
+#: duze przyciski UZBROJ / Uchwyt 3D, plakietka stanu. Kotwice `<span id="tw-...">` stoja tuz przed
+#: przyciskiem, ktory stylujemy (`div:has(> #tw-x) + div` = nastepny element visera). Selektory
+#: opieraja sie na stalych klasach Mantine i atrybutach data-dock visera 1.1.x; gdy sie nie
+#: dopasuja, STOP zostaje zwyklym czerwonym przyciskiem, ktory dalej dziala.
+PANEL_CSS = """<style>
+div[style*="grid-template-rows"] > div:has(#tw-stop){overflow:clip !important}
+div:has(> #tw-stop) + div{position:sticky;top:0;z-index:60;background:var(--mantine-color-body);
+  margin-inline:0 !important;padding:6px var(--mantine-spacing-xs) 6px !important;
+  box-shadow:0 8px 10px -8px rgba(0,0,0,.7)}
+div:has(> #tw-stop) + div > button{height:56px !important;font-size:1.35rem;font-weight:800;letter-spacing:.14em}
+div:has(> #tw-stop) + div > button .mantine-Button-section > div{width:26px;height:26px}
+div:has(> #tw-stop) + div > button .mantine-Button-section svg{width:26px;height:26px;position:static;transform:none}
+div:has(> #tw-stop) + div > button .mantine-Button-section[data-position="left"]{margin-right:.6em !important}
+div:has(> .tw-chip){position:sticky;top:68px;z-index:59;background:var(--mantine-color-body);padding-bottom:6px}
+div:has(> #tw-clear) + div:has(> button){position:sticky;top:103px;z-index:58;background:var(--mantine-color-body);
+  margin-inline:0 !important;padding:0 var(--mantine-spacing-xs) 6px !important}
+div:has(> #tw-clear) + div:has(> button) > button{height:40px !important;font-weight:700}
+.tw-chip{display:flex;align-items:center;gap:.6em;margin:0 var(--mantine-spacing-xs);border-radius:4px;
+  padding:.3em .7em;font-size:.8rem}
+.tw-word{font-weight:800;letter-spacing:.06em;font-size:.95rem}
+.tw-meta{opacity:.8;margin-left:auto;text-align:right}
+.tw-off{background:var(--mantine-color-dark-6);color:var(--mantine-color-dark-1)}
+.tw-idle{background:var(--mantine-color-dark-5);color:var(--mantine-color-gray-3)}
+.tw-armed{background:var(--mantine-color-orange-8);color:#fff}
+.tw-busy{background:var(--mantine-color-blue-8);color:#fff}
+.tw-estop{background:var(--mantine-color-red-9);color:#fff}
+.tw-lost{background:var(--mantine-color-red-9);color:#fff}
+.tw-homing{background:var(--mantine-color-orange-8);color:#fff}
+div:has(> #tw-arm) + div > button{height:auto !important;min-height:3.2em;font-size:1.1rem;font-weight:800;
+  letter-spacing:.04em}
+div:has(> #tw-arm) + div > button .mantine-Button-label{white-space:normal;line-height:1.15}
+div:has(> #tw-arm) + div > button:disabled{opacity:.9;font-weight:600}
+div:has(> #tw-3d) + div > button{height:2.6em !important;font-weight:700}
+/* zakladki w jednym rzedzie: nieaktywne tylko ikona (nazwa w dymku), aktywna z nazwa */
+[data-dock-strip] [data-dock-tab]{padding:0 .55em !important}
+[data-dock-strip] [data-dock-tab] svg{width:1.35em;height:1.35em}
+[data-dock-strip] [data-dock-tab][aria-selected="false"] > span{display:none !important}
+[data-dock-strip] [data-dock-tab][aria-selected="false"] > div:first-child{margin-right:0 !important;opacity:.9}
+</style>"""
+
+
+def set_if(handle, attr: str, value) -> None:
+    """Zapis wlasciwosci visera tylko przy zmianie (kazdy zapis to komunikat do przegladarki)."""
+    if getattr(handle, attr) != value:
+        setattr(handle, attr, value)
+
+
+class _Toggle:
+    """Wlacznik z przyciskow o semantyce checkboxa visera: `.value` (bool), zapis z kodu wola
+    `on_update` ze zdarzeniem bez `client` (jak checkbox), klik - z prawdziwym zdarzeniem.
+
+    Z przyciskiem `release` zamiar kliku jest BEZWZGLEDNY: `primary` = wlacz, `release` = wylacz,
+    wiec klik na nieodswiezonej stronie nie odwroci zamiaru operatora (UZBROJ). Bez `release`
+    jeden przycisk przelacza (Uchwyt 3D - tylko widok, nic nie rusza).
+    """
+
+    def __init__(self, primary, release=None, on_look=None, off_look=None):
+        self.primary, self.release = primary, release
+        self.on_look, self.off_look = on_look, off_look
+        self._value, self._override, self._cbs = False, None, []
+        self._t_off = 0.0                               # chwila ostatniego wylaczenia (blokada dwukliku)
+        self._lock = threading.RLock()
+        if release is None:
+            primary.on_click(lambda e: self._clicked(e, None))
+        else:
+            primary.on_click(lambda e: self._clicked(e, True))
+            release.on_click(lambda e: self._clicked(e, False))
+        self._apply()
+
+    @property
+    def value(self) -> bool:
+        return self._value
+
+    @value.setter
+    def value(self, v) -> None:
+        v = bool(v)
+        with self._lock:
+            if v == self._value:
+                return                                  # jak viser: bez zmiany nie ma zdarzenia
+            self._value = v
+            if not v:
+                self._t_off = time.monotonic()
+            self._apply()
+        ev = viser.GuiEvent(client=None, client_id=None, target=self.primary)
+        for cb in list(self._cbs):
+            cb(ev)
+
+    def _clicked(self, event, want) -> None:
+        if event.client is None:
+            return
+        with self._lock:
+            want = (not self._value) if want is None else want
+            if want == self._value:                     # nieodswiezona strona: tylko przemaluj
+                self._apply()
+                return
+            if want and self.release is not None and time.monotonic() - self._t_off < 0.5:
+                self._apply()                           # drugi klik dwukliku "rozbroj" trafil w UZBROJ
+                return
+            self._value = want
+            if not want:
+                self._t_off = time.monotonic()
+            self._apply()
+        for cb in list(self._cbs):
+            cb(event)
+
+    def on_update(self, fn):
+        self._cbs.append(fn)
+        return fn
+
+    def set_override(self, look) -> None:
+        """None albo (etykieta, kolor, ikona): przycisk zablokowany z powodem na etykiecie."""
+        with self._lock:
+            if look != self._override:
+                self._override = look
+                self._apply()
+
+    @property
+    def disabled(self) -> bool:
+        return self._override is not None
+
+    @property
+    def hint(self):
+        return self.primary.hint
+
+    def _apply(self) -> None:
+        """Same zapisy wlasciwosci - nigdy nie czyta stanu blizniaka i nigdy nie rzuca (po nim idzie
+        zwolnienie sprzegla albo powiadomienie o STOP-ie)."""
+        try:
+            if self._override is not None:
+                label, color, icon = self._override
+                self._show(self.primary, label, color, icon, disabled=True)
+                if self.release is not None:
+                    set_if(self.release, "visible", False)
+            elif self.release is not None:
+                set_if(self.primary, "visible", not self._value)
+                set_if(self.primary, "disabled", False)
+                set_if(self.release, "visible", self._value)
+                if not self._value:
+                    self._show(self.primary, "UZBROJ", "gray", viser.Icon.LOCK, disabled=False)
+            else:
+                label, color, icon = self.on_look if self._value else self.off_look
+                self._show(self.primary, label, color, icon, disabled=False)
+        except Exception:
+            logger.exception("Przemalowanie wlacznika")
+
+    @staticmethod
+    def _show(b, label, color, icon, disabled) -> None:
+        set_if(b, "visible", True)
+        set_if(b, "label", label)
+        set_if(b, "color", color)
+        set_if(b, "icon", icon)
+        set_if(b, "disabled", disabled)
+
+
 def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240)) -> np.ndarray:
     img = np.zeros((size[1], size[0], 3), np.uint8)
     cv2.putText(img, text, (20, size[1] // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (230, 60, 60), 2, cv2.LINE_AA)
@@ -310,13 +483,20 @@ class TwinApp:
         self._runner_backend = ""
         self._frame_seen: dict[str, float] = {}
         self._policy_list: list[dict] = []
+        # Widok zakladki Ramie: klucz ostatniego przemalowania (`_render_arm`), stan suwakow,
+        # ostatnia plakietka stanu - przemalowanie tylko przy zmianie.
+        self._arm_key = None
+        self._sliders_armed = None
+        self._render_lock = threading.RLock()
+        self._chip_last = ""
         t_start = time.monotonic()
 
         # Serwer powstaje DOPIERO teraz, gdy cale ciezkie przygotowanie (scena, torch,
         # stanowisko) jest za nami: viser slucha od chwili utworzenia, a przegladarka
         # polaczona w polowie budowy panelu potrafila zostac z pustym widokiem.
         # Potem od razu panel (lekki), a na koncu siatki ramienia (~350 tys. trojkatow).
-        self.server = viser.ViserServer(host=host, port=port, label="Blizniak SO-101", verbose=False)
+        self.server = viser.ViserServer(host=host, port=port, label=f"Blizniak {self.ws.robot.upper()}",
+                                        verbose=False)
         s = self.server
         s.gui.configure_theme(control_width="large", dark_mode=True, show_logo=False,
                               show_share_button=False, brand_color=(255, 196, 0))
@@ -404,20 +584,35 @@ class TwinApp:
 
     # ================================================================ naglowek
     def _build_header(self) -> None:
+        """Nad zakladkami: STOP przyklejony u gory, Skasuj STOP (tylko przy STOP-ie), plakietka stanu
+        ramienia, wyjatki w statusie, jedna linia przewodnika "Teraz"; uwagi i kroki zwiniete."""
         g = self.server.gui
-        self.status_md = g.add_markdown("**Blizniak** - uruchamianie...")
+        # Styl + kotwica STOP-u; naglowek nigdy nie znika, wiec styl jest zawsze na stronie.
+        self._css = g.add_html(PANEL_CSS + '<span id="tw-stop"></span>')
         stop = g.add_button("STOP", color="red", icon=viser.Icon.HAND_STOP,
                             hint="Zatrzymanie awaryjne, zawsze dostepne: ramie staje w zmierzonej pozie, polityka, "
-                                 "fala i nagranie identyfikacji sie koncza, sprzeglo gasnie. Sciskajacy chwytak "
-                                 "dalej sciska. Ruszyc dalej: Ramie > Skasuj STOP.")
-        # Przewodnik zawsze nad zakladkami: gdzie operator jest w procedurze (docs/TWIN.md,
-        # kroki 0-8) i jedna nastepna akcja. Logika w `guide.py`, tu tylko wyswietlanie.
-        # Widoczne zawsze tylko "Teraz" i uwagi; lista krokow zwinieta - inaczej zabierala
-        # ok. 190 px nad kazda zakladka (Polacz ladowal na dole ekranu 1366x768).
-        with g.add_folder("Przewodnik", expand_by_default=True):
-            self.guide_md = g.add_markdown("")
-            with g.add_folder("Kroki 0-8", expand_by_default=False):
-                self.guide_steps_md = g.add_markdown("")
+                                 "fala i nagranie identyfikacji sie koncza, panel sie rozbraja. Sciskajacy chwytak "
+                                 "dalej sciska. Ruszyc dalej: Skasuj STOP (zolty, pod STOP-em).")
+        self.state_html = g.add_html(self._state_chip_html("off", ""))
+        g.add_html('<span id="tw-clear"></span>')
+        self.clear_btn = g.add_button("Skasuj STOP", color="yellow", icon=viser.Icon.RESTORE, visible=False,
+                                      hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne. "
+                                           "Ramie samo nie rusza - potem UZBROJ, zeby sterowac.")
+        self.status_md = g.add_markdown("", visible=False)
+        # Przewodnik: gdzie operator jest w procedurze (docs/TWIN.md, kroki 0-8) i jedna nastepna
+        # akcja. Logika w `guide.py`, tu tylko wyswietlanie. Widoczna zawsze tylko linia "Teraz";
+        # uwagi i lista krokow zwiniete - rozwiniete zabieraly ok. 190-400 px nad kazda zakladka.
+        self.guide_md = g.add_markdown("")
+        self.guide_folder = g.add_folder("Kroki 0-8", expand_by_default=False)
+        with self.guide_folder:
+            self.guide_notes_md = g.add_markdown("")
+            self.guide_steps_md = g.add_markdown("")
+
+        @self.clear_btn.on_click
+        @self._safe
+        def _(event):
+            self.twin.clear_estop()
+            self._notify(event, "STOP skasowany", "Ramie stoi. UZBROJ, zeby sterowac.")
 
         @stop.on_click
         async def _(event):
@@ -438,7 +633,11 @@ class TwinApp:
             self.sysid_job.stop()                       # tylko nagranie - dopasowanie jest chronione
             self.arm_engage.value = False
             self._gizmo_seed = None
-        self._notify(event, "STOP", "Ramie zatrzymane. Skasuj STOP w zakladce Ramie, zeby ruszyc dalej.", error=True)
+        if self._estop_active():
+            self._notify(event, "STOP", "Ramie zatrzymane. Skasuj STOP (zolty, pod STOP-em), zeby ruszyc dalej.",
+                         error=True)
+        else:
+            self._notify(event, "STOP", "Ramie niepolaczone - nic nie jedzie; zadania w tle przerwane.", error=True)
 
     # ------------------------------------------------ kto steruje ramieniem
     def _busy(self, me: str) -> str:
@@ -526,29 +725,25 @@ class TwinApp:
             box.value = False
 
     def _status_text(self) -> str:
+        """Same wyjatki (pusty tekst = nic sie nie dzieje); stan ramienia jest na plakietce."""
         st = self.twin.status
-        arm = (f"{st.backend} - {st.state} - {st.loop_hz:.0f} Hz" + (f", steruje: **{self.twin.owner}**"
-                                                                      if self.twin.owner else "")
-               + (f" - **{st.error}**" if st.error else "") if st.connected
-               else ("rozlaczone" + (f" ({st.error})" if st.error else "")))
-        cams = [c for c in self.ws.cameras if c.enabled]
-        trusted = sum(1 for c in cams if c.trusted)
-        moved = [c.name for c in cams if self.watch.moved(c.name)]
-        cam_txt = f"{len(cams)} ({trusted} skalibr.)" + (f" - **przestawiona: {', '.join(moved)}**" if moved else "")
-        pol = "-"
-        if self.runner is not None:
-            rs = self.runner.status
-            pol = (f"jedzie ({rs.step} krokow, {rs.hz:.0f} Hz)" if rs.running
-                   else f"stoi ({rs.stopped_because})")
-        tr = "-"
+        parts = []
+        moved = [c.name for c in self.ws.cameras if c.enabled and self.watch.moved(c.name)]
+        if moved:
+            parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
+        if self.runner is not None and self.runner.status.running:
+            parts.append(f"Polityka: jedzie ({self.runner.status.step} krokow)")
         if self.train.running:
             p = self.train.progress() or {}
-            tr = f"{p.get('iteration', 0)}/{p.get('iterations', '?')} it., sukces {p.get('success', 0):.0%}"
+            parts.append(f"Trening: {p.get('iteration', 0)}/{p.get('iterations', '?')} it.")
         # Trwale ostrzezenia ramienia (kalibracja chwytaka niezgodna z blizniakiem, chwytak
         # poluzowany po przeciazeniu) - `RobotStatus.warnings`; starszy status ich nie ma.
         warns = [str(w) for w in (getattr(st, "warnings", None) or [])]
-        warn_txt = f" | **Uwaga:** {'; '.join(warns)}" if warns else ""
-        return f"**Ramie:** {arm} | **Kamery:** {cam_txt} | **Polityka:** {pol} | **Trening:** {tr}{warn_txt}"
+        if warns:
+            parts.append(f"**Uwaga:** {'; '.join(warns)}")
+        if st.error:
+            parts.append(f"**blad ramienia:** {st.error}")
+        return " | ".join(parts)
 
     # ------------------------------------------------------------ przewodnik
     def _guide_snapshot(self) -> gd.GuideSnapshot:
@@ -557,8 +752,7 @@ class TwinApp:
         connected = bool(st.connected)
         backend = st.backend if connected else self._preset_backend()
         simulated = bool(st.simulated) if connected else backend == "sim"
-        safety = self.twin.safety_state
-        estop = safety is not None and getattr(safety, "value", safety) == "ESTOP"
+        estop = self._estop_active()
         now = time.monotonic()
         with self.frame_lock:
             live = set(self.frames)
@@ -604,22 +798,28 @@ class TwinApp:
     def _tick_guide(self) -> None:
         note = getattr(self.twin, "home_note", "")
         if note and self.home_md.content != f"**{note}**":
-            self.home_md.content = f"**{note}**"
+            self._msg(self.home_md, f"**{note}**")
         # Przypisanie tej samej tresci nic nie wysyla (`_skip_unchanged_markdown`).
         guide = gd.build(self._guide_snapshot())
-        self.guide_md.content = gd.render_head(guide)
+        self.guide_md.content = gd.render_now(guide)
+        notes = gd.render_notes(guide)
+        self.guide_notes_md.content = notes
         self.guide_steps_md.content = gd.render_steps(guide)
+        n = notes.count("**Uwaga:**")
+        set_if(self.guide_folder, "label", f"Uwagi ({n}) i kroki 0-8" if n else "Kroki 0-8")
 
     # ================================================================== ramie
     def _build_arm(self) -> None:
-        """Zakladka Ramie jak jog_a1x: Polacz, UZBROJ/rozbroj, predkosc, Dom, Ustaw dom = tu, suwaki."""
+        """Zakladka Ramie jak pilot jog: rozlaczone - zestaw i Polacz; polaczone - duzy UZBROJ,
+        Uchwyt 3D, Dom, Ustaw dom = tu, predkosc, suwaki stawow, Rozlacz; stol zwiniety na dole."""
         g = self.server.gui
-        self._tab_help("Ramie")
-        with g.add_folder("Polaczenie"):
-            presets = self._arm_presets()
-            labels = tuple(presets)
-            current = next((k for k, (b, p) in presets.items()
-                            if b == self.ws.backend and (p is None or p == (self.ws.port or p))), labels[0])
+        presets = self._arm_presets()
+        labels = tuple(presets)
+        current = next((k for k, (b, p) in presets.items()
+                        if b == self.ws.backend and (p is None or p == (self.ws.port or p))), labels[0])
+        # --- rozlaczone: zestaw, port, Polacz (folder bez etykiety = bez ramki)
+        self.conn_box = g.add_folder(None)
+        with self.conn_box:
             self.arm_backend = g.add_dropdown("Ramie", labels, initial_value=current,
                                               hint="Gotowe zestawy dla ramienia tego stanowiska: symulacja albo "
                                                    "sprzet z domyslnym laczem (A1X: xcan na macOS, can0 na Linuksie, "
@@ -630,34 +830,110 @@ class TwinApp:
                                             "(`lerobot-twin check` wypisuje porty). a1x: can0 (Linux), xcan "
                                             "albo xcan:6 (macOS), PCAN_USBBUS1 (Windows); pusty = domyslny. "
                                             "sim: nieuzywany.")
-
-            @self.arm_backend.on_update
-            def _(event):
-                port = presets.get(self.arm_backend.value, (None, None))[1]
-                if port is not None:
-                    self.arm_port.value = port
-
             connect = g.add_button("Polacz", icon=viser.Icon.PLUG_CONNECTED, color="green",
                                    hint="Laczy wybrane ramie BEZ ruchu: ramie zostaje tam, gdzie stoi, suwaki "
                                         "pokazuja zmierzona poze. Konczy wszystko, co jezdzi, i kasuje "
                                         "potwierdzenia. Backend i port zapisuje w stanowisku.")
-            disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X,
+
+        @self.arm_backend.on_update
+        def _(event):
+            port = presets.get(self.arm_backend.value, (None, None))[1]
+            if port is not None:
+                self.arm_port.value = port
+            self._render_arm(force=True)
+
+        # --- polaczone: sterowanie
+        self.ctl_box = g.add_folder(None)
+        with self.ctl_box:
+            g.add_html('<span id="tw-arm"></span>')
+            arm_on = g.add_button("UZBROJ", color="gray", icon=viser.Icon.LOCK,
+                                  hint="Uzbrojony panel RUSZA ramieniem: suwaki i Uchwyt 3D ustawiaja cel od "
+                                       "ZMIERZONEJ pozy. Odmowa przy STOP-ie albo gdy ramie ma polityka, fala, "
+                                       "identyfikacja; STOP, Dom i Polacz rozbrajaja.")
+            arm_off = g.add_button("UZBROJONE - kliknij, by rozbroic", color="orange", icon=viser.Icon.BOLT,
+                                   visible=False,
+                                   hint="Rozbraja panel: ramie trzyma poze, suwaki znow pokazuja zmierzone katy.")
+            self.arm_engage = _Toggle(arm_on, arm_off)
+            g.add_html('<span id="tw-3d"></span>')
+            gz_btn = g.add_button("Uchwyt 3D: wyl.", color="gray", icon=viser.Icon.ARROWS_MOVE,
+                                  hint="Strzalki na koncowce w 3D. Uzbrojony panel: przeciaganie rusza "
+                                       "ramieniem (IK, sama pozycja); skok stawu > 15 st. jest odrzucany - "
+                                       "ciagnij malymi krokami. Klik = pokaz/ukryj.")
+            self.tcp_gizmo_on = _Toggle(gz_btn, on_look=GIZMO_ON_IDLE, off_look=GIZMO_OFF)
+            self.tcp_md = g.add_markdown("", visible=False)
+            self.home_btn = g.add_button("Dom", icon=viser.Icon.HOME, color="orange",
+                                         hint="Jedzie do pozycji domowej stanowiska (Ustaw dom = tu) albo z modelu - "
+                                              "RUSZA ramieniem, odbiera je kazdemu. A1X: etapami (lokiec, "
+                                              "nadgarstek, bark), kazdy etap sprawdzony na kolizje w blizniaku; "
+                                              "kolizja = ramie stoi, powod nizej. Sciskajacy chwytak zostaje "
+                                              "zamkniety. Przy STOP-ie nie rusza.")
+            self.home_md = g.add_markdown("", visible=False)
+            self.set_home_btn = g.add_button("Ustaw dom = tu", icon=viser.Icon.MAP_PIN, color="gray",
+                                             hint="Zmierzona poza, dokladnie ta, staje sie domem tego stanowiska "
+                                                  "(zapis w twin.json); limity poszerzaja sie, zeby ja objac. Zrob "
+                                                  "to w pozie, w ktorej ramie naprawde spoczywa (zlozone na "
+                                                  "podstawie). Niczym nie rusza.")
+            top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
+            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
+                                          hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "
+                                               "w jog_a1x). Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
+                                               "rampa nadzoru.")
+            spec = self.ws.spec()
+            kin = self.twin.scene.kin
+            names = JOINT_LABELS.get(self.ws.robot, {})
+            self.sliders = {}
+            self.slider_range = {}
+            order = [n for n in spec.joints if n != spec.gripper] + ([spec.gripper] if spec.gripper in spec.joints
+                                                                      else [])
+            for name in order:
+                k = list(spec.joints).index(name)
+                if name == spec.gripper:
+                    g.add_divider()
+                    lo, hi = 0.0, 100.0
+                    tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (SO-101: tiki serwa jak w "
+                           "feetech; A1X: skok palca 0..5 cm). Uzbrojony panel ustawia cel. Chwytak, ktory po "
+                           "STOP-ie dalej sciska: Skasuj STOP, UZBROJ, potem ten suwak.")
+                else:
+                    # Zaokraglone do 0,5 st. do srodka zakresu MJCF - ladne liczby na suwaku, zadnej poza zakresem.
+                    lo = float(np.ceil(np.degrees(kin.lo[k]) * 2) / 2)
+                    hi = float(np.floor(np.degrees(kin.hi[k]) * 2) / 2)
+                    tip = (f"Kat stawu [st.], suwak {lo:g}..{hi:g} (zakres modelu). Uzbrojony panel ustawia cel - "
+                           f"nadzor przycina go do limitow z konfiguracji i EEPROM serwa; rozbrojony pokazuje "
+                           f"zmierzony kat.")
+                label, full = names.get(name, (name, name))
+                s = g.add_slider(label, lo, hi, 0.5, float(np.clip(spec.home.get(name, 0.0), lo, hi)),
+                                 hint=f"{full} ({name}). {tip}")
+                self.sliders[name] = s
+                self.slider_range[name] = (lo, hi)
+
+                def on_slide(event, name=name):
+                    if event.client is None or not self.arm_engage.value:
+                        return                          # zmiana z petli (sprzezenie zwrotne) albo bez uzbrojenia
+                    self._gizmo_seed = None             # cel zmienil sie obok uchwytu TCP
+                    try:
+                        self.twin.set_target({name: float(self.sliders[name].value)}, owner=PANEL_OWNER)
+                    except RuntimeError:                # ramie odebrane panelowi w miedzyczasie
+                        self.arm_engage.value = False
+                s.on_update(on_slide)
+
+            disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X, color="gray",
                                       hint="Konczy polityke, fale i identyfikacje, odbiera ramie wszystkim i "
-                                           "rozlacza backend. Silnikow nie zwalnia - ramie trzyma poze.")
-        # Galaxea A1X: sekwencja wlaczenia FF 1-5-6 tylko recznie (zasilone od nowa ramie slucha od razu,
-        # a FF 5 na chwile puszcza silniki). Widoczne tylko z polaczonym backendem a1x.
-        self.a1x_folder = g.add_folder("Silniki A1X")
-        with self.a1x_folder:
-            self.a1x_confirm = g.add_checkbox(
-                "Prawdziwe ramie: rozumiem, ze silniki na chwile puszcza", False,
-                hint="Potwierdzenie przed kazdym Wlacz silniki A1X (gasnie po uzyciu). FF 5 na ulamek sekundy "
-                     "zwalnia silniki - ramie bez hamulcow moze lekko opasc; podeprzyj je.")
-            a1x_enable = g.add_button("Wlacz silniki A1X (FF 1-5-6)", icon=viser.Icon.BOLT,
-                                      hint="Tylko gdy ramie zglasza sie, ale nie slucha rozkazow (blad 'gluche "
-                                           "na 0x050'). Wysyla FF 1 -> 5 -> 6 z celem = zmierzona poza przed, "
-                                           "miedzy i po kazdym kodzie. Odmowa, gdy panel jest uzbrojony albo "
-                                           "ramie ma polityka / fala / identyfikacja.")
-            self.a1x_md = g.add_markdown("")
+                                           "rozlacza backend. Silnikow nie zwalnia - ramie trzyma poze. "
+                                           "Zmiana zestawu: Rozlacz, potem Polacz.")
+            # Galaxea A1X: sekwencja wlaczenia FF 1-5-6 tylko recznie (zasilone od nowa ramie slucha od
+            # razu, a FF 5 na chwile puszcza silniki). Widoczne tylko z polaczonym backendem a1x.
+            self.a1x_folder = g.add_folder("Silniki A1X", expand_by_default=False)
+            with self.a1x_folder:
+                self.a1x_confirm = g.add_checkbox(
+                    "Prawdziwe ramie: rozumiem, ze silniki na chwile puszcza", False,
+                    hint="Potwierdzenie przed kazdym Wlacz silniki A1X (gasnie po uzyciu). FF 5 na ulamek sekundy "
+                         "zwalnia silniki - ramie bez hamulcow moze lekko opasc; podeprzyj je.")
+                a1x_enable = g.add_button("Wlacz silniki A1X (FF 1-5-6)", icon=viser.Icon.BOLT,
+                                          hint="Tylko gdy ramie zglasza sie, ale nie slucha rozkazow (blad 'gluche "
+                                               "na 0x050'). Wysyla FF 1 -> 5 -> 6 z celem = zmierzona poza przed, "
+                                               "miedzy i po kazdym kodzie. Odmowa, gdy panel jest uzbrojony albo "
+                                               "ramie ma polityka / fala / identyfikacja.")
+                self.a1x_md = g.add_markdown("")
 
         def show_a1x() -> None:
             on = self.twin.status.connected and self.twin.status.backend == "a1x"
@@ -674,7 +950,7 @@ class TwinApp:
             if not (st.connected and st.backend == "a1x") or not hasattr(b, "enable"):
                 raise RuntimeError("wlaczenie silnikow tylko dla polaczonego ramienia a1x")
             if self.arm_engage.value:
-                raise RuntimeError("najpierw rozbroj panel (odznacz UZBROJ)")
+                raise RuntimeError("najpierw rozbroj panel (kliknij UZBROJONE)")
             busy = self._busy(PANEL_OWNER)
             if busy:
                 raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
@@ -698,6 +974,7 @@ class TwinApp:
                 self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
             finally:
                 show_a1x()
+                self._render_arm(force=True)
             self._notify(event, "Polaczono", f"{self.twin.status.backend}: {self.twin.status.state}")
 
         @disconnect.on_click
@@ -707,68 +984,11 @@ class TwinApp:
             self._reset_confirmations()
             self.twin.disconnect()
             show_a1x()
+            self._render_arm(force=True)
 
-        with g.add_folder("Sterowanie"):
-            self.arm_engage = g.add_checkbox("UZBROJ (ARM): panel steruje ramieniem", False,
-                                             hint="Uzbrojony panel RUSZA ramieniem: suwaki i uchwyt koncowki "
-                                                  "ustawiaja cel od ZMIERZONEJ pozy. Odznacz = rozbroj (ramie "
-                                                  "trzyma poze). Odmowa przy STOP-ie albo gdy ramie ma polityka, "
-                                                  "fala, identyfikacja; STOP, Dom i Polacz rozbrajaja.")
-            top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
-            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
-                                          hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "
-                                               "w jog_a1x). Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
-                                               "rampa nadzoru.")
-            home = g.add_button("Dom", icon=viser.Icon.HOME,
-                                hint="Jedzie do pozycji domowej stanowiska (Ustaw dom = tu) albo z modelu - "
-                                     "RUSZA ramieniem, odbiera je kazdemu. A1X: etapami (lokiec, nadgarstek, "
-                                     "bark), kazdy etap sprawdzony na kolizje w blizniaku; kolizja = ramie stoi, "
-                                     "powod nizej. Sciskajacy chwytak zostaje zamkniety. Przy STOP-ie nie rusza.")
-            set_home = g.add_button("Ustaw dom = tu", icon=viser.Icon.MAP_PIN,
-                                    hint="Zmierzona poza, dokladnie ta, staje sie domem tego stanowiska (zapis "
-                                         "w twin.json); limity poszerzaja sie, zeby ja objac. Zrob to w pozie, "
-                                         "w ktorej ramie naprawde spoczywa (zlozone na podstawie). Niczym nie rusza.")
-            clear = g.add_button("Skasuj STOP", icon=viser.Icon.RESTORE,
-                                 hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne; ramie "
-                                      "samo nie rusza, ale nastepne polecenia juz przejda.")
-            self.home_md = g.add_markdown("")
-            self.tcp_gizmo_on = g.add_checkbox("Uchwyt koncowki w 3D", False,
-                                               hint="Strzalki na koncowce w 3D. Uzbrojony panel: przeciaganie rusza "
-                                                    "ramieniem (IK, sama pozycja); skok stawu > 15 st. jest "
-                                                    "odrzucany - ciagnij malymi krokami.")
-            self.tcp_md = g.add_markdown("")
-            spec = self.ws.spec()
-            kin = self.twin.scene.kin
-            self.sliders = {}
-            self.slider_range = {}
-            for k, name in enumerate(spec.joints):
-                if name == spec.gripper:
-                    lo, hi = 0.0, 100.0
-                else:
-                    # Zaokraglone do 0,5 st. do srodka zakresu MJCF - ladne liczby na suwaku, zadnej poza zakresem.
-                    lo = float(np.ceil(np.degrees(kin.lo[k]) * 2) / 2)
-                    hi = float(np.floor(np.degrees(kin.hi[k]) * 2) / 2)
-                if name == spec.gripper:
-                    tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (SO-101: tiki serwa jak w "
-                           "feetech; A1X: skok palca 0..5 cm). Uzbrojony panel ustawia cel. Chwytak, ktory po "
-                           "STOP-ie dalej sciska: Skasuj STOP, UZBROJ, potem ten suwak.")
-                else:
-                    tip = (f"Kat stawu [st.], suwak {lo:g}..{hi:g} (zakres modelu). Uzbrojony panel ustawia cel - "
-                           f"nadzor przycina go do limitow z konfiguracji i EEPROM serwa; rozbrojony pokazuje "
-                           f"zmierzony kat.")
-                s = g.add_slider(name, lo, hi, 0.5, float(np.clip(spec.home.get(name, 0.0), lo, hi)), hint=tip)
-                self.sliders[name] = s
-                self.slider_range[name] = (lo, hi)
-
-                def on_slide(event, name=name):
-                    if event.client is None or not self.arm_engage.value:
-                        return                          # zmiana z petli (sprzezenie zwrotne) albo bez uzbrojenia
-                    self._gizmo_seed = None             # cel zmienil sie obok uchwytu TCP
-                    try:
-                        self.twin.set_target({name: float(self.sliders[name].value)}, owner=PANEL_OWNER)
-                    except RuntimeError:                # ramie odebrane panelowi w miedzyczasie
-                        self.arm_engage.value = False
-                s.on_update(on_slide)
+        # --- stol (zawsze, zwiniete)
+        with g.add_folder("Stanowisko (stol)", expand_by_default=False):
+            self._build_table()
 
         self.twin.set_speed(self.arm_speed.value)
 
@@ -780,23 +1000,106 @@ class TwinApp:
         def _(event):
             self._on_engage(event)
 
-        @home.on_click
+        @self.arm_engage.on_update
+        def _(event):
+            self._render_arm()                          # suwaki, uchwyt, plakietka od razu po zmianie
+
+        @self.tcp_gizmo_on.on_update
+        def _(event):
+            self._render_arm()
+
+        @self.home_btn.on_click
         @self._safe
         def _(event):
-            self.home_md.content = ""
+            self._msg(self.home_md, "")
             self._go_home()
 
-        @set_home.on_click
+        @self.set_home_btn.on_click
         @self._safe
         def _(event):
             h = self.twin.set_home_here()
-            self.home_md.content = "dom = " + ", ".join(f"{k} {v:.1f}" for k, v in h.items())
+            self._notify(event, "Dom zapisany", ", ".join(f"{names.get(k, (k, k))[0]} {v:.1f}" for k, v in h.items()))
 
-        @clear.on_click
-        def _(event):
-            self.twin.clear_estop()
+        self._render_arm(force=True)
 
-        self._build_table()
+    # ---------------------------------------------------------- widok Ramie
+    @staticmethod
+    def _msg(md, text: str) -> None:
+        """Markdown widoczny tylko, gdy ma tresc."""
+        md.content = text
+        set_if(md, "visible", bool(text))
+
+    def _estop_active(self) -> bool:
+        s = self.twin.safety_state                      # None bez nadzoru (rozlaczone)
+        return s is not None and getattr(s, "value", s) == "ESTOP"
+
+    def _arm_mode(self) -> tuple[str, str]:
+        """(tryb, kto): jedno zrodlo dla plakietki i przycisku UZBROJ."""
+        if self._estop_active():
+            return "estop", ""
+        if not self.twin.connected:
+            # Petla padla (blad lacza), a backend wciaz otwarty: Rozlacz musi byc dostepne.
+            return ("lost" if self.twin.backend is not None else "off"), ""
+        o = self.twin.owner
+        if o is not None and o != PANEL_OWNER:
+            return "busy", str(o)
+        st = self.twin.safety_state
+        if o is None and getattr(st, "value", st) in ("HOMING", "STARTING"):
+            return "homing", ""                          # rampa do domu bez wlasciciela (SO-101)
+        return ("armed" if self.arm_engage.value else "idle"), ""
+
+    def _render_arm(self, force: bool = False) -> None:
+        """Przemalowanie zakladki Ramie do stanu blizniaka (tylko przy zmianie klucza; same zapisy
+        wlasciwosci, zadnych ruchow). Wolane z petli (30 Hz), po Polacz/Rozlacz i po zmianie wlacznikow."""
+        with self._render_lock:
+            mode, who = self._arm_mode()
+            estop = mode == "estop"
+            conn = self.twin.connected or self.twin.backend is not None      # Rozlacz takze po padnieciu petli
+            armed = self.arm_engage.value
+            key = (mode, who, armed, conn, self.tcp_gizmo_on.value, self._preset_backend(),
+                   bool(self.tcp_md.content), bool(self.home_md.content), self.twin.status.backend if conn else None)
+            if key == self._arm_key and not force:
+                return
+            self._arm_key = key
+            set_if(self.conn_box, "visible", not conn)
+            set_if(self.ctl_box, "visible", conn)
+            set_if(self.arm_port, "visible", self._preset_backend() != "sim")
+            set_if(self.clear_btn, "visible", estop)
+            look = ARM_OVERRIDES.get(mode)
+            self.arm_engage.set_override(look(who) if look else None)
+            self.tcp_gizmo_on.on_look = GIZMO_ON_ARMED if armed else GIZMO_ON_IDLE
+            self.tcp_gizmo_on.set_override(GIZMO_ESTOP if estop else None)
+            self.tcp_gizmo_on._apply()
+            set_if(self.home_btn, "disabled", estop)
+            set_if(self.set_home_btn, "disabled", not conn)
+            if armed != self._sliders_armed:
+                self._sliders_armed = armed
+                for s in self.sliders.values():
+                    set_if(s, "disabled", not armed)
+            for md in (self.tcp_md, self.home_md):
+                set_if(md, "visible", bool(md.content))
+            self._render_chip(mode, who)
+
+    def _state_chip_html(self, mode: str, who: str) -> str:
+        word = {"off": "ROZLACZONE", "idle": "ROZBROJONE", "armed": "UZBROJONE", "homing": "JEDZIE DO DOMU",
+                "busy": f"STERUJE: {who.upper()}", "estop": "STOP AKTYWNY", "lost": "PETLA PADLA"}[mode]
+        st = self.twin.status
+        if mode == "lost":
+            meta = (str(st.error) or "blad lacza") + " - Rozlacz"
+        elif st.connected:
+            backend = "symulacja" if st.backend == "sim" else str(st.backend)
+            port = f" {self.ws.port}" if self.ws.port and st.backend != "sim" else ""
+            meta = f"{backend}{port} - {round(float(st.loop_hz or 0.0) / 5) * 5:.0f} Hz"
+        else:
+            meta = "wybierz zestaw i Polacz"
+        return (f'<div class="tw-chip tw-{mode}"><span class="tw-word">{_html.escape(word)}</span>'
+                f'<span class="tw-meta">{_html.escape(meta)}</span></div>')
+
+    def _render_chip(self, mode: str, who: str) -> None:
+        s = self._state_chip_html(mode, who)
+        if s != self._chip_last:
+            self._chip_last = s
+            self.state_html.content = s
 
     def _arm_presets(self) -> dict[str, tuple[str, str | None]]:
         """Zestawy Ramie -> (backend, port albo None = z pola). Pierwszy = domyslny dla tego systemu."""
@@ -860,7 +1163,7 @@ class TwinApp:
             self.twin.claim(PANEL_OWNER, preempt=self._panel_preempted)
         except RuntimeError as exc:
             self.arm_engage.value = False
-            self._notify(event, "Sprzeglo", f"{exc} - zatrzymaj je najpierw.", error=True)
+            self._notify(event, "UZBROJ", f"{exc} - zatrzymaj je najpierw.", error=True)
             return
         self._gizmo_seed = None
         self._gizmo_t = 0.0                         # uchwyt TCP od razu na koncowce
@@ -868,30 +1171,31 @@ class TwinApp:
         # (pod blokada wlasnosci w `Twin`); odebrane (STOP, Dom) miedzy claim a sprzeglem - odmowa.
         if not self.twin.set_engaged(True, owner=PANEL_OWNER):
             self.arm_engage.value = False
+            if self._estop_active():
+                self._notify(event, "UZBROJ", "STOP aktywny - najpierw Skasuj STOP.", error=True)
 
     def _build_table(self) -> None:
-        """Stol i uchwyt TCP w 3D."""
+        """Stol (zwiniety folder na dole zakladki Ramie) i uchwyt TCP w 3D."""
         g = self.server.gui
-        with g.add_folder("Stanowisko (stol)", expand_by_default=False):
-            t = self.ws.table_obj()
-            g.add_markdown("Blat i to, gdzie na nim stoi podstawa - zmierz na biurku. Kamery sa "
-                           "skalibrowane wzgledem PODSTAWY, wiec zmiana stolu ich nie rusza.")
-            self.tab_size = g.add_vector2("Blat: szerokosc, glebokosc [m]", tuple(t.size), min=(0.2, 0.2),
-                                          max=(3.0, 3.0), step=0.01,
-                                          hint="Wymiary blatu [m] (0,2-3,0), zmierz na biurku. Dziala po Zastosuj.")
-            self.tab_base = g.add_vector2("Podstawa od srodka blatu [m]", tuple(t.base_xy), min=(-1.5, -1.5),
-                                          max=(1.5, 1.5), step=0.005,
-                                          hint="Gdzie stoi podstawa ramienia wzgledem srodka blatu, x i y [m]. "
-                                               "Dziala po Zastosuj.")
-            self.tab_yaw = g.add_number("Obrot podstawy [st.]", float(np.degrees(t.base_yaw)), min=-180.0,
-                                        max=180.0, step=1.0,
-                                        hint="Obrot podstawy wokol osi pionowej [st.], -180..180. Dziala po Zastosuj.")
-            self.tab_h = g.add_number("Wysokosc blatu nad podloga [m]", float(t.height), min=0.3, max=1.5,
-                                      step=0.01, hint="Wysokosc blatu [m] (0,3-1,5); zle ustawiona psuje Sim-Real. "
-                                                      "Dziala po Zastosuj.")
-            apply_table = g.add_button("Zastosuj", icon=viser.Icon.CHECK,
-                                       hint="Zapisuje stol i przebudowuje scene blizniaka. Ramieniem nie rusza, "
-                                            "kamer nie przestawia (sa wzgledem podstawy).")
+        t = self.ws.table_obj()
+        g.add_markdown("Zmierz blat i polozenie podstawy. Kamery sa wzgledem PODSTAWY, zmiana stolu ich "
+                       "nie rusza.")
+        self.tab_size = g.add_vector2("Blat: szerokosc, glebokosc [m]", tuple(t.size), min=(0.2, 0.2),
+                                      max=(3.0, 3.0), step=0.01,
+                                      hint="Wymiary blatu [m] (0,2-3,0), zmierz na biurku. Dziala po Zastosuj.")
+        self.tab_base = g.add_vector2("Podstawa od srodka blatu [m]", tuple(t.base_xy), min=(-1.5, -1.5),
+                                      max=(1.5, 1.5), step=0.005,
+                                      hint="Gdzie stoi podstawa ramienia wzgledem srodka blatu, x i y [m]. "
+                                           "Dziala po Zastosuj.")
+        self.tab_yaw = g.add_number("Obrot podstawy [st.]", float(np.degrees(t.base_yaw)), min=-180.0,
+                                    max=180.0, step=1.0,
+                                    hint="Obrot podstawy wokol osi pionowej [st.], -180..180. Dziala po Zastosuj.")
+        self.tab_h = g.add_number("Wysokosc blatu nad podloga [m]", float(t.height), min=0.3, max=1.5,
+                                  step=0.01, hint="Wysokosc blatu [m] (0,3-1,5); zle ustawiona psuje Sim-Real. "
+                                                  "Dziala po Zastosuj.")
+        apply_table = g.add_button("Zastosuj", icon=viser.Icon.CHECK, color="gray",
+                                   hint="Zapisuje stol i przebudowuje scene blizniaka. Ramieniem nie rusza, "
+                                        "kamer nie przestawia (sa wzgledem podstawy).")
 
         @apply_table.on_click
         @self._safe
@@ -940,16 +1244,16 @@ class TwinApp:
             # wygrywa tylko, gdy start z `seed` nie trafil, i wtedy odrzuca ja limit skoku.
             sol = self._kin_gizmo.ik(p_base, seed=seed, restarts=0)
             if not sol.ok:
-                self.tcp_md.content = "uchwyt poza zasiegiem ramienia - cel bez zmian"
+                self._msg(self.tcp_md, "uchwyt poza zasiegiem ramienia - cel bez zmian")
                 return
             arm = {k: float(v) for k, v in sol.joints.items() if k != gripper}
             jump = max((abs(v - float(seed.get(k, v))) for k, v in arm.items()), default=0.0)
             if jump > GIZMO_MAX_STEP_DEG:
-                self.tcp_md.content = (f"odrzucone: IK chcialo skoku {jump:.0f} st. (inna galaz) - "
+                self._msg(self.tcp_md, f"odrzucone: IK chcialo skoku {jump:.0f} st. (inna galaz) - "
                                        f"przeciagaj mniejszymi krokami")
                 return
             self._gizmo_seed = {**seed, **arm}
-        self.tcp_md.content = ""
+        self._msg(self.tcp_md, "")
         try:
             self.twin.set_target(arm, owner=PANEL_OWNER)
         except RuntimeError:                            # ramie odebrane panelowi w miedzyczasie
@@ -963,9 +1267,6 @@ class TwinApp:
             # Ramie odebrane panelowi (STOP, Dom, polaczenie, petla padla) albo wziete przez zadanie.
             self.arm_engage.value = False
             self._gizmo_seed = None
-        other = owner is not None and owner != PANEL_OWNER
-        if self.arm_engage.disabled != other:
-            self.arm_engage.disabled = other
         if not self.arm_engage.value:
             for name, s in self.sliders.items():
                 if name in joints:
@@ -981,6 +1282,7 @@ class TwinApp:
             if np.abs(np.asarray(self.tcp_gizmo.position) - p).max() > 1e-4:
                 self.tcp_gizmo.position = p
             self._gizmo_seed = None
+        self._render_arm()
 
     # ================================================================= kamery
     def _build_cameras(self) -> None:
@@ -2053,7 +2355,7 @@ class TwinApp:
             run = g.add_button("Uruchom", icon=viser.Icon.PLAYER_PLAY, color="green",
                                hint="Polityka jedzie na polaczonym ramieniu (przez nadzor) - RUSZA ramieniem. "
                                     "Odmowa przy aktywnym STOP-ie albo gdy ramie ma fala / identyfikacja; "
-                                    "STOP, Dom albo Zatrzymaj w trakcie startu - nie rusza. Sprzeglo panelu gasnie.")
+                                    "STOP, Dom albo Zatrzymaj w trakcie startu - nie rusza. Panel sie rozbraja.")
             halt = g.add_button("Zatrzymaj", icon=viser.Icon.PLAYER_STOP,
                                 hint="Zatrzymuje polityke - takze jeszcze ladowana po Uruchom; ramie trzyma "
                                      "ostatni cel.")
@@ -2076,7 +2378,7 @@ class TwinApp:
                                          "podstawy (mediana z kamer), zielona plytka w 3D. Ramieniem nie rusza.")
             goto_tag = g.add_button("Jedz nad tag", icon=viser.Icon.PLAYER_PLAY, color="orange",
                                     hint="RUSZA ramieniem: IK do punktu nad znalezionym tagiem, rampa przez "
-                                         "nadzor. Wymaga wolnego ramienia (sprzeglo wylaczone) i, na prawdziwym "
+                                         "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
                                          "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
             self.tag_md = g.add_markdown("")
         self._tag_fix = None
@@ -2281,7 +2583,7 @@ class TwinApp:
         if not self.twin.connected:
             raise RuntimeError("ramie nie jest polaczone")
         if self.twin.owner is not None:
-            raise RuntimeError(f"ramie zajete: {self.twin.owner} - wylacz sprzeglo / zatrzymaj")
+            raise RuntimeError(f"ramie zajete: {self.twin.owner} - rozbroj panel / zatrzymaj")
         if not self.twin.status.simulated and not self.pol_confirm.value:
             raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie w zakladce Polityki")
         p = hover_point(fix.T_tag2base, self.tag_above_cm.value / 100.0)
@@ -2393,8 +2695,8 @@ class TwinApp:
             raise RuntimeError("polacz ramie w zakladce Ramie (sim, zeby bezpiecznie sprawdzic)")
         if not self.twin.status.simulated and not self.pol_confirm.value:
             raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie, ze sie ruszy")
-        if self.twin.safety_state is not None and self.twin.safety_state.value == "ESTOP":
-            raise RuntimeError("aktywny STOP - skasuj go w zakladce Ramie")
+        if self._estop_active():
+            raise RuntimeError("aktywny STOP - Skasuj STOP (zolty, pod STOP-em)")
         busy = self._busy(POLICY_OWNER)
         if busy:
             raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
@@ -2586,7 +2888,11 @@ class TwinApp:
         return self._grab()
 
     def _tick_slow(self, frames: dict[str, np.ndarray] | None = None) -> dict[str, np.ndarray]:
-        self.status_md.content = self._status_text()
+        status = self._status_text()
+        self.status_md.content = status
+        set_if(self.status_md, "visible", bool(status))
+        with self._render_lock:
+            self._render_chip(*self._arm_mode())        # odswieza tez Hz na plakietce
         opts = tuple(c.name for c in self.ws.cameras) or ("-",)
         for dd in (self.intr_cam, self.reloc_cam, self.sr_cam):
             if dd.options != opts:

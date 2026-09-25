@@ -111,12 +111,14 @@ lerobot-twin ui                  # http://localhost:8080; zajęty port: --port 8
 lerobot-twin ui --host 0.0.0.0   # także z sieci — panel nie ma hasła, tylko w zaufanej sieci
 ```
 
-Stały **STOP** i pasek stanu nad zakładkami, pod nimi **Przewodnik**: zawsze
-widoczne jedno **Teraz:** („Krok N/8 (tytuł): zakładka > **przycisk**”, albo co
-właśnie jedzie i jak to przerwać; aktywny STOP z przyczyną) i uwagi, których
-Teraz nie mówi (ostrzeżenia, kamera bez kadru dłużej niż 3 s, przestawiona
-kamera), a pod nimi zwinięta lista **Kroki 0–8** (niżej) liczona z bieżącego
-stanu — ramię, kamery, K, pozy, Sim-Real, dynamika, polityki. Na prawdziwym
+Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
+nim żółty **Skasuj STOP** (tylko przy aktywnym STOP-ie), plakietka stanu ramienia
+(ROZŁĄCZONE / ROZBROJONE / UZBROJONE / STERUJE: … / STOP AKTYWNY) i **Przewodnik**:
+zawsze widoczne jedno **Teraz:** („Krok N/8 (tytuł): zakładka > **przycisk**”,
+albo co właśnie jedzie i jak to przerwać; aktywny STOP z przyczyną), a pod nim
+zwinięty folder **Kroki 0–8** z uwagami, których Teraz nie mówi (ostrzeżenia,
+kamera bez kadru dłużej niż 3 s, przestawiona kamera; ich liczba w nazwie
+folderu) i listą kroków liczoną z bieżącego stanu — ramię, kamery, K, pozy, Sim-Real, dynamika, polityki. Na prawdziwym
 ramieniu dynamika zmierzona w sim i same polityki bazowe nie zaliczają kroków
 5 i 6; kroki 7–8 to sprawdzenie w bieżącej sesji panelu (liczy się polityka,
 która ruszyła na tym backendzie). W symulacji prowadzi przez te same kroki z
@@ -127,7 +129,7 @@ a każda zakładka zwiniętą notkę **Jak używać**. Logika przewodnika:
 w 3D, z polityki, z fali kalibracyjnej, z identyfikacji — idzie przez
 `runtime.Twin` i jego `SafetySupervisor`.
 
-**Ramię ma zawsze jednego właściciela**: panel (sprzęgło i uchwyt), polityka,
+**Ramię ma zawsze jednego właściciela**: panel (UZBRÓJ: suwaki i uchwyt 3D), polityka,
 fala kalibracyjna albo identyfikacja. Drugi nie ruszy, dopóki pierwszy nie
 skończy — panel mówi, kto ma ramię. **STOP**, **Dom**, **Połącz** i **Rozłącz**
 odbierają ramię każdemu, a ramię zostaje w **zmierzonej** pozie: nie dociska
@@ -159,7 +161,7 @@ STOP dopiero, gdy błąd chwytaka trwa 2 s.
 
 Połączenie potrzebuje dwóch zgodnych odczytów (±2 jednostki) — przekłamana
 ramka nie zostaje pierwszym rozkazem. Ramię stojące po włączeniu poza limitami
-zostaje, gdzie jest; po włączeniu sprzęgła wraca w zakres (najwyżej 90°/s).
+zostaje, gdzie jest; po UZBRÓJ wraca w zakres (najwyżej 90°/s).
 Limity z konfiguracji są zawężane do limitów zapisanych w EEPROM serw.
 Niefatalne zastrzeżenia (inne tiki chwytaka w backendzie, zero stawów w
 kalibracji LeRobota, zmniejszony docisk) panel pokazuje jako **Uwaga** w pasku
@@ -167,7 +169,7 @@ stanu.
 
 | zakładka | co robi |
 |---|---|
-| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*); wykrywanie przejściówki CH343; sprzęgło; suwaki stawów; uchwyt końcówki w 3D (IK) |
+| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
 | **Kamery** | kamery USB i **symulowane** — symulowaną stawiasz w dowolnym miejscu widoku 3D i przeciągasz uchwytem; piramidy z obrazem na żywo (zielona = zaufana, pomarańczowa = niezaufana, czerwona = **przestawiona**); podgląd; błąd kalibracji względem prawdy dla symulowanych |
 | **Kalibracja** | arkusze do druku (tablica ChArUco, karta z tagami); **1.** intrynsyki — tablica w ręku, kadry zapisują się same, gdy wnoszą nowe ujęcie; **2.** położenie wszystkich kamer naraz — fala z kartą w chwytaku; **szybka relokalizacja** jednej przestawionej kamery |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
@@ -201,7 +203,7 @@ Przed pierwszym połączeniem sprawdź tiki chwytaka swojego ramienia (akapit
 z `--config configs/local.yaml`.
 
 W zakładce Ramię: `feetech`, port, **Połącz** (bez jazdy do domu). Suwaki mają
-pokazywać to, co ramię. Sprzęgło + mały ruch jednym suwakiem.
+pokazywać to, co ramię. UZBRÓJ + mały ruch jednym suwakiem.
 
 **Do bliźniaka używaj backendu `feetech`.** Backend `lerobot` liczy kąty od
 środka zakresu swojej kalibracji, a nie od tiku 2048 jak model — na typowej
@@ -455,7 +457,7 @@ finally:
     b.close()
 ```
 
-Pusty chwytak, sprzęgło, suwak chwytaka na 0. Poczekaj, aż szczęki staną,
+Pusty chwytak, UZBRÓJ, suwak chwytaka na 0. Poczekaj, aż szczęki staną,
 i uruchom skrypt: wynik to `gripper_fb_closed`. To samo przy 100 daje
 `gripper_fb_open`. Na Linuksie skrypt może czytać równolegle z panelem
 (czytających może być wielu, nadawca jeden). Na macOS przejściówkę trzyma panel,
@@ -473,8 +475,8 @@ sprawdzone: na Linuksie `ip -det -s link show can0`, na macOS
 `python -m galaxeo.xcan_usb --normal`, potem je zamknij.
 
 **0. Połączenie.** `lerobot-twin --config configs/local.yaml ui`, zakładka
-Ramię: Ramię = `a1x`, Port jak w tabeli wyżej, **odznacz** „Po połączeniu jedź
-do pozycji domowej”, *Połącz*. Nic nie idzie na magistralę, dopóki czegoś nie
+Ramię: zestaw *Galaxea A1X* dla tego systemu (Port jak w tabeli wyżej), *Połącz*
+— nigdy nie jedzie do domu. Nic nie idzie na magistralę, dopóki czegoś nie
 ruszysz. Suwaki pokazują zmierzoną pozę, a przewodnik podpowiada ten sam krok.
 *Połącz* kończy się błędem, gdy:
 
@@ -489,19 +491,19 @@ Złożone ramię stoi zwykle **poza limitami bliźniaka** (J2 ok. −0,2°, J3 o
 gdzie stoi (miękkie limity, jak ramię nr 2 SO-101). Pierwszy ruch suwakiem J2
 albo J3 wyprowadza staw w zakres z prędkością 15°/s.
 
-**1. Mały ruch.** Sprzęgło, potem jeden suwak (np. J1) o kilka stopni. Strumień
+**1. Mały ruch.** UZBRÓJ, potem jeden suwak (np. J1 Podstawa) o kilka stopni. Strumień
 `p_des` startuje od **zmierzonej** pozy. Jedzie najwyżej 90°/s (backend) i nie
 szybciej niż pozwala nadzór. Sprawdź kierunki i to, że suwaki idą za ramieniem.
 Ramię zgłasza się, ale nie jedzie? Po ok. 1 s pojawia się błąd „… st. od rozkazu
 przez … s i stoi — ramię głuche na 0x050 … albo zablokowane” i STOP. Dopiero
 wtedy (albo po zwolnieniu FF 2 i ponownym zasileniu) użyj **Włącz silniki A1X
 (FF 1-5-6)**. Przycisk jest widoczny tylko przy połączonym `a1x`, wymaga
-zaznaczenia potwierdzenia i odmawia przy włączonym sprzęgle albo gdy ramię ma
+zaznaczenia potwierdzenia i odmawia przy uzbrojonym panelu albo gdy ramię ma
 polityka, fala lub identyfikacja. W trakcie sekwencji backend strumieniuje
 `p_des` = zmierzona poza. Świeżo zasilone ramię słucha od razu i przycisku nie
 potrzebuje.
 
-**2. Dom i wyłączenie.** *Pozycja domowa* A1X to uniesiona poza z modelu
+**2. Dom i wyłączenie.** *Dom* A1X to uniesiona poza z modelu
 (J2 57°, J3 −92°, J4 34°, szczęki na 60). Pierwszy Dom to więc duży ruch w górę.
 **Przed wyłączeniem zasilania złóż ramię** suwakami (J2 → 3°, J3 → −3°, reszta
 → 0) i podeprzyj je, bo A1X nie ma hamulców. Ostatnie 3° do ogranicznika to
@@ -530,7 +532,7 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   i przestaje raportować). `robot.torque_off_on_exit` jest dla `a1x` ignorowane
   (ostrzeżenie w logu), heartbeat `0x023` nie jest wysyłany nigdy.
 - **FF 5 na ułamek sekundy puszcza silniki.** Przycisk włączenia tylko przy
-  podpartym ramieniu i wyłączonym sprzęgle; nigdy „na wszelki wypadek”.
+  podpartym ramieniu i rozbrojonym panelu; nigdy „na wszelki wypadek”.
 - **`t_ff`, `kp`, `kd` nic nie robią** (zmierzone w galaxeo). Nie ma podatności,
   kompensacji grawitacji ani ustępowania przy kolizji. **Jedyną ochroną są
   limity i ograniczenie prędkości**: limity bliźniaka (URDF minus 3–5°),
