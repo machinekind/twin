@@ -2039,7 +2039,9 @@ class TwinApp:
             self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
                                        hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
                                             "'Zmierzony bok taga' w zakladce Kamery.")
-            self.tag_above_cm = g.add_number("wysokosc nad tagiem [cm]", 8.0, min=2.0, max=30.0, step=1.0)
+            self.tag_above_cm = g.add_number("wysokosc nad tagiem [cm]", 8.0, min=2.0, max=30.0, step=1.0,
+                                             hint="Ile nad srodkiem taga (wzdluz osi z podstawy) ma stanac "
+                                                  "koncowka po 'Jedz nad tag'.")
             find_tag = g.add_button("Znajdz tag w kamerach", icon=viser.Icon.TARGET,
                                     hint="Kadry wlaczonych kamer z zaufana poza -> poza taga w ukladzie "
                                          "podstawy (mediana z kamer), zielona plytka w 3D. Ramieniem nie rusza.")
