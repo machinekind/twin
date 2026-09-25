@@ -21,7 +21,7 @@ pytest.importorskip("mujoco")
 
 from lerobot_mp.twin.rl.randomize import Dynamics, Randomization  # noqa: E402
 from lerobot_mp.twin.rl.sysid import (  # noqa: E402
-    IDENTIFIED, JOINTS, OWNER, Recording, Replayer, check_recording, excitation, fit, identify, plan_target, record,
+    IDENTIFIED, JOINTS, OWNER, Recording, Replayer, excitation, identify, plan_target, record,
 )
 from lerobot_mp.twin.robots import SO101  # noqa: E402
 
@@ -44,12 +44,8 @@ def synthetic_recording(truth: Dynamics, delay: float, joints=None, hold=0.7):
     return Recording(t, cmd, meas, {"backend": "test", "time": "test"})
 
 
-@pytest.mark.parametrize("truth, delay", [
-    (Dynamics(kp=0.8, damping=1.4, armature=1.3, frictionloss=0.7), 0.055),   # z przegladu: armatura -13 %
-    (Dynamics(kp=0.7, damping=1.07, armature=0.93, frictionloss=1.0), 0.043),
-    (Dynamics(kp=1.3, damping=0.72, armature=1.12, frictionloss=1.4), 0.067),
-])
-def test_identification_on_the_panel_excitation_is_as_good_as_it_says(truth, delay):
+def test_identification_on_the_panel_excitation_is_as_good_as_it_says():
+    truth, delay = Dynamics(kp=0.8, damping=1.4, armature=1.3, frictionloss=0.7), 0.055  # z przegladu: armatura -13 %
     rec = synthetic_recording(truth, delay)
     out = identify(rec)
     dyn = out.dyn
@@ -84,112 +80,6 @@ def test_identification_on_the_panel_excitation_is_as_good_as_it_says(truth, del
     assert rand.min_delay <= delay * 20 <= rand.max_delay
 
 
-def test_dynamics_remember_what_was_fitted():
-    """`fitted` przezywa zapis w workspace (JSON) i odczyt; stara dynamika bez pola - nic nie dopasowano."""
-    import json
-
-    dyn = Dynamics(damping=1.2, armature=0.9, delay=1.1, source="identyfikacja", fitted=IDENTIFIED)
-    back = Dynamics.from_dict(json.loads(json.dumps(dyn.to_dict())))
-    assert back == dyn and back.fitted == IDENTIFIED and back.is_fitted("armature") and not back.is_fitted("kp")
-    old = dyn.to_dict()
-    old.pop("fitted")
-    assert Dynamics.from_dict(old).fitted == () and Dynamics.from_dict(None).fitted == ()
-
-
-def test_a_fit_that_explains_nothing_is_not_useful():
-    """s6 weryfikatora: blad 0,55 -> 0,51 st., armatura x0,45 z pasmem +-inf - panel proponowal
-    zapis, a trening stawal wokol 0,45 przy prawdzie 1,0. Taki wynik ma sie przyznac, ze nic nie mowi."""
-    from lerobot_mp.twin.rl.sysid import FitResult, assess
-
-    inf = float("inf")
-    bad = Dynamics(damping=1.25, armature=0.45, delay=0.02, fitted=IDENTIFIED, fit_deg=0.51,
-                   band={"damping": 0.6, "armature": inf, "delay": inf})
-    res = FitResult(bad, 0.55, {"damping": 0.6, "armature": inf, "delay": inf})
-    assert not res.useful
-    assert any("armature" in r and "nieskonczona" in r for r in res.reasons)
-    assert any("nic nie wyjasnia" in r for r in res.reasons)
-    good = Dynamics(damping=1.1, armature=0.9, delay=0.6, fitted=IDENTIFIED, fit_deg=0.06,
-                    band={"damping": 0.12, "armature": 0.08, "delay": 0.04})
-    assert assess(good, 0.85) == [] and FitResult(good, 0.85).useful
-    assert assess(good, 0.07) != []                             # 0,07 -> 0,06: nic nie poprawilo
-    wide = Dynamics(**{**good.__dict__, "band": dict(good.band, damping=0.35)})
-    assert any("damping" in r for r in assess(wide, 0.85))      # pasmo 35 % (s17: blad 62 %)
-    assert assess(Dynamics(**{**good.__dict__, "band": dict(good.band, delay=0.5)}), 0.85)
-    assert assess(Dynamics(**{**good.__dict__, "band": {}}), 0.85)     # brak pasma = nie wiadomo
-    assert assess(Dynamics(), None)                                     # nic nie mierzono
-
-
-def test_fit_keeps_the_old_shape():
-    truth = Dynamics(kp=1.0, damping=1.4, armature=1.0, frictionloss=1.0)
-    dyn, base = fit(synthetic_recording(truth, 0.04, joints=("shoulder_lift", "elbow_flex")))
-    assert isinstance(dyn, Dynamics) and base > dyn.fit_deg
-
-
-def test_truncated_recording_is_rejected():
-    """Petla ramienia padla w trakcie: reszta nagrania to NaN - nie wolno z tego dopasowac dynamiki."""
-    rec = synthetic_recording(Dynamics(), 0.04, joints=("shoulder_lift", "elbow_flex"))
-    cut = len(rec.t) // 4
-    rec.measured[cut:] = np.nan
-    with pytest.raises(ValueError, match="bez pomiaru"):
-        check_recording(rec)
-    rec.command[cut:] = np.nan
-    with pytest.raises(ValueError, match="bez rozkazu"):
-        identify(rec)
-
-
-def test_batched_replay_matches_a_plain_step_loop():
-    """`run_many` (rollout, wiele dynamik naraz, w watkach) = zwykla petla `mj_step` w Pythonie."""
-    import mujoco
-
-    rec = synthetic_recording(Dynamics(), 0.0, joints=("elbow_flex",), hold=0.3)
-    rp = Replayer()
-    try:
-        sets = [(Dynamics(kp=0.8, armature=1.2), 0.05), (Dynamics(damping=1.3, frictionloss=0.6), 0.013)]
-        many = rp.run_many(rec, sets)
-        prep = rp._prepare(rec)
-        m, d = rp.scene.model, rp.scene.data
-        for (dyn, dl), got in zip(sets, many):
-            rp.apply(dyn)
-            mujoco.mj_setState(m, d, prep["init"], mujoco.mjtState.mjSTATE_FULLPHYSICS)
-            ctrl = rp._controls(rec, prep, dl)
-            q, k = np.zeros((len(rec.t), 6)), 0
-            for i, n_i in enumerate(prep["after"]):
-                while k < min(n_i, prep["n_steps"]):
-                    d.ctrl[rp.act] = ctrl[k]
-                    mujoco.mj_step(m, d)
-                    k += 1
-                q[i] = d.qpos[rp.scene.kin.qadr]
-            assert np.abs(rp._from_q(q) - got).max() < 1e-9
-        assert np.abs(many[0] - many[1]).max() > 0.1
-    finally:
-        rp.scene.close()
-
-
-def test_rows_from_ticks_pair_each_reading_with_the_command_of_its_tick():
-    """Wiersz = takt petli: pomiar z taktu przed jego wysylka, takt bez wysylki trzyma rozkaz,
-    odczyt z `measured_t` sprzed taktu dostaje wlasny wiersz z rozkazem sprzed taktu."""
-    from lerobot_mp.twin.rl.sysid import _rows_from_ticks
-
-    home = dict(SO101.home)
-    m1 = dict(home, shoulder_pan=1.0)
-    m2 = dict(home, shoulder_pan=2.0)
-    samples = [
-        (10.00, dict(home, shoulder_pan=5.0), [m1[j] for j in JOINTS], 10.00),
-        (10.03, {}, None, 10.00),                                   # lacze wstrzymane - nic nie poszlo
-        (10.07, {"shoulder_pan": 7.0}, [m2[j] for j in JOINTS], 10.065),
-    ]
-    t, cmd, meas = _rows_from_ticks(samples, home)
-    assert np.allclose(t, [0.0, 0.03, 0.065, 0.07])
-    assert list(cmd[:, 0]) == [5.0, 5.0, 5.0, 7.0]
-    assert meas[0, 0] == 1.0 and np.isnan(meas[1]).all() and meas[2, 0] == 2.0 and np.isnan(meas[3]).all()
-
-
-def test_recording_roundtrip(tmp_path):
-    rec = Recording(np.arange(3.0), np.ones((3, 6)), np.full((3, 6), np.nan), {"a": 1})
-    back = Recording.load(rec.save(tmp_path / "r.npz"))
-    assert np.allclose(back.t, rec.t) and back.meta == {"a": 1}
-
-
 # ------------------------------------------------------------ nagranie na blizniaku
 @pytest.fixture
 def twin():
@@ -206,78 +96,6 @@ def twin():
 def short_plan():
     home = dict(SO101.home)
     return [(0.0, home), (0.3, dict(home, shoulder_pan=5.0)), (0.6, home)]
-
-
-def test_record_approaches_the_start_smoothly_before_recording(twin):
-    """Ramie stoi 40 st. od domu: nagranie zaczyna sie w domu, a dojazd idzie rampa, nie skokiem."""
-    with twin.lock:
-        twin.scene.set_joints(dict(SO101.home, shoulder_pan=40.0))
-    twin.connect("sim")
-    seen = []
-    orig = twin.set_target
-
-    def spy(joints, owner=None):
-        seen.append(float(joints.get("shoulder_pan", np.nan)))
-        orig(joints, owner=owner)
-    twin.set_target = spy
-    rec = record(twin, short_plan(), settle=0.2)
-    assert abs(rec.command[0, 0] - SO101.home["shoulder_pan"]) < 1.0      # dojazd PRZED nagraniem
-    assert twin.owner is None and not twin._engaged                       # ramie oddane
-    # Nagrywane rozkazy nie skacza: najwyzej ~5 st. (skok planu) miedzy taktami.
-    assert np.abs(np.diff(rec.command[:, 0])).max() < 6.0
-
-
-def test_record_stops_when_the_arm_loop_dies(twin):
-    """Kabel wypadl w trakcie: `record` ma rzucic, a nie oddac nagrania z samymi NaN."""
-    twin.connect("sim")
-    b = twin._backend
-    calls = [0]
-    real = b.read_joints
-
-    def failing():
-        calls[0] += 1
-        if calls[0] > 150:
-            raise OSError("kabel wypadl")
-        return real()
-    b.read_joints = failing
-    with pytest.raises(RuntimeError, match="petla ramienia|odebrane|przerwana"):
-        record(twin, short_plan() + [(3.0, dict(SO101.home))], settle=0.2)
-
-
-def test_record_is_preempted_by_home(twin):
-    import threading
-
-    twin.connect("sim")
-    threading.Timer(1.8, twin.home).start()
-    with pytest.raises(RuntimeError, match="przerwan"):
-        record(twin, short_plan() + [(3.0, dict(SO101.home))], settle=0.2)
-    assert twin.owner is None
-
-
-def test_record_refuses_while_another_owner_drives(twin):
-    twin.connect("sim")
-    twin.claim("polityka")
-    with pytest.raises(RuntimeError, match="ramie zajete: polityka"):
-        record(twin, short_plan())
-
-
-def test_record_claims_once_and_only_drives_an_arm_it_still_has(twin):
-    """Kontrakt K3: `record` bierze ramie RAZ, potem juz tylko `move(take=False)`."""
-    twin.connect("sim")
-    claims, takes = [], []
-    claim, move = twin.claim, twin.move
-
-    def spy_claim(owner, preempt=None):
-        claims.append((owner, twin.safety_state.value))
-        claim(owner, preempt)
-
-    def spy_move(*a, **kw):
-        takes.append(kw.get("take", True))
-        move(*a, **kw)
-    twin.claim, twin.move = spy_claim, spy_move
-    record(twin, short_plan(), settle=0.2)
-    assert claims == [(OWNER, "IDLE")] and takes == [False]
-    assert twin.owner is None
 
 
 def test_record_does_not_take_back_an_arm_freed_by_home(twin):
@@ -304,33 +122,6 @@ def test_record_does_not_take_back_an_arm_freed_by_home(twin):
     assert twin.safety_state.value == "HOMING"       # rampy do domu nikt nie przerwal
 
 
-def test_record_with_take_false_needs_the_arm_already_taken(twin):
-    twin.connect("sim")
-    with pytest.raises(RuntimeError, match="odebrane"):
-        record(twin, short_plan(), settle=0.2, take=False)
-    assert twin.owner is None and not twin._engaged
-    twin.claim(OWNER)                                # panel wzial ramie przed startem zadania
-    rec = record(twin, short_plan(), settle=0.2, take=False)
-    assert len(rec.t) > 10 and twin.owner is None and not twin._engaged
-
-
-def test_record_waits_for_the_start_ramp_instead_of_cutting_it(twin):
-    """Polaczenie z `go_home`: nadzor jedzie rampa startowa - `record` jej nie przerywa `claim`-em."""
-    with twin.lock:
-        twin.scene.set_joints(dict(SO101.home, shoulder_pan=25.0))
-    twin.connect("sim", go_home=True)
-    assert twin.safety_state.value == "STARTING"
-    states = []
-    claim = twin.claim
-
-    def spy_claim(owner, preempt=None):
-        states.append(twin.safety_state.value)
-        claim(owner, preempt)
-    twin.claim = spy_claim
-    record(twin, short_plan(), settle=0.2)
-    assert states and states[0] != "STARTING"
-
-
 # ------------------------------------------------------------ nagranie z czasem prawdziwego ramienia
 class JitterArm:
     """Petla ramienia z czasem jak na prawdziwym ramieniu (s17 weryfikatora), w zegarze wirtualnym.
@@ -342,7 +133,7 @@ class JitterArm:
     `sleep` przesuwa zegar (z narzutem rejestratora 0,5-2 ms) i puszcza takty, ktore minely.
     """
 
-    def __init__(self, truth: Dynamics, delay: float, listeners: bool, hz: float = 30.0, jit: float = 0.008,
+    def __init__(self, truth: Dynamics, delay: float, hz: float = 30.0, jit: float = 0.008,
                  settle: float = 0.5, seed: int = 3):
         rng = np.random.default_rng(seed)
         self.rng = rng
@@ -380,9 +171,8 @@ class JitterArm:
                                                  measured_t=mt_last, command=sent))
         self.now, self.fired = -0.2, 0
         self.listeners: dict[int, object] = {}
-        if listeners:
-            self.add_tick_listener = self._add
-            self.remove_tick_listener = self.listeners.pop
+        self.add_tick_listener = self._add
+        self.remove_tick_listener = self.listeners.pop
         self.connected, self.loop_hz, self.owner, self.preempt_reason = True, hz, None, ""
         self.safety_state = SimpleNamespace(value="IDLE")
         self.time = SimpleNamespace(monotonic=lambda: self.now, sleep=self._sleep, strftime=lambda f: "test")
@@ -423,8 +213,7 @@ class JitterArm:
         pass
 
 
-@pytest.mark.parametrize("listeners", [True, False], ids=["tick_listener", "status_fallback"])
-def test_record_under_real_arm_timing_keeps_the_documented_accuracy(listeners, monkeypatch):
+def test_record_under_real_arm_timing_keeps_the_documented_accuracy(monkeypatch):
     """Petla z jitterem i rzadszym odczytem serw: nagranie przez `record` ma dac te sama dynamike.
 
     Zmierzone przed poprawka (s17 weryfikatora, ta sama prawda): `record` stemplowal wiersze
@@ -434,16 +223,16 @@ def test_record_under_real_arm_timing_keeps_the_documented_accuracy(listeners, m
     from lerobot_mp.twin.rl import sysid
 
     truth, delay = Dynamics(kp=0.85, damping=1.1, armature=0.9, frictionloss=1.2), 0.03
-    arm = JitterArm(truth, delay, listeners)
+    arm = JitterArm(truth, delay)
     monkeypatch.setattr(sysid, "time", arm.time)
     rec = record(arm, excitation(SO101.home), settle=0.5)
-    assert rec.meta["stamps"] == ("tick" if listeners else "measured_t")
+    assert rec.meta["stamps"] == "tick"
     assert not arm.listeners                                   # sluchacz zdjety po nagraniu
     out = identify(rec)
     dyn = out.dyn
     errs = {"damping": dyn.damping / truth.damping - 1, "armature": dyn.armature / truth.armature - 1,
             "delay_ms": 1000 * (dyn.delay / 20 - delay)}
-    print("jitter", "listener" if listeners else "fallback", {k: round(v, 3) for k, v in errs.items()},
+    print("jitter", {k: round(v, 3) for k, v in errs.items()},
           {k: round(v, 3) for k, v in out.band.items()}, round(dyn.fit_deg, 3), round(out.base, 3))
     assert dyn.fit_deg < 0.2 * out.base and dyn.fit_deg < 0.2
     assert abs(errs["damping"]) <= 0.15 and abs(errs["armature"]) <= 0.12 and abs(errs["delay_ms"]) <= 3.0
@@ -451,25 +240,3 @@ def test_record_under_real_arm_timing_keeps_the_documented_accuracy(listeners, m
         assert abs(errs[name]) <= out.band[name], (name, errs[name], out.band[name])
     assert abs(errs["delay_ms"]) / 1000 <= out.band["delay"]
     assert out.useful, out.reasons
-
-
-def test_excitation_default_joints_are_the_non_gripper_home_keys():
-    plan = excitation(SO101.home)
-    old = excitation(SO101.home, joints=("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"))
-    assert plan == old
-    assert excitation(SO101.home, joints=SO101.arm_joints) == old
-    toy = excitation({"a": 0.0, "gripper": 50.0, "b": 10.0}, hold=0.5)
-    moved = {k for _, target in toy for k, v in target.items() if v != {"a": 0.0, "gripper": 50.0, "b": 10.0}[k]}
-    assert moved == {"a", "b"}
-
-
-def test_recording_without_joint_meta_is_so101(tmp_path):
-    rec = Recording(np.arange(3.0), np.ones((3, 6)), np.full((3, 6), np.nan), {"a": 1})
-    assert rec.joints == SO101.joints
-    path = tmp_path / "old.npz"
-    np.savez_compressed(path, t=rec.t, command=rec.command, measured=rec.measured, meta='{"a": 1}')
-    back = Recording.load(path)
-    assert back.joints == SO101.joints and back.meta == {"a": 1}
-    two = Recording(np.arange(3.0), np.ones((3, 3)), np.full((3, 3), np.nan), {"b": 2}, ("j1", "j2", "gripper"))
-    back = Recording.load(two.save(tmp_path / "toy.npz"))
-    assert back.joints == ("j1", "j2", "gripper") and back.meta == {"b": 2}

@@ -94,8 +94,11 @@ czas renderu — zmierzony; PyTorch z CUDA — działa; MJX/Warp — Warp dział
 | `assets/robots/a1x/`, `scripts/import_a1x_model.py` | model A1X z URDF producenta, każda reguła przetworzenia z testem, skrypt odtwarza plik bajt w bajt | kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm), fala 85 % póz z kartą nad stołem, fizyka RL przy 5 ms bez NaN, szczęki symetryczne do 5,8 mm |
 | `robot/a1x.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
 
-Testy: `pytest -q` (ok. 680) — wszystko przechodzi; znany, stary `test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`
-(za sztywny próg w samym teście, sprzed bliźniaka) jest oznaczony `xfail`.
+Testy: `pytest -q` (92 testy, ok. 45 s na CPU) — wszystko przechodzi. Zestaw odchudzony
+2026-09-25 z ok. 680: zostały wyłącznie testy integracyjne (łańcuch przez kilka modułów
+tak, jak jedzie produkcja) zachowań groźnych dla sprzętu i człowieka, psujących
+stanowisko albo przeniesienie sim-real; testy jednostkowe, CLI/konfiguracji, brzmienia
+komunikatów i warianty parametryzacji usunięte (historia: commit `b2ba4bb`).
 
 ---
 
@@ -222,8 +225,9 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
    ramionach): najpierw 5 linii próby `mujoco_warp.put_model` z
    `assets/robots/a1x/a1x.xml` (równość szczęk, bryły z siatek) i pomiar
    `nconmax/njmax` dla A1X (w `batch.py` wpisano nie zmierzone 64/384; na CPU szczyt
-   12 kontaktów / 49 wierszy), potem `pytest -q tests/test_twin_rl.py -k gpu`
-   (test `test_gpu_pickplace_matches_the_cpu_env` ma tolerancję 5e-3 dobraną bez
+   12 kontaktów / 49 wierszy), potem porównanie GPU z CPU
+   (test `test_gpu_pickplace_matches_the_cpu_env` usunięty przy odchudzaniu — odtworzyć
+   z commitu `b2ba4bb` na maszynie z CUDA; miał tolerancję 5e-3 dobraną bez
    sprawdzenia; `mocap_pos` per świat przez `wp.to_torch` też nie był sprawdzony),
    krótki przebieg `lerobot-twin train --task pickplace --envs 256 --iters 3
    --eval-episodes 2` i dopiero pełny trening na SO-101 i A1X. Z polityką

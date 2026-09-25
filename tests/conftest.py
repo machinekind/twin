@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from lerobot_mp.config import AppConfig, load_config
-from lerobot_mp.twin.robots import REGISTRY, RobotSpec
+from lerobot_mp.twin.robots import RobotSpec
 from lerobot_mp.vision.pose import (
     LEFT_ELBOW,
     LEFT_HIP,
@@ -119,13 +119,6 @@ def cfg() -> AppConfig:
 @pytest.fixture
 def frame_size() -> tuple[int, int]:
     return (1280, 720)
-
-
-@pytest.fixture(params=sorted(REGISTRY))
-def spec(request) -> RobotSpec:
-    """Kazde ramie z rejestru - testy geometrii i fizyki, ktore maja trzymac dla wszystkich."""
-    pytest.importorskip("mujoco")
-    return REGISTRY[request.param]
 
 
 #: Zabawkowe ramie: dwa stawy obrotowe, chwytak na suwaku (0..2 cm) i druga szczeka

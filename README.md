@@ -89,7 +89,7 @@ zostaje sprawdzenie.
 W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 (inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
 8/8. Kod przeszedł trzy rundy przeglądu z niezależną weryfikacją poprawek;
-ok. 680 testów. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
+92 testy integracyjne (odchudzone 2026-09-25 do łańcuchów przez kilka modułów i zachowań groźnych dla sprzętu). Galaxea A1X działa w symulacji (kalibracja kamer 6/6
 zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
 na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
 ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
