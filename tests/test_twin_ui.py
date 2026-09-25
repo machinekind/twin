@@ -316,6 +316,28 @@ def test_reach_goal_from_the_gizmo_is_kept_in_the_trained_region(app):
     assert np.allclose(app.goal_gizmo.position, (app.T_b2w @ np.r_[g, 1.0])[:3], atol=1e-6)
 
 
+def test_reach_goal_region_follows_the_workspace_robot(app):
+    """Obszar celow reach bierze sie z opisu ramienia stanowiska, nie z domyslnego SO-101.
+
+    Punkt 0,45 m od osi lezy poza pierscieniem SO-101 (0,13-0,32 m), ale w pierscieniu
+    A1X (0,25-0,50 m): dla stanowiska a1x ma zostac tam, gdzie jest.
+    """
+    from lerobot_mp.twin.robots import A1X, SO101
+
+    saved_robot, saved_task = app.ws.robot, app._reach_task
+    try:
+        app.ws.robot, app._reach_task = "a1x", None
+        app._set_goal(np.array([0.45, 0.0, 0.10]))
+        assert app._reach_task.goal_radius == A1X.desk.goal_radius
+        assert np.hypot(*app._goal_base[:2]) == pytest.approx(0.45)
+        app.ws.robot, app._reach_task = "so101", None
+        app._set_goal(np.array([0.45, 0.0, 0.10]))
+        assert app._reach_task.goal_radius == SO101.desk.goal_radius
+        assert np.hypot(*app._goal_base[:2]) == pytest.approx(SO101.desk.goal_radius[1])
+    finally:
+        app.ws.robot, app._reach_task = saved_robot, saved_task
+
+
 @pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
     from lerobot_mp.twin.calib.handeye import CameraFit, Fit

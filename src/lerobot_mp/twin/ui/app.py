@@ -2060,7 +2060,7 @@ class TwinApp:
         @self._safe
         def _(event):
             from ..rl import task as tk
-            g_ = tk.sample_goals(self.twin.scene.kin, tk.make_task("reach"), np.random.default_rng(), 1)[0]
+            g_ = tk.sample_goals(self.twin.scene.kin, tk.make_task("reach", self.ws.spec()), np.random.default_rng(), 1)[0]
             self._set_goal(g_)
 
         @new_cube.on_click
@@ -2131,7 +2131,7 @@ class TwinApp:
             g = np.asarray(runner.goal, float)
         else:
             if self._reach_task is None:
-                self._reach_task = tk.make_task("reach")
+                self._reach_task = tk.make_task("reach", self.ws.spec())
             g = project_goal(self._reach_task, np.asarray(p_base, float))
         self._goal_base = g
         pw = (self.T_b2w @ np.r_[g, 1.0])[:3]
