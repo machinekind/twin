@@ -555,7 +555,7 @@ class TwinApp:
         """Stan panelu dla przewodnika - same odczyty z pamieci (bez dysku, renderu i kamer)."""
         st = self.twin.status
         connected = bool(st.connected)
-        backend = st.backend if connected else str(self.arm_backend.value)
+        backend = st.backend if connected else self._preset_backend()
         simulated = bool(st.simulated) if connected else backend == "sim"
         safety = self.twin.safety_state
         estop = safety is not None and getattr(safety, "value", safety) == "ESTOP"
@@ -616,18 +616,27 @@ class TwinApp:
         g = self.server.gui
         self._tab_help("Ramie")
         with g.add_folder("Polaczenie"):
-            backends = ("sim", "feetech", "lerobot", "a1x")
-            self.arm_backend = g.add_dropdown("Ramie", backends, initial_value=self.ws.backend
-                                              if self.ws.backend in backends else "sim",
-                                              hint="sim - blizniak jest ramieniem (proba bez sprzetu); feetech - "
-                                                   "serwa SO-101 wprost przez port; lerobot - przez kalibracje "
-                                                   "LeRobota; a1x - Galaxea A1X po CAN (stanowisko robot: a1x). "
-                                                   "Dziala po Polacz.")
-            self.arm_port = g.add_text("Port", self.ws.port or "",
+            presets = self._arm_presets()
+            labels = tuple(presets)
+            current = next((k for k, (b, p) in presets.items()
+                            if b == self.ws.backend and (p is None or p == (self.ws.port or p))), labels[0])
+            self.arm_backend = g.add_dropdown("Ramie", labels, initial_value=current,
+                                              hint="Gotowe zestawy dla ramienia tego stanowiska: symulacja albo "
+                                                   "sprzet z domyslnym laczem (A1X: xcan na macOS, can0 na Linuksie, "
+                                                   "PCAN na Windows; SO-101: feetech przez port). Zestaw wpisuje "
+                                                   "Port, ktory mozna potem poprawic. Dziala po Polacz.")
+            self.arm_port = g.add_text("Port", self.ws.port or (presets[current][1] or ""),
                                        hint="feetech/lerobot: COMx, /dev/ttyACM0 albo socket://adres:5555 "
                                             "(`lerobot-twin check` wypisuje porty). a1x: can0 (Linux), xcan "
                                             "albo xcan:6 (macOS), PCAN_USBBUS1 (Windows); pusty = domyslny. "
                                             "sim: nieuzywany.")
+
+            @self.arm_backend.on_update
+            def _(event):
+                port = presets.get(self.arm_backend.value, (None, None))[1]
+                if port is not None:
+                    self.arm_port.value = port
+
             connect = g.add_button("Polacz", icon=viser.Icon.PLUG_CONNECTED, color="green",
                                    hint="Laczy wybrane ramie BEZ ruchu: ramie zostaje tam, gdzie stoi, suwaki "
                                         "pokazuja zmierzona poze. Konczy wszystko, co jezdzi, i kasuje "
@@ -686,7 +695,7 @@ class TwinApp:
         @self._safe
         def _(event):
             try:
-                self._connect(self.arm_backend.value, self.arm_port.value.strip() or None, False)
+                self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
             finally:
                 show_a1x()
             self._notify(event, "Polaczono", f"{self.twin.status.backend}: {self.twin.status.state}")
@@ -788,6 +797,28 @@ class TwinApp:
             self.twin.clear_estop()
 
         self._build_table()
+
+    def _arm_presets(self) -> dict[str, tuple[str, str | None]]:
+        """Zestawy Ramie -> (backend, port albo None = z pola). Pierwszy = domyslny dla tego systemu."""
+        import platform
+        sim = {"symulacja (blizniak jest ramieniem)": ("sim", "")}
+        if self.ws.robot == "a1x":
+            can = {"Galaxea A1X po xcan (macOS)": ("a1x", "xcan"),
+                   "Galaxea A1X po can0 (Linux)": ("a1x", "can0"),
+                   "Galaxea A1X po PCAN (Windows)": ("a1x", "PCAN_USBBUS1")}
+            first = {"Darwin": "Galaxea A1X po xcan (macOS)", "Linux": "Galaxea A1X po can0 (Linux)",
+                     "Windows": "Galaxea A1X po PCAN (Windows)"}.get(platform.system())
+            ordered = {}
+            if first:
+                ordered[first] = can[first]
+            ordered.update(can)
+            ordered.update(sim)
+            return ordered
+        return {"SO-101 przez port (feetech)": ("feetech", None), **sim,
+                "SO-101 przez LeRobota (lerobot)": ("lerobot", None)}
+
+    def _preset_backend(self) -> str:
+        return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]
 
     def _go_home(self) -> None:
         """Pozycja domowa: odbiera ramie kazdemu (panel, polityka, fala) - takze startowi w toku."""

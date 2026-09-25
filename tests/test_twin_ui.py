@@ -856,9 +856,21 @@ def test_arm_tab_offers_a1x_and_its_enable_button_only_for_a_connected_a1x(app, 
     """Ramie = a1x w liscie; "Wlacz silniki A1X" tylko z polaczonym a1x, z potwierdzeniem, bez sprzegla."""
     from lerobot_mp.twin.runtime import RobotStatus
 
-    assert "a1x" in app.arm_backend.options
+    # Zestawy zaleza od ramienia stanowiska: SO-101 -> feetech/sim/lerobot, A1X -> xcan/can0/PCAN/sim,
+    # a pierwszy zestaw A1X to lacze tego systemu (macOS: xcan) i wpisuje Port.
     assert "can0" in app.arm_port.hint and "xcan" in app.arm_port.hint
-    app.arm_backend.value = "sim"
+    so101 = app._arm_presets()
+    assert [b for b, _ in so101.values()] == ["feetech", "sim", "lerobot"]
+    monkeypatch.setattr(app.ws, "robot", "a1x")
+    a1x = app._arm_presets()
+    assert {b for b, _ in a1x.values()} == {"a1x", "sim"} and "a1x" in a1x[next(iter(a1x))]
+    import platform
+    if platform.system() == "Darwin":
+        assert next(iter(a1x.values())) == ("a1x", "xcan")
+    monkeypatch.setattr(app.ws, "robot", "so101")
+    sim_label = next(k for k, (b, _) in so101.items() if b == "sim")
+    app.arm_backend.value = sim_label
+    assert app._preset_backend() == "sim"
     _click(app, "Polacz")
     assert app.twin.status.backend == "sim" and app.a1x_folder.visible is False
     ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
