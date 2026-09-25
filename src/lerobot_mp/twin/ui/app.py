@@ -611,14 +611,19 @@ class TwinApp:
         g = self.server.gui
         self._tab_help("Ramie")
         with g.add_folder("Polaczenie"):
-            self.arm_backend = g.add_dropdown("Ramie", ("sim", "feetech", "lerobot"), initial_value=self.ws.backend
-                                              if self.ws.backend in ("sim", "feetech", "lerobot") else "sim",
+            backends = ("sim", "feetech", "lerobot", "a1x")
+            self.arm_backend = g.add_dropdown("Ramie", backends, initial_value=self.ws.backend
+                                              if self.ws.backend in backends else "sim",
                                               hint="sim - blizniak jest ramieniem (proba bez sprzetu); feetech - "
                                                    "serwa SO-101 wprost przez port (do blizniaka ten); lerobot - "
-                                                   "przez kalibracje LeRobota (katy przesuniete). Dziala po Polacz.")
+                                                   "przez kalibracje LeRobota (katy przesuniete); a1x - Galaxea "
+                                                   "A1X po CAN (stanowisko z robot: a1x, pakiet galaxeo). Dziala "
+                                                   "po Polacz.")
             self.arm_port = g.add_text("Port", self.ws.port or "",
                                        hint="Port dla feetech/lerobot: COMx (Windows), /dev/ttyACM0 (Linux) albo "
-                                            "socket://adres:5555 (most lerobot-mp-bridge). Dla sim nieuzywany.")
+                                            "socket://adres:5555 (most lerobot-mp-bridge). Dla a1x interfejs CAN: "
+                                            "can0 (Linux), xcan albo xcan:6 (macOS), pusty = domyslny - Wykryj "
+                                            "porty go nie pokaze. Dla sim nieuzywany.")
             self.ports_md = g.add_markdown("")
             scan = g.add_button("Wykryj porty", icon=viser.Icon.SEARCH,
                                 hint="Wypisuje porty USB-serial; pierwsza przejsciowke CH34x (WCH, typowa w "
@@ -635,6 +640,52 @@ class TwinApp:
             disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X,
                                       hint="Konczy polityke, fale i nagranie identyfikacji, odbiera ramie "
                                            "wszystkim i rozlacza backend. Potwierdzenia trzeba potem dac od nowa.")
+        # Galaxea A1X: sekwencja wlaczenia FF 1-5-6 tylko recznie (zasilone od nowa ramie slucha od razu,
+        # a FF 5 na chwile puszcza silniki). Widoczne tylko z polaczonym backendem a1x.
+        self.a1x_folder = g.add_folder("Silniki A1X")
+        with self.a1x_folder:
+            self.a1x_confirm = g.add_checkbox(
+                "Prawdziwe ramie: rozumiem, ze silniki na chwile puszcza", False,
+                hint="Potwierdzenie przed kazdym Wlacz silniki A1X (gasnie po uzyciu). FF 5 na ulamek sekundy "
+                     "zwalnia silniki - ramie bez hamulcow moze lekko opasc; podeprzyj je.")
+            a1x_enable = g.add_button("Wlacz silniki A1X (FF 1-5-6)", icon=viser.Icon.BOLT,
+                                      hint="Tylko gdy ramie zglasza sie, ale nie slucha rozkazow (blad 'gluche "
+                                           "na 0x050'). Wysyla FF 1 -> 5 -> 6 z celem = zmierzona poza przed, "
+                                           "miedzy i po kazdym kodzie. Odmowa przy wlaczonym sprzegle albo gdy "
+                                           "ramie ma polityka / fala / identyfikacja.")
+            self.a1x_md = g.add_markdown("")
+
+        def show_a1x() -> None:
+            on = self.twin.status.connected and self.twin.status.backend == "a1x"
+            self.a1x_folder.visible = on
+            if not on:
+                self.a1x_confirm.value = False
+
+        show_a1x()
+
+        @a1x_enable.on_click
+        @self._safe
+        def _(event):
+            st, b = self.twin.status, self.twin.backend
+            if not (st.connected and st.backend == "a1x") or not hasattr(b, "enable"):
+                raise RuntimeError("wlaczenie silnikow tylko dla polaczonego ramienia a1x")
+            if self.arm_engage.value:
+                raise RuntimeError("najpierw wylacz sprzeglo panelu")
+            busy = self._busy(PANEL_OWNER)
+            if busy:
+                raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
+            if not self.a1x_confirm.value:
+                raise RuntimeError("zaznacz potwierdzenie, ze silniki na chwile puszcza")
+            self.a1x_confirm.value = False
+            self.a1x_md.content = "wlaczanie: FF 1 -> 5 -> 6, cel = zmierzona poza..."
+
+            def work():
+                try:
+                    self.a1x_md.content = f"**Silniki A1X:** {b.enable()}"
+                except Exception as exc:                  # odmowa backendu (cisza na laczu, FF 2)
+                    logger.exception("Wlaczanie silnikow A1X")
+                    self.a1x_md.content = f"**Silniki A1X:** odmowa - {exc}"
+            threading.Thread(target=work, name="a1x-wlacz", daemon=True).start()
 
         @scan.on_click
         @self._safe
@@ -657,7 +708,11 @@ class TwinApp:
         @connect.on_click
         @self._safe
         def _(event):
-            self._connect(self.arm_backend.value, self.arm_port.value.strip() or None, self.arm_home_on_connect.value)
+            try:
+                self._connect(self.arm_backend.value, self.arm_port.value.strip() or None,
+                              self.arm_home_on_connect.value)
+            finally:
+                show_a1x()
             self._notify(event, "Polaczono", f"{self.twin.status.backend}: {self.twin.status.state}")
 
         @disconnect.on_click
@@ -666,6 +721,7 @@ class TwinApp:
             self._stop_motion("rozlaczenie")
             self._reset_confirmations()
             self.twin.disconnect()
+            show_a1x()
 
         with g.add_folder("Sterowanie"):
             self.arm_engage = g.add_checkbox("Sprzeglo: panel steruje ramieniem", False,
@@ -697,7 +753,8 @@ class TwinApp:
                     lo = float(np.ceil(np.degrees(kin.lo[k]) * 2) / 2)
                     hi = float(np.floor(np.degrees(kin.hi[k]) * 2) / 2)
                 if name == spec.gripper:
-                    tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (tiki serwa jak w feetech). Ze "
+                    tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (SO-101: tiki serwa jak w "
+                           "feetech; A1X: skok palca 0..5 cm). Ze "
                            "sprzeglem ustawia cel. Chwytak, ktory po STOP-ie dalej sciska: Skasuj STOP, "
                            "sprzeglo, potem ten suwak (przy STOP-ie sprzeglo sie nie wlacza).")
                 else:

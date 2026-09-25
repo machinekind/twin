@@ -111,7 +111,7 @@ safety:
     gripper: 35.0
 
 robot:
-  backend: sim         # sim | lerobot | feetech | auto
+  backend: sim         # sim | lerobot | feetech | a1x | auto
   port: null           # np. /dev/ttyACM0, /dev/tty.usbmodem58FA0958121, COM5
   robot_id: so101_follower
   kind: so101          # so101 | so100
@@ -130,6 +130,28 @@ robot:
   # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position
   # serwa chwytaka (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u.
   torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte
+
+# --- tylko backend `a1x`: Galaxea A1X po CAN-FD (lerobot-twin, pip install -e ".[a1x]") ---
+# robot.port to wtedy interfejs CAN: can0 (Linux), xcan albo xcan:<adres usb> (macOS), virtual:x.
+a1x:
+  kp: 20.0                   # nigdy 0: przy kp 0 ramie jest gluche; dziala i tak tylko p_des
+  kd: 1.0
+  gripper_kp: 25.0
+  gripper_open_pdes: -2.0    # p_des chwytaka przy 100 (otwarty); bardziej ujemne = szerzej
+  gripper_closed_pdes: 0.6   # p_des przy 0 (zamkniety)
+  gripper_fb_closed: null    # grupa 7 z 0x052 [rad] przy 0 i przy 100 - zmierz; null = panel
+  gripper_fb_open: null      #   pokazuje rozkaz chwytaka, nie pomiar
+  gripper_start: 100.0       # co zglaszac jako chwytak przed pierwszym rozkazem (bez sprzezenia)
+  gripper_rate_pdes_s: 2.0   # slew p_des chwytaka [1/s]
+  gripper_force: 1.2         # |effort| przy zamykaniu powyzej = kontakt, cel zamarza
+  joint_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # zero stawow [st.]: odjete przy odczycie (J3 ~ +1.49)
+  stream_hz: 200.0           # strumien 0x050/0x051 [Hz]
+  max_step_deg_s: 90.0       # wlasny limit predkosci backendu (pod nadzorem blizniaka)
+  stale_ms: 150.0            # brak 0x052 dluzej = lacze milczy, wysylka stoi
+  frozen_frames: 50          # tyle identycznych 0x052 = ramie zwolnione (FF 2): wylacz i wlacz zasilanie
+  deaf_err_deg: 3.0          # rozkaz-pomiar tyle st. przez deaf_s przy stojacym stawie
+  deaf_s: 1.0                #   = ramie gluche (Wlacz silniki A1X) albo zablokowane -> STOP
+  enable_on_connect: false   # FF 1->5->6 po polaczeniu; domyslnie nie (FF 5 na chwile puszcza silniki)
 
 ui:
   show: true

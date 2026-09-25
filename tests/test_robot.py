@@ -81,6 +81,43 @@ def test_factory_rejects_unknown_backend():
         create_backend(cfg)
 
 
+def test_factory_error_lists_every_backend():
+    cfg = load_config(overrides={"robot": {"backend": "quantum"}})
+    with pytest.raises(ValueError, match=r"sim\|lerobot\|feetech\|a1x\|auto"):
+        create_backend(cfg)
+
+
+def _a1x_config(port="can7"):
+    from lerobot_mp.config import JointConfig
+
+    joints = {f"arm_joint{i}": JointConfig(min=-90.0, max=90.0) for i in range(1, 7)}
+    joints["gripper"] = JointConfig(min=0.0, max=100.0)
+    return load_config(overrides={"robot": {"backend": "a1x", "port": port}}, joints=joints)
+
+
+def test_factory_builds_a1x(monkeypatch):
+    pytest.importorskip("galaxeo")
+    from lerobot_mp.robot import a1x
+
+    opened = []
+    monkeypatch.setattr(a1x, "open_bus", lambda iface: opened.append(iface) or object())
+    arm = create_backend(_a1x_config())
+    assert isinstance(arm, a1x.A1XArm)
+    assert not arm.info.simulated and "can7" in arm.info.description
+    assert opened == []                                   # lacze otwiera dopiero connect()
+
+
+def test_factory_a1x_reports_missing_library_clearly(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "galaxeo", None)     # pakiet niezainstalowany
+    from lerobot_mp.robot import a1x                      # sam modul importuje sie bez galaxeo
+
+    with pytest.raises(ImportError, match=r'pip install -e "\.\[a1x\]"'):
+        create_backend(_a1x_config())
+    assert a1x.A1XArm is not None
+
+
 def test_lerobot_backend_reports_missing_library_clearly():
     """Bez zainstalowanego LeRobot komunikat ma mowic, co zainstalowac."""
     from lerobot_mp.robot.lerobot_backend import LeRobotArm

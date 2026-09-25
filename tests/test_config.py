@@ -68,3 +68,30 @@ def test_joints_argument_replaces_the_default_joint_table():
     assert merged.joint("b").max == 50.0 and table["b"].max == 100.0
     with pytest.raises(ValueError, match="Nieznany staw"):
         load_config(joints=table, overrides={"joints": {"gripper": {"max_vel": 1.0}}})
+
+
+def test_a1x_section_has_defaults_and_rejects_unknown_keys(tmp_path):
+    cfg = load_config()
+    assert cfg.a1x.kp == 20.0 and cfg.a1x.gripper_kp == 25.0
+    assert cfg.a1x.gripper_fb_closed is None and cfg.a1x.enable_on_connect is False
+    assert cfg.a1x.joint_offsets_deg == (0.0,) * 6
+    path = tmp_path / "c.yaml"
+    path.write_text("a1x:\n  joint_offsets_deg: [0, 0, 1.49, 0, 0, 0]\n  gripper_fb_closed: 0.2\n"
+                    "  gripper_fb_open: -1.0\n", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.a1x.joint_offsets_deg == (0.0, 0.0, 1.49, 0.0, 0.0, 0.0)
+    assert (cfg.a1x.gripper_fb_closed, cfg.a1x.gripper_fb_open) == (0.2, -1.0)
+    assert cfg.a1x.stale_ms == 150.0                     # nietkniete pole - wartosc domyslna
+    with pytest.raises(ValueError, match="Nieznane klucze"):
+        load_config(overrides={"a1x": {"heartbeat": True}})
+
+
+def test_a1x_kp_zero_is_rejected():
+    with pytest.raises(ValueError, match="kp"):
+        load_config(overrides={"a1x": {"kp": 0.0}})
+    with pytest.raises(ValueError, match="kp"):
+        load_config(overrides={"a1x": {"gripper_kp": -1.0}})
+    with pytest.raises(ValueError, match="6 wartosci"):
+        load_config(overrides={"a1x": {"joint_offsets_deg": [0.0, 1.0]}})
+    with pytest.raises(ValueError, match="oba albo zadne"):
+        load_config(overrides={"a1x": {"gripper_fb_closed": 0.2}})

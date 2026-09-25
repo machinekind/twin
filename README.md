@@ -270,6 +270,23 @@ lerobot-twin --config configs/local.yaml ui
 
 Dalej: [docs/TWIN.md](docs/TWIN.md), „Pierwszy test na prawdziwym stanowisku”, od kroku 0.
 
+### 7. Galaxea A1X (CAN)
+
+Backend `a1x` rozmawia z ramieniem po CAN-FD przez pakiet `galaxeo`
+(protokół i łącze, repozytorium galaxeo-manipulators):
+
+```bash
+pip install -e ".[twin,a1x,dev]" -c constraints.txt   # wymaga scalonej gałęzi `pkg` w galaxeo-manipulators
+# do czasu scalenia: pip install -e <klon galaxeo-manipulators na gałęzi pkg>
+# macOS (dongiel XCAN): dodatkowo pip install pyusb i brew install libusb
+```
+
+W panelu: Ramię = `a1x`, Port = interfejs CAN (`can0` na Linuksie po
+`./can_up.sh`, `xcan` albo `xcan:<adres usb>` na macOS). Parametry (wzmocnienia,
+p_des chwytaka, przesunięcie zera J3) są w sekcji `a1x` konfiguracji. Po
+„Połącz” nic nie idzie na magistralę do pierwszego ruchu; sekwencja włączenia
+FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
+
 ### Naprawa OpenCV po LeRobocie
 
 Opcjonalny backend `lerobot` (`pip install -e ".[robot]" -c constraints.txt`,

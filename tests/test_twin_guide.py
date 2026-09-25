@@ -368,3 +368,21 @@ def test_panel_texts_are_not_specific_to_one_machine(panel):
     finally:
         panel.ws.cameras[:] = saved
         panel._refresh_cameras()
+
+
+def test_a1x_is_a_real_backend_with_its_own_connect_hint_and_a_no_brakes_warning():
+    g = gd.build(GuideSnapshot(backend="a1x", simulated=False, arm_error="brak ramek 0x052 na can0"))
+    assert g.current.number == 0 and "Ramie = a1x" in g.now and "can0" in g.now
+    assert "Wykryj porty" not in g.now                    # interfejs CAN to nie port szeregowy
+    assert "brak ramek 0x052" in g.current.detail
+    g = gd.build(GuideSnapshot(connected=True, backend="a1x", simulated=False, policies=BUNDLED))
+    st = _status(g)
+    assert st[0] == DONE and st[1] == CURRENT and "Szukaj kamer USB" in g.now
+    assert st[2] == TODO and st[4] == TODO                 # jak feetech: na sprzecie nic nie jest "nie dotyczy"
+    assert "prawdziwe ramie (a1x)" in g.mode
+    assert any("brak hamulcow" in b for b in g.blockers)
+    assert not any("brak hamulcow" in b for b in gd.build(GuideSnapshot(connected=True, backend="feetech",
+                                                                          simulated=False)).blockers)
+    text = gd.render(g)
+    assert "a1x" in text and text == gd.render(gd.build(GuideSnapshot(connected=True, backend="a1x",
+                                                                        simulated=False, policies=BUNDLED)))

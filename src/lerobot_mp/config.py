@@ -327,12 +327,14 @@ class SafetyConfig:
 
 @dataclass
 class RobotConfig:
-    #: "sim" | "lerobot" | "feetech" | "auto".
+    #: "sim" | "lerobot" | "feetech" | "a1x" | "auto".
     #:   lerobot - pelna zgodnosc z ekosystemem LeRobot (wymaga torcha),
     #:   feetech - rozmowa wprost z serwami przez port szeregowy (sam pyserial).
+    #:   a1x     - Galaxea A1X po CAN-FD (pakiet `galaxeo`, sekcja `a1x`; tylko blizniak).
     #:   auto    - lerobot, jesli jest zainstalowany, inaczej feetech.
     backend: str = "sim"
     #: Port szeregowy plytki sterujacej, np. /dev/ttyACM0 albo COM5.
+    #: Dla a1x: interfejs CAN (can0 / xcan / xcan:6 / virtual:x); pusty = can0 (macOS: xcan).
     port: str | None = None
     #: Identyfikator ramienia w LeRobot (wskazuje plik kalibracji).
     robot_id: str = "so101_follower"
@@ -363,6 +365,67 @@ class RobotConfig:
     #: Wylaczenie momentu przy wyjsciu. Domyslnie NIE, bo wiotkie ramie opada
     #: pod wlasnym ciezarem - wlacz tylko, gdy wiesz, ze jest podparte.
     torque_off_on_exit: bool = False
+
+
+@dataclass
+class A1XConfig:
+    """Backend `a1x`: Galaxea A1X po CAN-FD (protokol i lacze z pakietu `galaxeo`).
+
+    Ramie jest czysto pozycyjne: dziala tylko p_des, kp/kd/v_des/t_ff sa bez wplywu,
+    ale kp 0 zostawia je gluche na rozkazy (galaxeo diag/REPORT.md) - dlatego kp > 0.
+    Ramie nie ma hamulcow: rozlaczenie nigdy nie zwalnia silnikow (FF 2), a
+    niesterowane A1X trzyma poze, w ktorej stoi (galaxeo docs/SAFETY.md).
+    """
+
+    #: Wzmocnienia wysylane w 0x050 (nigdy 0; tylko p_des ma wladze).
+    kp: float = 20.0
+    kd: float = 1.0
+    gripper_kp: float = 25.0
+    #: p_des chwytaka [jednostki ramienia] przy 100 (otwarty) i przy 0 (zamkniety);
+    #: bardziej ujemne = szerzej (galaxeo so101_bridge.py).
+    gripper_open_pdes: float = -2.0
+    gripper_closed_pdes: float = 0.6
+    #: Pozycja grupy 7 z 0x052 [rad] przy 0 i przy 100 - zmierz na swoim ramieniu.
+    #: None = sprzezenie niezmierzone: backend zglasza ostatni rozkaz (petla otwarta).
+    gripper_fb_closed: float | None = None
+    gripper_fb_open: float | None = None
+    #: Co backend zglasza jako chwytak przed pierwszym rozkazem, gdy sprzezenie niezmierzone.
+    gripper_start: float = 100.0
+    #: Slew p_des chwytaka [jednostki p_des / s]; pelny skok 2,6 to 1,3 s.
+    gripper_rate_pdes_s: float = 2.0
+    #: |effort| grupy 7 powyzej tego progu przy zamykaniu = kontakt: cel zamarza (chwyta, nie miazdzy).
+    gripper_force: float = 1.2
+    #: Przesuniecie zera stawow ramienia [st.]: odjete przy odczycie, dodane przy wysylce
+    #: (J3 czyta ok. +1,49 st. w spoczynku - zmierz swoje).
+    joint_offsets_deg: tuple[float, ...] = (0.0,) * 6
+    #: Czestotliwosc strumienia 0x050 / 0x051 [Hz] (ramie odpowiada 0x052 co 5 ms).
+    stream_hz: float = 200.0
+    #: Wlasny limit predkosci p_des backendu [st./s] - druga warstwa pod nadzorem blizniaka.
+    max_step_deg_s: float = 90.0
+    #: Brak 0x052 dluzej niz tyle [ms] = lacze milczy: wysylka stoi, blizniak dostaje blad.
+    stale_ms: float = 150.0
+    #: Tyle identycznych ramek 0x052 z rzedu = telemetria zamrozona (ramie zwolnione, FF 2).
+    frozen_frames: int = 50
+    #: Rozjazd rozkaz-pomiar [st.] trwajacy `deaf_s` przy stojacym stawie = ramie gluche albo zablokowane.
+    deaf_err_deg: float = 3.0
+    deaf_s: float = 1.0
+    #: Sekwencja wlaczenia FF 1 -> 5 -> 6 zaraz po polaczeniu. Domyslnie NIE: zasilone od nowa
+    #: ramie slucha od razu, a FF 5 na chwile puszcza silniki. W panelu jest na to przycisk.
+    enable_on_connect: bool = False
+
+    def __post_init__(self) -> None:
+        if self.kp <= 0 or self.gripper_kp <= 0:
+            raise ValueError("a1x.kp i a1x.gripper_kp musza byc > 0 - przy kp 0 ramie A1X przestaje "
+                             "sluchac rozkazow")
+        if len(self.joint_offsets_deg) != 6:
+            raise ValueError("a1x.joint_offsets_deg: potrzeba 6 wartosci (arm_joint1..6)")
+        self.joint_offsets_deg = tuple(float(x) for x in self.joint_offsets_deg)
+        if (self.gripper_fb_closed is None) != (self.gripper_fb_open is None):
+            raise ValueError("a1x.gripper_fb_closed i gripper_fb_open: podaj oba albo zadne")
+        if self.gripper_fb_closed is not None and abs(self.gripper_fb_open - self.gripper_fb_closed) < 1e-6:
+            raise ValueError("a1x.gripper_fb_closed i gripper_fb_open nie moga byc rowne")
+        if self.stream_hz <= 0 or self.max_step_deg_s <= 0 or self.gripper_rate_pdes_s <= 0:
+            raise ValueError("a1x.stream_hz, max_step_deg_s i gripper_rate_pdes_s musza byc > 0")
 
 
 @dataclass
@@ -425,6 +488,7 @@ class AppConfig:
     keyboard: KeyboardConfig = field(default_factory=KeyboardConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     robot: RobotConfig = field(default_factory=RobotConfig)
+    a1x: A1XConfig = field(default_factory=A1XConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     geometry: ArmGeometryConfig = field(default_factory=ArmGeometryConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)

@@ -103,7 +103,7 @@ class CameraSnap:
 @dataclass(frozen=True)
 class GuideSnapshot:
     connected: bool = False
-    #: "sim", "feetech", "lerobot" (albo "brak" przed pierwszym polaczeniem).
+    #: "sim", "feetech", "lerobot", "a1x" (albo "brak" przed pierwszym polaczeniem).
     backend: str = "brak"
     simulated: bool = True
     arm_error: str = ""
@@ -181,9 +181,15 @@ def _step_arm(s: GuideSnapshot) -> Step:
     if s.connected:
         det = f"polaczone: {s.backend}" + (" (blizniak jest ramieniem)" if s.simulated else "")
         return Step(0, title, DONE, det)
-    act = ("Ramie > Polaczenie: Ramie = sim, **Polacz**" if s.simulated
-           else "Ramie > Polaczenie: Ramie = feetech, **Wykryj porty** (albo socket://adres:5555 z mostu), "
-                "odznacz 'Po polaczeniu jedz do pozycji domowej', **Polacz**")
+    if s.simulated:
+        act = "Ramie > Polaczenie: Ramie = sim, **Polacz**"
+    elif s.backend == "a1x":
+        # A1X po CAN: interfejs, nie port szeregowy - "Wykryj porty" go nie pokaze.
+        act = ("Ramie > Polaczenie: Ramie = a1x, Port = can0 (macOS: xcan), odznacz 'Po polaczeniu jedz do "
+               "pozycji domowej', **Polacz**")
+    else:
+        act = ("Ramie > Polaczenie: Ramie = feetech, **Wykryj porty** (albo socket://adres:5555 z mostu), "
+               "odznacz 'Po polaczeniu jedz do pozycji domowej', **Polacz**")
     det = "rozlaczone" + (f" ({s.arm_error})" if s.arm_error else "")
     return Step(0, title, TODO, det, act)
 
@@ -379,6 +385,9 @@ def blockers(s: GuideSnapshot) -> list[str]:
     out += [str(w) for w in s.warnings]
     if s.connected and s.backend == "lerobot":
         out.append("backend lerobot liczy katy inaczej niz blizniak - do blizniaka uzywaj feetech")
+    if s.connected and s.backend == "a1x":
+        out.append("backend a1x: brak hamulcow - STOP trzyma zmierzona poze; nie wylaczaj zasilania z ramieniem "
+                   "w gorze")
     for c in s.cameras:
         if not c.enabled:
             continue
