@@ -199,7 +199,80 @@ SO101 = RobotSpec(
     },
 )
 
-REGISTRY: dict[str, RobotSpec] = {SO101.name: SO101}
+#: Galaxea A1X: szesc stawow obrotowych i chwytak na suwaku. MJCF generuje
+#: `scripts/import_a1x_model.py` z URDF producenta (`assets/robots/a1x/README.md`).
+A1X = RobotSpec(
+    name="a1x",
+    title="Galaxea A1X",
+    mjcf="assets/robots/a1x/a1x.xml",
+    joints=("arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "arm_joint6", "gripper"),
+    gripper="gripper",
+    tcp_site="tcp",
+    hand_body="gripper_link",
+    base_body="base_link",
+    # Keyframe `home` modelu (1,0 / -1,6 / 0,6 rad); szczeka 0,03 m z 0,05 = 60.
+    home={
+        "arm_joint1": 0.0,
+        "arm_joint2": 57.3,
+        "arm_joint3": -91.7,
+        "arm_joint4": 34.4,
+        "arm_joint5": 0.0,
+        "arm_joint6": 0.0,
+        "gripper": 60.0,
+    },
+    # Site `tcp` jak z generatora galaxeo: x - podejscie, y - zamykanie szczek.
+    tcp_approach=(1.0, 0.0, 0.0),
+    tcp_closing=(0.0, 1.0, 0.0),
+    # Kolejnosc tak, zeby od pierwszego do drugiego czubka szlo wzdluz `tcp_closing` (+y):
+    # szczeka 1 jedzie po +y, szczeka 2 po -y. Srodek miedzy nimi nie zalezy od kolejnosci.
+    fingertips=("finger2_tip", "finger1_tip"),
+    roll_joint="arm_joint6",
+    # Ramie i lokiec wysuniete do przodu, nadgarstek w dol: 85 % poz ma TCP 0,20-0,55 m
+    # od osi i nad blatem (mediana 0,35 m wysokosci). Szersze zakresy z planu (J2 20..120,
+    # J3 -150..-30, J4 +-60) dawaly 57 %, z karta zwykle ponad kadrem kamer przy stole.
+    wave_ranges={
+        "arm_joint1": (-75.0, 75.0),
+        "arm_joint2": (60.0, 130.0),
+        "arm_joint3": (-130.0, -60.0),
+        "arm_joint4": (0.0, 80.0),
+        "arm_joint5": (-45.0, 45.0),
+    },
+    jaw_bodies=("gripper_finger_link1", "gripper_finger_link2"),
+    # Zakresy URDF minus 3-5 st. zapasu: rozkaz nie dociska stawu do ogranicznika.
+    # Poza spoczynkowa ramienia (J2 ~ -0,2 st., J3 ~ +1,5 st.) lezy poza nimi celowo -
+    # nadzor wyprowadza z niej staw miekkimi limitami (`keep_outside`), jak ramie 2 SO-101.
+    limits={
+        "arm_joint1": (-160.0, 160.0),
+        "arm_joint2": (3.0, 177.0),
+        "arm_joint3": (-187.0, -3.0),
+        "arm_joint4": (-85.0, 85.0),
+        "arm_joint5": (-85.0, 85.0),
+        "arm_joint6": (-160.0, 160.0),
+        "gripper": (0.0, 100.0),
+    },
+    # 90 st/s = ogranicznik predkosci mostka; chwytak jak SO-101 (ten sam `grip_step` zadan RL).
+    max_vel={**{f"arm_joint{k}": 90.0 for k in range(1, 7)}, "gripper": 300.0},
+    # Wysuw szczeki [m]: 0 = plytki zsuniete (czubki 3 mm od siebie), 0,05 = pelne otwarcie.
+    gripper_range_q=(0.0, 0.05),
+    mirror_joints={"gripper_finger_joint2": ("gripper", -1.0)},
+    # Metry: 20 mm wysuwu = 43 mm miedzy czubkami, wiecej niz przekatna 42 mm kostki.
+    jaw=JawThresholds(still=0.001, margin=0.003, creep=0.002, open=0.020),
+    desk=Desk(
+        goal_radius=(0.25, 0.50),
+        goal_height=(0.03, 0.25),
+        cube_radius=(0.28, 0.45),
+        cube_bearing=(-0.7, 0.7),
+        wave_radius=(0.20, 0.55),
+        search_centre=(0.35, 0.0, 0.08),
+        search_dist=(0.6, 1.2),
+        camera_dist=(0.7, 1.1),
+        camera_centre=(0.35, 0.0, 0.08),
+        map_centre=(0.36, 0.0),
+        map_side=0.9,
+    ),
+)
+
+REGISTRY: dict[str, RobotSpec] = {SO101.name: SO101, A1X.name: A1X}
 
 
 def get_spec(name: str) -> RobotSpec:

@@ -2,9 +2,11 @@
 
     lerobot-twin check                       # czy srodowisko jest gotowe (bez renderu), takze GPU
     lerobot-twin demo                        # przykladowe stanowisko w symulacji (2 kamery)
+    lerobot-twin demo --robot a1x            # ... z ramieniem Galaxea A1X
     lerobot-twin card --tag-mm 50            # arkusz karty kalibracyjnej do druku
     lerobot-twin board --square-mm 28        # tablica ChArUco do intrynsyk kamery
     lerobot-twin calib-sim --n 5 --cameras 2 # kalibracja w symulacji, oceniana wzgledem prawdy
+    lerobot-twin calib-sim --robot a1x       # ... na ramieniu A1X
     lerobot-twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
     lerobot-twin train --task reach          # polityka PPO na GPU (MuJoCo Warp) + ewaluacja na CPU
     lerobot-twin eval <policy.pt> --rand     # ewaluacja polityki w zwyklym MuJoCo
@@ -53,10 +55,16 @@ def _check(_: argparse.Namespace) -> int:
 
     try:
         from .kinematics import RobotKinematics
-        from .robots import SO101
+        from .robots import REGISTRY, SO101
 
+        for spec in REGISTRY.values():
+            try:
+                m = RobotKinematics(spec).model
+                line(f"model {spec.title}", f"{m.nbody} cial, {int(m.mesh_facenum.sum())} trojkatow")
+            except Exception as exc:  # noqa: BLE001 - zly model to wiersz raportu, nie wyjatek
+                line(f"model {spec.title}", f"{type(exc).__name__}: {exc}", False)
+        # Zgodnosc z niezaleznym modelem podgladu 3D - tylko SO-101 go ma.
         kin = RobotKinematics(SO101)
-        line("model SO-101 (menagerie)", f"{kin.model.nbody} cial, {int(kin.model.mesh_facenum.sum())} trojkatow")
         from ..preview.model import load_model
 
         art = load_model()
@@ -178,14 +186,40 @@ def _board(a: argparse.Namespace) -> int:
 
 
 def _calib_sim(a: argparse.Namespace) -> int:
-    from .calib import simulate
+    """`calib.simulate` dla wybranego ramienia - te same wiersze wyniku, co `python -m ...simulate`."""
+    import numpy as np
 
-    argv = ["--n", str(a.n), "--cameras", str(a.cameras), "--seed", str(a.seed)]
-    if a.extreme:
-        argv.append("--extreme")
-    if a.verbose:
-        argv.append("-v")
-    return simulate.main(argv)
+    from .calib import simulate
+    from .robots import get_spec
+
+    spec = get_spec(a.robot)
+    print(f"Ramie: {spec.title}")
+
+    def show(r):
+        if a.verbose:
+            prog = "  ".join(f"{c}: {o} obs {s:.0f}st" for c, (o, _, s) in r.progress.items())
+            print(f"    poza {r.index:2d}  {prog}  {r.note}")
+
+    rows = []
+    for seed in range(a.seed, a.seed + a.n):
+        res = simulate.run(seed, a.cameras, spec=spec, extreme=a.extreme, on_step=show)
+        rows.append(res)
+        for cam in sorted(res.trusted):
+            flag = "" if res.trusted[cam] else f"  NIEZAUFANA ({res.reasons[cam]})"
+            print(f"ziarno {seed:3d} {cam}: pozy={res.poses:2d} rms={res.rms_px[cam]:.2f}px  "
+                  f"blad={res.err_mm[cam]:.2f}mm {res.err_deg[cam]:.3f}st  "
+                  f"karta={res.card_mm:.2f}mm {res.card_deg:.2f}st{flag}")
+
+    ok = [(r, c) for r in rows for c in r.trusted if r.trusted[c]]
+    total = sum(len(r.trusted) for r in rows)
+    print(f"\nzaufane kamery: {len(ok)}/{total}")
+    if ok:
+        mm = np.array([r.err_mm[c] for r, c in ok])
+        deg = np.array([r.err_deg[c] for r, c in ok])
+        px = np.array([r.rms_px[c] for r, c in ok])
+        for name, v, unit in (("przesuniecie", mm, "mm"), ("obrot", deg, "st"), ("residuum", px, "px")):
+            print(f"{name:>13}: mediana {np.median(v):7.3f} {unit}  najgorzej {v.max():7.3f} {unit}")
+    return 0
 
 
 def _workspace(a: argparse.Namespace) -> int:
@@ -209,9 +243,14 @@ def _workspace(a: argparse.Namespace) -> int:
     return 0
 
 
-#: Przykladowe stanowisko w symulacji - dwie kamery, ktorych skalibrowana poza
-#: jest ich prawdziwa poza w scenie (zaufane), wiec "kostka z kamer" dziala od razu.
-DEMO_WORKSPACE = Path("examples") / "twin.sim.json"
+#: Przykladowe stanowiska w symulacji, po jednym na ramie - dwie kamery, ktorych
+#: skalibrowana poza jest ich prawdziwa poza w scenie (zaufane), wiec "kostka z kamer"
+#: dziala od razu.
+DEMO_WORKSPACES = {
+    "so101": Path("examples") / "twin.sim.json",
+    "a1x": Path("examples") / "twin.a1x.sim.json",
+}
+DEMO_WORKSPACE = DEMO_WORKSPACES["so101"]
 
 
 def _demo(a: argparse.Namespace) -> int:
@@ -220,9 +259,10 @@ def _demo(a: argparse.Namespace) -> int:
     from ..paths import data_path
     from .robots import resolve_asset
 
-    src = resolve_asset(DEMO_WORKSPACE)
+    example = DEMO_WORKSPACES[a.robot]
+    src = resolve_asset(example)
     if not src.is_file():
-        print(f"Brak {DEMO_WORKSPACE} - to polecenie dziala z klonu repozytorium.", file=sys.stderr)
+        print(f"Brak {example} - to polecenie dziala z klonu repozytorium.", file=sys.stderr)
         return 1
     # To samo co workspace.default_path(), ale bez importu `workspace` (ciagnie mujoco).
     dst = Path(a.path) if a.path else data_path(Path("workspace") / "twin.json")
@@ -236,8 +276,12 @@ def _demo(a: argparse.Namespace) -> int:
     print(f"Skopiowano {src} -> {dst}")
     print("Stanowisko w symulacji: ramie sim, dwie kamery symulowane (sym-lewa, sym-prawa) z zaufana kalibracja.")
     ws_flag = f" --workspace {dst}" if a.path else ""
-    print(f"Dalej: lerobot-twin ui{ws_flag}  ->  Ramie: sim, Polacz  ->  Polityka: lift-v3,"
-          f" 'lift: skad polozenie kostki' = kamery.")
+    if a.robot == "so101":
+        print(f"Dalej: lerobot-twin ui{ws_flag}  ->  Ramie: sim, Polacz  ->  Polityka: lift-v3,"
+              f" 'lift: skad polozenie kostki' = kamery.")
+    else:
+        # Polityki w assets/policies sa uczone na SO-101 - dla innego ramienia tylko panel.
+        print(f"Ramie: {a.robot}. Dalej: lerobot-twin ui{ws_flag}  ->  Ramie: sim, Polacz.")
     return 0
 
 
@@ -432,6 +476,8 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("demo", help="przykladowe stanowisko w symulacji -> workspace/twin.json")
     p.add_argument("--path", default=None, help="plik docelowy (domyslnie workspace/twin.json)")
     p.add_argument("--force", action="store_true", help="nadpisz istniejacy plik stanowiska")
+    p.add_argument("--robot", choices=tuple(DEMO_WORKSPACES), default="so101",
+                   help="ktore ramie (domyslnie so101)")
     p.set_defaults(fn=_demo)
 
     p = sub.add_parser("card", help="arkusz karty kalibracyjnej do druku")
@@ -451,6 +497,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--cameras", type=int, default=2)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--extreme", action="store_true", help="karta na granicy przekrzywienia")
+    p.add_argument("--robot", choices=tuple(DEMO_WORKSPACES), default="so101",
+                   help="ktore ramie (domyslnie so101)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=_calib_sim)
 

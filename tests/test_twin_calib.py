@@ -153,6 +153,20 @@ def test_full_session_in_simulation_calibrates_the_camera():
     assert res.poses < 40, "fala ma sie zmiescic w kilkudziesieciu pozach, nie w maksimum"
 
 
+@pytest.mark.render
+def test_calib_session_converges_on_the_a1x():
+    """Ta sama sesja na A1X: fala z `A1X.wave_ranges`, kamery w skali `A1X.desk`.
+
+    Osiagniete na ziarnie 0: 16 poz, 0,58 mm i 0,037 st. (residuum 0,27 px).
+    """
+    from lerobot_mp.twin.robots import A1X
+
+    res = run(seed=0, n_cameras=1, spec=A1X)
+    for cam, ok in res.trusted.items():
+        assert ok, res.reasons[cam]
+        assert res.err_mm[cam] < 5.0
+
+
 def test_card_nominal_is_the_identity_for_so101():
     """Obrot karty z osi opisu - dla SO-101 dokladnie ta sama macierz co wczesniejsza stala."""
     card = Card()
@@ -186,3 +200,27 @@ def test_sample_cameras_for_so101_are_the_default_ones():
     b = sample_cameras(np.random.default_rng(7), 2, SO101)
     for va, vb in zip(a, b):
         assert np.array_equal(va.K, vb.K) and np.array_equal(va.T_cam2base, vb.T_cam2base)
+
+
+def test_calib_sim_cli_runs_the_requested_robot(monkeypatch, capsys):
+    """`lerobot-twin calib-sim --robot a1x` przekazuje opis A1X do sesji (bez renderu - sesja podmieniona)."""
+    from lerobot_mp.twin.calib import simulate
+    from lerobot_mp.twin.cli import main as cli_main
+    from lerobot_mp.twin.robots import A1X
+
+    seen = []
+
+    def fake_run(seed, n_cameras=1, spec=SO101, **kw):
+        seen.append((seed, n_cameras, spec))
+        cams = [f"cam{k}" for k in range(n_cameras)]
+        return simulate.Result(seed, 12, {c: True for c in cams}, {c: "" for c in cams},
+                               {c: 0.3 for c in cams}, {c: 0.5 for c in cams}, {c: 0.02 for c in cams}, 0.1, 0.01)
+
+    monkeypatch.setattr(simulate, "run", fake_run)
+    assert cli_main(["calib-sim", "--robot", "a1x", "--n", "2", "--cameras", "2", "--seed", "3"]) == 0
+    assert seen == [(3, 2, A1X), (4, 2, A1X)]
+    out = capsys.readouterr().out
+    assert "Galaxea A1X" in out and "zaufane kamery: 4/4" in out
+    seen.clear()
+    assert cli_main(["calib-sim", "--n", "1"]) == 0
+    assert seen == [(0, 2, SO101)]

@@ -147,3 +147,37 @@ def test_cli_prints_a_card_sheet(tmp_path):
     out = tmp_path / "karta.png"
     assert cli_main(["card", "--out", str(out), "--dpi", "100"]) == 0
     assert out.stat().st_size > 1000
+
+
+def test_a1x_example_workspace_loads_and_builds_a_scene():
+    from lerobot_mp.paths import REPO_ROOT
+    from lerobot_mp.twin import scene as sc
+    from lerobot_mp.twin.robots import A1X
+
+    ws = Workspace.load(REPO_ROOT / "examples" / "twin.a1x.sim.json")
+    assert ws.robot == "a1x" and ws.spec() is A1X and ws.backend == "sim"
+    assert ws.table_obj().size == (1.2, 0.8) and ws.table_obj().base_xy == (-0.45, 0.0)
+    assert len(ws.cameras) == 2
+    for cam in ws.cameras:
+        # Przyklad nie moze klamac: "zaufana" kalibracja = prawdziwa poza w scenie.
+        assert cam.source == "sim" and cam.trusted
+        assert np.allclose(cam.T_cam2base, cam.sim_pose)
+        dist = np.linalg.norm(np.asarray(cam.T_cam2base)[:3, 3] - [0.35, 0.0, 0.0])
+        assert 0.8 < dist < 1.1
+    with sc.build(ws.scene_config()) as scene:
+        assert scene.model.actuator(sc.PREFIX + "gripper").id >= 0
+        for cam in ws.cameras:
+            assert np.allclose(scene.camera_pose(cam.name), cam.T_cam2base, atol=1e-9)
+        scene.set_joints(A1X.home)
+        assert scene.joints()["arm_joint2"] == pytest.approx(A1X.home["arm_joint2"])
+
+
+def test_demo_copies_the_requested_robot_example(tmp_path, capsys):
+    target = tmp_path / "a1x.json"
+    assert cli_main(["demo", "--robot", "a1x", "--path", str(target)]) == 0
+    assert Workspace.load(target).robot == "a1x"
+    assert "lift-v3" not in capsys.readouterr().out          # polityki bazowe sa uczone na SO-101
+    so = tmp_path / "so101.json"
+    assert cli_main(["demo", "--path", str(so)]) == 0
+    assert Workspace.load(so).robot == "so101"
+    assert "lift-v3" in capsys.readouterr().out
