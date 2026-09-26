@@ -709,7 +709,7 @@ Klucz `type` zawsze pierwszy — przekaźnik rozpoznaje typ po początku tekstu.
 ```
 okulary → bliźniak:
 {"type":"target","source":"hand"|"object","pos":[x,y,z],"session":"...","ts":<ms>,
- "trusted":true,"depthMeasured"?:true,"label"?:"cup","id"?:3,"cam"?:"left"}
+ "trusted":true,"depthMeasured"?:true,"age"?:0.12,"label"?:"cup","id"?:3,"cam"?:"left"}
 
 bliźniak → okulary i podgląd:
 {"type":"targetState","state":"accepted"|"rejected"|"moving"|"reached"|"backoff"|"hold",
@@ -740,7 +740,10 @@ podejścia jest sprawdzana dopiero przy `--grasp` (w pudełku SO-101 w dół si�
 nie da — odmowa `ik`). Tylko z `--grasp`: zejście do 1 cm nad środek z połową
 prędkości i ostrzejszym strażnikiem, zamknięcie chwytaka, powrót w górę.
 Obiekt bez zmierzonej głębi (`depthMeasured` różne od `true`) dostaje odmowę
-`no depth` — okulary umieszczają go wtedy na zgadywanych 150 cm.
+`no depth` — okulary umieszczają go wtedy na zgadywanych 150 cm. `age` to
+sekundy od chwili, gdy okulary naprawdę widziały wykrycie; cel obiektu z
+`age` ponad 0,5 s dostaje odmowę `stale` (obiekt mógł już zniknąć albo się
+przesunąć). Bez `age` (atrapy okularów) cel jest przyjmowany.
 
 ### Łańcuch bezpieczeństwa
 
@@ -758,6 +761,7 @@ nowa**, na własnym wątku, w tej kolejności — pierwsza porażka to
 | `session` | sesja celu różna od sesji **ostatniej zaufanej** rejestracji, którą bliźniak dostał od przekaźnika — sama flaga `trusted` z okularów nie wystarcza |
 | `outside volume` | punkt poza pudełkiem zasięgu |
 | `no depth` | cel obiektu bez zmierzonej głębi |
+| `stale` | cel obiektu z wykrycia sprzed ponad 0,5 s (`age`; `detail` podaje wiek) |
 | `ik` | brak rozwiązania IK do 3 mm (albo oś podejścia ponad 15° od pionu) |
 | `jump` | któryś staw miałby przejechać ponad 45° na jednym odcinku |
 | `collision` | droga od bieżącego rozkazu do celu koliduje ze sceną |
@@ -781,10 +785,15 @@ progu (to już docisk do przeszkody).
   stoi (< 15°/s): rozkaz jedzie, staw nie idzie, więc coś go trzyma (przy
   zejściu `--grasp`: 3°). Po końcu rampy, w czasie dojeżdżania: 2,5° przez 0,3 s.
   Wyzwala przed własnym progiem „głuchy albo zablokowany” backendu A1X (3° przez
-  1 s → STOP);
+  1 s → STOP). W `start_center` (10°/s) ciaśniej: 4° w rampie i 2,5° przez
+  0,2 s przy dojeżdżaniu — staw zablokowany z 3-6° rampy przed sobą wyzwala co
+  najmniej 0,3 s przed błędem backendu;
 - **wysiłek** — |effort| stawu ponad próg przez 3 kolejne odczyty. A1X: 20
   jednostek surowych (skala `/600` galaxeo), przy zejściu 12; symulacja:
-  0,8 × `forcerange` napędu (przy zejściu 0,5). Bez odczytów wysiłku działa
+  0,8 × `forcerange` napędu (przy zejściu 0,5), ale nie dla SO-101: jego napęd
+  (kp 998 N·m/rad, `forcerange` 2,94 N·m) nasyca się przy 0,17° uchybu, więc w
+  zwykłym ruchu siła stoi na `forcerange` i żaden próg nie odróżni ściany —
+  w symulacji SO-101 działa sama reguła opóźnienia. Bez odczytów wysiłku działa
   tylko reguła opóźnienia. Staw, który już na starcie odcinka ma wysiłek ponad
   połowę progu, na ten odcinek traci regułę wysiłku (WARNING w logu).
 

@@ -17,7 +17,7 @@ Blizniak laczy sie z przekaznikiem (`server.js` z repozytorium specs-lens) jako 
 Watek sieci tylko odbiera i wrzuca cele do kolejki. JEDEN watek wykonawcy robi
 wszystko inne: sprawdzenie celu, IK, kolizje, ruch, wycofanie. Kolejnosc sprawdzen
 i powody odmowy (`reason`): not connected, stop, busy, not armed, untrusted,
-session, outside volume, no depth, ik, jump, collision.
+session, outside volume, no depth, stale, ik, jump, collision.
 
 Ruch to wlasna rampa smoothstep 50 Hz (nie `Twin.move`), bo trzeba ja przerwac
 w kazdym takcie: nowy cel (jedzie dalej od biezacego rozkazu), uderzenie
@@ -77,6 +77,8 @@ class Target:
     depth: bool = False               # obiekt: glebia zmierzona (nie domyslne 150 cm)
     label: str = ""
     t_rx: float = 0.0                 # chwila odbioru (zegar blizniaka)
+    #: Obiekt: ile sekund temu okulary naprawde widzialy wykrycie; None - nie podano (atrapy okularow).
+    age: float | None = None
 
 
 @dataclass
@@ -104,9 +106,13 @@ def parse_target(msg: Mapping[str, Any], now: float) -> Target | None:
     source = msg.get("source")
     if source not in ("hand", "object"):
         return None
+    age = msg.get("age")
+    if age is not None:
+        # Zepsuty wiek = nieznany, ale podany: NaN, czyli odmowa "stale" (nie cisza bez targetState).
+        age = float(age) if isinstance(age, (int, float)) and not isinstance(age, bool) else math.nan
     return Target(source=source, pos=pos, session=str(msg.get("session") or ""),
                   trusted=msg.get("trusted") is True, ts=msg.get("ts"),
-                  depth=msg.get("depthMeasured") is True, label=str(msg.get("label") or ""), t_rx=now)
+                  depth=msg.get("depthMeasured") is True, label=str(msg.get("label") or ""), t_rx=now, age=age)
 
 
 def down_rotation(spec, p: np.ndarray) -> np.ndarray:
@@ -139,6 +145,11 @@ class SpecsReach:
     #: backend A1X zglosi "gluchy" staw (3 st. przez 1 s) i STOP.
     arrive_lag_deg = 2.5
     arrive_lag_s = 0.3
+    #: `start_center` (10 st./s): ciasniej - staw zablokowany z 3-6 st. rampy przed soba nie
+    #: przekracza 6 st., a uchyb ponad 3 st. liczy juz "gluchy" zegar backendu. Opoznienie 4 st.
+    #: w rampie i 0,2 s przy dojezdzaniu - wyzwolenie co najmniej 0,3 s przed bledem backendu.
+    center_lag_deg = 4.0
+    center_arrive_lag_s = 0.2
     #: Co ile sekund kulka TCP w nakladce; po ilu sekundach znika kulka celu.
     tcp_period_s = 0.2
     target_linger_s = 2.0
@@ -146,12 +157,20 @@ class SpecsReach:
     #: Tolerancja IK [m] i najwiekszy blad osi podejscia [rad] dla celu obiektu.
     ik_tol = 0.003
     approach_tol = 0.26
+    #: Cel obiektu z wykrycia starszego niz tyle sekund (pole `age` z okularow) = odmowa "stale".
+    max_object_age_s = 0.5
     #: Sila chwytu: rozkaz chwytaka i czas na zamkniecie.
     grip_closed = 0.0
     grip_wait_s = 1.2
     #: Symulacja: prog wysilku jako czesc `forcerange` aktuatora (zwykly ruch / opuszczanie).
     sim_effort_frac = 0.8
     sim_effort_frac_descend = 0.5
+    #: Roboty (`spec.name`), dla ktorych w symulacji nie ma reguly wysilku - tylko opoznienie.
+    #: SO-101: kp 998 N m/rad przy forcerange 2,94 N m - naped nasyca sie przy 0,17 st. uchybu,
+    #: wiec w zwyklym ruchu |sila| stoi na forcerange (zmierzone: 4 z 5 stawow na 2,94, wrist_roll
+    #: 0,6). Sily ponad forcerange nie ma, wiec zaden prog nie ma zapasu 1,5x nad zwyklym ruchem.
+    #: Sciane w symulacji SO-101 lapie regula opoznienia (test).
+    sim_effort_off = frozenset({"so101"})
     #: A1X: prog wysilku w surowej skali ramki 0x052 (zgadywane, patrz docs/TWIN.md).
     real_effort_abs = 20.0
     real_effort_abs_descend = 12.0
@@ -549,6 +568,9 @@ class SpecsReach:
             return "outside volume", []
         if t.source == "object" and not t.depth:
             return "no depth", []
+        if t.source == "object" and t.age is not None and not t.age <= self.max_object_age_s:   # NaN tez
+            self._detail = f"wykrycie sprzed {t.age:.2f} s > {self.max_object_age_s:.1f} s"
+            return "stale", []
 
         kin, checker = self._tools()
         cmd = self._command()
@@ -761,7 +783,8 @@ class SpecsReach:
         try:
             for step in steps:
                 self._tune_guard(self._guard, "normal")
-                if not self._ramp(step, speed_deg_s, gen):
+                self._guard.lag_deg = self.center_lag_deg
+                if not self._ramp(step, speed_deg_s, gen, arrive_lag_s=self.center_arrive_lag_s):
                     with self._lock:
                         cause = self._cause
                     tw.hold_measured()
@@ -817,9 +840,10 @@ class SpecsReach:
 
     # ------------------------------------------------------------ rampa
     def _ramp(self, goal: Mapping[str, float], speed: float, gen: int, *, guarded: bool = True,
-              profile: str = "normal") -> bool:
+              profile: str = "normal", arrive_lag_s: float | None = None) -> bool:
         """Rampa smoothstep do `goal` i czekanie na dojechanie. True = dojechal, False = przerwana
-        (`self._cause`); `_Abort` - ramie odebrane albo nie dojechalo (wtedy trzyma zmierzona poze)."""
+        (`self._cause`); `_Abort` - ramie odebrane albo nie dojechalo (wtedy trzyma zmierzona poze).
+        `arrive_lag_s` - czas reguly opoznienia przy dojezdzaniu (domyslnie `arrive_lag_s`)."""
         tw = self.twin
         start_all = self._command()
         start = {k: start_all.get(k, float(v)) for k, v in goal.items()}
@@ -853,7 +877,8 @@ class SpecsReach:
             guard = self._guard
             if guard is not None:
                 # Staw zablokowany tuz przy celu: wycofanie, zanim backend uzna go za "gluchy".
-                guard.lag_deg, guard.lag_s = self.arrive_lag_deg, self.arrive_lag_s
+                guard.lag_deg = self.arrive_lag_deg
+                guard.lag_s = self.arrive_lag_s if arrive_lag_s is None else float(arrive_lag_s)
             # Dojechanie: kazdy staw ramienia najwyzej `arrive_deg` od celu i stoi.
             deadline = time.monotonic() + self.arrive_timeout_s
             prev: tuple[float, dict[str, float]] | None = None
@@ -947,9 +972,11 @@ class SpecsReach:
             s = self.twin.scene
             frac = self.sim_effort_frac_descend if descend else self.sim_effort_frac
             ids = [s.model.actuator(sc.PREFIX + j).id for j in self.arm]
+            self._effort_ids = np.array(ids)
+            if self.spec.name in self.sim_effort_off:
+                return {}                               # naped nasycony w zwyklym ruchu - tylko opoznienie
             rng = s.model.actuator_forcerange[ids]
             limited = s.model.actuator_forcelimited[ids]
-            self._effort_ids = np.array(ids)
             return {j: frac * float(max(abs(rng[i, 0]), abs(rng[i, 1])))
                     for i, j in enumerate(self.arm) if limited[i] and rng[i, 1] > rng[i, 0]}
         try:

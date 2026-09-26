@@ -187,7 +187,7 @@ def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
         d.stop()
 
 
-@pytest.mark.parametrize("case", ["outside", "session", "no depth", "untrusted"])
+@pytest.mark.parametrize("case", ["outside", "session", "no depth", "stale", "untrusted"])
 def test_rejections(twin, kin, vol, relay, case):
     d = driver(twin, relay)
     try:
@@ -198,6 +198,10 @@ def test_rejections(twin, kin, vol, relay, case):
             ts, why = relay.target(vol.center, session="stara"), "session"
         elif case == "no depth":
             ts, why = relay.target(vol.center, source="object", label="cup"), "no depth"
+        elif case == "stale":
+            # Wykrycie widziane naprawde 0,8 s temu (okulary zgubily obiekt) - nie jechac.
+            ts = relay.target(vol.center, source="object", label="cup", depthMeasured=True, age=0.8)
+            why = "stale"
         else:
             relay.trusted = False
             d2 = driver(twin, relay)
@@ -206,6 +210,8 @@ def test_rejections(twin, kin, vol, relay, case):
             ts, why = relay.target(vol.center), "untrusted"
         st = relay.wait_state(ts, {"rejected", "reached"}, 5.0)
         assert (st["state"], st.get("reason")) == ("rejected", why)
+        if case == "stale":
+            assert "0.80 s" in st["detail"], st
         after = twin.status.measured
         assert max(abs(after[k] - before[k]) for k in d.arm) < 0.5
     finally:
@@ -217,7 +223,7 @@ def test_object_target_goes_above_it_pointing_down(twin, kin, vol, relay):
     d = driver(twin, relay)
     try:
         p = vol.center + np.array([0.0, -0.05, -0.08])
-        ts = relay.target(p, source="object", label="cup", depthMeasured=True)
+        ts = relay.target(p, source="object", label="cup", depthMeasured=True, age=0.2)   # swieze wykrycie
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 12.0)
         assert st["state"] == "reached", st
         T = kin.tcp(twin.status.measured)
@@ -388,6 +394,27 @@ def test_stop_mid_move_holds_and_releases_the_arm(twin, kin, vol, relay):
     finally:
         d.stop()
         twin.clear_estop()
+
+
+def test_command_moved_during_the_real_hold_off_holds_with_moved(twin, kin, vol, relay):
+    # Tryb real na symulacji: cel dloni czeka `hold_off_s`; w tym czasie panel przesuwa J1 o 45 st.
+    ready(twin, kin, vol)
+    d = driver(twin, relay, mode="real", real_ok=True, hold_off_s=1.0)
+    try:
+        cmd0 = dict(twin.status.command)
+        ts = relay.target(vol.center + np.array([0.0, -0.08, -0.03]))       # J1 w druga strone niz suwak
+        relay.wait_state(ts, {"accepted", "rejected"}, 5.0)
+        assert relay.states_for(ts) == ["accepted"]
+        twin.claim("panel")
+        twin.set_target({"arm_joint1": cmd0["arm_joint1"] + 45.0}, owner="panel")
+        twin.release("panel")
+        st = relay.wait_state(ts, {"moving", "reached", "hold", "backoff", "rejected"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("hold", "moved"), relay.states_for(ts)
+        assert "rozkaz zmieniony" in st.get("detail", ""), st
+        assert "moving" not in relay.states_for(ts)
+        assert twin.owner is None
+    finally:
+        d.stop()
 
 
 def test_relay_loss_mid_move_in_real_mode_holds(twin, kin, vol, relay):
