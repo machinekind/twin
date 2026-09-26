@@ -114,7 +114,7 @@ i dane:
 | `assets/calib/*.txt` | gotowe obiektywy kamer autora (Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
 | `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
-| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | nie |
+| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — zestawy z fal na stanowisku autora |
 | `workspace/policies/` | polityki, które sam wytrenujesz | nie |
 | `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
 
