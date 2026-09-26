@@ -1,0 +1,1163 @@
+{
+  "created": "2026-09-26T03:00:09.384484+00:00",
+  "start_unix": 1790390346.0,
+  "deadline_unix": 1790401146.0,
+  "source_policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\experiments\\lift-robust\\checkpoint-0125\\policy.pt",
+  "training_end_unix": 1790399646.0,
+  "objects": {
+    "cube": {
+      "kind": "cube",
+      "half_size": [
+        0.015,
+        0.015,
+        0.015
+      ],
+      "mass": 0.03,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.015,
+            0.015,
+            0.015
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 1.5707963267948966
+    },
+    "flat": {
+      "kind": "flat",
+      "half_size": [
+        0.026,
+        0.018,
+        0.004
+      ],
+      "mass": 0.025,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.026,
+            0.018,
+            0.004
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 3.141592653589793
+    },
+    "triangle": {
+      "kind": "triangle",
+      "half_size": [
+        0.022,
+        0.024,
+        0.009
+      ],
+      "mass": 0.025,
+      "parts": [
+        {
+          "kind": "mesh",
+          "size": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": [
+            [
+              -0.022,
+              -0.018,
+              -0.009
+            ],
+            [
+              0.022,
+              -0.018,
+              -0.009
+            ],
+            [
+              0.0,
+              0.024,
+              -0.009
+            ],
+            [
+              -0.022,
+              -0.018,
+              0.009
+            ],
+            [
+              0.022,
+              -0.018,
+              0.009
+            ],
+            [
+              0.0,
+              0.024,
+              0.009
+            ]
+          ]
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "cylinder": {
+      "kind": "cylinder",
+      "half_size": [
+        0.013,
+        0.013,
+        0.024
+      ],
+      "mass": 0.035,
+      "parts": [
+        {
+          "kind": "cylinder",
+          "size": [
+            0.013,
+            0.024,
+            0.0
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 1.5707963267948966
+    },
+    "pliers": {
+      "kind": "pliers",
+      "half_size": [
+        0.065,
+        0.022,
+        0.008
+      ],
+      "mass": 0.11,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.02,
+            0.011,
+            0.008
+          ],
+          "pos": [
+            0.042,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 3.0,
+          "vertices": []
+        },
+        {
+          "kind": "capsule",
+          "size": [
+            0.007,
+            0.035,
+            0.0
+          ],
+          "pos": [
+            -0.02,
+            -0.014,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.7071067811865476,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "capsule",
+          "size": [
+            0.007,
+            0.035,
+            0.0
+          ],
+          "pos": [
+            -0.02,
+            0.014,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.7071067811865476,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.009,
+            0.021,
+            0.007
+          ],
+          "pos": [
+            0.014,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 2.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "screw": {
+      "kind": "screw",
+      "half_size": [
+        0.029,
+        0.008,
+        0.008
+      ],
+      "mass": 0.018,
+      "parts": [
+        {
+          "kind": "cylinder",
+          "size": [
+            0.004,
+            0.023,
+            0.0
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.7071067811865476,
+            0.0
+          ],
+          "mass_fraction": 2.0,
+          "vertices": []
+        },
+        {
+          "kind": "cylinder",
+          "size": [
+            0.008,
+            0.003,
+            0.0
+          ],
+          "pos": [
+            -0.026,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.7071067811865476,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "nut": {
+      "kind": "nut",
+      "half_size": [
+        0.017,
+        0.017,
+        0.006
+      ],
+      "mass": 0.025,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.0063508529610858825,
+            0.004,
+            0.006
+          ],
+          "pos": [
+            0.011,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.0,
+            0.7071067811865476
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.0063508529610858825,
+            0.004,
+            0.006
+          ],
+          "pos": [
+            0.0055000000000000005,
+            0.009526279441628824,
+            0.0
+          ],
+          "quat": [
+            0.25881904510252096,
+            0.0,
+            0.0,
+            0.9659258262890682
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.0063508529610858825,
+            0.004,
+            0.006
+          ],
+          "pos": [
+            -0.005499999999999997,
+            0.009526279441628826,
+            0.0
+          ],
+          "quat": [
+            -0.25881904510252063,
+            0.0,
+            0.0,
+            0.9659258262890683
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.0063508529610858825,
+            0.004,
+            0.006
+          ],
+          "pos": [
+            -0.011,
+            1.3471114790620884e-18,
+            0.0
+          ],
+          "quat": [
+            -0.7071067811865475,
+            0.0,
+            0.0,
+            0.7071067811865476
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.0063508529610858825,
+            0.004,
+            0.006
+          ],
+          "pos": [
+            -0.005500000000000005,
+            -0.009526279441628822,
+            0.0
+          ],
+          "quat": [
+            -0.9659258262890682,
+            0.0,
+            0.0,
+            0.258819045102521
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.0063508529610858825,
+            0.004,
+            0.006
+          ],
+          "pos": [
+            0.0055000000000000005,
+            -0.009526279441628824,
+            0.0
+          ],
+          "quat": [
+            -0.9659258262890683,
+            0.0,
+            0.0,
+            -0.2588190451025208
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "washer": {
+      "kind": "washer",
+      "half_size": [
+        0.022,
+        0.022,
+        0.0025
+      ],
+      "mass": 0.012,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            0.016,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.0,
+            0.7071067811865476
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            0.01294427190999916,
+            0.00940456403667957,
+            0.0
+          ],
+          "quat": [
+            0.4539904997395468,
+            0.0,
+            0.0,
+            0.8910065241883678
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            0.0049442719099991594,
+            0.015216904260722457,
+            0.0
+          ],
+          "quat": [
+            0.15643446504023092,
+            0.0,
+            0.0,
+            0.9876883405951378
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            -0.004944271909999158,
+            0.015216904260722459,
+            0.0
+          ],
+          "quat": [
+            -0.1564344650402308,
+            0.0,
+            0.0,
+            0.9876883405951378
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            -0.012944271909999158,
+            0.009404564036679572,
+            0.0
+          ],
+          "quat": [
+            -0.45399049973954675,
+            0.0,
+            0.0,
+            0.8910065241883679
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            -0.016,
+            1.959434878635765e-18,
+            0.0
+          ],
+          "quat": [
+            -0.7071067811865475,
+            0.0,
+            0.0,
+            0.7071067811865476
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            -0.01294427190999916,
+            -0.009404564036679568,
+            0.0
+          ],
+          "quat": [
+            -0.8910065241883678,
+            0.0,
+            0.0,
+            0.45399049973954686
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            -0.004944271909999161,
+            -0.015216904260722457,
+            0.0
+          ],
+          "quat": [
+            -0.9876883405951377,
+            0.0,
+            0.0,
+            0.15643446504023098
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            0.004944271909999156,
+            -0.015216904260722459,
+            0.0
+          ],
+          "quat": [
+            -0.9876883405951378,
+            0.0,
+            0.0,
+            -0.15643446504023073
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.005198715139726501,
+            0.004,
+            0.0025
+          ],
+          "pos": [
+            0.012944271909999158,
+            -0.009404564036679573,
+            0.0
+          ],
+          "quat": [
+            -0.8910065241883679,
+            0.0,
+            0.0,
+            -0.45399049973954664
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "l_bracket": {
+      "kind": "l_bracket",
+      "half_size": [
+        0.027,
+        0.027,
+        0.006
+      ],
+      "mass": 0.035,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.027,
+            0.007,
+            0.006
+          ],
+          "pos": [
+            0.0,
+            -0.02,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.007,
+            0.02,
+            0.006
+          ],
+          "pos": [
+            -0.02,
+            0.007,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "t_bracket": {
+      "kind": "t_bracket",
+      "half_size": [
+        0.025,
+        0.03,
+        0.007
+      ],
+      "mass": 0.035,
+      "parts": [
+        {
+          "kind": "box",
+          "size": [
+            0.025,
+            0.008,
+            0.007
+          ],
+          "pos": [
+            0.0,
+            0.022,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        },
+        {
+          "kind": "box",
+          "size": [
+            0.008,
+            0.022,
+            0.007
+          ],
+          "pos": [
+            0.0,
+            -0.008,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    },
+    "capsule": {
+      "kind": "capsule",
+      "half_size": [
+        0.034,
+        0.012,
+        0.012
+      ],
+      "mass": 0.03,
+      "parts": [
+        {
+          "kind": "capsule",
+          "size": [
+            0.012,
+            0.022,
+            0.0
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            0.7071067811865476,
+            0.0,
+            0.7071067811865476,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": []
+        }
+      ],
+      "yaw_period": 3.141592653589793
+    },
+    "wedge": {
+      "kind": "wedge",
+      "half_size": [
+        0.025,
+        0.016,
+        0.01
+      ],
+      "mass": 0.03,
+      "parts": [
+        {
+          "kind": "mesh",
+          "size": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mass_fraction": 1.0,
+          "vertices": [
+            [
+              -0.025,
+              -0.016,
+              -0.01
+            ],
+            [
+              0.025,
+              -0.016,
+              -0.01
+            ],
+            [
+              -0.025,
+              -0.016,
+              0.01
+            ],
+            [
+              -0.025,
+              0.016,
+              -0.01
+            ],
+            [
+              0.025,
+              0.016,
+              -0.01
+            ],
+            [
+              -0.025,
+              0.016,
+              0.01
+            ]
+          ]
+        }
+      ],
+      "yaw_period": 6.283185307179586
+    }
+  },
+  "profiles": {
+    "nominal": {
+      "kp": [
+        1.0,
+        1.0
+      ],
+      "damping": [
+        1.0,
+        1.0
+      ],
+      "armature": [
+        1.0,
+        1.0
+      ],
+      "frictionloss": [
+        1.0,
+        1.0
+      ],
+      "cube_mass": [
+        1.0,
+        1.0
+      ],
+      "cube_friction": [
+        1.0,
+        1.0
+      ],
+      "obs_noise_deg": 0.0,
+      "max_delay": 0,
+      "cube_delay": 0,
+      "cube_period": 1,
+      "cube_noise": 0.0,
+      "fold_yaw": false,
+      "centre": {
+        "kp": 1.0,
+        "damping": 1.0,
+        "armature": 1.0,
+        "frictionloss": 1.0,
+        "delay": 0.0,
+        "source": "menagerie",
+        "fit_deg": null,
+        "fitted": [],
+        "band": {}
+      },
+      "min_delay": 0,
+      "calibration_translation": 0.0,
+      "calibration_rotation_deg": 0.0,
+      "calibration_scale": 0.0,
+      "joint_bias_deg": 0.0,
+      "dropout_probability": 0.0,
+      "dropout_steps": 0,
+      "cube_z_noise": 0.0
+    },
+    "warm": {
+      "kp": [
+        0.925,
+        1.075
+      ],
+      "damping": [
+        0.875,
+        1.15
+      ],
+      "armature": [
+        0.875,
+        1.15
+      ],
+      "frictionloss": [
+        0.8,
+        1.25
+      ],
+      "cube_mass": [
+        0.8,
+        1.3
+      ],
+      "cube_friction": [
+        0.85,
+        1.15
+      ],
+      "obs_noise_deg": 0.3,
+      "max_delay": 1,
+      "cube_delay": 1,
+      "cube_period": 2,
+      "cube_noise": 0.001,
+      "fold_yaw": true,
+      "centre": {
+        "kp": 1.0,
+        "damping": 1.0,
+        "armature": 1.0,
+        "frictionloss": 1.0,
+        "delay": 0.0,
+        "source": "menagerie",
+        "fit_deg": null,
+        "fitted": [],
+        "band": {}
+      },
+      "min_delay": 0,
+      "calibration_translation": 0.001,
+      "calibration_rotation_deg": 0.25,
+      "calibration_scale": 0.0,
+      "joint_bias_deg": 0.0,
+      "dropout_probability": 0.0,
+      "dropout_steps": 0,
+      "cube_z_noise": 0.0
+    },
+    "moderate": {
+      "kp": [
+        0.85,
+        1.15
+      ],
+      "damping": [
+        0.75,
+        1.3
+      ],
+      "armature": [
+        0.75,
+        1.3
+      ],
+      "frictionloss": [
+        0.6,
+        1.5
+      ],
+      "cube_mass": [
+        0.6,
+        1.6
+      ],
+      "cube_friction": [
+        0.7,
+        1.3
+      ],
+      "obs_noise_deg": 0.3,
+      "max_delay": 1,
+      "cube_delay": 3,
+      "cube_period": 3,
+      "cube_noise": 0.002,
+      "fold_yaw": true,
+      "centre": {
+        "kp": 1.0,
+        "damping": 1.0,
+        "armature": 1.0,
+        "frictionloss": 1.0,
+        "delay": 0.0,
+        "source": "menagerie",
+        "fit_deg": null,
+        "fitted": [],
+        "band": {}
+      },
+      "min_delay": 0,
+      "calibration_translation": 0.003,
+      "calibration_rotation_deg": 0.75,
+      "calibration_scale": 0.01,
+      "joint_bias_deg": 0.15,
+      "dropout_probability": 0.05,
+      "dropout_steps": 2,
+      "cube_z_noise": 0.001
+    },
+    "stress": {
+      "kp": [
+        0.7749999999999999,
+        1.2249999999999999
+      ],
+      "damping": [
+        0.625,
+        1.4500000000000002
+      ],
+      "armature": [
+        0.625,
+        1.4500000000000002
+      ],
+      "frictionloss": [
+        0.3999999999999999,
+        1.75
+      ],
+      "cube_mass": [
+        0.3999999999999999,
+        1.9000000000000001
+      ],
+      "cube_friction": [
+        0.5499999999999999,
+        1.4500000000000002
+      ],
+      "obs_noise_deg": 0.3,
+      "max_delay": 2,
+      "cube_delay": 4,
+      "cube_period": 4,
+      "cube_noise": 0.003,
+      "fold_yaw": true,
+      "centre": {
+        "kp": 1.0,
+        "damping": 1.0,
+        "armature": 1.0,
+        "frictionloss": 1.0,
+        "delay": 0.0,
+        "source": "menagerie",
+        "fit_deg": null,
+        "fitted": [],
+        "band": {}
+      },
+      "min_delay": 0,
+      "calibration_translation": 0.006,
+      "calibration_rotation_deg": 1.5,
+      "calibration_scale": 0.02,
+      "joint_bias_deg": 0.3,
+      "dropout_probability": 0.1,
+      "dropout_steps": 4,
+      "cube_z_noise": 0.002
+    },
+    "extreme": {
+      "kp": [
+        0.7749999999999999,
+        1.2249999999999999
+      ],
+      "damping": [
+        0.625,
+        1.4500000000000002
+      ],
+      "armature": [
+        0.625,
+        1.4500000000000002
+      ],
+      "frictionloss": [
+        0.3999999999999999,
+        1.75
+      ],
+      "cube_mass": [
+        0.3999999999999999,
+        1.9000000000000001
+      ],
+      "cube_friction": [
+        0.5499999999999999,
+        1.4500000000000002
+      ],
+      "obs_noise_deg": 0.3,
+      "max_delay": 3,
+      "cube_delay": 4,
+      "cube_period": 4,
+      "cube_noise": 0.003,
+      "fold_yaw": true,
+      "centre": {
+        "kp": 1.0,
+        "damping": 1.0,
+        "armature": 1.0,
+        "frictionloss": 1.0,
+        "delay": 0.0,
+        "source": "menagerie",
+        "fit_deg": null,
+        "fitted": [],
+        "band": {}
+      },
+      "min_delay": 0,
+      "calibration_translation": 0.01,
+      "calibration_rotation_deg": 3.0,
+      "calibration_scale": 0.03,
+      "joint_bias_deg": 0.6,
+      "dropout_probability": 0.15,
+      "dropout_steps": 10,
+      "cube_z_noise": 0.002
+    }
+  },
+  "source_sha256": {
+    "src\\lerobot_mp\\twin\\rl\\batch.py": "7cc2603d3787e82e423413a031f8b549883870bdb483494505e0032882c68642",
+    "src\\lerobot_mp\\twin\\rl\\env.py": "ce01c23e23c75f1c13b64a4647f6a14268c27dd00f1f0e90620b19b36accf7f6",
+    "src\\lerobot_mp\\twin\\rl\\evaluate.py": "d68ae7364ee0f0aabc3a95498f2eb09259c8bf345602981621f68f455e7828cd",
+    "src\\lerobot_mp\\twin\\rl\\multi.py": "004d2c64e712996c0393a1cb3c69213a909bbe61d5bd8d121a4e0b79ec31c449",
+    "src\\lerobot_mp\\twin\\rl\\objects.py": "9a8df925658518e98910b657f11758118668ed67de758bd436edfbc26e15af49",
+    "src\\lerobot_mp\\twin\\rl\\policy.py": "144db6f86acf69642d3184bef6bb7de5ed144a92f109cf975a0345fe05bc2d35",
+    "src\\lerobot_mp\\twin\\rl\\ppo.py": "f50944fff9655729f18567fd42705e2292619ad4e403875ddfd950921fb67e84",
+    "src\\lerobot_mp\\twin\\rl\\randomize.py": "50e8aca1d3530989b4974b5a83686fa171eecb719d6f40a3e09a2be4a47cb727",
+    "src\\lerobot_mp\\twin\\rl\\runner.py": "352a93e94df95b84de76e61dc0f9cbcbb1e5fe68d4515f2d3b489687ae7434c1",
+    "src\\lerobot_mp\\twin\\rl\\sysid.py": "59a6e6101d25f7931f53e5f1b80aa1a2a36eea967058fb9a297574c3f0404de8",
+    "src\\lerobot_mp\\twin\\rl\\task.py": "0906f35329acc200110af0e2c69086a98870ff61d8cefb26ea5f1f1883945b16",
+    "src\\lerobot_mp\\twin\\rl\\__init__.py": "e73a9b37bf8bb2efc8fd7944eda549c8984365f4078fe06b9280d05904222b67",
+    "scripts\\campaign_multi.py": "ff7889c2df15ee5de95adc6e905c79fa36c60d415c790482fa33ca903c7f53c2"
+  },
+  "videos": "D:\\digital-twin-training\\sukcesy",
+  "validation_seed": 30000,
+  "test_seed": 80000,
+  "warning": "Known object identity/dimensions and noisy pose, not image recognition of arbitrary objects"
+}
