@@ -123,6 +123,7 @@ class TwinEnv(gym.Env):
         m.opt.timestep = self.task.timestep
         self.T_world2base = inverse(self.scene.T_base2world)
         self.site = self.kin.site_id
+        self.tip_ids = [m.geom(self.kin.prefix + name).id for name in self.kin.spec.fingertips]
         if self.task.cube:
             self.cube_qadr = m.jnt_qposadr[m.body_jntadr[self.fields.cube_body]]
             self.cube_dadr = m.jnt_dofadr[m.body_jntadr[self.fields.cube_body]]
@@ -153,6 +154,8 @@ class TwinEnv(gym.Env):
         d = self.scene.data
         R, t = self.T_world2base[:3, :3], self.T_world2base[:3, 3]
         out = {"q": d.qpos[self.kin.qadr].copy(), "tcp": R @ d.site_xpos[self.site] + t}
+        if self.task.grasp_tip_reward:
+            out["grasp_pos"] = R @ d.geom_xpos[self.tip_ids].mean(axis=0) + t
         if self.task.cube:
             b = self.fields.cube_body
             out["cube_pos"] = R @ d.xpos[b] + t
@@ -283,7 +286,7 @@ class TwinEnv(gym.Env):
             self._carried = bool(carried[0])
             kw = dict(target=self.target[None], cube_vel=s["cube_vel"][None], carried=carried,
                       grip_open=tk.grip_is_open(np, self.limits, self.q_cmd[None]))
-        r, success, failure = tk.reward(np, self.task, s["tcp"][None], action[None], self.prev_action[None],
+        r, success, failure = tk.reward(np, self.task, s.get("grasp_pos", s["tcp"])[None], action[None], self.prev_action[None],
                                         goal=self.goal[None], cube_pos=s.get("cube_pos", np.zeros(3))[None],
                                         jaw_contacts=s.get("jaws", np.zeros(2))[None],
                                         q_cmd=self.q_cmd[None], limits=self.limits, **kw)

@@ -447,6 +447,7 @@ dłoni ma stawy SO-101, a backend `a1x` odmawia wtedy startu.
 | `stream_hz` | 200,0 | częstotliwość strumienia `0x050` / `0x051`; ramię odpowiada `0x052` co 5 ms |
 | `max_step_deg_s` | 90,0 | własny limit prędkości `p_des` backendu [°/s], druga warstwa pod nadzorem |
 | `stale_ms` | 150,0 | brak `0x052` dłużej niż tyle = łącze milczy: wysyłka staje, cele przepadają, bliźniak robi STOP |
+| `command_timeout_ms` | 250.0 | A stale caller cancels the independent sender's targets and latches a stop; healthy telemetry alone cannot keep an old movement alive |
 | `frozen_frames` | 50 | tyle identycznych ramek `0x052` z rzędu = telemetria zamrożona (ramię zwolnione FF 2) |
 | `deaf_err_deg` / `deaf_s` | 3,0 / 1,0 | rozkaz dalej od pomiaru niż `deaf_err_deg` przez `deaf_s` przy stojącym stawie (< 0,3°/s) = ramię głuche na `0x050` albo zablokowane → błąd i STOP |
 | `enable_on_connect` | `false` | sekwencja FF 1 → 5 → 6 zaraz po *Połącz*. Zostaw `false` i używaj przycisku w panelu, bo FF 5 na chwilę puszcza silniki |
@@ -477,15 +478,15 @@ finally:
     b.close()
 ```
 
-Pusty chwytak, UZBRÓJ, suwak chwytaka na 0. Poczekaj, aż szczęki staną,
-i uruchom skrypt: wynik to `gripper_fb_closed`. To samo przy 100 daje
-`gripper_fb_open`. Na Linuksie skrypt może czytać równolegle z panelem
-(czytających może być wielu, nadawca jeden). Na macOS przejściówkę trzyma panel,
-więc przed każdym odczytem daj *Rozłącz* — chwytak zostaje na ostatnim `p_des`.
-Po ponownym *Połącz* backend w pętli otwartej zgłasza chwytak jako 100
-(`gripper_start`). Pierwszy ruch suwaka startuje więc od otwarcia: zamknięte
-szczęki najpierw się otworzą. Sprawdź też kilka punktów pośrednich (np. 50).
-Zależność ma być liniowa, patrz otwarte pytania niżej.
+The backend now refuses a changed gripper command until both feedback endpoints
+are configured. The former procedure of moving an uncalibrated gripper with the
+twin's sliders no longer applies. Reuse the team's measured endpoints, or obtain
+them in a separately supervised driver calibration session using its current safety
+instructions and exactly one CAN writer. The read-only snippet above can record
+feedback at already established openings; it cannot calibrate or move the gripper.
+Verify endpoints and an intermediate opening before using grasp inference.
+`gripper_start` is only an unmeasured display estimate, never a starting point for
+new G1 motion. See [current offline evidence](A1X_OFFLINE_VALIDATION.md).
 
 ### Pierwsza sesja krok po kroku
 
@@ -536,40 +537,39 @@ wystaje tak samo (ok. 70 mm), a fala losuje pozy z `A1X.wave_ranges`. Polityki
 bazowe (`reach-v3`, `lift-v3`) są uczone na SO-101: runner i ewaluacja odmawiają
 ich na stanowisku A1X („polityka uczona na so101, stanowisko ma a1x”). Politykę
 dla A1X trzeba nauczyć (`lerobot-twin train --task reach` ze stanowiskiem A1X,
-na karcie NVIDIA). Uwaga: MuJoCo Warp z modelem A1X (równość szczęk, bryły
-z siatek) nie był jeszcze sprawdzony na GPU.
+na karcie NVIDIA). A1X CPU/GPU training, jaw coupling and scripted lifts have
+now been checked on the local RTX 2000 Ada through WSL. See
+[A1X offline validation](A1X_OFFLINE_VALIDATION.md) for bounded workloads and
+current learned-policy results; they do not establish physical readiness.
 
 ### Czym A1X różni się od SO-101 (bezpieczeństwo)
 
 - **Brak hamulców.** Odcięcie zasilania (także wyłącznik awaryjny, wypięty
   kabel) zrzuca ramię z miejsca, w którym jest. Przed wyłączeniem złóż je albo
   podeprzyj.
-- **STOP trzyma zmierzoną pozę strumieniem**, nie zwalnia silników. Ramię,
-  do którego nic nie jest wysyłane, też trzyma pozę i nie dryfuje. Zatrzymanie
-  jest bezpieczne; niebezpieczny jest start z celem innym niż poza ramienia,
-  i przed tym chroni start strumienia od pomiaru.
+- **STOP cancels old targets and preserves holding torque.** The sender's stop
+  latch prevents resumption without explicit healthy recovery. This is not a
+  torque-release command or evidence that the physical arm will stop within a
+  particular distance. Operator supervision and the driver safety guide remain necessary.
 - **Bliźniak nigdy nie wysyła FF 2** (zwolnienie: ramię wiotczeje, opada
   i przestaje raportować). `robot.torque_off_on_exit` jest dla `a1x` ignorowane
   (ostrzeżenie w logu), heartbeat `0x023` nie jest wysyłany nigdy.
 - **FF 5 na ułamek sekundy puszcza silniki.** Przycisk włączenia tylko przy
   podpartym ramieniu i rozbrojonym panelu; nigdy „na wszelki wypadek”.
-- **`t_ff`, `kp`, `kd` nic nie robią** (zmierzone w galaxeo). Nie ma podatności,
-  kompensacji grawitacji ani ustępowania przy kolizji. **Jedyną ochroną są
-  limity i ograniczenie prędkości**: limity bliźniaka (URDF minus 3–5°),
-  limity URDF w backendzie (poszerzone o pozę startową), nadzór i 90°/s
-  backendu. Kolizję łapie dopiero wykrywanie rozjazdu (25° przez 0,5 s w nadzorze,
-  3° przez 1 s przy stojącym stawie w backendzie).
-- **Utrata łącza.** Brak `0x052` przez 150 ms albo zamrożona telemetria:
-  wysyłka staje od razu, cele ramienia i chwytaka przepadają, bliźniak robi
-  STOP. Po powrocie ramek nic nie jedzie do następnego rozkazu, a ten startuje
-  od świeżego pomiaru.
-- **Chwytak.** Celu chwytaka nie da się odczytać z ramienia. Bez zmierzonego
-  sprzężenia backend pracuje w pętli otwartej i panel pokazuje rozkaz. Strumień
-  `0x051` rusza dopiero przy rozkazie różnym od zgłoszonej wartości (o > 0,5),
-  więc *Połącz* niczego nie domyka. Przy zamykaniu cel zamarza, gdy |effort|
-  przekroczy `gripper_force` (1,2). Bez zmierzonego sprzężenia pierwszy ruch
-  chwytaka po *Połącz* zaczyna od `gripper_start` (otwarty), więc przedmiot
-  trzymany w szczękach wypadnie. Wcześniej go wyjmij albo przytrzymaj.
+- **Position-only transport.** Do not assume compliance from `t_ff`, `kp` or
+  `kd`. Joint/workspace/rate limits and tracking checks remain active. The common
+  A1X path also rejects modeled collisions at target submission and final command
+  send, including the measured start and a provisional 3 mm environmental buffer.
+  This does not cover unmodeled obstacles, calibration errors or stopping distance.
+- **Lost/stale input.** Missing feedback for 150 ms, frozen telemetry, I/O failure
+  or no renewed caller command for 250 ms cancels targets and latches the sender.
+  Fresh frames alone do not resume motion. Recovery discards old targets and
+  starts any subsequently authorized movement from fresh feedback.
+- **Gripper.** Calibrated feedback is required for changed G1 commands and physical
+  policy startup. The first accepted movement ramps from measured opening, even
+  when holding an object. Closing still freezes at configured effort threshold
+  `gripper_force` (default 1.2, empirical units); opening remains possible. The
+  threshold and feedback calibration must be measured on the real setup.
 
 ### Jednostki
 

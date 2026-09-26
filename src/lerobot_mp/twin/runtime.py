@@ -387,6 +387,32 @@ class Twin:
         self.extras = {k: v for k, v in extras.items() if v is not None}
         self.rebuild()
 
+    def observe_object(self, name: str, position, rotation) -> None:
+        """Update modeled geometry from a base-frame observation, without commanding the arm.
+
+        The caller must establish observation provenance/freshness. Physical
+        camera policies use this so the collision scene follows the observed
+        object instead of retaining its initial display position.
+        """
+        p, R = np.asarray(position, float), np.asarray(rotation, float)
+        if (p.shape != (3,) or R.shape != (3, 3) or not np.isfinite(p).all() or not np.isfinite(R).all()
+                or not np.allclose(R.T @ R, np.eye(3), atol=1e-4) or abs(np.linalg.det(R) - 1) > 1e-4):
+            raise ValueError("Object observation must be a finite rigid pose")
+        with self.lock:
+            scene = self.scene
+            m, d, T = scene.model, scene.data, scene.T_base2world
+            body = m.body(name).id
+            joint = int(m.body_jntadr[body])
+            if joint < 0 or m.jnt_type[joint] != mujoco.mjtJoint.mjJNT_FREE:
+                raise ValueError("Observed object must have a free joint")
+            qa, va = int(m.jnt_qposadr[joint]), int(m.jnt_dofadr[joint])
+            quat = np.empty(4)
+            mujoco.mju_mat2Quat(quat, (T[:3, :3] @ R).ravel())
+            d.qpos[qa:qa + 3] = T[:3, :3] @ p + T[:3, 3]
+            d.qpos[qa + 3:qa + 7] = quat
+            d.qvel[va:va + 6] = 0
+            mujoco.mj_forward(m, d)
+
     def _render_view(self) -> sc.Scene:
         """Kopia stanu sceny do renderu: pod blokada tylko kopiowanie wektorow stanu.
 
@@ -874,7 +900,11 @@ class Twin:
         with self.lock:
             checker = self._collision_checker
             if checker is None or checker.scene is not self.scene:
-                checker = self._collision_checker = CollisionChecker(self.scene, grasp_objects=("cube",))
+                # Provisional model clearance for tracking/solver lag. A reach
+                # trial had 0.12 mm of finger/table contact despite a clear
+                # commanded pose. This is not a measured hardware error bound.
+                checker = self._collision_checker = CollisionChecker(self.scene, grasp_objects=("cube",),
+                                                                       clearance_m=.003)
             opening = checker.blocked_gripper_opening()
             if opening is not None and self._grip is not None:
                 # A squeeze setpoint can be narrower than a solid object. Check

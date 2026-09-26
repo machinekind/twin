@@ -30,24 +30,42 @@ def main():
     parser.add_argument("--iters", type=int, default=300)
     parser.add_argument("--seconds", type=int, default=900)
     parser.add_argument("--seed", type=int, default=11)
+    parser.add_argument("--init", type=Path, help="Fine-tune an existing A1X policy for the same task")
+    parser.add_argument("--init-std", type=float, default=.6)
+    parser.add_argument("--eval-seed", type=int, default=20000)
     args = parser.parse_args()
     if not (1 <= args.envs <= 1024 and 1 <= args.iters <= 1000 and 1 <= args.seconds <= 1800):
         parser.error("Limits: 1024 worlds, 1000 iterations, 1800 seconds")
+    if not 0 < args.init_std <= 1:
+        parser.error("init-std must be in (0, 1]")
+    init = Policy.load(args.init) if args.init else None
+    if init is not None and (init.meta.robot != "a1x" or init.task.name != args.task):
+        parser.error("Initial policy must be A1X and match --task")
     args.out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
-    cfg = PPOConfig(num_envs=args.envs, iterations=args.iters, seed=args.seed)
-    task = make_task(args.task, A1X)
+    cfg = PPOConfig(num_envs=args.envs, iterations=args.iters, seed=args.seed, init_std=args.init_std)
+    if init is not None:
+        cfg.hidden = tuple(init.meta.hidden)
+    task = init.task if init is not None else make_task(args.task, A1X)
     rand = Randomization()
     report = {
         "purpose": "simulation candidate, requires independent runtime validation",
-        "hypothesis": "Existing PPO can learn A1X reaching with corrected action units and timing",
+        "hypothesis": (f"PPO can improve the existing A1X {args.task} candidate" if init else
+                       f"Existing PPO can learn A1X {args.task} with corrected action units and timing"),
+        "initial_policy": str(args.init) if init else None,
+        "initial_policy_sha256": hashlib.sha256(args.init.read_bytes()).hexdigest() if init else None,
+        "prior_steps": init.meta.steps if init else 0,
+        "continuation": "Actor, normalizer and critic restored; optimizer and action variance restart" if init else None,
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
         "source_sha256": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in sorted((root / "src").rglob("*.py"))},
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "input_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in
+                         ("assets/robots/a1x/a1x.xml", "configs/default.yaml", "constraints.txt")},
         "versions": {p: importlib.metadata.version(p) for p in
                      ("torch", "mujoco", "mujoco-warp", "warp-lang", "numpy")},
         "ppo": asdict(cfg), "task": asdict(task), "randomization": asdict(rand),
-        "training_limit_s": args.seconds, "held_out_seeds": [20000, 20019],
+        "training_limit_s": args.seconds, "evaluation_seeds": [args.eval_seed, args.eval_seed + 19],
         "stop_rules": "Iteration/time limit, numerical failure, or GPU capacity overflow; no automatic retry",
         "status": "running", "device": torch.cuda.get_device_name(),
     }
@@ -76,16 +94,16 @@ def main():
                                   ("iteration", "steps", "success", "fps", "elapsed", "physics")}), flush=True)
         ws = Workspace(robot="a1x")
         policy = train(task, cfg, workspace=ws, randomization=rand, out_dir=args.out / "policy",
-                       on_progress=progress, stop=stop)
+                       on_progress=progress, stop=stop, init=init)
         timer.cancel()
         report["training_elapsed_s"] = time.monotonic() - started
         policy = Policy.load(args.out / "policy" / "policy.pt")
         report["iterations"], report["steps"] = policy.meta.iterations, policy.meta.steps
         report["gpu_training"] = policy.meta.evals["gpu"]
         report["cpu_nominal"] = evaluate(policy, episodes=20, workspace=ws,
-                                          randomization=Randomization.none(), seed=20000)
+                                          randomization=Randomization.none(), seed=args.eval_seed)
         report["cpu_randomized"] = evaluate(policy, episodes=20, workspace=ws,
-                                             randomization=rand, seed=20000)
+                                             randomization=rand, seed=args.eval_seed)
         report["status"] = "evaluated"  # Evaluation completed; this is not a success gate.
     except BaseException:
         report["status"], report["error"] = "failed", traceback.format_exc()

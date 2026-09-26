@@ -126,6 +126,7 @@ class BatchEnv:
         self.qpos, self.qvel, self.ctrl = t(self.d.qpos), t(self.d.qvel), t(self.d.ctrl)
         self.qacc_ws = t(self.d.qacc_warmstart)
         self.site_xpos, self.xpos, self.xmat = t(self.d.site_xpos), t(self.d.xpos), t(self.d.xmat)
+        self.geom_xpos = t(self.d.geom_xpos)
         self.sensordata = t(self.d.sensordata) if cube else None
         #: pickplace: polozenia cial mocap (N, nmocap, 3) - podkladka celu.
         self.mocap_pos = t(self.d.mocap_pos) if self.task.target else None
@@ -138,6 +139,7 @@ class BatchEnv:
         self.dadr = torch.as_tensor(self.kin.dadr, device=dev)
         self.act = torch.as_tensor(scene.act_ids, device=dev)
         self.site = int(self.kin.site_id)
+        self.tip_ids = torch.as_tensor([mjm.geom(self.kin.prefix + name).id for name in spec.fingertips], device=dev)
         T = scene.T_base2world
         self.R_b = torch.as_tensor(T[:3, :3], **f32)
         self.t_b = torch.as_tensor(T[:3, 3], **f32)
@@ -219,6 +221,8 @@ class BatchEnv:
     def _state(self) -> dict[str, torch.Tensor]:
         R, t = self.R_b, self.t_b
         out = {"q": self.qpos[:, self.qadr], "tcp": (self.site_xpos[:, self.site] - t) @ R}
+        if self.task.grasp_tip_reward:
+            out["grasp_pos"] = (self.geom_xpos[:, self.tip_ids].mean(1) - t) @ R
         if self.task.cube:
             out["cube_pos"] = (self.xpos[:, self.cube_body] - t) @ R
             out["cube_rot"] = R.T @ self.xmat[:, self.cube_body]
@@ -402,7 +406,7 @@ class BatchEnv:
             self.carried = tk.carry_latch(torch, self.task, self.carried, s["jaws"], s["cube_pos"])
             kw = dict(target=self.target, cube_vel=s["cube_vel"], carried=self.carried,
                       grip_open=tk.grip_is_open(torch, self.limits, self.q_cmd))
-        rew, success, failure = tk.reward(torch, self.task, s["tcp"], action, self.prev_action, goal=self.goal,
+        rew, success, failure = tk.reward(torch, self.task, s.get("grasp_pos", s["tcp"]), action, self.prev_action, goal=self.goal,
                                           cube_pos=s.get("cube_pos"), jaw_contacts=s.get("jaws"),
                                           q_cmd=self.q_cmd, limits=self.limits, **kw)
         self.streak, finished = tk.success_streak(torch, self.task, self.streak, success)

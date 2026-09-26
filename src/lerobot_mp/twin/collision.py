@@ -19,6 +19,7 @@ Dwie rzeczy, ktorych nauczyl galaxeo-manipulators:
 from __future__ import annotations
 
 from collections.abc import Mapping
+import copy
 
 import mujoco
 import numpy as np
@@ -28,11 +29,16 @@ from .scene import PREFIX, Scene
 
 
 class CollisionChecker:
-    def __init__(self, scene: Scene, *, grasp_objects: tuple[str, ...] = ()):
+    def __init__(self, scene: Scene, *, grasp_objects: tuple[str, ...] = (), clearance_m: float = 0.0):
+        if not np.isfinite(clearance_m) or clearance_m < 0:
+            raise ValueError("Collision clearance must be finite and nonnegative")
         self.scene = scene
-        self.model = scene.model
-        self.data = mujoco.MjData(scene.model)
-        self.kin = RobotKinematics(scene.cfg.robot, scene.model, PREFIX)
+        # The environmental clearance must not change the dynamics/contact model.
+        self.model = copy.copy(scene.model) if clearance_m else scene.model
+        if clearance_m:
+            self.model.geom_margin[:] = np.maximum(self.model.geom_margin, clearance_m)
+        self.data = mujoco.MjData(self.model)
+        self.kin = RobotKinematics(scene.cfg.robot, self.model, PREFIX)
         m = self.model
         base = m.body(PREFIX + scene.cfg.robot.base_body).id
         in_robot = np.zeros(m.nbody, bool)
@@ -101,6 +107,10 @@ class CollisionChecker:
         out = set()
         for c in d.contact[: d.ncon]:
             g1, g2 = int(c.geom1), int(c.geom2)
+            # Mechanical joint housings can be separated by less than the
+            # environmental buffer. Still reject actual self penetration.
+            if c.dist > 0 and self.robot_geom[g1] and self.robot_geom[g2]:
+                continue
             if self.robot_geom[g1] or self.robot_geom[g2]:
                 out.add((min(g1, g2), max(g1, g2)))
         return out
@@ -136,7 +146,9 @@ class CollisionChecker:
         kinds = [self.model.joint(PREFIX + name).type[0] for name in self.kin.spec.joints]
         step = np.where(np.asarray(kinds) == mujoco.mjtJoint.mjJNT_SLIDE, 0.001, step_rad)
         n = max(1, int(np.ceil(np.max(np.abs(q1 - q0) / step))))
-        for s in np.linspace(0.0, 1.0, n + 1)[1:]:
+        # Include the measured start. With a short move, sampling only the end
+        # can miss a near-table tracking pose while the commanded end is clear.
+        for s in np.linspace(0.0, 1.0, n + 1):
             why = self._config_clear(self.kin.from_q(q0 + s * (q1 - q0)))
             if why:
                 return f"{why} w {s:.0%} drogi"

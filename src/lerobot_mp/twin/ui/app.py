@@ -3012,13 +3012,16 @@ class TwinApp:
         with self.twin.lock:
             return name in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
 
-    def _configure_objects(self, cube: bool, pad: bool) -> None:
+    def _configure_objects(self, cube: bool, pad: bool, task=None) -> None:
         """Kostka i/lub podkladka celu pickplace w scenie blizniaka (przebudowa, stan zostaje)."""
         from ..rl import task as tk
         from ..rl.env import TARGET_RGBA, TARGET_SIZE
-        task = tk.make_task("lift", self.ws.spec())
+        task = task or tk.make_task("lift", self.ws.spec())
         h = task.cube_half
-        objs, sensors = [], []
+        # Retain unrelated modeled obstacles when adding/removing task objects.
+        with self.twin.lock:
+            objs = [o for o in self.twin.scene.cfg.objects if o.name not in ("cube", "target")]
+            sensors = [name for name in self.twin.scene.cfg.grasp_sensors if name != "cube"]
         if cube:
             objs.append(sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0), mass=task.cube_mass))
             sensors.append("cube")
@@ -3175,7 +3178,10 @@ class TwinApp:
             det = None
         if det is not None:
             self._cube_used_t = det.t
-        return self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
+        observed = self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
+        if observed is not None and not st.simulated and self.cube_tracker.source in ("kamery", "w dloni"):
+            self.twin.observe_object("cube", observed[0], observed[1])
+        return observed
 
     def _require_physical_vision(self) -> None:
         from ..workspace import require_physical_cameras
@@ -3232,6 +3238,7 @@ class TwinApp:
                     raise RuntimeError("kostka z kamer wymaga wlaczonej mapy i szukania kostki (zakladka Mapa)")
                 if not self.twin.status.simulated:
                     self._require_physical_vision()
+                    self._configure_objects(cube=True, pad=self._body_in_scene("target"), task=pol.task)
                 self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
                 self._cube_used_t = 0.0
                 provider = self._vision_cube

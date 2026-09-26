@@ -49,6 +49,7 @@ def test_cpu_gpu_observations_rewards_and_timeout_reset_agree():
         gpu.mjw.forward(gpu.m, gpu.d)
         gpu.wp.synchronize_device()
         gpu._perceive(gpu._state())
+        np.testing.assert_allclose(gpu._state()["grasp_pos"][0].cpu().numpy(), cpu.state()["grasp_pos"], atol=1e-6)
         action = np.array([.01, -.02, .03, 0, 0, 0, .2], dtype=np.float32)
         for step in range(task.episode_steps):
             c_obs, c_reward, term, trunc, c_info = cpu.step(action)

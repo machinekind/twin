@@ -101,6 +101,11 @@ class TaskConfig:
     #: pierscien kostki ze `spec.desk`).
     target_radius: tuple[float, float] = (0.15, 0.25)
     target_bearing: tuple[float, float] = (-0.8, 0.8)
+    #: Coarse lift-approach reward distance [m]; legacy/SO-101 shaping remains 5 cm.
+    approach_scale: float = 0.05
+    #: A1X's fingertip midpoint is 29.89 mm ahead of its calibrated TCP.
+    #: Reward approaching with the actual gripping surface, without moving the TCP frame.
+    grasp_tip_reward: bool = False
 
     @property
     def obs_dim(self) -> int:
@@ -150,7 +155,11 @@ def make_task(name: str = "reach", spec: RobotSpec | None = None, **overrides) -
         base = replace(base, n_joints=len(spec.joints), goal_radius=d.goal_radius, goal_height=d.goal_height,
                        cube_radius=d.cube_radius, cube_bearing=d.cube_bearing,
                        target_radius=d.cube_radius, target_bearing=d.cube_bearing)
+        if spec.name == "a1x" and name == "lift":
+            base = replace(base, approach_scale=0.20, grasp_tip_reward=True)
     task = replace(base, **overrides)
+    if not np.isfinite(task.approach_scale) or task.approach_scale <= 0:
+        raise ValueError("approach_scale must be finite and > 0")
     if spec is not None:
         if not np.isfinite(task.control_hz) or task.control_hz <= 0:
             raise ValueError("control_hz must be finite and > 0")
@@ -331,7 +340,8 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
     success = grasped & (height > task.lift_height)
     g = grasped.to(tcp.dtype) if xp is not np else grasped.astype(tcp.dtype)
     s = success.to(tcp.dtype) if xp is not np else success.astype(tcp.dtype)
-    r = (1.0 - xp.tanh(d / 0.05)) + g + 4.0 * g * lifted + 2.0 * s
+    approach = 0.5 * (1.0 - xp.tanh(d / task.approach_scale)) + 0.5 * (1.0 - xp.tanh(d / 0.05))
+    r = approach + g + 4.0 * g * lifted + 2.0 * s
     if task.hold_still > 0:
         na = action.shape[-1] - 1 if limits is None else limits.n_arm
         cost = cost + task.hold_still * s * (_clip(xp, action[..., :na], -1.0, 1.0) ** 2).sum(-1)

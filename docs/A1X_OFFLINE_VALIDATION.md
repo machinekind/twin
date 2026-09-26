@@ -67,8 +67,8 @@ reset and termination on a real folded-wrist/shoulder collision.
 Six backend regression cases were added afterward: feedback endpoints and midpoint,
 first calibrated squeeze while holding an object, sender I/O failure/recovery, and
 reconnection. All **14 backend-contract cases passed** in
-`a1x-backend-contracts-final.log` (0.87 s). No source changes followed the full-suite
-run; the later changes are tests, validation scripts and documentation.
+`a1x-backend-contracts-final.log` (0.87 s). These results describe checkpoint
+`5de2292`; subsequent changes and their verification are recorded below.
 The fake-CAN tests imported the adjacent `galaxeo` working tree (HEAD `d9fa677`);
 that checkout contains team changes and was neither edited nor installed by this task.
 
@@ -160,8 +160,93 @@ mistakenly treated the normal end-of-episode message as a fault; it is supersede
 Success here means final TCP error below 20 mm; reach has no sustained-hold
 requirement. This checkpoint demonstrates learning, but is **not ready for a demo
 or hardware deployment**. The scripted lift remains the stronger current baseline.
-The next experiment should improve reaching precision/stability and repeat the
-independent controller evaluation before proceeding to learned lift.
+The improved candidate below supersedes it for reaching experiments.
+
+## Follow-up geometry, perception and learned reach
+
+`a1x-geometry-001.log`: two independent geometry checks pass. URDF forward
+kinematics agree with every MuJoCo robot link across 100 random joint poses;
+joint limits, jaw unit/sign conversion, the 29.89 mm TCP/fingertip offset and
+normalized generated XML agree. This validates conversion from vendor assets,
+not the physical assembly, calibration offsets or installed accessories.
+
+`reach-candidate-003` fine-tunes candidate 002 for 500 iterations, 512 worlds,
+seed 14, 900 s ceiling and initial action std 0.3. It restores actor, critic and
+normalizer, with a fresh optimizer/action variance. Additional training:
+6,144,000 transitions, 464.2 s including setup, 477.5 s through CPU evaluation,
+1,592.5 MiB peak total GPU memory. No numerical failures or capacity overflow.
+
+| Seed set | Nominal CPU | Default-randomized CPU | Guarded runtime |
+|---|---:|---:|---:|
+| 21000-21019, validation | 19/20 | 20/20 | 19/20; 1 safe rejection |
+| 30000-30019, fresh policy evaluation | 19/20 | 20/20 | 19/20; 1 safe rejection |
+
+CPU median final errors were about 1.5-1.8 mm. Each nominal CPU set had one
+collision-ended episode. The old runtime guard also allowed one table contact
+in each set. Seed 21007 exposed 0.1194 mm finger/table penetration even though
+the commanded endpoint was clear: the measured tracking pose was not included
+when a short path used only its endpoint. Evidence: `reach-contact-21007.json`.
+
+The guard now includes the measured start and uses 3 mm environmental clearance
+on a private model copy. Simulated dynamics remain unchanged. Positive internal
+housing clearances are exempt from that buffer; actual self penetration remains
+prohibited. Both replays now have zero actual contacts and one safe rejection:
+`reach-runtime-buffered-001.json`, `reach-holdout-buffered-003.json`. Since the
+guard changed after inspecting these sets, they are regression evidence for the
+guard, not untouched guard holdouts. `clearance-003.log`: eight focused tests
+pass. All five scripted lifts still pass (`runtime-lift-buffered-001.json`).
+This 3 mm choice is provisional and is not a measured physical error bound.
+
+After freezing the policy and guard, a fresh seed set 32000-32019 passed **20/20**
+through the common controller (`reach-final-holdout-003.json`). The evaluator
+observes every 5 ms physics substep: zero prohibited contacts or numerical
+failures. The same monitor passes all five scripted lifts, with continuous
+bilateral contact above 6 cm for 3.815-3.825 s, and maximum jaw coupling below
+0.565 mm (`runtime-lift-substeps-001.json`). Learned reaching is still a narrow
+simulation result; this does not qualify a hardware policy.
+
+Physical-mode policy observations now refuse stale, simulated or unknown cube
+sources. Observation loss and exceptions after movement hold measured arm pose
+while preserving an existing squeeze. Current camera/held-object estimates
+update free-object collision geometry using the saved task's cube size, while
+retaining unrelated modeled obstacles. Simulation truth is not overwritten by
+camera estimates. Tests: `physical-observation-loss-002.log` (12 passed),
+`observed-geometry-001.log` (38 passed), `observed-geometry-002.log` (8 passed).
+These are fake/simulated observations; live camera operation remains untested.
+The complete updated suite passed **166 tests** in 193.41 s
+(`offline-suite-004.log`), including GPU and rendering. The later evaluation
+script changes were exercised by the fresh reaching set and scripted lifts above.
+
+## Lift learning experiments
+
+`gpu-lift-1024/report.json`: 1,024 worlds x 3 iterations, 73,728 transitions,
+2,074.5 MiB peak total GPU memory, approximately 38-40k transitions/s after
+warm-up. No overflow; peak 4,098/65,536 contacts and 23/384 constraint rows.
+Save/reload and two CPU episodes passed; this smoke run did not learn a lift.
+
+`lift-candidate-001` is the bounded original-reward baseline: 1,024 worlds,
+1,000 iterations or 900 seconds, seed 17, CPU evaluation seeds 22000-22019.
+Its manifest preserves the source/task loaded before reward changes below.
+Do not overwrite it or relabel it as the corrected experiment.
+It completed at its 900 s training limit: 606 iterations, 14,893,056 transitions,
+2,074.5 MiB peak total GPU memory; 979.5 s including CPU evaluation. Success was
+0/20 nominal and 0/20 randomized, with no evaluation collisions or numerical
+failures. Training had 226 collision-ended episodes and no capacity overflow.
+
+The original lift approach reward uses a 5 cm scale centered on the TCP. For
+100 actual A1X starting poses, its float32 value is exactly zero in 99 cases
+and at most 5.96e-8. The A1X starts roughly half a metre from the cube, and its
+gripping surfaces are 29.89 mm ahead of the TCP. A new A1X lift task therefore
+uses a coarse 20 cm plus fine 5 cm approach reward centered on the fingertip
+midpoint. On the same starts, its range is 0.00100-0.00757 (median 0.00334),
+with no exact zeros. This gives a learning signal; it does not prove learning.
+
+The calibrated TCP frame and observation layout are unchanged. Saved task
+definitions and SO-101 defaults retain the legacy reward. Success still requires
+bilateral contact, over 6 cm height and a consecutive 2 s hold. CPU/GPU reward
+and fingertip position agreement plus legacy compatibility pass 11 focused
+tests (`lift-reward-contracts-001.log`); diagnostic samples are in
+`lift-reward-diagnosis.json`.
 
 ## Remaining validation
 
@@ -171,7 +256,7 @@ independent controller evaluation before proceeding to learned lift.
   candidates through that same controller path.
 - Extend grasp/contact stress coverage as needed; the five successful lift traces
   remain a narrow nominal comparison, not physical dynamics validation.
-- Improve the reach candidate. Train lift only with explicit experiment scope,
+- Retain the improved reach candidate as simulation-only. Train lift with explicit experiment scope,
   recorded limits, and independent sustained-hold/runtime evaluation.
 - Preserve and verify live calibration/configuration, actual G1 feedback, dynamics,
   camera latency, and physical success when the user returns to hardware testing.

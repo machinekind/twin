@@ -95,7 +95,8 @@ Changes affecting the live setup are reviewed with its operator before use.
 
 ### 2. Establish an A1X simulation baseline on CPU
 
-- [ ] Verify joint directions, offsets, units, limits, TCP location, and G1 geometry.
+- [x] Verify model joint directions, offsets, units, limits, TCP location, and G1
+  geometry against the vendor URDF and generator. Physical agreement remains unmeasured.
 - [x] Exercise open/close, reaching, and a scripted block grasp/lift with collisions.
 - [x] Measure finger coupling error, object slip, penetrations, and numerical
   failures. Finite numbers alone do not establish realistic grasp physics.
@@ -118,8 +119,9 @@ Exit: demonstrated A1X GPU compatibility, with logs and checkpoint replay.
 
 ### 4. Train and evaluate a narrow policy
 
-- [x] Train an initial A1X `reach` candidate; evaluate on held-out seeds using CPU
-  and the runtime path. Result is below demo quality; improvement remains necessary.
+- [x] Train and improve A1X `reach`; evaluate on held-out seeds using CPU and the
+  runtime path. The improved candidate reaches 19/20 through the guarded controller;
+  the remaining case is safely rejected. This is simulation evidence only.
 - [ ] Train A1X `lift` for the agreed object/workspace. SO-101 weights are not an
   A1X starting checkpoint. Freeze each experiment's scope, budget, and stop rule.
 - [ ] Include measured actuator behavior and realistic perception delay/noise.
@@ -164,8 +166,8 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **improve the learned reaching candidate and reevaluate it
-through the common controller before training lift**. See [offline evidence](A1X_OFFLINE_VALIDATION.md)
+Current next action: **train and evaluate the corrected lift candidate against
+the completed original-reward baseline**. See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
 
 Selected available compute: local RTX 2000 Ada laptop GPU, 8188 MiB total,
@@ -176,6 +178,11 @@ neither short run learned the task. Five scripted lifts held for two seconds on
 both CPU and GPU, with zero reported capacity overflow. These are narrow,
 measured workloads, not a promise that every training configuration fits 8 GB.
 The adjacent driver checkout has concurrent team changes and must remain untouched.
+
+A 1,024-world lift smoke check used 2,074.5 MiB total GPU memory without capacity
+overflow. The 8 GB GPU is sufficient for these measured workloads. Learned reach
+now achieves 19/20 runtime successes on each of two seed sets, with one guarded
+rejection and zero actual contacts per set. Learned lift is still unproven.
 
 | Date | Work / decision | Evidence | Next action |
 |---|---|---|---|
@@ -189,6 +196,14 @@ The adjacent driver checkout has concurrent team changes and must remain untouch
 | 2026-09-26 | First longer reach attempt fails on per-world constraint capacity, not VRAM | `reach-candidate-001/report.json`: 69 rows required vs 64 allocated; 1336.5 MiB peak total usage | Verify larger A1X reach allocation and collision termination, then rerun a bounded candidate |
 | 2026-09-26 | Corrected training candidate completes 3,686,400 transitions; held-out performance remains insufficient | `reach-candidate-002/report.json`: 9/20 nominal CPU, 10/20 randomized CPU; `reach-runtime-003.json`: 6/20 common-controller successes, all 20 completed without collision/fault | Improve precision/stability with another explicitly bounded local experiment; do not deploy this candidate |
 | 2026-09-26 | Current control/training changes verified, including GPU and render paths | `offline-suite-003.log`: 145 passed; six additional backend cases added afterward, all 14 backend-contract cases passed in `a1x-backend-contracts-final.log` | Preserve the local checkpoint and continue from these artifacts |
+| 2026-09-26 | Local implementation checkpoint preserved | `5de2292`: control corrections, scripted physics/runtime and initial learned reach evidence | Improve learned policies without changing the live driver |
+| 2026-09-26 | Independent model geometry audit passes | `a1x-geometry-001.log`: 2 tests, 100 random URDF/MuJoCo link poses, jaw units, TCP offset and regenerated XML agreement | Physical directions and offsets remain deferred |
+| 2026-09-26 | Reach fine-tuning substantially improves accuracy | `reach-candidate-003`: 6,144,000 additional transitions, 19/20 nominal and 20/20 randomized CPU; fresh seeds 30000-30019 repeat those counts | Common-controller evaluation exposed two marginal table contacts |
+| 2026-09-26 | Guard includes measured start and provisional 3 mm environmental clearance | `reach-runtime-buffered-001.json`, `reach-holdout-buffered-003.json`: 19/20 each, one rejection each, zero actual contacts; `runtime-lift-buffered-001.json`: scripted 5/5 | Keep clearance provisional until measured tracking/calibration error is known |
+| 2026-09-26 | Physical observation-loss stops and modeled object poses corrected offline | `physical-observation-loss-002.log`, `observed-geometry-001.log`, `observed-geometry-002.log` | Verify real perception only when physical access resumes |
+| 2026-09-26 | Lift approach reward diagnosed as nearly absent at home | `lift-reward-diagnosis.json`: old float32 reward exactly zero on 99/100 starts; corrected coarse/fine fingertip reward nonzero on all 100. `lift-reward-contracts-001.log`: 11 passed | Complete original bounded baseline; compare new task definition separately |
+| 2026-09-26 | Updated suite and fresh guarded reach holdout pass | `offline-suite-004.log`: 166 passed; `reach-final-holdout-003.json`: 20/20 on seeds 32000-32019, zero contacts at every substep; `runtime-lift-substeps-001.json`: scripted 5/5 | Preserve source checkpoint and proceed with lift |
+| 2026-09-26 | Original-reward lift baseline completed with no learned lifts | `lift-candidate-001/report.json`: 606 iterations, 14,893,056 transitions in 900.2 s; 0/20 nominal and 0/20 randomized, no numerical/capacity failure | Corrected reward comparison: same seed/worlds, at most 606 iterations and 900 s; same validation seeds |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
@@ -239,3 +254,15 @@ that external plate; its front overhang and thickness are now requested. The
 earlier 439.63 mm / table-Z=0 IK study remains explicitly provisional and must
 not supply physical targets. Facts and unknowns are saved in
 `../reconstructions/scyzoryk/grasps/placement_observations.json`.
+
+Knife-setup measurements now supplied: plate front overhang **1 mm**, thickness
+**11 mm**. The corrected provisional object origin is `[440.627, 0, -11] mm`
+in the CAD base frame, conditional on forward-axis alignment. A new offline
+probe saved separately as `plate_corrected_reach_probe.json` gives **44/80**
+sampled descent IK passes across four illustrative yaws (7/12/9/16). All 44
+also pass sampled mesh-to-table checks along descent and a direct joint-space
+arrival from the stored folded pose. Checks include six moving arm links and
+G1/dual mount envelopes; they do not establish self/obstacle/plate collision,
+installed camera coverage, calibration, or continuous controller safety. Eight
+hardware-free geometry/frame tests pass. No motor commands were sent. This
+remains adjacent knife-grasp work and does not complete a twin-training stage.

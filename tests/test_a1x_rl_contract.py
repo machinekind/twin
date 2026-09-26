@@ -52,6 +52,15 @@ def test_new_a1x_lifts_require_two_seconds_but_saved_overrides_are_preserved():
     assert tk.make_task("lift", A1X, end_on_success=7).end_on_success == 7
 
 
+def test_legacy_lift_checkpoint_keeps_its_reward_definition():
+    from lerobot_mp.twin.rl.policy import PolicyMeta
+    old = PolicyMeta(task={"name": "lift", "n_joints": 7}, hidden=[8], obs_dim=36, act_dim=7, robot="a1x")
+    assert old.task_config().approach_scale == .05
+    assert not old.task_config().grasp_tip_reward
+    assert tk.make_task("lift", SO101).approach_scale == .05
+    assert not tk.make_task("lift", SO101).grasp_tip_reward
+
+
 @pytest.mark.parametrize("finished,expected", [(False, 0.0), (True, 1.0)])
 def test_evaluation_does_not_count_a_last_frame_lift_as_a_completed_hold(monkeypatch, finished, expected):
     from types import SimpleNamespace

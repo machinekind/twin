@@ -214,6 +214,9 @@ class PolicyRunner:
                 raise NoCube(f"zadanie {self.task.name} potrzebuje polozenia kostki - kamery jej nie widza")
             cube_pos, cube_rot = got[0], got[1]
             self._cube_src = str(got[2]) if len(got) > 2 else (self.cube_source() if self.cube_source else None)
+            if not self.twin.status.simulated and self._cube_src not in ("kamery", "w dloni"):
+                raise NoCube("Physical policy requires a current camera or held-object estimate; "
+                             f"received {self._cube_src!r}")
             self._cube = np.asarray(cube_pos, float).copy()
             if self.policy.meta.randomization.get("fold_yaw", False):
                 # W treningu polityka widziala obrot zlozony do +-45 st. (jak z detektora);
@@ -405,13 +408,13 @@ class PolicyRunner:
             if self.status.step == 0 and now - self._t_start < self.wait_for_cube:
                 self.status.stopped_because = "czekam na kostke z kamer"
                 return True
-            self._halt(str(exc))
+            self._halt(str(exc), hold_measured=True)
             return False
         except Exception as exc:                        # ramie sie rozlaczylo, ramie odebrane, blad percepcji...
             if self.twin.owner != OWNER and self._stop.is_set():
                 return False                            # zatrzymana przez `stop` w trakcie taktu
             logger.exception("Petla polityki przerwana")
-            self._halt(f"{type(exc).__name__}: {exc}")
+            self._halt(f"{type(exc).__name__}: {exc}", hold_measured=True)
             return False
         return True
 

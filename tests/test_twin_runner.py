@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+import numpy as np
 import pytest
 
 pytest.importorskip("mujoco")
@@ -62,6 +63,32 @@ def test_physical_policy_refuses_command_only_gripper_state(twin, monkeypatch):
     with pytest.raises(RuntimeError, match="calibrated gripper feedback"):
         runner.start(threaded=False)
     assert twin.owner is None and not runner.status.running
+
+
+@pytest.mark.parametrize("lost", [None, "ostatnie widziane", "symulacja", "unknown", "error"])
+def test_physical_policy_losing_valid_object_state_holds_measured_arm_pose(twin, monkeypatch, lost):
+    arm = FakeArm()
+    arm.blocked["shoulder_pan"] = 10.0
+    connect_fake(twin, monkeypatch, arm)
+    state = {"source": "kamery"}
+
+    def provider():
+        if state["source"] is None:
+            return None
+        if state["source"] == "error":
+            raise RuntimeError("camera calibration changed")
+        return np.array([.2, 0, .015]), np.eye(3), state["source"]
+
+    runner = PolicyRunner(twin, constant_policy(tk.make_task("lift"), {0: 1.0}),
+                          cube_provider=provider, episode_limit=False)
+    runner.start(threaded=False)
+    now = drive(twin, runner, .2)
+    assert runner.status.running and runner.status.step > 0
+    state["source"] = lost
+    assert not runner.step_once(now + .05)
+    drive(twin, runner, .2, now)
+    assert not runner.status.running and twin.owner is None
+    assert arm.sent[-1]["shoulder_pan"] == pytest.approx(10.0, abs=.5)
 
 
 def test_tracking_stop_holds_the_measured_pose_instead_of_pressing_on(twin, monkeypatch):

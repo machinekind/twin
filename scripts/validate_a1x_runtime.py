@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import mujoco
 import numpy as np
 
+from evaluate_a1x_runtime import PhysicsMonitor
+
 from lerobot_mp.twin.collision import CollisionChecker
 from lerobot_mp.twin.rl.env import TwinEnv, scene_config
 from lerobot_mp.twin.rl.policy import PolicyMeta
@@ -40,6 +42,8 @@ def trial(source, trace):
         data.ctrl[:] = cpu.scene.data.ctrl
         mujoco.mj_forward(model, data)
         twin.connect("sim", threaded=False)
+        monitor = PhysicsMonitor(twin.scene, task)
+        twin.scene.step = monitor.step
         actions = iter(trace[:, 11:18].astype(np.float32))
         policy = SimpleNamespace(task=task, meta=PolicyMeta(task=asdict(task), robot="a1x", hidden=[],
                                                            obs_dim=task.obs_dim, act_dim=7),
@@ -72,8 +76,12 @@ def trial(source, trace):
                         if (checker.robot_geom[pair[0]] or checker.robot_geom[pair[1]]) and pair not in checker.allowed:
                             prohibited.add(checker._describe(pair))
             holds.append(bool(runner.status.success))
-        result.update(success=bool(all(holds[-40:]) and not prohibited),
+        result.update(success=bool(all(holds[-40:]) and not prohibited and not monitor.contacts
+                                   and monitor.max_hold_s >= 2.0 - 1e-8 and not monitor.numerical),
                       held_2s=bool(all(holds[-40:])), runner_success_streak=runner.status.success_streak,
+                      max_continuous_hold_s=monitor.max_hold_s,
+                      substep_contacts=monitor.contacts,
+                      max_jaw_coupling_mm=monitor.max_coupling_mm,
                       final_height_mm=float((cube()[0][2] - task.cube_half) * 1000),
                       prohibited_contacts=sorted(prohibited),
                       warnings=[int(w.number) for w in data.warning],

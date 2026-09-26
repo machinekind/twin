@@ -50,6 +50,42 @@ def test_checker_sees_an_object_moved_after_it_was_constructed():
         scene.close()
 
 
+def test_observed_object_pose_updates_the_motion_guard_and_invalid_pose_is_atomic():
+    twin = Twin(Workspace(robot="a1x"))
+    try:
+        twin.configure(objects=[sc.Box("obstacle", (.025, .025, .025), (.5, .4))])
+        twin.connect("sim", threaded=False)
+        twin.set_target({"arm_joint1": 5.0})
+        before = twin.scene.data.qpos.copy()
+        with pytest.raises(ValueError, match="finite rigid pose"):
+            twin.observe_object("obstacle", [np.nan, 0, 0], np.eye(3))
+        np.testing.assert_array_equal(twin.scene.data.qpos, before)
+        palm = twin.scene.kin.body("gripper_link", twin.joints())[:3, 3]
+        twin.observe_object("obstacle", palm, np.eye(3))
+        with pytest.raises(RuntimeError, match="obstacle"):
+            twin.set_target({"arm_joint1": 5.0})
+    finally:
+        twin.close()
+
+
+def test_clearance_rejects_near_table_command_without_changing_simulation_physics():
+    # Reach validation seed 21007: this command was clear, but its measured
+    # tracking pose let a finger touch the table by 0.12 mm.
+    near_table = dict(arm_joint1=3.29549, arm_joint2=161.919819, arm_joint3=-121.455809,
+                      arm_joint4=85.0, arm_joint5=58.745456, arm_joint6=13.985366, gripper=37.632239)
+    tracking = dict(arm_joint1=3.28420, arm_joint2=162.734278, arm_joint3=-121.139181,
+                    arm_joint4=84.815475, arm_joint5=58.552351, arm_joint6=14.203985, gripper=37.51019)
+    scene = sc.build(sc.SceneConfig(robot=A1X))
+    try:
+        margin = scene.model.geom_margin.copy()
+        assert CollisionChecker(scene).config_clear(near_table) is None
+        buffered = CollisionChecker(scene, clearance_m=.003)
+        assert "table" in buffered.path_clear(tracking, near_table)
+        np.testing.assert_array_equal(scene.model.geom_margin, margin)
+    finally:
+        scene.close()
+
+
 def test_final_command_guard_catches_an_obstacle_added_after_target_acceptance():
     twin = Twin(Workspace(robot="a1x"))
     try:
