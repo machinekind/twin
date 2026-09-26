@@ -633,9 +633,10 @@ zasięgu** i kulkę na TCP. Pinch w pudełku (albo na obiekcie wykrytym z kamer
 okularów) wysyła punkt jako cel, a bliźniak prowadzi tam ramię — jako jeden
 z właścicieli ruchu, przez ten sam nadzór co panel. Soczewka i przekaźnik żyją
 w repozytorium `alien-bazaar` (`specs-lens`, README, sekcja „Reach box”);
-tutaj jest strona bliźniaka. **Nic z tego nie jechało jeszcze na okularach ani
-na prawdziwym ramieniu** — sprawdzone tylko w symulacji, z udawanym
-przekaźnikiem i udawanymi okularami.
+tutaj jest strona bliźniaka. Ten kierowca poprowadził prawdziwe A1X z okularów
+26.09.2026; poza tym sprawdzony w symulacji, z udawanym przekaźnikiem
+i udawanymi okularami. Opis po angielsku: [SPECS.md](SPECS.md), całe
+stanowisko krok po kroku: [RIG.md](RIG.md).
 
 ```
 okulary (Lens) --ws /specs--> przekaźnik (server.js) --ws /twin--> lerobot-twin specs --> Twin --> sim / A1X
@@ -691,7 +692,8 @@ albo STOP w panelu — trzymaj rękę na klawiaturze.
 | `--mode dry\|sim\|real` | domyślnie `dry` |
 | `--backend`, `--port` | w `dry` i `sim` domyślnie `sim` (sprzętu nie otworzy przypadkiem); w `real` backend i port ze stanowiska |
 | `--grasp` | cel obiektu: zejście, chwyt i powrót nad obiekt (inaczej tylko nad obiekt) |
-| `--allow-untrusted` | przyjmuj cele z niezaufanej rejestracji (tylko do prób w symulacji) |
+| `--trusted-only` | przyjmuj cele tylko przy zaufanej rejestracji; bez tego (i zawsze w panelu) wystarczy każda rejestracja |
+| `--max-jump-deg` | odmowa `jump`, gdy staw miałby przejechać więcej na jednym odcinku; domyślnie 150, odcinek zawsze jedzie jednym ruchem |
 | `--i-know` | wymagane w `real`; bez niego polecenie kończy się kodem 2 |
 | `--start-center` | przed startem ramię jedzie etapami (jak Dom, 10°/s, pod strażnikiem uderzeń) nad środek pudełka; w `real` dopiero po Enter. Bez niej w symulacji jest szybki przejazd bez pytania, w `real` żaden |
 | `--workspace`, `--seconds` | plik stanowiska; koniec po N sekundach (testy) |
@@ -706,9 +708,10 @@ albo STOP w panelu — trzymaj rękę na klawiaturze.
    każdy cel dostaje odmowę `not armed`.
 3. **`real`** — prawdziwe ramię, tylko z `--i-know` (w panelu: z zaznaczonym
    polem wyboru). Cel dłoni rusza dopiero po 1 s od przyjęcia (`hold_off_s`);
-   nowy cel albo STOP w tym czasie go anuluje. Jeśli rozkaz zmienił się w tej
-   sekundzie (suwaki w panelu), skok i droga są sprawdzane jeszcze raz od nowego
-   rozkazu — inaczej `hold` z powodem `moved`. Zerwane połączenie z przekaźnikiem
+   nowy cel albo STOP w tym czasie go anuluje. Jeśli rozkaz zmienił się od
+   sprawdzeń o 0,5° albo więcej (suwaki w panelu), cel kończy się `hold`
+   z powodem `moved`, bez ruchu i bez ponownego planowania — trzeba wskazać
+   jeszcze raz. Zerwane połączenie z przekaźnikiem
    w czasie jazdy zatrzymuje ją (`hold`, powód `relay`).
 
 ### Wiadomości
@@ -766,14 +769,14 @@ nowa**, na własnym wątku, w tej kolejności — pierwsza porażka to
 | `stop` | aktywny STOP |
 | `busy` | ramię ma inny właściciel (UZBROJONY panel, polityka, fala) albo kierowca akurat cofa ramię lub zamyka chwytak |
 | `not armed` | `real` bez zgody (`--i-know` / pole wyboru w panelu), albo `sim` na backendzie sprzętowym |
-| `untrusted` | cel z niezaufanej rejestracji (bez `--allow-untrusted`) |
-| `session` | sesja celu różna od sesji **ostatniej zaufanej** rejestracji, którą bliźniak dostał od przekaźnika — sama flaga `trusted` z okularów nie wystarcza |
+| `untrusted` | brak rejestracji; z `--trusted-only` także cel albo rejestracja niezaufane |
+| `session` | sesja celu różna od sesji ostatniej rejestracji, którą bliźniak dostał od przekaźnika (z `--trusted-only`: **ostatniej zaufanej**) |
 | `outside volume` | punkt poza pudełkiem zasięgu |
 | `no depth` | cel obiektu bez zmierzonej głębi |
 | `stale` | cel obiektu z wykrycia sprzed ponad 0,5 s (`age`; `detail` podaje wiek) |
 | `ik` | brak rozwiązania IK do 3 mm (albo oś podejścia ponad 15° od pionu) |
-| `jump` | któryś staw miałby przejechać ponad 45° na jednym odcinku |
-| `collision` | droga od bieżącego rozkazu do celu koliduje ze sceną |
+| `jump` | któryś staw miałby przejechać ponad `--max-jump-deg` (domyślnie 150°) na jednym odcinku |
+| `collision` | droga od bieżącego rozkazu do celu koliduje ze stołem albo z samym ramieniem (sprawdzacz nie widzi obiektów sceny) |
 
 Ruch to własna rampa (smoothstep, 50 Hz, 20°/s na największym stawie) pod
 właścicielem `specs`. Na czas jazdy granica prędkości nadzoru (`Twin.set_speed`,
@@ -823,8 +826,9 @@ o przeszkodę ma jeszcze wysiłek ponad próg) — przy 8°/s to ok. 2,4° drogi
   każdego stawu przy spokojnej jeździe w pudełku (w `dry` log co 1 s, na starcie
   każdego odcinka też) i przy lekkim oporze ręką, potem ustaw `SpecsReach.real_effort_abs` /
   `real_effort_abs_descend`.
-- **Bez `--start-center` pierwszy cel po połączeniu dostaje `jump`.** Z domu A1X
-  każdy punkt pudełka wymaga 47–70° na którymś stawie (limit 45°). Uruchom
+- **Bez `--start-center` pierwszy cel po połączeniu to długi przejazd.** Z domu
+  A1X każdy punkt pudełka wymaga ponad 45° na którymś stawie; przy domyślnym
+  `--max-jump-deg` 150 to nie odmowa, tylko jeden ruch z 20°/s. Uruchom
   `lerobot-twin specs --mode real --i-know --start-center` i potwierdź Enterem
   przejazd nad środek pudełka (etapami, 10°/s). Inaczej: podjedź z panelu
   (uchwyt 3D), zdejmij UZBROJONE (inaczej `busy`) i dopiero wtedy pinch.

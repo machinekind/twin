@@ -72,8 +72,9 @@ class SpecsFolder:
 
     def start(self) -> None:
         self.stop(keep_consent=True)
+        # Same trust rule as `lerobot-twin specs` without --trusted-only: any registration is enough.
         self.driver = SpecsReach(self.app.twin, relay_url=str(self.url.value).strip() or DEFAULT_RELAY,
-                                 mode=self.mode.value, real_ok=bool(self.real_ok.value))
+                                 mode=self.mode.value, real_ok=bool(self.real_ok.value), allow_untrusted=True)
         self.driver.start()
         self.tick()
 
@@ -93,7 +94,7 @@ class SpecsFolder:
         else:
             st = drv.status()
             link = "polaczone" if st["connected"] else f"lacze z {drv.relay_url}..."
-            session = st["session"] or "brak zaufanej rejestracji"
+            session = st["session"] or "brak rejestracji"
             text = f"Okulary: {link}, tryb **{st['mode']}**, sesja: {session}"
             last = st["last"]
             if last:
