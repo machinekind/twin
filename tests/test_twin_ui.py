@@ -380,20 +380,20 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
 
 def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app):
     specs = app.specs
-    specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nikt nie slucha - kierowca ponawia
+    specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nothing listens; the driver keeps retrying
     specs.mode.value = "real"
     specs.real_ok.value = True
     specs.start()
     try:
         drv = specs.driver
         assert drv is not None and drv.mode == "real" and drv.real_ok
-        drv._phase = "moving"                                         # jak w trakcie jazdy
+        drv._phase = "moving"                                         # pretend a move is in progress
         specs.mode.value = "dry"
         specs.apply_mode()
         assert drv.mode == "dry"
-        assert drv._cancel.is_set() and drv._cause == "mode"          # ruch staje: hold "mode"
+        assert drv._cancel.is_set() and drv._cause == "mode"
         drv._phase = "idle"
     finally:
         specs.stop()
     assert specs.driver is None
-    assert specs.real_ok.value is False                               # zgoda nie przechodzi na nastepne polaczenie
+    assert specs.real_ok.value is False                               # consent doesn't carry to the next connection

@@ -1,11 +1,11 @@
-"""Folder "Spectacles" panelu: kierowca `SpecsReach` (okulary -> przekaznik -> ramie).
+"""Panel folder "Spectacles": drives `SpecsReach` (glasses -> relay -> arm).
 
-    self.specs = add_specs_folder(self, g)             # w zakladce, gdzie ma byc folder
-    self.specs.tick()                                  # z wolnego taktu panelu (1 Hz)
+    self.specs = add_specs_folder(self, g)             # inside the tab that should hold the folder
+    self.specs.tick()                                  # from the panel's slow (1 Hz) tick
 
-Samodzielny modul, zeby app.py zmienial sie o dwie linijki. Przycisk laczy blizniaka
-panelu z przekaznikiem (`server.js`, sciezka /twin); ruchy ida przez te sama wlasnosc
-ramienia co reszta panelu (wlasciciel "specs"), wiec uzbrojony panel = odmowa "busy".
+Kept as its own module so app.py only changes by a couple of lines. The button connects the panel's twin to the
+relay (`server.js`, path /twin). Moves go through the same arm ownership as the rest of the panel (owner "specs"),
+so while the panel is armed the glasses get a "busy" refusal.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class SpecsFolder:
         def _(event):
             try:
                 self.start()
-            except Exception as exc:                    # blad do napisu, nie do petli panelu
+            except Exception as exc:                    # show it in the folder, do not break the panel loop
                 logger.exception("Spectacles: nie polaczono")
                 self.md.content = f"Okulary: blad - {exc}"
 
@@ -62,7 +62,7 @@ class SpecsFolder:
             self.apply_mode()
 
     def apply_mode(self) -> None:
-        """Tryb i zgoda z panelu do kierowcy; ruch w toku staje (hold "mode")."""
+        """Push mode and consent to the driver; a move in progress stops (hold "mode")."""
         if self.driver is not None:
             self.driver.set_mode(self.mode.value, bool(self.real_ok.value))
 
@@ -77,13 +77,12 @@ class SpecsFolder:
         drv, self.driver = self.driver, None
         if drv is not None:
             drv.stop()
-        # Zgoda na prawdziwe ramie nie przechodzi na nastepne polaczenie (poza ponownym "Polacz").
+        # Real-arm consent must not carry over to the next connection (except a reconnect via "Polacz").
         if not keep_consent and self.real_ok.value:
             self.real_ok.value = False
         self.tick()
 
     def tick(self) -> None:
-        """Napis stanu - wolany z wolnego taktu panelu."""
         drv = self.driver
         if drv is None:
             text = "Okulary: rozlaczone"
@@ -102,5 +101,5 @@ class SpecsFolder:
 
 
 def add_specs_folder(app: Any, gui: Any) -> SpecsFolder:
-    """Folder "Spectacles" w biezacym kontekscie GUI (`gui` = `app.server.gui`)."""
+    """Add the folder in the current GUI context (`gui` = `app.server.gui`)."""
     return SpecsFolder(app, gui)

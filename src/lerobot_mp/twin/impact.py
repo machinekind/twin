@@ -1,26 +1,25 @@
-"""Uderzenie w przeszkode: wykrycie z probek petli i poza, do ktorej sie wycofac.
+"""Collision detection for the arm: spot a blocked joint from loop samples and pick a pose to back off to.
 
     guard = ImpactGuard(["arm_joint1", ..., "arm_joint6"], effort_abs=20.0)
     hit = guard.feed(s.t, s.sent, s.measured, s.fresh, efforts=arm.efforts(), velocities=arm.velocities())
-    if hit:                                            # hit.kind "lag" albo "effort", hit.backoff_pose
+    if hit:                                            # hit.kind is "lag" or "effort"; hit.backoff_pose
         ...
 
-Czysta logika na liczbach (bez blizniaka, bez zegara) - karmiona probkami
-`Twin.add_tick_listener` i tym, co zmierzy backend. Dwie reguly:
+Pure number logic (no twin, no clock), fed with `Twin.add_tick_listener` samples and backend readings.
+Two triggers:
 
-* **Opoznienie** (glowna na sprzecie): rozkaz jedzie dalej, a staw nie nadaza -
-  |rozkaz - pomiar| > `lag_deg` przez `lag_s`, a staw prawie stoi (|predkosc| < `vel_still`).
-  Normalna rampa ma rozkaz tuz przed pomiarem i staw w ruchu, wiec nie wyzwala.
-  Musi zadzialac dlugo przed wlasnym "gluchym" bledem backendu A1X (3 st. przez 1 s).
-* **Wysilek**: |wysilek| stawu powyzej progu bezwzglednego (`effort_abs`, na staw albo
-  jeden dla wszystkich) przez `effort_n` kolejnych probek. A1X: surowa skala ramki 0x052
-  (prog 20 to zgadywanie); symulacja: 0,8 * forcerange aktuatora.
+* **Lag** (the main one on hardware): the command keeps moving but the joint does not - |command - measured|
+  > `lag_deg` for `lag_s` while the joint is nearly still (|velocity| < `vel_still`). A normal ramp has the
+  command just ahead of the measurement with the joint moving, so it does not trigger. Must fire well before
+  the A1X backend's own "deaf" error (3 deg for 1 s).
+* **Effort**: |effort| above an absolute threshold (`effort_abs`, per joint or one for all) for `effort_n`
+  consecutive samples. A1X: raw scale of CAN frame 0x052 (threshold 20 is a guess); sim: 0.8 * actuator
+  forcerange.
 
-Poza wycofania: najnowsza "dobra" probka (bez podejrzen) starsza o `backoff_s` od
-uderzenia, ktora jest tez co najmniej `min_backoff_deg` od pomiaru na swoim najbardziej
-oddalonym stawie; bez takiej - najstarsza dobra probka; bez dobrych probek - pomiar.
-Probki z `sent == {}` (nic nie poszlo do serw) sa pomijane w calosci; nieswieze
-pomiary (`fresh=False`) tez - nie ma w nich nic nowego o ramieniu.
+Back-off pose: the newest "good" (unsuspicious) sample at least `backoff_s` older than the impact whose
+farthest joint is at least `min_backoff_deg` from the measurement; else the oldest good sample; else the
+measurement. Samples with `sent == {}` (nothing reached the servos) and stale ones (`fresh=False`) are
+ignored - they say nothing new about the arm.
 """
 
 from __future__ import annotations
@@ -32,21 +31,15 @@ from dataclasses import dataclass
 
 @dataclass
 class Impact:
-    """Wyzwolenie straznika."""
-
     t: float
     joint: str
-    #: "lag" - staw nie nadaza za rozkazem i stoi; "effort" - wysilek ponad prog.
-    kind: str
-    #: Opoznienie [st.] albo wysilek (jednostki backendu) w chwili wyzwolenia.
-    value: float
-    #: Stawy (tylko pilnowane) pozy, do ktorej sie wycofac; None - brak pomiaru tych stawow.
+    kind: str  # "lag" or "effort"
+    value: float  # lag in deg, or effort in backend units
+    # Guarded joints only; None when none of them were measured.
     backoff_pose: dict[str, float] | None
 
 
 class ImpactGuard:
-    """Wykrywa zablokowany staw (opoznienie albo wysilek) i wybiera poze wycofania."""
-
     def __init__(
         self,
         joints: Sequence[str],
@@ -77,16 +70,14 @@ class ImpactGuard:
         self.reset()
 
     def reset(self) -> None:
-        """Zapomina wszystko: bufor dobrych probek, liczniki i poprzedni pomiar."""
         self._good: deque[tuple[float, dict[str, float]]] = deque()
         self._lag_since: dict[str, float] = {}
         self._effort_count: dict[str, int] = {}
         self._prev: tuple[float, dict[str, float]] | None = None
 
-    # ------------------------------------------------------------------ probki
     def _velocity(self, t: float, measured: dict[str, float],
                   velocities: Mapping[str, float] | None) -> dict[str, float]:
-        """Predkosci [st./s]: z backendu, a brakujace z poprzedniej swiezej probki. Brak = nieznana."""
+        """Velocities in deg/s: from the backend, missing ones derived from the previous sample; absent = unknown."""
         vel: dict[str, float] = {}
         if velocities:
             vel.update({j: float(velocities[j]) for j in self.joints if j in velocities})
@@ -107,10 +98,10 @@ class ImpactGuard:
         efforts: Mapping[str, float] | None = None,
         velocities: Mapping[str, float] | None = None,
     ) -> Impact | None:
-        """Jedna probka petli. Zwraca `Impact` w takcie wyzwolenia, inaczej None.
+        """Feed one loop sample; returns an `Impact` on the tick it triggers, else None.
 
-        Po wyzwoleniu liczniki startuja od zera (kolejne wyzwolenie wymaga nowego
-        `lag_s` / `effort_n`); bufor dobrych probek zostaje, dopoki nie ma `reset`.
+        After a trigger the counters restart (the next one needs a fresh `lag_s` / `effort_n`); the good-sample
+        buffer is kept until `reset`.
         """
         if not sent or not fresh:
             return None
@@ -122,7 +113,6 @@ class ImpactGuard:
 
         hit: tuple[str, str, float] | None = None
         suspicious = False
-        # --- opoznienie: rozkaz ucieka, a staw stoi
         for j in self.joints:
             if j not in sent or j not in m:
                 self._lag_since.pop(j, None)
@@ -136,7 +126,6 @@ class ImpactGuard:
                     hit = (j, "lag", err)
             else:
                 self._lag_since.pop(j, None)
-        # --- wysilek: prog bezwzgledny przez `effort_n` kolejnych probek
         if efforts is not None:
             for j, limit in self.effort_abs.items():
                 if j not in efforts:
@@ -162,9 +151,7 @@ class ImpactGuard:
             self._good.popleft()
         return None
 
-    # ---------------------------------------------------------------- wycofanie
     def _backoff(self, t: float, measured: dict[str, float]) -> dict[str, float] | None:
-        """Najnowsza dobra probka >= `backoff_s` przed `t` i >= `min_backoff_deg` od pomiaru."""
         for ts, pose in reversed(self._good):
             if ts > t - self.backoff_s:
                 continue
@@ -176,5 +163,4 @@ class ImpactGuard:
         return dict(measured) if measured else None
 
     def good_samples(self) -> list[tuple[float, dict[str, float]]]:
-        """Kopia bufora dobrych probek (t, poza) - do podgladu i testow."""
         return [(ts, dict(p)) for ts, p in self._good]

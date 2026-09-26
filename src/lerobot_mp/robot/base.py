@@ -101,19 +101,17 @@ class RobotBackend(ABC):
         return []
 
     def efforts(self) -> dict[str, float] | None:
-        """Wysilek (moment) stawow ramienia z ostatniego swiezego pomiaru: {staw: wartosc}.
+        """Arm joint efforts (torque) from the latest fresh reading; gripper excluded. Must not raise.
 
-        Jednostka zalezy od sprzetu: A1X - surowa skala ramki 0x052 (po `EFF_SCALE`
-        galaxeo, bez przeliczenia na N*m). Bez chwytaka. None = backend nie mierzy
-        wysilku albo pomiar jest stary/zamrozony. Nigdy nie rzuca.
+        Units depend on the hardware: A1X uses the raw 0x052 scale (after galaxeo's `EFF_SCALE`, not N*m).
+        None = not measured by this backend, or the reading is stale/frozen.
         """
         return None
 
     def velocities(self) -> dict[str, float] | None:
-        """Predkosci stawow ramienia z ostatniego swiezego pomiaru [st./s]: {staw: wartosc}.
+        """Arm joint velocities in deg/s from the latest fresh reading; gripper excluded. Must not raise.
 
-        Bez chwytaka. None = backend nie mierzy predkosci albo pomiar jest stary/zamrozony
-        (wolajacy liczy ja wtedy sam z kolejnych swiezych odczytow). Nigdy nie rzuca.
+        None = not measured by this backend, or the reading is stale/frozen (callers then differentiate positions).
         """
         return None
 

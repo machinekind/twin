@@ -175,9 +175,8 @@ class Workspace:
     #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
     #: pusta = model Menagerie. Srodek randomizacji w treningu.
     dynamics: dict[str, Any] = field(default_factory=dict)
-    #: Pudelko zasiegu okularow (`reach.ReachVolume`) w ukladzie podstawy [m]:
-    #: {"lo": [x, y, z], "hi": [x, y, z]}; None = domyslne z opisu ramienia.
-    #: Opcjonalne - plik bez tego klucza wczytuje sie jak dawniej, a None nie trafia do pliku.
+    #: Reach box for the glasses (`reach.ReachVolume`), base frame [m]: {"lo": [x, y, z], "hi": [x, y, z]}.
+    #: None = arm default; None is not written, so older files without the key still load.
     reach: dict[str, Any] | None = None
     path: Path | None = field(default=None, compare=False, repr=False)
 

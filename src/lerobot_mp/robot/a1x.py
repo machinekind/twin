@@ -404,13 +404,13 @@ class A1XArm(RobotBackend):
             return sent
 
     def _fresh_fb(self) -> Any:
-        """Ostatnia ramka 0x052, gdy swieza i zywa; None przy braku, starej albo zamrozonej telemetrii."""
+        """Latest 0x052 frame, or None when missing, stale or frozen."""
         if not self._connected or self._fb is None or self._stale_now(self._clock()) or self._frozen():
             return None
         return self._fb
 
     def efforts(self) -> dict[str, float] | None:
-        """Wysilek 6 stawow ramienia z ostatniej ramki 0x052 - surowa skala A1X (bez chwytaka)."""
+        """Raw A1X effort scale from frame 0x052; arm joints only, no gripper."""
         with self._lock:
             fb = self._fresh_fb()
             if fb is None:
@@ -418,7 +418,7 @@ class A1XArm(RobotBackend):
             return {name: float(fb.eff[i]) for i, name in enumerate(self.arm)}
 
     def velocities(self) -> dict[str, float] | None:
-        """Predkosci 6 stawow ramienia z ostatniej ramki 0x052 [st./s] (bez chwytaka)."""
+        """deg/s from frame 0x052; arm joints only, no gripper."""
         with self._lock:
             fb = self._fresh_fb()
             if fb is None:

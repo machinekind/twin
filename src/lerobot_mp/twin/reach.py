@@ -1,17 +1,15 @@
-"""Pudelko zasiegu: prostopadloscian w ukladzie podstawy, w ktory okulary wskazuja cel.
+"""Reach box: an axis-aligned box in the robot base frame that the Specs glasses point targets into.
 
-    vol = ReachVolume.from_workspace(ws)               # albo ReachVolume.from_spec(get_spec("a1x"))
-    vol.contains(p)                                    # punkt [m] w ukladzie podstawy
-    overlay = vol.overlay_object()                     # obiekt "volume" dla nakladki w okularach
+    vol = ReachVolume.from_workspace(ws)               # or ReachVolume.from_spec(get_spec("a1x"))
+    vol.contains(p)                                    # p in metres, base frame
+    overlay = vol.overlay_object()                     # "volume" object for the glasses overlay
 
-Jedno zrodlo prawdy: blizniak wysyla pudelko do okularow jako obiekt nakladki,
-okulary rysuja je i podswietlaja kursor dloni, a blizniak i tak sprawdza kazdy
-cel od nowa (pudelko, IK, kolizje) przed ruchem.
+Single source of truth: the twin sends the box to the glasses as an overlay object, the glasses draw it and
+highlight the hand cursor, and the twin still re-checks every target (box, IK, collisions) before moving.
 
-Domyslne pudelka sa sprawdzone testem (`tests/test_twin_reach.py`): w kazdym
-punkcie siatki 4x4x3 (z osmioma rogami) IK trafia w 3 mm, a poza jest wolna od
-kolizji z pustym stolem. Dol pudelka najwyzej 5 cm nad blatem - wysokosc stolu
-tez jest kalibrowana, wiec palce nie maja schodzic nizej.
+The default boxes are verified by `tests/test_twin_reach.py`: at every point of a 4x4x3 grid (corners
+included) IK lands within 3 mm and the pose does not collide with an empty table. The box floor is at most
+5 cm above the table - table height is calibrated too, so the fingers must not go lower.
 """
 
 from __future__ import annotations
@@ -25,25 +23,22 @@ import numpy as np
 
 from .robots import RobotSpec
 
-#: Najnizszy dol pudelka nad blatem [m].
-MIN_Z = 0.05
-#: Kolor pudelka w nakladce (RGB 0..1).
+MIN_Z = 0.05  # m, lowest box floor above the table
 COLOR = (0.2, 0.65, 1.0)
-#: Pudelka ustalone recznie i sprawdzone testem, [lo, hi] w ukladzie podstawy [m].
-#: A1X: plan x 0,18..0,50 dawal kolizje palcow ze stolem w rogach (0,18, +-0,30, 0,05),
-#: wiec przod zaczyna sie od 0,20.
+# Hand-picked (lo, hi) in the base frame [m]. A1X: x from 0.18 made the fingers hit the table at the corners
+# (0.18, +-0.30, 0.05), so the front starts at 0.20.
 DEFAULTS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
     "a1x": ((0.20, -0.30, 0.05), (0.50, 0.30, 0.30)),
 }
-#: Pudelko wyliczane z `Desk`: odsuniecie przodu od kolumny barku [m] (SO-101: przy 0,13-0,15
-#: szczeka uderza w bark w dolnych rogach blisko podstawy) i czesc bocznego zasiegu.
-NEAR_BASE = 0.04
+# Box derived from `Desk`: the front is pushed away from the shoulder column (SO-101: at 0.13-0.15 m the jaw
+# hits the shoulder in the low corners near the base), and the sides use part of the lateral reach.
+NEAR_BASE = 0.04  # m
 SIDE_FRACTION = 0.6
 
 
 @dataclass
 class ReachVolume:
-    """Prostopadloscian osiowy (AABB) w ukladzie podstawy [m]."""
+    """Axis-aligned box in the base frame [m]."""
 
     lo: np.ndarray
     hi: np.ndarray
@@ -56,7 +51,6 @@ class ReachVolume:
         if not np.all(self.lo < self.hi):
             raise ValueError(f"pudelko zasiegu: lo {self.lo.tolist()} musi byc mniejsze od hi {self.hi.tolist()}")
 
-    # ------------------------------------------------------------ geometria
     @property
     def center(self) -> np.ndarray:
         return (self.lo + self.hi) / 2.0
@@ -66,18 +60,18 @@ class ReachVolume:
         return self.hi - self.lo
 
     def contains(self, p: Sequence[float] | np.ndarray, margin: float = 0.0) -> bool:
-        """Punkt w pudelku. `margin` > 0 wymaga zapasu od scian (pudelko zwezone), < 0 - poszerza."""
+        """`margin` > 0 shrinks the box (requires clearance from the walls), < 0 grows it."""
         q = np.asarray(p, float).reshape(3)
         if not np.all(np.isfinite(q)):
             return False
         return bool(np.all(q >= self.lo + margin) and np.all(q <= self.hi - margin))
 
     def clamp(self, p: Sequence[float] | np.ndarray) -> np.ndarray:
-        """Najblizszy punkt pudelka."""
+        """Nearest point inside the box."""
         return np.clip(np.asarray(p, float).reshape(3), self.lo, self.hi)
 
     def overlay_object(self, alpha: float = 0.35) -> dict[str, Any]:
-        """Obiekt nakladki `volume` dla okularow (srodek i wymiary w ukladzie podstawy [m])."""
+        """Overlay object of kind `volume` for the glasses (centre and size in the base frame [m])."""
         return {
             "id": "reach",
             "kind": "volume",
@@ -89,10 +83,9 @@ class ReachVolume:
         }
 
     def to_dict(self) -> dict[str, list[float]]:
-        """Postac do `Workspace.reach` (twin.json)."""
+        """Shape stored in `Workspace.reach` (twin.json)."""
         return {"lo": [float(v) for v in self.lo], "hi": [float(v) for v in self.hi]}
 
-    # ----------------------------------------------------------- skad wziac
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ReachVolume:
         try:
@@ -102,11 +95,11 @@ class ReachVolume:
 
     @classmethod
     def from_spec(cls, spec: RobotSpec) -> ReachVolume:
-        """Domyslne pudelko ramienia: z tabeli `DEFAULTS`, inaczej wpisane w pierscien celow `Desk`.
+        """Default box for the arm: from `DEFAULTS`, else fitted inside the `Desk` goal ring.
 
-        Z `Desk`: przod od `goal_radius[0] + NEAR_BASE`, boki +-`SIDE_FRACTION` bocznego zasiegu
-        pierscienia (`goal_radius[1] * sin(cube_bearing)`), tyl tak, zeby rog lezal na
-        `goal_radius[1]`; wysokosc `goal_height`, dol co najmniej `MIN_Z`.
+        From `Desk`: front at `goal_radius[0] + NEAR_BASE`, sides at +-`SIDE_FRACTION` of the ring's lateral
+        reach (`goal_radius[1] * sin(cube_bearing)`), back so the corner lies on `goal_radius[1]`; height from
+        `goal_height`, floor at least `MIN_Z`.
         """
         if spec.name in DEFAULTS:
             lo, hi = DEFAULTS[spec.name]
@@ -121,6 +114,6 @@ class ReachVolume:
 
     @classmethod
     def from_workspace(cls, ws: Any) -> ReachVolume:
-        """Pudelko ze stanowiska (`Workspace.reach`), a bez niego - domyslne ramienia."""
+        """Box from `Workspace.reach`, falling back to the arm default."""
         data = getattr(ws, "reach", None)
         return cls.from_dict(data) if data else cls.from_spec(ws.spec())

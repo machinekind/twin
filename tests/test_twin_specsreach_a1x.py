@@ -1,8 +1,8 @@
-"""Kierowca `SpecsReach` przez backend `a1x` na atrapie magistrali (`FakeA1XBus`), bez sprzetu.
+"""`SpecsReach` driving the `a1x` backend over a fake CAN bus (`FakeA1XBus`), no hardware.
 
-Blizniak z `threaded=False`: petle i magistrale kreci test (`Rig.pump`), zegar wirtualny
-idzie za zegarem sciennym, bo watek wykonawcy kierowcy jest prawdziwy (rampa, czekanie
-na dojechanie). Przekaznik to ta sama atrapa co w `test_twin_specsreach.py`.
+The twin runs with `threaded=False` and the test ticks its loop and the bus (`Rig.pump`). The virtual
+clock follows the wall clock because the driver's worker thread is real (ramps, waiting for arrival).
+The relay is the fake from `test_twin_specsreach.py`.
 """
 
 from __future__ import annotations
@@ -30,15 +30,15 @@ from lerobot_mp.twin.specsreach import SpecsReach  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
 
 ARM = tuple(f"arm_joint{i}" for i in range(1, 7))
-DT = 0.02                                      # takt petli blizniaka (4 takty magistrali)
+DT = 0.02                                      # twin loop period (4 bus ticks)
 
 
 class WallBus(FakeA1XBus):
-    """Atrapa ze sciana: staw `wall[0]` nie przejdzie za `wall[1]` [rad] w strone rozkazu."""
+    """Fake bus with a wall: joint `wall[0]` can't be commanded past `wall[1]` [rad] in direction `wall[2]`."""
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
-        self.wall: tuple[int, float, float] | None = None       # (staw, granica, znak kierunku)
+        self.wall: tuple[int, float, float] | None = None       # (joint index, limit, direction sign)
 
     def send(self, can_id: int, data: bytes, *, fd: bool = True) -> None:
         super().send(can_id, data, fd=fd)
@@ -49,7 +49,7 @@ class WallBus(FakeA1XBus):
 
 
 class Rig:
-    """Blizniak na atrapie A1X, kierowca i przekaznik; `pump` kreci petle w tempie zegara."""
+    """Twin on the fake A1X, plus driver and relay; `pump` runs the loop at wall-clock pace."""
 
     def __init__(self, monkeypatch, relay: FakeRelay, offset: dict[str, float] | None = None):
         spec = robots.REGISTRY["a1x"]
@@ -57,9 +57,9 @@ class Rig:
         self.vol = ReachVolume.from_workspace(Workspace(robot="a1x"))
         sol = self.kin.ik(self.vol.center, seed=spec.home, tol=0.003)
         assert sol.ok
-        self.start = {k: float(sol.joints[k]) for k in ARM}  # z pozy domowej kazdy cel to skok > 45 st.
+        self.start = {k: float(sol.joints[k]) for k in ARM}  # from home every target is a > 45 deg jump
         self.clock = Clock()
-        # `offset` [st.] - ramie startuje tyle od pozy nad srodkiem pudelka (dla `start_center`).
+        # `offset` [deg]: start this far from the pose above the volume centre (for `start_center`).
         self.bus = WallBus([self.start[k] + (offset or {}).get(k, 0.0) for k in ARM])
         self.bus.tick(n=60)
         self.arm: A1XArm | None = None
@@ -91,7 +91,7 @@ class Rig:
         self.faults.extend(self.twin.status.faults)
 
     def pump(self, secs: float, until=None) -> bool:
-        """Takty petli przez `secs` s zegara sciennego (albo do `until()`); True - `until` spelnione."""
+        """Tick the loop for `secs` of wall time or until `until()`; True if `until` was met."""
         t0 = time.monotonic()
         n = 0
         while time.monotonic() - t0 < secs:
@@ -132,7 +132,7 @@ class Rig:
 
     def close(self) -> None:
         if self.driver is not None:
-            # Watek wykonawcy moze czekac na petle (dojechanie) - kreci ja, az kierowca skonczy.
+            # The worker may be waiting on the loop (arrival), so keep ticking until the driver stops.
             import threading
             t = threading.Thread(target=self.driver.stop)
             t.start()
@@ -156,7 +156,7 @@ def rig(monkeypatch, relay):
 
 
 def far_target(rig: Rig) -> np.ndarray:
-    """Cel dloni ~20 st. na J1 od srodka pudelka: rampa trwa ponad sekunde."""
+    """Hand target ~20 deg of J1 from the volume centre, so the ramp takes over a second."""
     return rig.vol.center + np.array([0.0, 0.2, -0.05])
 
 
@@ -167,7 +167,7 @@ def test_sim_mode_or_real_without_consent_on_the_a1x_is_not_armed(rig, mode, rea
     st = rig.wait_state(ts, {"rejected", "moving", "reached"}, 5.0)
     assert (st["state"], st.get("reason")) == ("rejected", "not armed")
     rig.pump(0.3)
-    assert rig.cmd_frames() == []                                   # zadnej ramki 0x050
+    assert rig.cmd_frames() == []
     assert rig.twin.owner is None
 
 
@@ -177,7 +177,7 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
     real_backoff = d._backoff
 
     def spy(t):
-        rig.bus.eff[:6] = [0.0] * 6                                # sila minela - wycofanie bez drugiego uderzenia
+        rig.bus.eff[:6] = [0.0] * 6                                # force gone, so backing off doesn't trip again
         trip["hit"] = d._impact
         trip["tx"] = len(rig.bus.tx)
         return real_backoff(t)
@@ -186,7 +186,7 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
     rig.wait_state(ts, {"moving"}, 5.0)
     rig.pump(0.6)
     before = dict(rig.twin.status.measured)
-    rig.bus.eff[0] = 60.0                                           # > progu 20 w skali ramki 0x052
+    rig.bus.eff[0] = 60.0                                           # > threshold of 20 in 0x052 frame units
     st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 15.0)
     assert (st["state"], st.get("reason")) == ("backoff", "impact effort arm_joint1"), rig.relay.states_for(ts)
     hit = trip["hit"]
@@ -194,16 +194,16 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
     frames = rig.cmd_frames(trip["tx"])
     assert frames
     j1 = [f[0] for f in frames]
-    # Wstecz: J1 wraca w strone pozy sprzed uderzenia i konczy w pozie wycofania.
+    # J1 moves back toward the pre-hit pose and ends at the backoff pose.
     assert abs(j1[-1] - hit.backoff_pose["arm_joint1"]) < 0.5
-    ahead = np.sign(before["arm_joint1"] - rig.start["arm_joint1"])              # kierunek jazdy do celu
-    assert ahead != 0 and (j1[-1] - j1[0]) * ahead < -2.0                           # co najmniej 2 st. wstecz
-    # Wolno: szczyt smoothstep 1,5 x 8 = 12 st./s (+ drgania zegara testu) w oknach 0,2 s,
-    # nigdy szybciej niz granica nadzoru 15 st./s.
+    ahead = np.sign(before["arm_joint1"] - rig.start["arm_joint1"])              # direction of travel
+    assert ahead != 0 and (j1[-1] - j1[0]) * ahead < -2.0
+    # Slow: smoothstep peak 1.5 x 8 = 12 deg/s (+ test clock jitter) over 0.2 s windows,
+    # never above the supervisor's 15 deg/s cap.
     win = int(round(0.2 / STEP))
     rates = [abs(j1[i + win] - j1[i]) / 0.2 for i in range(len(j1) - win)]
     assert rates and max(rates) <= 13.0, max(rates)
-    # Strumien backendu goni rozkaz petli skokami (90 st./s, co 4 ramki) - predkosc tylko w oknach.
+    # The backend chases the loop command in jumps (90 deg/s, every 4 frames), so only windowed speed is meaningful.
     win = int(round(0.1 / STEP))
     fast = [abs(j1[i + win] - j1[i]) / 0.1 for i in range(len(j1) - win)]
     assert max(fast) <= 15.0 + 2 * LSB_DEG / 0.1, max(fast)
@@ -224,7 +224,7 @@ def test_stall_at_a_wall_trips_the_guard_before_the_backend_deaf_fault(rig):
     ts = rig.relay.target(target)
     rig.wait_state(ts, {"moving"}, 5.0)
     rig.pump(0.3)
-    # J1 staje 2 st. dalej niz teraz, w kierunku jazdy.
+    # J1 gets stuck 2 deg further along its direction of travel.
     q = rig.bus.q[0]
     sign = 1.0 if rig.bus.p_des[0] >= q else -1.0
     rig.bus.wall = (0, q + sign * np.radians(2.0), sign)
@@ -233,7 +233,7 @@ def test_stall_at_a_wall_trips_the_guard_before_the_backend_deaf_fault(rig):
     assert (st["state"], st.get("reason")) == ("backoff", "impact lag arm_joint1"), rig.relay.states_for(ts)
     assert tripped
     assert not any("gluche" in f for f in rig.faults), rig.faults
-    rig.pump(1.5)                                                   # po wycofaniu tez bez bledu serwa
+    rig.pump(1.5)                                                   # no servo fault after the backoff either
     assert not any("gluche" in f for f in rig.faults), rig.faults
     assert rig.twin.safety_state.value != "estop"
 
@@ -252,7 +252,7 @@ def test_stop_mid_ramp_holds_releases_and_streams_only_the_held_pose(rig):
     rig.pump(1.0)
     after = rig.cmd_frames(n)
     held = after[0] if after else None
-    assert all(max(abs(a - b) for a, b in zip(f, held)) <= 2 * LSB_DEG for f in after)   # zadnej jazdy
+    assert all(max(abs(a - b) for a, b in zip(f, held)) <= 2 * LSB_DEG for f in after)   # no motion
     assert d._worker is not None and d._worker.is_alive()
 
 
@@ -268,14 +268,17 @@ def test_relay_loss_mid_move_in_real_mode_holds(rig):
     rig.pump(0.3)
     cmd = dict(rig.twin.status.command)
     rig.pump(0.8)
-    assert max(abs(rig.twin.status.command[k] - cmd[k]) for k in ARM) < 0.2          # rozkaz stoi
+    assert max(abs(rig.twin.status.command[k] - cmd[k]) for k in ARM) < 0.2
 
 
 @pytest.mark.parametrize("left_deg", [6.0, 7.0, 8.0])
 def test_start_center_stall_near_the_end_holds_before_the_backend_deaf_fault(monkeypatch, relay, left_deg):
-    """`start_center` 10 st./s, J1 staje 2 st. dalej, gdy do konca rampy zostalo `left_deg`:
-    uchyb konczy sie na ok. 4-6 st. - do starego progu 6 st., nad "gluchym" 3 st. backendu.
-    Z 6 st. / 0,3 s (jak zwykly ruch) backend liczyl juz do 0,74 s z 1 s; z 4 st. / 0,2 s - do 0,34 s."""
+    """`start_center` at 10 deg/s; J1 gets stuck 2 deg further when `left_deg` of the ramp remains.
+
+    The error ends at about 4-6 deg: up to the old 6 deg lag threshold, above the backend's 3 deg "deaf"
+    threshold. With 6 deg / 0.3 s (the normal-move setting) the backend had already counted up to 0.74 s
+    of its 1 s deaf timeout; with 4 deg / 0.2 s, only up to 0.34 s.
+    """
     rig = Rig(monkeypatch, relay, offset={"arm_joint1": -15.0})
     try:
         d = SpecsReach(rig.twin, relay_url=relay.url, mode="real", real_ok=True)
@@ -285,7 +288,7 @@ def test_start_center_stall_near_the_end_holds_before_the_backend_deaf_fault(mon
 
         def spy(cause):
             if cause == "impact" and "deaf_age" not in trip:
-                # Jak dlugo backend liczy juz "gluchy" staw w chwili wyzwolenia straznika.
+                # How long the backend has been counting a joint as "deaf" when the guard trips.
                 trip["deaf_age"] = max((rig.clock.t - t0 for t0 in rig.arm._deaf_since.values()), default=0.0)
             real_interrupt(cause)
         d._interrupt = spy
@@ -298,13 +301,13 @@ def test_start_center_stall_near_the_end_holds_before_the_backend_deaf_fault(mon
         th.join(1.0)
         assert out["r"] == "impact lag arm_joint1", (out, rig.faults)
         assert not any("gluche" in f for f in rig.faults), rig.faults
-        assert trip["deaf_age"] <= 1.0 - 0.3, trip                     # co najmniej 0,3 s przed bledem backendu
-        rig.pump(1.5)                                                   # trzyma - bez wycofania i bez bledu
+        assert trip["deaf_age"] <= 1.0 - 0.3, trip                     # >= 0.3 s before the backend fault
+        rig.pump(1.5)                                                   # holds: no backoff and no fault
         rig.bus.wall = None
         assert not any("gluche" in f for f in rig.faults), rig.faults
         meas, cmd = rig.twin.status.measured, rig.twin.status.command
         assert max(abs(cmd[k] - meas[k]) for k in ARM) < 1.0, (cmd, meas)
-        assert goal - meas["arm_joint1"] > 2.0                         # zostal przy scianie
+        assert goal - meas["arm_joint1"] > 2.0                         # stayed at the wall
         assert rig.twin.safety_state.value != "estop"
         assert rig.twin.owner is None
     finally:

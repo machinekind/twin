@@ -1,4 +1,5 @@
-"""Pudelko zasiegu okularow: kazdy punkt domyslnego pudelka osiagalny i bez kolizji z pustym stolem."""
+"""Specs reach volume: defaults, helpers, workspace persistence, and every default grid point reachable
+without colliding with the empty table."""
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from lerobot_mp.twin.workspace import Workspace
 
 
 def grid(vol: ReachVolume) -> list[np.ndarray]:
-    """Siatka 4x4x3 - linspace ma konce, wiec wszystkie 8 rogow jest w srodku."""
+    """4x4x3 grid; linspace includes the endpoints, so all 8 corners are in it."""
     axes = [np.linspace(vol.lo[k], vol.hi[k], n) for k, n in enumerate((4, 4, 3))]
     return [np.array(p) for p in itertools.product(*axes)]
 
@@ -50,7 +51,7 @@ def test_a1x_default_numbers():
 def test_contains_margin_and_clamp():
     vol = ReachVolume(np.array([0.2, -0.3, 0.05]), np.array([0.5, 0.3, 0.3]))
     assert vol.contains([0.35, 0.0, 0.1])
-    assert vol.contains([0.2, -0.3, 0.05])                                       # sciana sie liczy
+    assert vol.contains([0.2, -0.3, 0.05])                                       # the boundary counts as inside
     assert not vol.contains([0.19, 0.0, 0.1])
     assert not vol.contains([0.21, 0.0, 0.1], margin=0.02)
     assert vol.contains([0.19, 0.0, 0.1], margin=-0.02)
@@ -75,7 +76,7 @@ def test_workspace_override_survives_save_and_load_and_old_files_still_load(tmp_
     path = tmp_path / "twin.json"
     ws = Workspace(robot="a1x")
     ws.save(path)
-    assert "reach" not in json.loads(path.read_text())                         # plik jak dawniej
+    assert "reach" not in json.loads(path.read_text())                         # no override: file format unchanged
     assert Workspace.load(path).reach is None
     assert ReachVolume.from_workspace(Workspace.load(path)).lo.tolist() == pytest.approx([0.20, -0.30, 0.05])
 

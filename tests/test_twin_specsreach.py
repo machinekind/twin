@@ -1,7 +1,7 @@
-"""Okulary -> przekaznik -> kierowca `SpecsReach` -> ramie A1X w symulacji (bez sprzetu).
+"""Specs -> relay -> `SpecsReach` driver -> A1X arm in simulation (no hardware).
 
-Przekaznik to atrapa w procesie (`websockets.sync.server`) na wolnym porcie: po polaczeniu
-wysyla zaufana rejestracje sesji "s1", zapisuje nakladki i stany celow, a test wstrzykuje cele.
+The relay is an in-process fake (`websockets.sync.server`) on a free port. On connect it sends a
+trusted registration for session "s1"; it records overlays and target states, and tests inject targets.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 class FakeRelay:
-    """Atrapa `server.js` od strony `/twin`."""
+    """Fake of the `/twin` side of `server.js`."""
 
     def __init__(self, session: str = "s1", trusted: bool = True):
         self.session, self.trusted = session, trusted
@@ -55,7 +55,7 @@ class FakeRelay:
         try:
             for text in ws:
                 msg = json.loads(text)
-                assert next(iter(msg)) == "type", text             # przekaznik czyta typ z pierwszego klucza
+                assert next(iter(msg)) == "type", text             # the real relay reads the type from the first key
                 with self.cond:
                     if msg["type"] == "overlay":
                         self.overlays.append(msg)
@@ -95,7 +95,7 @@ class FakeRelay:
             return found()
 
     def drop_clients(self) -> None:
-        """Zerwanie polaczen z blizniakami (przekaznik padl albo siec)."""
+        """Simulates the relay dying or the network dropping."""
         with self.cond:
             clients = list(self.clients)
         for ws in clients:
@@ -131,7 +131,7 @@ def relay():
 
 
 def ready(twin, kin, vol) -> None:
-    """Ramie w pozie nad srodkiem pudelka (z pozy domowej skok > 45 st. - odmowa "jump")."""
+    """Park the arm above the volume centre: from home every target is a > 45 deg jump, rejected as "jump"."""
     if twin.safety_state is not None and twin.safety_state.value == "estop":
         twin.clear_estop()
     twin.configure(objects=None)
@@ -147,7 +147,7 @@ def driver(twin, relay, **kw) -> SpecsReach:
     d = SpecsReach(twin, relay_url=relay.url, **kw)
     d.start()
     relay.wait_client()
-    time.sleep(0.2)                                      # rejestracja dotarla do kierowcy
+    time.sleep(0.2)                                      # let the registration reach the driver
     return d
 
 
@@ -159,7 +159,6 @@ def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
     ready(twin, kin, vol)
     d = driver(twin, relay)
     try:
-        # Po polaczeniu nakladka: pudelko (kind volume) i kulka TCP.
         first = relay.overlays[0]
         kinds = {o["id"]: o["kind"] for o in first["objects"]}
         assert kinds == {"reach": "volume", "tcp": "sphere"}
@@ -168,19 +167,18 @@ def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
         p = vol.center + np.array([0.05, 0.08, -0.05])
         ts = relay.target(p)
         relay.wait_state(ts, {"moving", "rejected"}, 5.0)
-        # W trakcie jazdy nadzor ogranicza predkosc do ~1,5 x rampy (+5): 20 st./s -> 35.
+        # While moving, the supervisor caps speed at 1.5 x ramp speed + 5: 20 deg/s -> 35.
         assert twin._supervisor.speed_cap == pytest.approx(35.0)
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 10.0)
         assert st["state"] == "reached", st
         assert relay.states_for(ts)[:2] == ["accepted", "moving"]
         assert st["mode"] == "sim" and list(st)[0] == "type"
         assert np.linalg.norm(tcp(kin, twin) - p) < 0.005
-        assert twin.owner is None                          # zwolnione, sprzeglo trzyma cel
+        assert twin.owner is None                          # released; the clutch holds the target
         deadline = time.monotonic() + 2.0
         while twin._speed_cap is not None and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert twin._speed_cap is None and twin._supervisor.speed_cap is None   # granica przywrocona
-        # kulka TCP odswiezana i kulka celu w nakladce
+        assert twin._speed_cap is None and twin._supervisor.speed_cap is None
         ids = [o["id"] for m in relay.overlays for o in m["objects"]]
         assert ids.count("tcp") >= 3 and "target" in ids
     finally:
@@ -199,7 +197,7 @@ def test_rejections(twin, kin, vol, relay, case):
         elif case == "no depth":
             ts, why = relay.target(vol.center, source="object", label="cup"), "no depth"
         elif case == "stale":
-            # Wykrycie widziane naprawde 0,8 s temu (okulary zgubily obiekt) - nie jechac.
+            # Detection last actually seen 0.8 s ago (the glasses lost the object): don't move.
             ts = relay.target(vol.center, source="object", label="cup", depthMeasured=True, age=0.8)
             why = "stale"
         else:
@@ -223,13 +221,13 @@ def test_object_target_goes_above_it_pointing_down(twin, kin, vol, relay):
     d = driver(twin, relay)
     try:
         p = vol.center + np.array([0.0, -0.05, -0.08])
-        ts = relay.target(p, source="object", label="cup", depthMeasured=True, age=0.2)   # swieze wykrycie
+        ts = relay.target(p, source="object", label="cup", depthMeasured=True, age=0.2)
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 12.0)
         assert st["state"] == "reached", st
         T = kin.tcp(twin.status.measured)
         assert np.linalg.norm(T[:3, 3] - (p + [0.0, 0.0, 0.08])) < 0.005
         approach = T[:3, :3] @ np.asarray(twin.spec.tcp_approach)
-        assert approach[2] < -0.95                          # podejscie w dol
+        assert approach[2] < -0.95                          # gripper points down
     finally:
         d.stop()
 
@@ -242,8 +240,8 @@ def test_object_grasp_descends_closes_and_lifts(twin, kin, vol, relay):
         ts = relay.target(p, source="object", label="cup", depthMeasured=True)
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 25.0)
         assert st["state"] == "reached", (st, relay.states_for(ts))
-        assert relay.states_for(ts).count("moving") == 3            # nad, w dol, w gore
-        # Odcinki w dol / w gore bez docinania: ugiecie pod ciezarem zostaje (symulacja do ~8 mm).
+        assert relay.states_for(ts).count("moving") == 3            # above, down, up
+        # The down/up legs aren't corrected for sag under load, so it remains (up to ~8 mm in sim).
         assert np.linalg.norm(tcp(kin, twin) - (p + [0.0, 0.0, 0.08])) < 0.008
         assert twin.status.command["gripper"] < 5.0
     finally:
@@ -262,7 +260,7 @@ def test_dry_mode_accepts_then_holds_and_does_not_move(twin, kin, vol, relay):
         assert relay.states[-1]["mode"] == "dry"
         after = twin.status.measured
         assert max(abs(after[k] - before[k]) for k in d.arm) < 0.5
-        assert any(o["id"] == "target" for m in relay.overlays for o in m["objects"])   # planowany cel
+        assert any(o["id"] == "target" for m in relay.overlays for o in m["objects"])   # planned target still shown
     finally:
         d.stop()
 
@@ -281,7 +279,7 @@ def test_new_target_mid_move_retargets(twin, kin, vol, relay):
         assert st["state"] == "reached", st
         assert "reached" not in relay.states_for(ts1)
         old = [x for x in relay.states if x["ts"] == ts1 and x["state"] == "hold"]
-        assert old and old[-1]["reason"] == "retargeted"      # zastapiony cel dostaje stan koncowy
+        assert old and old[-1]["reason"] == "retargeted"
         assert np.linalg.norm(tcp(kin, twin) - p2) < 0.005
     finally:
         d.stop()
@@ -321,15 +319,15 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
     ready(twin, kin, vol)
     d = driver(twin, relay)
     if rule == "lag":
-        d.sim_effort_frac = 100.0                          # wysilek nigdy - zostaje regula opoznienia
+        d.sim_effort_frac = 100.0                          # effort never trips, leaving only the lag rule
     try:
-        d._tools()                                         # sprawdzacz zbudowany bez sciany
+        d._tools()                                         # build the collision checker before the wall exists
         c = vol.center
         half = (0.12, 0.01, 0.15)
         xy = (float(c[0]), float(c[1]) + 0.09)
         wall = Box("wall", size=half, xy=xy, rgba=(0.5, 0.5, 0.5, 1.0), free=False)
         twin.configure(objects=[wall])
-        with twin.lock:                                    # sciana naprawde statyczna i w scenie
+        with twin.lock:
             m = twin.scene.model
             assert m.body_jntnum[m.body("wall").id] == 0
         lo = np.array([xy[0] - half[0], xy[1] - half[1], 0.0])
@@ -352,9 +350,9 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
         assert st["state"] == "backoff", (st, relay.states_for(ts))
         assert st["reason"] == f"impact {rule} arm_joint1", st
         assert trip_tcp
-        # Wycofanie w czasie: poza sprzed >= 0,4 s, oddalona o >= 3 st. na najbardziej ruchliwym
-        # stawie (regula straznika) - niekoniecznie na J1, ktory uderzyl. TCP oddala sie od sciany
-        # o wiecej niz odbicie (~2 mm); przy uderzeniu przedramieniem TCP przesuwa sie niewiele.
+        # Backoff goes to the pose from >= 0.4 s earlier that is >= 3 deg away on the most-moved joint
+        # (the guard's rule), not necessarily J1, which hit. The TCP ends farther from the wall than the
+        # ~2 mm rebound alone; a forearm hit moves the TCP only a little.
         measured = twin.status.measured
         assert max(abs(measured[j] - trip_q[0][j]) for j in d.arm) >= 2.5, (measured, trip_q[0])
         assert _dist_to_box(tcp(kin, twin), lo, hi) > _dist_to_box(trip_tcp[0], lo, hi) + 0.005
@@ -368,7 +366,7 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
 
 
 def _moving(twin, kin, vol, relay, **kw):
-    """Kierowca w trakcie dlugiej jazdy (J1 ~20 st. przy 10 st./s)."""
+    """Start a driver on a long move (J1 ~20 deg at 10 deg/s) and return mid-move."""
     ready(twin, kin, vol)
     kw.setdefault("speed_deg_s", 10.0)
     d = driver(twin, relay, **kw)
@@ -379,7 +377,7 @@ def _moving(twin, kin, vol, relay, **kw):
 
 
 def _stands(twin, d, secs: float = 0.5) -> bool:
-    """Po chwili na wyhamowanie ramie stoi (nie jedzie dalej do celu)."""
+    """After 0.5 s to brake, the arm stays still for `secs` instead of continuing to the target."""
     time.sleep(0.5)
     a = dict(twin.status.measured)
     time.sleep(secs)
@@ -396,19 +394,19 @@ def test_stop_mid_move_holds_and_releases_the_arm(twin, kin, vol, relay):
         assert twin.owner is None
         assert _stands(twin, d)
         assert d.last_state["state"] != "reached"
-        assert d._worker is not None and d._worker.is_alive()          # bez wyjatku w watku wykonawcy
+        assert d._worker is not None and d._worker.is_alive()          # the worker thread did not crash
     finally:
         d.stop()
         twin.clear_estop()
 
 
 def test_command_moved_during_the_real_hold_off_holds_with_moved(twin, kin, vol, relay):
-    # Tryb real na symulacji: cel dloni czeka `hold_off_s`; w tym czasie panel przesuwa J1 o 45 st.
+    # Real mode on the sim backend: a hand target waits `hold_off_s`, and meanwhile the panel moves J1 by 45 deg.
     ready(twin, kin, vol)
     d = driver(twin, relay, mode="real", real_ok=True, hold_off_s=1.0)
     try:
         cmd0 = dict(twin.status.command)
-        ts = relay.target(vol.center + np.array([0.0, -0.08, -0.03]))       # J1 w druga strone niz suwak
+        ts = relay.target(vol.center + np.array([0.0, -0.08, -0.03]))       # J1 turns opposite to the panel
         relay.wait_state(ts, {"accepted", "rejected"}, 5.0)
         assert relay.states_for(ts) == ["accepted"]
         twin.claim("panel")
@@ -424,7 +422,7 @@ def test_command_moved_during_the_real_hold_off_holds_with_moved(twin, kin, vol,
 
 
 def test_relay_loss_mid_move_in_real_mode_holds(twin, kin, vol, relay):
-    # Tryb real na symulacji: jedyna roznica to utrata przekaznika (sim jedzie dalej).
+    # Real mode on the sim backend: only real mode holds on relay loss (sim mode keeps going).
     d, ts = _moving(twin, kin, vol, relay, mode="real", real_ok=True, hold_off_s=0.0)
     try:
         relay.drop_clients()
@@ -464,7 +462,7 @@ def test_exception_in_the_worker_holds_and_the_driver_takes_the_next_target(twin
         assert (st["state"], st.get("reason")) == ("hold", "error")
         assert "atrapa bledu" in st["detail"]
         assert twin.owner is None
-        assert _stands(twin, d)                                          # trzyma zmierzona poze
+        assert _stands(twin, d)
         assert twin.safety_state.value != "estop"
         monkeypatch.setattr(d, "_check", real_check)
         p = vol.center + np.array([0.03, 0.05, -0.02])

@@ -470,22 +470,22 @@ def test_twin_connects_to_a_fake_a1x_holds_pose_and_follows_a_target(monkeypatch
         twin.close()
 
 
-# ------------------------------------------------------- wysilek i predkosci
+# ------------------------------------------------------- efforts and velocities
 def test_efforts_and_velocities_come_from_fresh_feedback_for_the_six_arm_joints():
     arm, bus, clock = connected()
     bus.eff[:6] = [1.5, -22.0, 3.0, 0.0, -0.5, 7.25]
-    bus.grip_effort = 9.0                                                        # chwytak nie wchodzi
-    arm.send_joints({"arm_joint2": 50.0})                                        # 30 -> 50 st.
+    bus.grip_effort = 9.0                                                        # must not show up in arm efforts
+    arm.send_joints({"arm_joint2": 50.0})                                        # 30 -> 50 deg
     run(arm, bus, clock, 0.05)
     eff, vel = arm.efforts(), arm.velocities()
     assert set(eff) == set(vel) == set(ARM)
     assert eff["arm_joint2"] == pytest.approx(-22.0, abs=1.0 / P.EFF_SCALE)
     assert eff["arm_joint6"] == pytest.approx(7.25, abs=1.0 / P.EFF_SCALE)
-    assert eff["arm_joint1"] == pytest.approx(1.5, abs=0.002 + 1.0 / P.EFF_SCALE)   # + szum atrapy
+    assert eff["arm_joint1"] == pytest.approx(1.5, abs=0.002 + 1.0 / P.EFF_SCALE)   # + fake bus noise
     assert 9.0 not in eff.values()
-    assert vel["arm_joint2"] == pytest.approx(90.0, abs=2.0)                     # slew backendu 90 st./s
+    assert vel["arm_joint2"] == pytest.approx(90.0, abs=2.0)                     # backend slew rate 90 deg/s
     assert vel["arm_joint1"] == pytest.approx(0.0, abs=0.1)
-    # zatrzymane ramie - predkosci zero, wysilek dalej z ostatniej ramki
+    # stopped arm: zero velocity, effort still taken from the latest frame
     run(arm, bus, clock, 0.5)
     assert max(abs(v) for v in arm.velocities().values()) < 0.1
     bus.eff[2] = 30.0
@@ -495,7 +495,7 @@ def test_efforts_and_velocities_come_from_fresh_feedback_for_the_six_arm_joints(
 
 def test_efforts_and_velocities_are_none_without_fresh_feedback():
     arm, bus, clock = make_arm()
-    assert arm.efforts() is None and arm.velocities() is None                   # przed connect
+    assert arm.efforts() is None and arm.velocities() is None                   # before connect
     arm, bus, clock = connected()
     run(arm, bus, clock, 0.05)
     assert arm.efforts() is not None
@@ -506,7 +506,7 @@ def test_efforts_and_velocities_are_none_without_fresh_feedback():
     run(arm, bus, clock, 0.05)
     assert arm.efforts() is not None
     bus.frozen = True
-    run(arm, bus, clock, 0.4)                                                    # 80 identycznych ramek
+    run(arm, bus, clock, 0.4)                                                    # 80 identical frames
     assert arm.efforts() is None and arm.velocities() is None
     arm.disconnect()
     assert arm.efforts() is None

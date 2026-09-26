@@ -15,10 +15,10 @@
     lerobot-twin ui                          # panel w przegladarce: http://localhost:8080
     lerobot-twin ui --host 0.0.0.0           # ... dostepny z sieci (bez hasla - tylko w zaufanej)
     lerobot-twin --config configs/local.yaml ui   # tiki chwytaka, baudrate itd. z pliku YAML
-    lerobot-twin specs                       # okulary Spectacles przez przekaznik: tylko sprawdzenia (dry)
-    lerobot-twin specs --mode sim            # ... ramie w symulacji jedzie do wskazanego punktu
-    lerobot-twin specs --mode real --i-know  # ... PRAWDZIWE ramie (backend ze stanowiska)
-    lerobot-twin specs --mode real --i-know --start-center  # ... najpierw (po Enter) nad srodek pudelka
+    lerobot-twin specs                       # Spectacles glasses via the relay: checks only (dry)
+    lerobot-twin specs --mode sim            # ... simulated arm moves to the pointed target
+    lerobot-twin specs --mode real --i-know  # ... REAL arm (backend from the workspace)
+    lerobot-twin specs --mode real --i-know --start-center  # ... first (after Enter) above the box centre
 
 `--config` ustawia zmienna LEROBOT_MP_CONFIG, wiec plik widzi tez proces treningu
 uruchamiany z panelu.
@@ -433,7 +433,7 @@ def _ui(a: argparse.Namespace) -> int:
     return ui_main(argv)
 
 
-#: Przypomnienie przed `specs --mode real` - skrot z docs/TWIN.md ("Czym A1X rozni sie od SO-101").
+# Summary of docs/TWIN.md ("Czym A1X rozni sie od SO-101").
 SPECS_REAL_WARNING = """\
 UWAGA: okulary rusza PRAWDZIWYM ramieniem.
   - Brak hamulcow: odciecie zasilania zrzuca ramie. STOP trzyma zmierzona poze strumieniem.
@@ -455,10 +455,10 @@ def _specs(a: argparse.Namespace) -> int:
     if a.mode == "real" and not a.i_know:
         print("lerobot-twin specs --mode real rusza prawdziwym ramieniem - dodaj --i-know.", file=sys.stderr)
         return 2
-    # Odmowy, uderzenia, brak przekaznika i wysilek stawow (dry) ida przez logging.
+    # Refusals, impacts, a missing relay and joint efforts (dry) are reported via logging.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ws = Workspace.load(a.workspace)
-    # dry i sim domyslnie na ramieniu w symulacji: bez --backend nic nie laczy sie ze sprzetem.
+    # dry and sim default to the simulated arm so nothing touches hardware without --backend.
     backend = a.backend or ("sim" if a.mode in ("dry", "sim") else None)
     if a.mode == "real":
         print(SPECS_REAL_WARNING, flush=True)
@@ -478,7 +478,7 @@ def _specs(a: argparse.Namespace) -> int:
 
     drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=a.allow_untrusted,
                      real_ok=a.mode == "real" and a.i_know, on_state=show)
-    # Z pozy domowej / zerowej kazdy punkt pudelka to skok > 45 st. (odmowa "jump"): najpierw nad srodek.
+    # From the home/zero pose every box point is a > 45 deg jump ("jump" refusal), so go above the centre first.
     if a.start_center:
         if not st.simulated:
             if a.mode != "real":
@@ -500,7 +500,6 @@ def _specs(a: argparse.Namespace) -> int:
                 twin.close()
                 return 1
     elif st.simulated:
-        # Tylko w symulacji, bez pytania: szybki przejazd nad srodek pudelka zasiegu.
         goal = drv.center_pose()
         try:
             if goal is not None:
@@ -528,7 +527,7 @@ def _specs(a: argparse.Namespace) -> int:
                 code = 1
                 break
             stop.wait(0.2)
-        if stop.is_set():                                  # Enter
+        if stop.is_set():                                  # Enter pressed
             twin.estop("STOP z klawiatury (specs)")
     except KeyboardInterrupt:
         twin.estop("Ctrl-C (specs)")
