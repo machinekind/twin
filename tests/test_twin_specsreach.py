@@ -285,11 +285,15 @@ def test_new_target_mid_move_retargets(twin, kin, vol, relay):
         d.stop()
 
 
-def test_untrusted_registration_of_the_same_session_revokes_trust(twin, kin, vol, relay):
+def test_trust_holds_for_the_session_and_a_new_session_starts_without_it(twin, kin, vol, relay):
     d = driver(twin, relay)
     try:
         assert d.status()["session"] == "s1"
+        # A wobbly update in the same session (the wearer glanced at a tag from afar) keeps the trust.
         d._on_message(json.dumps({"type": "registration", "session": "s1", "trusted": False}))
+        assert d.status()["session"] == "s1"
+        # The Lens restarted: nothing is trusted until its new session registers.
+        d._on_message(json.dumps({"type": "registration", "session": "s2", "trusted": False}))
         assert d.status()["session"] is None
         ts = relay.target(vol.center)
         st = relay.wait_state(ts, {"rejected", "reached"}, 5.0)

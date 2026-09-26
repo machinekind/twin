@@ -487,8 +487,13 @@ class SpecsReach:
             return
         with self._lock:
             self._session_any = str(session)
-            # Any registration without `trusted: true`, even a repeat of the same session, revokes trust.
-            self._session = str(session) if msg.get("trusted") is True else None
+            # Trust holds for the Lens session once earned, like the glasses keep drawing with the
+            # last trusted transform: a wobbly update in the same session must not revoke silently.
+            # A new session (the Lens restarted) starts without trust.
+            if msg.get("trusted") is True:
+                self._session = str(session)
+            elif self._session != str(session):
+                self._session = None
 
     def _on_target(self, msg: dict, text: str | bytes) -> None:
         t = parse_target(msg, time.monotonic())
