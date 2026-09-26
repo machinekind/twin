@@ -167,13 +167,17 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **collect teaching examples through the guarded runtime,
-then train for that command path and retain grasp behavior during RL refinement**.
-State-triggered demonstrations improved imitation to 16/20 nominal and 5/20
-randomized CPU holds. The same checkpoint now completes 3/20 guarded-runtime
-lifts after correcting two independently reproduced guard/timing bugs. Each
-successful runtime lift has a full 2 s hold and zero prohibited contacts.
-This is imitation learning, not an RL success or physical readiness.
+Current next action: **diagnose learned grasp/hold drift and collect corrective
+examples from the states the learned controller actually visits**. Guarded
+demonstration collection is implemented: coordinated arm increments, measured
+gentle closure and smaller lift steps achieve 197/200 scripted runtime holds,
+with three guard rejections and zero actual prohibited contacts. Training on
+these examples reaches only 3/20 guarded lifts; a four-times-longer supervised
+fit reduces prediction error but reaches 2/20. More supervised updates alone
+did not solve the controller gap. All comparisons reuse development cases.
+Keep candidate 002 (16/20 nominal CPU, 3/20 guarded runtime) and the new candidates
+separate. Each counted runtime success has a full 2 s hold and zero prohibited
+contacts. This is imitation learning, not an RL success or physical readiness.
 The five-minute H100 PPO refinement of the earlier imitation candidate finished
 and lost the grasp behavior (0/20 nominal and randomized). No training job is
 currently running. Keep the improved imitation checkpoint and failed refinement
@@ -249,6 +253,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Fixed excess clearance rejection and premature hold completion | Analytic 5/3.1 mm gaps incorrectly rejected before fix; 2.9 mm gaps and penetration remain rejected. Fake-arm tests reproduce 40 samples spanning only 1.95 s. `clearance-runtime-contracts-002.log`: 50 passed | Check full offline suite and established reach/scripted-lift regressions |
 | 2026-09-26 | Unchanged imitation checkpoint completes first guarded lifts | `lift-imitation-runtime-004.json`: 3/20, independent holds 2.010-2.050 s, zero actual prohibited contacts/numerical failures; 16 guarded rejections and one timeout | Train with controller-accepted demonstrations; retain the 3 mm threshold and full-duration hold |
 | 2026-09-26 | Full regressions and established runtime baselines remain valid | `offline-suite-005.log`: 181 passed; `reach-clearance-regression-001.json`: 20/20; `runtime-lift-distance-001.json`: scripted 5/5, 3.815-3.825 s continuous holds | Build guarded-runtime teaching data; no new long H100 job is running |
+| 2026-09-26 | Scripted teacher now runs through the guarded controller | `lift-demos-runtime-001` to `005`: matched 20-case development comparisons improve 10/20 to 20/20; `lift-demos-runtime-006`: 197/200, three guarded rejections, no actual prohibited contacts or numerical failures | Train a separate imitation candidate on successful runtime examples |
+| 2026-09-26 | Runtime demonstrations and longer fitting do not yet improve learned reliability | `lift-imitation-003` / `004`: 3/20 and 2/20 guarded holds; lower prediction loss does not imply grasp retention | Diagnose trajectory drift and collect corrective examples; retain earlier candidate and unchanged criteria |
+| 2026-09-26 | Reproduced and corrected IK home-restart gripper reset | Requests for 0% / 100% both returned 60% before fix; two regressions now pass. `runtime-demo-contracts-003.log`: 18 passed; `ik-ui-regression-001.log`: existing branch-jump test passes | Preserve scoped code/data evidence; physical access remains deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

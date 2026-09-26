@@ -436,6 +436,107 @@ a regression set, not a new holdout. `runtime-lift-distance-001.json` repeats
 the established scripted fallback: 5/5, 3.815-3.825 s continuous holds and under
 0.565 mm peak jaw-coupling error. No physical tests were run.
 
+### Demonstrations through the guarded runtime
+
+The simulation-only `scripts/a1x_runtime_env.py` adapter executes demonstration
+actions through `PolicyRunner -> Twin -> SafetySupervisor -> SceneBackend`.
+Every recorded observation is asserted equal to the actual policy input. The
+adapter requires both controller completion and independently measured full
+physics hold duration, with no prohibited contacts, numerical faults or guard
+rejections. It has no hardware-selection argument. Failures remain in the report
+and are excluded by the existing imitation loader.
+
+Matched development seeds 41000-41019 exposed problems in the scripted teacher:
+
+| Artifact | Teacher change | Scripted guarded holds |
+|---|---|---:|
+| `lift-demos-runtime-001` | Original state-triggered waypoints | 10/20 |
+| `lift-demos-runtime-002` | Scale arm increments together instead of clipping each joint independently | 13/20 |
+| `lift-demos-runtime-003` | Close at most 1 mm beyond measured opening until bilateral pad contact | 0/20: closure phase cap too short |
+| `lift-demos-runtime-004` | Allow up to 64 closure ticks within unchanged 200-step overall limit | 14/20 |
+| `lift-demos-runtime-005` | Quarter-size synchronized lift increments | 20/20 |
+
+All five comparisons recorded zero actual prohibited contacts and numerical
+failures. `runtime-demo-guard-diagnosis-001` captures the original rejection
+configurations: one descent puts a finger body 2.019 mm from the cube, inside
+the existing 3 mm guard. Synchronizing joint increments removed descent failures
+on these seeds. Gentle closing removed closure failures. The remaining lift
+rejection captured in `runtime-demo-guard-diagnosis-002` has a hypothetical
+finger-body/cube overlap at the next commanded pose while the actual held block
+has not moved yet. Smaller lift increments pass without changing the guard,
+object-contact exemptions, dynamics, action limits, or success criteria.
+
+The gentler closing phase uses simulator contact measurements as teacher
+information. Those contacts are not added to the learned policy's observations;
+the resulting policy still requires independent controller evaluation.
+This is development of a scripted teacher, not learned-policy qualification.
+
+`lift-demos-runtime-006` broadens the final teacher to seeds 41000-41199:
+**197/200 scripted guarded lifts**, 143.60 s, zero actual prohibited contacts
+or numerical failures. Seeds 41062, 41190 and 41197 were rejected at lift-off
+and excluded from training. Maximum finger-coupling error over every monitored
+physics substep was 1.369 mm. The full task workspace, initial pose noise,
+200-step episode limit, 6 cm height, 2 s hold and 3 mm clearance are unchanged.
+Reproduce in the isolated WSL environment with a new output directory:
+
+```bash
+MUJOCO_GL=disable OMP_NUM_THREADS=2 python scripts/collect_a1x_lift_demos.py \
+  --out workspace/validation/NEW_RUNTIME_DEMOS --episodes 200 --seed 41000 \
+  --seconds 240 --state-triggered --runtime --synchronized --measured-close --lift-rate .25
+```
+
+`runtime-demo-contracts-002.log`: 12 tests pass, including simulation-only
+connection, exact reset/input reproduction, atomic nonfinite-action rejection,
+successful full-duration scripted holds, guarded failure reporting, dataset
+exclusion, and the existing GPU critic-warmup preservation check.
+
+Two matched imitation fits on this dataset keep seed 23, whole-episode split,
+the existing network, and development evaluation seeds 50000-50019:
+
+| Candidate | Supervised updates / elapsed | Best validation loss | Bare nominal / randomized holds | Guarded runtime holds |
+|---|---|---:|---:|---:|
+| `lift-imitation-003` | 5,000 / 15.88 s | 0.002667 | 7/20 / 5/20 | 3/20 |
+| `lift-imitation-004` | 20,000 / 64.09 s; selected update 19,900 | 0.001039 | 4/20 / 10/20 | 2/20 |
+
+Both fits were capped at 120 s. The first bare evaluations had 1/9 collision
+episodes, the second 12/7, nominal/randomized respectively. Neither had numerical
+failures. `lift-imitation-runtime-005.json` records candidate 003: 11 guarded
+rejections and six timeouts. `lift-imitation-runtime-006.json` records candidate
+004: 17 guarded rejections and one timeout. Both runtime sets had zero actual
+prohibited contacts and numerical failures. Candidate 004 briefly achieved the
+height/contact criterion in 19/20 nominal CPU trials, but sustained it in only
+4/20. Lower action-prediction loss did not produce reliable autonomous holds.
+These are reused development cases, not fresh qualification trials.
+
+Checkpoint SHA256 values:
+
+- Candidate 003: `1a7d192afdfbecb5441add9bf24fa6593162ccc428093ebde7ae475c2e52ab40`.
+- Candidate 004: `279ebfec3864e51888b29ea58e4eec775889f10a97920c41c8dbc2b6e315916a`.
+
+The demonstrated improvement is in the guarded scripted teacher and data
+collection, not the learned controller. Keep candidate 002 and its evidence;
+neither new candidate qualifies deployment. Next investigate the learner's
+departures from the demonstrated trajectories, particularly grasp retention,
+and collect corrective examples before another unanchored PPO refinement.
+
+### IK retry must preserve gripper state
+
+Source review found that the home-pose IK restart included the home gripper
+opening, although the method promises to retain the caller's gripper setting.
+`ik-gripper-restart-before-001.json` reproduces this using actual A1X geometry:
+requests for 0% and 100% both return 60% when the home arm solution wins.
+Both targeted tests fail before the fix (`ik-gripper-restart-before-002.log`).
+The home restart now replaces only arm coordinates, preserving the gripper
+just like the random restarts. No limits or geometry changed. This issue is
+independent of learned policy execution, which does not call IK.
+
+`runtime-demo-contracts-003.log`: 18 geometry, legacy-robot, runtime-demo and
+imitation tests pass, including both new IK regressions. The existing UI test
+for rejecting a jump to a different IK branch also passes
+(`ik-ui-regression-001.log`). The recorded dataset and policy fits predate this
+IK correction; their manifests retain the original source hashes. No physical
+commands or Brev configuration changes were made.
+
 ### Remote environment and isolation
 
 The user supplied Brev organization `wysocki-55ff9e-nih0` and machine

@@ -13,6 +13,19 @@ from lerobot_mp.twin.kinematics import RobotKinematics
 from lerobot_mp.twin.robots import A1X
 
 
+@pytest.mark.parametrize("opening", [0.0, 100.0])
+def test_ik_home_restart_preserves_requested_gripper(opening):
+    kin = RobotKinematics(A1X)
+    target = kin.tcp(A1X.home)
+    # One iteration cannot correct this distant arm seed. The exact home arm
+    # is the successful restart; its default jaw opening must not be inherited.
+    seed = {**A1X.home, "arm_joint1": 90.0, "gripper": opening}
+    result = kin.ik(target[:3, 3], target[:3, :3], seed=seed, iters=1, restarts=0)
+    assert result.ok and result.pos_err < 1e-6 and result.rot_err < 1e-6
+    assert result.joints["gripper"] == pytest.approx(opening)
+    assert seed["gripper"] == opening
+
+
 def rotation(axis, angle):
     axis = np.asarray(axis, float)
     axis /= np.linalg.norm(axis)
