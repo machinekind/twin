@@ -332,8 +332,10 @@ def on_backoff_start(d: SpecsReach, fn) -> None:
 
 
 @pytest.mark.parametrize("rule", ["effort", "lag"])
-def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, rule):
+def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, rule, monkeypatch):
     ready(twin, kin, vol)
+    # An obstacle nobody told the twin about: the planner must not see it, the guard must catch it.
+    monkeypatch.setattr("lerobot_mp.twin.specsreach.scene_obstacles", lambda twin, **kw: [])
     d = driver(twin, relay)
     if rule == "lag":
         d.link.sim_effort_frac = 100.0                     # effort never trips, leaving only the lag rule
@@ -341,7 +343,6 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
         c = vol.center
         half = (0.12, 0.01, 0.15)
         xy = (float(c[0]), float(c[1]) + 0.09)
-        # The wall is in the sim scene only: galaxeo's collision check (table and self) does not see it.
         wall = Box("wall", size=half, xy=xy, rgba=(0.5, 0.5, 0.5, 1.0), free=False)
         twin.configure(objects=[wall])
         with twin.lock:
@@ -593,3 +594,72 @@ def test_overlay_object_is_the_galaxeo_reach_box(vol):
     o = overlay_object(vol)
     assert (o["id"], o["kind"], o["alpha"]) == ("reach", "volume", 0.35)
     assert np.allclose(o["pos"], vol.center, atol=1e-4) and np.allclose(o["size"], vol.size, atol=1e-4)
+
+
+def test_scene_obstacles_are_everything_collidable_but_the_arm_and_the_table(twin):
+    from galaxeo.arm import Box as GBox
+
+    from lerobot_mp.twin.armlink import CAMERA_HALF, scene_obstacles
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    twin.configure(objects=[Box("kostka", (0.015, 0.015, 0.015), (0.35, 0.10)),
+                            Box("listwa", (0.02, 0.20, 0.02), (0.30, 0.0), free=False, z=0.40),
+                            Box("cel", (0.05, 0.05, 0.001), (0.30, -0.2), mocap=True)])
+    T = np.eye(4)
+    T[:3, 3] = [0.70, 0.30, 0.60]
+    twin.workspace.add_camera(CameraRecord(name="kam", source="sim", width=64, height=48, T_cam2base=T.tolist(),
+                                           sim_pose=T.tolist(), calibration={"trusted": True}))
+    try:
+        obst = {o.name: o for o in scene_obstacles(twin)}
+        near = {o.name for o in scene_obstacles(twin, exclude_near=[0.35, 0.10, 0.015])}
+    finally:
+        twin.workspace.remove_camera("kam")
+        twin.configure(objects=None)
+    assert set(obst) == {"kostka", "listwa", "kamera kam"}                 # no mocap pad, floor, table or arm
+    assert all(isinstance(o, GBox) for o in obst.values())
+    assert np.allclose(obst["kostka"].center, [0.35, 0.10, 0.015], atol=1e-6)
+    assert np.allclose(obst["listwa"].center, [0.30, 0.0, 0.40], atol=1e-6)
+    assert np.allclose(obst["listwa"].half, [0.02, 0.20, 0.02], atol=1e-6)
+    assert np.allclose(obst["kamera kam"].center, [0.70, 0.30, 0.60]) and obst["kamera kam"].half == (CAMERA_HALF,) * 3
+    assert "kostka" not in near and "listwa" in near
+
+
+def test_a_scene_obstacle_in_the_way_is_a_collision_until_it_is_removed(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay)
+    try:
+        p = vol.center + np.array([0.12, 0.0, 0.0])
+        # A wall across the straight path from the parking pose to the target.
+        wall = Box("sciana", (0.005, 0.15, 0.15), (float(vol.center[0]) + 0.06, float(vol.center[1])),
+                   free=False, z=float(vol.center[2]))
+        twin.configure(objects=[wall])
+        ts = relay.target(p)
+        st = relay.wait_state(ts, {"rejected", "reached", "hold", "backoff"}, 12.0)
+        assert (st["state"], st.get("reason")) == ("rejected", "collision"), st
+        assert "sciana" in st["detail"], st
+
+        twin.configure(objects=None)
+        ts = relay.target(p)
+        st = relay.wait_state(ts, {"rejected", "reached", "hold", "backoff"}, 12.0)
+        assert st["state"] == "reached", st
+    finally:
+        twin.configure(objects=None)
+        d.stop()
+
+
+def test_the_object_being_grasped_is_not_an_obstacle(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay, grasp=True)
+    try:
+        p = vol.center + np.array([0.0, 0.05, -0.1])
+        # A cube held in the air at the object point: the descent to 1 cm above its centre would
+        # be a collision if the planner counted the grasped object as an obstacle.
+        twin.configure(objects=[Box("kubek", (0.015, 0.015, 0.015), (float(p[0]), float(p[1])), free=False,
+                                    z=float(p[2]))])
+        ts = relay.target(p, source="object", label="cup", depthMeasured=True)
+        st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 25.0)
+        assert st["state"] in {"reached", "backoff"}, st                    # the descent may touch the cube
+        assert relay.states_for(ts).count("moving") >= 1
+    finally:
+        twin.configure(objects=None)
+        d.stop()

@@ -25,7 +25,7 @@ import numpy as np
 from ..paths import data_path
 from .calib.card import Card
 from .robots import RobotSpec, get_spec
-from .scene import CameraView, SceneConfig, Table
+from .scene import Box, CameraView, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
 #: zeby panel odpalony z innego katalogu nie zaczynal od pustego stanowiska.
@@ -175,6 +175,10 @@ class Workspace:
     #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
     #: pusta = model Menagerie. Srodek randomizacji w treningu.
     dynamics: dict[str, Any] = field(default_factory=dict)
+    #: Nieruchome przeszkody na stanowisku (statyw kamery, listwa, monitor): prostopadloscian
+    #: w ukladzie podstawy, {"name", "center": [x, y, z], "half": [hx, hy, hz]} [m]. Trafiaja do sceny
+    #: (widoczne, z kolizja) i do sprawdzania drogi ramienia (`armlink.scene_obstacles`).
+    obstacles: list[dict[str, Any]] = field(default_factory=list)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -222,7 +226,16 @@ class Workspace:
                           card=self.card_obj() if with_card else None)
         for key, value in extra.items():
             setattr(cfg, key, value)
+        cfg.objects = [*self.obstacle_objs(), *cfg.objects]
         return cfg
+
+    def obstacle_objs(self) -> list[Box]:
+        out = []
+        for k, o in enumerate(self.obstacles):
+            c, h = [float(v) for v in o["center"]], [float(v) for v in o["half"]]
+            out.append(Box(str(o.get("name") or f"przeszkoda{k + 1}"), (h[0], h[1], h[2]), (c[0], c[1]),
+                           rgba=(0.45, 0.45, 0.5, 0.6), mass=0.0, free=False, z=c[2]))
+        return out
 
     def apply_fit(self, fit, tag_size: float | None = None,
                   intrinsics: dict[str, tuple[Any, Any]] | None = None) -> list[str]:

@@ -75,7 +75,7 @@ i `mujoco_warp`.
   (Windows `%LOCALAPPDATA%\NVIDIA\warp\Cache`, Linux `~/.cache/warp`).
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
-dynamika) i `workspace/policies/` są lokalne, poza repozytorium. Z klonu ich
+dynamika, przeszkody) i `workspace/policies/` są lokalne, poza repozytorium. Z klonu ich
 domyślne ścieżki liczą się od katalogu repozytorium, niezależnie od katalogu
 uruchomienia; inny plik: `--workspace <plik>`. Bez pliku bliźniak startuje
 z pustym stanowiskiem (ramię `sim`, bez kamer). `lerobot-twin demo` kopiuje
@@ -638,8 +638,25 @@ okulary (Lens) --ws /specs--> przekaźnik (server.js) --ws /twin--> lerobot-twin
 **Tylko A1X.** Wszystko, co dotyczy ramienia, pochodzi z pakietu `galaxeo.arm`
 (model A1X, jedyne ramię, jakie zna): pudełko zasięgu, IK i FK narzędzia,
 sprawdzanie kolizji (ze sobą i ze stołem z = 0), rampa, strażnik uderzeń
-i cofanie. Bliźniak dostarcza tylko cele. `lerobot-twin specs` i folder panelu
+i cofanie. Bliźniak dostarcza cele i przeszkody. `lerobot-twin specs` i folder panelu
 odmawiają stanowiska z innym ramieniem (SO-101).
+
+**Przeszkody.** Przed każdym celem bliźniak podaje pakietowi wszystko, w co
+ramię nie może wjechać (`armlink.scene_obstacles`): każdy obiekt sceny
+z kolizją (kostka z kamer, przeszkody ze stanowiska), w układzie podstawy,
+w bieżącej pozie, oraz sześcian 12 cm w miejscu każdej kamery, która ma pozę.
+Obrócone bryły i siatki idą jako prostopadłościan obejmujący (ostrożniej, nie
+luźniej). Przy celu obiektu pomijany jest obiekt w promieniu 6 cm od celu, czyli
+ten, po który ramię jedzie. Nieruchome przeszkody stanowiska (statyw, listwa,
+monitor) wpisuje się do `workspace/twin.json`:
+
+```json
+"obstacles": [{"name": "statyw", "center": [0.6, 0.4, 0.5], "half": [0.03, 0.03, 0.5]}]
+```
+
+`center` i `half` w metrach, w układzie podstawy (blat z = 0). Taka przeszkoda
+stoi w scenie bliźniaka jako szara bryła, więc widzi ją też sprawdzanie kolizji
+fali kalibracyjnej i uchwytu w panelu.
 
 **Pudełko zasięgu** to `galaxeo.arm.ReachBox`: pakiet liczy je sam z modelu
 A1X i narzędzia (siatka 4 × 4 × 3 z narożnikami, IK do 3 mm, poza bez kolizji,

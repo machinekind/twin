@@ -50,7 +50,7 @@ import numpy as np
 from galaxeo.arm import JOINTS, Arm, Kinematics, Motion, MoveResult, ReachBox, down_rotation
 from galaxeo.arm.motion import BACKOFF_CAP_DEG_S, MAX_JUMP_DEG
 
-from .armlink import TwinTransport, to_joints, to_q
+from .armlink import TwinTransport, scene_obstacles, to_joints, to_q
 from .runtime import Twin
 
 logger = logging.getLogger(__name__)
@@ -286,6 +286,7 @@ class SpecsReach:
         self._current: Target | None = None
         # The command the target was validated from [rad]; `_recheck` compares against it.
         self._validated_from: np.ndarray | None = None
+        self._obstacles: list = []
 
     def start(self) -> None:
         if self._net is not None:
@@ -748,6 +749,8 @@ class SpecsReach:
     def _legs(self, t: Target) -> list[_Leg]:
         """Target points -> joints (IK) -> legs, each checked for jumps and collisions."""
         self._validated_from = prev = self.link.command_q()
+        # Everything in the twin scene but the object we are going to grasp.
+        self._obstacles = scene_obstacles(self.twin, exclude_near=t.pos if t.source == "object" else None)
 
         legs: list[_Leg] = []
         for wp in self._waypoints(t):
@@ -791,7 +794,7 @@ class SpecsReach:
         jump = _deg(goal - start)
         if jump > self.max_jump:
             raise _Rejected("jump", f"skok {what} {jump:.0f} st. > {self.max_jump:.0f}")
-        collision = self.arm.collision.path_clear(start, goal)
+        collision = self.arm.collision.path_clear(start, goal, self._obstacles)
         if collision is not None:
             raise _Rejected("collision", f"kolizja {what}: {collision}")
 
@@ -892,6 +895,7 @@ class SpecsReach:
             return "ik"
 
         start = self.link.command_q()
+        self._obstacles = scene_obstacles(self.twin)
         steps, collision = self._stage_plan(start, goal)
         if collision is not None:
             logger.warning("Start nad srodek pudelka: %s", collision)
@@ -952,7 +956,7 @@ class SpecsReach:
             nxt[list(stage)] = goal[list(stage)]
             if _deg(nxt - pose) < 1e-3:
                 continue
-            collision = self.arm.collision.path_clear(pose, nxt)
+            collision = self.arm.collision.path_clear(pose, nxt, self._obstacles)
             if collision is not None:
                 return poses, collision
             poses.append(nxt)

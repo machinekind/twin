@@ -17,8 +17,9 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 
+import mujoco
 import numpy as np
-from galaxeo.arm import JOINTS, Reading
+from galaxeo.arm import JOINTS, Box, Reading, Sphere
 from galaxeo.arm.transport import EFFORT_DESCEND, EFFORT_MOVE, SIM_EFFORT_FRAC, SIM_EFFORT_FRAC_DESCEND
 
 from . import scene as sc
@@ -163,3 +164,49 @@ class TwinTransport:
         """The twin's current command (else the scene pose) [rad]."""
         tw = self.twin
         return to_q(tw.status.command or tw.joints())
+
+
+# ---- obstacles ---------------------------------------------------------------------------
+#: Half-size [m] of the box standing in for a camera body at its calibrated pose.
+CAMERA_HALF = 0.06
+#: Geoms galaxeo already models: its table is the plane z = 0 in the base frame.
+_SCENE_ONLY = {"floor", "table"}
+
+
+def scene_obstacles(twin: Twin, *, exclude_near=None, radius: float = 0.06) -> list[Box | Sphere]:
+    """What galaxeo must not hit: every collidable geom of the twin scene that is not the arm, plus
+    a box per placed camera, in the base frame at the scene's current pose.
+
+    Rotated boxes, cylinders and meshes become their axis-aligned bounding box (conservative).
+    `exclude_near` drops geoms within `radius` of a point: the object the arm is going to grasp.
+    """
+    out: list[Box | Sphere] = []
+    with twin.lock:
+        model, data = twin.scene.model, twin.scene.data
+        T_world2base = np.linalg.inv(twin.scene.T_base2world)
+        for g in range(model.ngeom):
+            if model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0:
+                continue
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or ""
+            body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) or ""
+            if name in _SCENE_ONLY or body.startswith(sc.PREFIX) or name.startswith(sc.PREFIX):
+                continue
+            R = T_world2base[:3, :3] @ data.geom_xmat[g].reshape(3, 3)
+            centre = T_world2base @ np.array([*data.geom_xpos[g], 1.0])
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_SPHERE:
+                out.append(Sphere(tuple(centre[:3]), float(model.geom_size[g][0]), name))
+                continue
+            aabb = model.geom_aabb[g]
+            c = centre[:3] + R @ aabb[:3]
+            half = np.abs(R) @ aabb[3:]
+            out.append(Box(tuple(c), tuple(half), name))
+    for cam in twin.workspace.cameras:
+        view = cam.view() if cam.enabled else None
+        if view is None:
+            continue
+        p = np.asarray(view.T_cam2base, float)[:3, 3]
+        out.append(Box(tuple(p), (CAMERA_HALF,) * 3, f"kamera {cam.name}"))
+    if exclude_near is not None:
+        p = np.asarray(exclude_near, float)
+        out = [o for o in out if np.linalg.norm(np.asarray(o.center) - p) > radius]
+    return out

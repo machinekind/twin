@@ -74,6 +74,9 @@ class Box:
     rgba: tuple[float, float, float, float] = (0.85, 0.25, 0.2, 1.0)
     mass: float = 0.05
     free: bool = True
+    #: Wysokosc srodka nad blatem [m]; None = lezy na blacie. Nieruchomy (`free=False`) obiekt
+    #: z `z` to przeszkoda w powietrzu (kamera na statywie, listwa).
+    z: float | None = None
     #: Cialo mocap bez kolizji (tylko do ogladania) - np. cel odlozenia pickplace. Poze
     #: ustawia sie przez `data.mocap_pos` / `mocap_quat`; obiekty przez nie przenikaja.
     mocap: bool = False
@@ -376,7 +379,7 @@ def build(cfg: SceneConfig) -> Scene:
     spec.attach(robot, prefix=PREFIX, frame=mount)
 
     for obj in cfg.objects:
-        p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.size[2], 1.0])
+        p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.size[2] if obj.z is None else obj.z, 1.0])
         body = world.add_body()
         body.name = obj.name
         body.pos = p[:3]
