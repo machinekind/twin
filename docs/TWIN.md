@@ -667,7 +667,9 @@ lerobot-twin specs --mode dry                           # bliźniak: ws://127.0.
 To samo z panelu: zakładka **Polityki**, folder **Spectacles** (adres
 przekaźnika, tryb, *Okulary moga ruszac prawdziwym ramieniem*, *Polacz z
 okularami* / *Rozlacz okulary*, stan: sesja i ostatni cel). Zmiana trybu albo
-pola wyboru działa od razu na połączonym kierowcy. Z `lerobot-twin specs`
+pola wyboru działa od razu na połączonym kierowcy, a ruch w toku staje (`hold`,
+powód `mode`). *Rozlacz okulary* i zamknięcie panelu kończą kierowcę i odznaczają
+zgodę na prawdziwe ramię. Z `lerobot-twin specs`
 **Enter** albo **Ctrl-C** to STOP: ramię trzyma zmierzoną pozę, bliźniak się
 rozłącza. Każdy `targetState` idzie na wyjście jako jedna linia JSON, a odmowy,
 uderzenia, brak przekaźnika i (w `dry`) wysiłek stawów co 1 s — do logu.
@@ -726,7 +728,7 @@ dłoni albo punkt nad obiektem), zdejmowana 2 s po `reached`, `backoff` albo
 opisuje odmowę `ik` / `jump` / `collision` (błąd IK w mm, skok, para w kolizji).
 Cel zastąpiony nowym dostaje `hold` z powodem `retargeted`; `hold` z `not arrived`
 (staw nie dojechał w 3 s — ramię trzyma zmierzoną pozę), `error` (wyjątek w
-kierowcy, też zmierzona poza) albo `moved` / `relay` (wyżej).
+kierowcy, też zmierzona poza) albo `moved` / `relay` / `mode` (wyżej).
 
 **Cel dłoni.** Pinch zaznacza punkt, a okulary wysyłają go dopiero, gdy dłoń
 wyjdzie z pudełka — ramię nie rusza w stronę ręki, która jeszcze w nim jest.

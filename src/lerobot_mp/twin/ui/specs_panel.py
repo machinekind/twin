@@ -55,25 +55,31 @@ class SpecsFolder:
 
         @self.mode.on_update
         def _(event):
-            if self.driver is not None:
-                self.driver.mode = self.mode.value
+            self.apply_mode()
 
         @self.real_ok.on_update
         def _(event):
-            if self.driver is not None:
-                self.driver.real_ok = bool(self.real_ok.value)
+            self.apply_mode()
+
+    def apply_mode(self) -> None:
+        """Tryb i zgoda z panelu do kierowcy; ruch w toku staje (hold "mode")."""
+        if self.driver is not None:
+            self.driver.set_mode(self.mode.value, bool(self.real_ok.value))
 
     def start(self) -> None:
-        self.stop()
+        self.stop(keep_consent=True)
         self.driver = SpecsReach(self.app.twin, relay_url=str(self.url.value).strip() or DEFAULT_RELAY,
                                  mode=self.mode.value, real_ok=bool(self.real_ok.value))
         self.driver.start()
         self.tick()
 
-    def stop(self) -> None:
+    def stop(self, *, keep_consent: bool = False) -> None:
         drv, self.driver = self.driver, None
         if drv is not None:
             drv.stop()
+        # Zgoda na prawdziwe ramie nie przechodzi na nastepne polaczenie (poza ponownym "Polacz").
+        if not keep_consent and self.real_ok.value:
+            self.real_ok.value = False
         self.tick()
 
     def tick(self) -> None:

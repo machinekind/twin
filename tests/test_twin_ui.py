@@ -376,3 +376,24 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
     assert FakeA1X.calls == 1 and "wyslano FF 1 -> 5 -> 6" in app.a1x_md.content
     assert app.a1x_confirm.value is False                 # nastepne wlaczenie - nowe potwierdzenie
     app.twin._backend = None
+
+
+def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app):
+    specs = app.specs
+    specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nikt nie slucha - kierowca ponawia
+    specs.mode.value = "real"
+    specs.real_ok.value = True
+    specs.start()
+    try:
+        drv = specs.driver
+        assert drv is not None and drv.mode == "real" and drv.real_ok
+        drv._phase = "moving"                                         # jak w trakcie jazdy
+        specs.mode.value = "dry"
+        specs.apply_mode()
+        assert drv.mode == "dry"
+        assert drv._cancel.is_set() and drv._cause == "mode"          # ruch staje: hold "mode"
+        drv._phase = "idle"
+    finally:
+        specs.stop()
+    assert specs.driver is None
+    assert specs.real_ok.value is False                               # zgoda nie przechodzi na nastepne polaczenie

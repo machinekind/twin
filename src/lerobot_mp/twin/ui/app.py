@@ -3033,6 +3033,9 @@ class TwinApp:
         try:
             if self.runner is not None:
                 self.runner.stop("zamkniecie panelu")
+            specs = getattr(self, "specs", None)           # kierowca okularow puszcza ramie przed rozlaczeniem
+            if specs is not None:
+                self._guard("spectacles", specs.stop)
             for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
                 job.stop()
         finally:

@@ -94,6 +94,13 @@ class FakeRelay:
             assert ok, f"brak stanu {states} dla {ts}: {[(s['ts'], s['state'], s.get('reason')) for s in self.states]}"
             return found()
 
+    def drop_clients(self) -> None:
+        """Zerwanie polaczen z blizniakami (przekaznik padl albo siec)."""
+        with self.cond:
+            clients = list(self.clients)
+        for ws in clients:
+            ws.close()
+
     def close(self) -> None:
         self.server.shutdown()
 
@@ -324,8 +331,11 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
         trip_tcp: list[np.ndarray] = []
         real_backoff = d._backoff
 
+        hits: list = []
+
         def spy(t):
             trip_tcp.append(tcp(kin, twin))
+            hits.append(d._impact)
             return real_backoff(t)
         d._backoff = spy
         ts = relay.target(c + np.array([0.0, 0.2, -0.05]))
@@ -333,12 +343,104 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
         assert st["state"] == "backoff", (st, relay.states_for(ts))
         assert st["reason"] == f"impact {rule} arm_joint1", st
         assert trip_tcp
-        assert _dist_to_box(tcp(kin, twin), lo, hi) > _dist_to_box(trip_tcp[0], lo, hi) + 0.002
+        # Wycofanie o >= 3 st. na J1 przy ~0,4 m to ~2 cm - 1 cm to juz nie odbicie od sciany.
+        assert _dist_to_box(tcp(kin, twin), lo, hi) > _dist_to_box(trip_tcp[0], lo, hi) + 0.01
+        pose = hits[0].backoff_pose
+        measured = twin.status.measured
+        assert max(abs(measured[j] - pose[j]) for j in d.arm) < 2.0, (measured, pose)
         assert twin.safety_state.value != "estop"
         assert twin.owner is None
     finally:
         d.stop()
         twin.configure(objects=None)
+
+
+def _moving(twin, kin, vol, relay, **kw):
+    """Kierowca w trakcie dlugiej jazdy (J1 ~20 st. przy 10 st./s)."""
+    ready(twin, kin, vol)
+    kw.setdefault("speed_deg_s", 10.0)
+    d = driver(twin, relay, **kw)
+    ts = relay.target(vol.center + np.array([0.0, 0.2, -0.05]))
+    relay.wait_state(ts, {"moving"}, 5.0)
+    time.sleep(0.5)
+    return d, ts
+
+
+def _stands(twin, d, secs: float = 0.5) -> bool:
+    """Po chwili na wyhamowanie ramie stoi (nie jedzie dalej do celu)."""
+    time.sleep(0.5)
+    a = dict(twin.status.measured)
+    time.sleep(secs)
+    b = twin.status.measured
+    return max(abs(a[k] - b[k]) for k in d.arm) < 0.5
+
+
+def test_stop_mid_move_holds_and_releases_the_arm(twin, kin, vol, relay):
+    d, ts = _moving(twin, kin, vol, relay)
+    try:
+        twin.estop("test")
+        st = relay.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("hold", "stop")
+        assert twin.owner is None
+        assert _stands(twin, d)
+        assert d.last_state["state"] != "reached"
+        assert d._worker is not None and d._worker.is_alive()          # bez wyjatku w watku wykonawcy
+    finally:
+        d.stop()
+        twin.clear_estop()
+
+
+def test_relay_loss_mid_move_in_real_mode_holds(twin, kin, vol, relay):
+    # Tryb real na symulacji: jedyna roznica to utrata przekaznika (sim jedzie dalej).
+    d, ts = _moving(twin, kin, vol, relay, mode="real", real_ok=True, hold_off_s=0.0)
+    try:
+        relay.drop_clients()
+        deadline = time.monotonic() + 3.0
+        while (d.last_state or {}).get("state") != "hold" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert (d.last_state["state"], d.last_state.get("reason")) == ("hold", "relay")
+        assert twin.owner is None
+        assert _stands(twin, d)
+        assert d.last_state["state"] != "reached"
+    finally:
+        d.stop()
+
+
+def test_mode_change_mid_move_holds(twin, kin, vol, relay):
+    d, ts = _moving(twin, kin, vol, relay)
+    try:
+        d.set_mode("dry", False)
+        st = relay.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("hold", "mode")
+        assert twin.owner is None
+        assert _stands(twin, d)
+        assert d.last_state["state"] != "reached"
+    finally:
+        d.stop()
+
+
+def test_exception_in_the_worker_holds_and_the_driver_takes_the_next_target(twin, kin, vol, relay, monkeypatch):
+    d, ts = _moving(twin, kin, vol, relay)
+    try:
+        real_check = d._check
+
+        def boom(gen):
+            raise ValueError("atrapa bledu")
+        monkeypatch.setattr(d, "_check", boom)
+        st = relay.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("hold", "error")
+        assert "atrapa bledu" in st["detail"]
+        assert twin.owner is None
+        assert _stands(twin, d)                                          # trzyma zmierzona poze
+        assert twin.safety_state.value != "estop"
+        monkeypatch.setattr(d, "_check", real_check)
+        p = vol.center + np.array([0.03, 0.05, -0.02])
+        ts2 = relay.target(p)
+        st = relay.wait_state(ts2, {"reached", "rejected", "hold", "backoff"}, 15.0)
+        assert st["state"] == "reached", (st, relay.states_for(ts2))
+        assert np.linalg.norm(tcp(kin, twin) - p) < 0.005
+    finally:
+        d.stop()
 
 
 def _env() -> dict[str, str]:

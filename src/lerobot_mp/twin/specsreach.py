@@ -248,6 +248,15 @@ class SpecsReach:
                 t.join(timeout=5.0)
         self._net = self._worker = None
 
+    def set_mode(self, mode: str, real_ok: bool) -> None:
+        """Zmiana trybu z panelu. Ruch w toku (tez odczekanie przed nim) staje: hold "mode"."""
+        if mode not in MODES:
+            raise ValueError(f"tryb {mode!r}: dozwolone {', '.join(MODES)}")
+        changed = (mode, bool(real_ok)) != (self.mode, self.real_ok)
+        self.mode, self.real_ok = mode, bool(real_ok)
+        if changed and self._phase == "moving":
+            self._interrupt("mode")
+
     @property
     def connected(self) -> bool:
         return self._ws is not None
@@ -662,8 +671,8 @@ class SpecsReach:
         if cause == "impact":
             self._backoff(t)
             return None
-        if cause == "relay":
-            reason = "relay"
+        if cause in ("relay", "mode"):
+            reason = cause
         else:
             reason = "stop" if (cause == "stop" and self._stop.is_set()) or self._estopped() else "preempted"
         self._report(t, "hold", reason)
