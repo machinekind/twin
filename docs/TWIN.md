@@ -951,11 +951,21 @@ jako błąd kamery i otwiera go na nowo.
 
 ### Kamera PMD z tagami na obudowie
 
-Kamera głębi pmd CamBoard nano (podgląd: `python pmd_view.py`) nie ma w bliźniaku
-własnego obrazu RGB, więc jej miejsca nie da się skalibrować kartą. Zamiast tego
-na obudowie są naklejone **trzy AprilTagi 36h11** (domyślnie 0, 1, 2) i kamery
-stanowiska, które mają pozę, widzą je — stąd poza PMD w układzie podstawy.
-Zakładka **Kamery → Kamera PMD (tagi na obudowie)** (`twin/tagbody.py`):
+Kamera głębi pmd CamBoard nano (podgląd: `python pmd_view.py`) jest kamerą
+stanowiska jak Brio czy uEye — źródło `pmd` / `pmd:<serial>` (`twin/pmd.py`,
+PMDSDK2 przez ctypes; w klonie dowiązanie `pmd/` do rozpakowanego katalogu
+z płyty kamery, `.gitignore`). *Szukaj kamer USB* znajduje ją, gdy SDK i
+kamera są; *Dodaj* wpisuje ją z **K odczytanym z jej kalibracji fabrycznej**
+(xyz z SDK to dokładny model otworkowy, residuum 0,002 px — bez szachownicy,
+plakietka *OBIEKTYW OK*). Jej kadr w panelu, w piramidzie 3D i w podglądzie
+`--stream-port` to obraz **amplitudy** (165×120, szary); odległości i xyz
+ostatniej klatki są obok (`PMDLive.depth_t`) na chmurę punktów — jeszcze nie
+w bliźniaku.
+
+Pozy nie da się skalibrować kartą (165 px szerokości), więc na obudowie są
+naklejone **trzy AprilTagi 36h11** (domyślnie 0, 1, 2) i kamery stanowiska,
+które mają pozę, widzą je — stąd poza PMD w układzie podstawy. Zakładka
+**Kamery → Kamera PMD (tagi na obudowie)** (`twin/tagbody.py`):
 
 1. **id tagów** i **bok tagu** (czarny kwadrat, zmierzony linijką). Pierwszy
    numer to układ kamery PMD: środek w środku tego taga, z wzdłuż jego normalnej.
@@ -974,6 +984,12 @@ Zakładka **Kamery → Kamera PMD (tagi na obudowie)** (`twin/tagbody.py`):
    sprawdzianem ich kalibracji. **Śledź na żywo** odświeża pozę co takt panelu.
 4. **Zapisz do stanowiska** — sekcja `pmd` w `twin.json` (numery, bok, układ,
    oś, ostatnia poza); po restarcie PMD jest w 3D od razu.
+
+Gdy w stanowisku jest kamera o źródle `pmd` i wybrano *Kamera patrzy wzdłuż*,
+*Znajdź PMD* wpisuje jej `T_cam2base` (= poza tagów × oś optyczna) — kamera
+dostaje piramidę z żywym obrazem amplitudy i wchodzi do sceny MuJoCo. Poza jest
+**niezaufana z założenia** (początek układu w środku taga, nie w obiektywie;
+dziedziczy kalibrację kamer stanowiska), więc mapa i percepcja jej nie biorą.
 
 W symulacji (`tests/test_twin_tagbody.py`, kostka 4 cm z tagiem na trzech
 ściankach, trzy kamery): poza bryły 1 mm / 1° od prawdy. **Uwaga na numery:**

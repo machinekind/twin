@@ -39,3 +39,6 @@ MUJOCO_LOG.TXT
 
 # Pliki Claude Code (worktree agentow, launch.json) - lokalne, nie do repozytorium
 .claude/
+
+# PMDSDK (dowiazanie do rozpakowanego pmd/ z plyty) - per maszyna
+/pmd

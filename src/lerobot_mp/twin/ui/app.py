@@ -39,6 +39,7 @@ from ..kinematics import inverse, pose
 from ..perception import CubeDetector, CubeTracker, TableMapper
 from ..runtime import Twin
 from ..calib import tags as aptags
+from ..pmd import is_pmd
 from ..tagbody import OPTICAL_AXES, TagBody, learn_layout, locate, observe
 from ...paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
@@ -1402,7 +1403,8 @@ class TwinApp:
                                  hint="Nowa kamera symulowana 640x480 ok. 0,55 m od ramienia, patrzaca na blat; "
                                       "kolejne staja z innych stron. Przestawiasz ja potem uchwytem w 3D.")
         probe = g.add_button("Szukaj kamer USB", icon=viser.Icon.SEARCH,
-                             hint="Szuka kamer USB (i IDS uEye, gdy jest pyueye), ktorych nie ma jeszcze w "
+                             hint="Szuka kamer USB (IDS uEye, gdy jest pyueye; pmd CamBoard nano, gdy jest "
+                                  "PMDSDK), ktorych nie ma jeszcze w "
                                   "stanowisku. Na maszynie wirtualnej/zdalnej kamera musi byc "
                                   "przepuszczona w kliencie USB.")
         self.usb_box = g.add_folder(None, visible=False)
@@ -1410,7 +1412,9 @@ class TwinApp:
             self.usb_pick = g.add_dropdown("Znaleziona", ("-",), initial_value="-",
                                            hint="Kamera z ostatniego Szukaj kamer USB: zrodlo i rozdzielczosc.")
             add_usb = g.add_button("Dodaj kamere USB", icon=viser.Icon.PLUS, color="green",
-                                   hint="Dodaje wybrana kamere USB z nominalnym K - potem zakladka Kalibracja.")
+                                   hint="Dodaje wybrana kamere USB z nominalnym K - potem zakladka Kalibracja. "
+                                        "Kamera pmd dostaje K z wlasnej kalibracji, a poze z tagow na obudowie "
+                                        "(folder Kamera PMD ponizej).")
         with g.add_folder("Nowa symulowana: pole widzenia", expand_by_default=False):
             self.sim_fov = g.add_slider("Pole widzenia [st.]", 40.0, 90.0, 1.0, 62.0,
                                         hint="Pionowe pole widzenia NOWEJ kamery symulowanej [st.], 40-90; "
@@ -1503,8 +1507,11 @@ class TwinApp:
             if not self._found_usb or self.usb_pick.value == "-":
                 raise RuntimeError("najpierw wyszukaj kamery")
             d = self._found_usb[[x["label"] for x in self._found_usb].index(self.usb_pick.value)]
-            stem = "ueye" if d["source"].startswith("ueye") else "kamera"
-            rec = self.ws.add_camera(CameraRecord(self.ws.free_name(stem), d["source"], d["width"], d["height"]))
+            stem = "ueye" if d["source"].startswith("ueye") else ("pmd" if is_pmd(d["source"]) else "kamera")
+            rec = CameraRecord(self.ws.free_name(stem), d["source"], d["width"], d["height"])
+            if d.get("K") is not None:                  # pmd: K z kalibracji fabrycznej (xyz z SDK)
+                rec.K, rec.intrinsics_from = [list(map(float, r)) for r in d["K"]], "pmd"
+            rec = self.ws.add_camera(rec)
             self._found_usb = []
             self.usb_box.visible = False
             self._save()
@@ -1741,7 +1748,7 @@ class TwinApp:
             return f'<div class="tw-empty">{_html.escape(text)}</div>'
         rows = []
         for c in self.ws.cameras:
-            src = "symulowana" if c.simulated else f"USB {c.source}"
+            src = "symulowana" if c.simulated else (f"glebia {c.source}" if is_pmd(c.source) else f"USB {c.source}")
             badges = [self._k_badge(c), self._pose_badge(c)] if calib else [self._cam_badge(c)]
             b = "".join(f'<span class="tw-badge {cls}">{_html.escape(w)}</span>' for w, cls in badges)
             rows.append(f'<div class="tw-cam"><b>{_html.escape(c.name)}</b><span class="tw-src">{_html.escape(src)}'
@@ -1841,6 +1848,9 @@ class TwinApp:
             info = (f"**poruszona** od kalibracji (obraz przesunal sie o "
                     f"{_px(self.watch.shift.get(rec.name, float('inf')))}) - zakladka **Kalibracja**, "
                     f"pomaranczowy przycisk")
+        elif not rec.calibrated and is_pmd(rec.source):
+            info = ("poza z tagow na obudowie: folder **Kamera PMD** ponizej (os optyczna, Znajdz PMD); "
+                    "K juz jest - z kalibracji fabrycznej")
         elif not rec.calibrated:
             info = "jeszcze nieskalibrowana - dalej zakladka **Kalibracja**"
         elif rec.trusted:
@@ -3222,6 +3232,7 @@ class TwinApp:
             return
         self._pmd_T = fix.T_body2base
         self._pmd_draw(fix.T_body2base)
+        self._pmd_pose_to_record(fix)
         p = fix.position
         cams = "; ".join(f"{n}: tagi {', '.join(map(str, fix.tags_seen[n]))}, {r:.2f} px"
                          for n, r in fix.reproj_px.items())
@@ -3232,6 +3243,31 @@ class TwinApp:
             text += (f". Kamery bez zaufanej pozy: {', '.join(untrusted)} - poza PMD jest tylko tak dobra, "
                      f"jak ich kalibracja.")
         self._pmd_note(text)
+
+    def _pmd_records(self) -> list[CameraRecord]:
+        return [c for c in self.ws.cameras if is_pmd(c.source)]
+
+    def _pmd_pose_to_record(self, fix) -> None:
+        """Poza z tagow -> `T_cam2base` kamery stanowiska o zrodle `pmd` (gdy wybrano os optyczna).
+
+        Poza jest NIEZAUFANA z zalozenia: uklad optyczny zaczyna sie w srodku wybranego taga,
+        nie w obiektywie (kilka-kilkanascie mm), a wchodzi przez kalibracje kamer stanowiska.
+        Do sceny i piramidy w 3D wystarcza; mapa i percepcja biora tylko kamery zaufane.
+        """
+        To = self.pmd.T_optical2body()
+        recs = self._pmd_records()
+        if To is None or not recs:
+            return
+        T = np.asarray(fix.T_body2base, float) @ To
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for rec in recs:
+            rec.T_cam2base = T.tolist()
+            rec.calibration = dict(rms_px=float(max(fix.reproj_px.values())), max_px=float(max(fix.reproj_px.values())),
+                                   n_obs=len(fix.per_camera), spread_deg=0.0, trusted=False,
+                                   reason="poza z tagow na obudowie (srodek w tagu, nie w obiektywie)", time=now,
+                                   spread_mm=float(fix.spread_mm), tags=[int(self.pmd.optical[0]), self.pmd.optical[1]])
+            self._update_frustum(rec)
+        self._dirty_rebuild = time.monotonic()          # kamera w scenie MuJoCo - przebudowa po chwili spokoju
 
     def _tick_pmd(self, frames: dict[str, np.ndarray]) -> None:
         if self.pmd_follow.value:
@@ -3245,7 +3281,8 @@ class TwinApp:
         """
         body = self.pmd
         Tw = self.T_b2w @ np.asarray(T_body2base, float)
-        key = (tuple(body.known()), body.optical, round(body.tag_size, 6))
+        has_record = any(c.enabled and c.T_cam2base is not None for c in self._pmd_records())
+        key = (tuple(body.known()), body.optical, round(body.tag_size, 6), has_record)
         with self.scene_lock:
             sc_ = self.server.scene
             if self._pmd_key != key:
@@ -3259,7 +3296,8 @@ class TwinApp:
                 # Plytka 0,5 mm przed srodkiem taga, zeby nie migotala z obudowa / plytka sasiada.
                 poses[f"tag{i}"] = Tw @ body.layout[i] @ pose(np.eye(3), np.array([0.0, 0.0, 0.0005]))
             To = body.T_optical2body()
-            if To is not None:
+            own_frustum = not any(c.enabled and c.T_cam2base is not None for c in self._pmd_records())
+            if To is not None and own_frustum:          # kamera pmd w stanowisku ma wlasna piramide z obrazem
                 poses["kamera"] = Tw @ To
             for name, T in poses.items():
                 h = self._pmd_nodes.get(name)

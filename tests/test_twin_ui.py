@@ -600,7 +600,7 @@ def test_pmd_camera_with_tags_on_its_housing_is_learned_found_drawn_and_saved(ap
     from lerobot_mp.twin import scene as sc
     from lerobot_mp.twin.calib import tags
     from lerobot_mp.twin.kinematics import pose
-    from lerobot_mp.twin.workspace import Workspace
+    from lerobot_mp.twin.workspace import CameraRecord, Workspace
 
     # Kamery symulowane panelu maja 640x480 i 62 st. pola widzenia (f ok. 400 px): kostka z modulowego
     # testu (tag 3 cm) z 0,4 m to 30 px na tag i ukosne tagi sie nie dekoduja - tu 1,5x wieksza, z 0,3 m.
@@ -651,8 +651,25 @@ def test_pmd_camera_with_tags_on_its_housing_is_learned_found_drawn_and_saved(ap
         assert {k: id(v) for k, v in app._pmd_nodes.items()} == before
         app.pmd_follow.value = False
 
+        # Kamera stanowiska o zrodle pmd (bez sprzetu - wylaczona, hub jej nie otwiera) dostaje poze
+        # z tagow: uklad optyczny wg "Kamera patrzy wzdluz", niezaufana z powodem; wtedy piramida
+        # z folderu ustepuje piramidzie kamery, gdy ta jest wlaczona.
+        pmd_rec = app.ws.add_camera(CameraRecord("pmd1", "pmd:test", 165, 120, K=[[104.0, 0, 82], [0, 103.0, 59.5], [0, 0, 1]],
+                                                 intrinsics_from="pmd", enabled=False))
+        app._pmd_find(app._grab())
+        expect = app._pmd_fix.T_body2base @ app.pmd.T_optical2body()
+        assert np.allclose(pmd_rec.T_cam2base, expect) and pmd_rec.calibrated and not pmd_rec.trusted
+        assert "tagow na obudowie" in pmd_rec.calibration["reason"] and pmd_rec.intrinsics_problem() == ""
+        assert "kamera" in app._pmd_nodes                   # wylaczona kamera pmd - piramida folderu zostaje
+        pmd_rec.enabled = True
+        app._pmd_find(app._grab())
+        assert "kamera" not in app._pmd_nodes and app.frustums["pmd1"].visible
+        assert np.allclose(app.frustums["pmd1"].position, (app.T_b2w @ expect)[:3, 3], atol=1e-6)
+        pmd_rec.enabled = False
+
         app._pmd_save(_Event())
         back = Workspace.load(app.ws_path)
+        assert np.allclose(back.camera("pmd1").T_cam2base, expect)
         assert back.pmd is not None and back.pmd["ids"] == [0, 1, 2] and back.pmd["optical"] == [0, "-z"]
         assert np.allclose(back.pmd["T_body2base"], app._pmd_fix.T_body2base)
         assert set(back.pmd["layout"]) == {"0", "1", "2"}
@@ -666,6 +683,7 @@ def test_pmd_camera_with_tags_on_its_housing_is_learned_found_drawn_and_saved(ap
         app.pmd_follow.value = False
         for rec in cams:
             app.ws.remove_camera(rec.name)
+        app.ws.remove_camera("pmd1")
         app.ws.pmd = None
         app.twin.configure(**extras)
         app._refresh_cameras()

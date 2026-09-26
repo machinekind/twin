@@ -17,8 +17,9 @@ tone curve so dim regions stay visible.
 The CamBoard nano (USB id 1c28:c007) is a vendor-specific USB device with no
 Linux kernel driver: it can only be read through pmd's proprietary PMDSDK2
 (libpmdaccess2.so + camboardnano.L64.pap / camboardnanoproc.L64.ppp plugins,
-shipped with the camera). This script talks to that library with ctypes, so
-nothing needs to be compiled. The SDK is looked up in --sdk-dir, $PMDDIR,
+shipped with the camera). The ctypes binding lives in `lerobot_mp.twin.pmd`
+(shared with the twin panel, where the camera is the `pmd` source), so nothing
+needs to be compiled. The SDK is looked up in --sdk-dir, $PMDDIR,
 pmd/Linux/Linux64bit/PMDSDK (the unpacked Linux64bit.tar.gz from the pmd
 disk), /usr/local/pmd and ./PMDSDK. The plugin needs the old libusb-0.1.so.4;
 a copy placed next to libpmdaccess2.so is preloaded automatically. Copy the
@@ -28,8 +29,6 @@ camera. The per-camera <serial>.dat calibration file is taken from --calib
 """
 
 import argparse
-import ctypes
-import glob
 import os
 import sys
 import time
@@ -37,225 +36,13 @@ import time
 import cv2
 import numpy as np
 
-PMD_OK = 0
-PMD_FILE_NOT_FOUND = 4097
-PMD_COULD_NOT_OPEN = 4098
-
-# Pixel flag bits (pmdsdk2.h). Any of the first four marks a pixel as unusable.
-PMD_FLAG_INVALID = 0x01
-PMD_FLAG_SATURATED = 0x02
-PMD_FLAG_INCONSISTENT = 0x04
-PMD_FLAG_LOW_SIGNAL = 0x08
-PMD_FLAG_SBI_ACTIVE = 0x10
-BAD_PIXEL_MASK = PMD_FLAG_INVALID | PMD_FLAG_SATURATED | PMD_FLAG_INCONSISTENT | PMD_FLAG_LOW_SIGNAL
-
-PMDHandle = ctypes.c_uint
-
-# Proximity enum for pmdGetValidIntegrationTime
-AT_LEAST, AT_MOST, CLOSE_TO = 0, 1, 2
-
-
-class PMDImageData(ctypes.Structure):
-    _fields_ = [
-        ("subType", ctypes.c_uint),
-        ("numColumns", ctypes.c_uint),
-        ("numRows", ctypes.c_uint),
-        ("numSubImages", ctypes.c_uint),
-        ("integrationTime", ctypes.c_int * 4),
-        ("modulationFrequency", ctypes.c_int * 4),
-        ("offset", ctypes.c_int * 4),
-        ("pixelAspectRatio", ctypes.c_int),
-        ("pixelOrigin", ctypes.c_int),
-        ("timeStampHi", ctypes.c_int),
-        ("timeStampLo", ctypes.c_uint),
-        ("reserved", ctypes.c_char * 24),
-        ("userData0", ctypes.c_uint),
-    ]
-
-
-class _DDUnion(ctypes.Union):
-    _fields_ = [("img", PMDImageData), ("fill", ctypes.c_char * 108)]
-
-
-class PMDDataDescription(ctypes.Structure):
-    _anonymous_ = ("u",)
-    _fields_ = [
-        ("PID", ctypes.c_uint),
-        ("DID", ctypes.c_uint),
-        ("type", ctypes.c_uint),
-        ("size", ctypes.c_uint),
-        ("subHeaderType", ctypes.c_uint),
-        ("u", _DDUnion),
-        ("_pad", ctypes.c_char * 512),  # headroom in case a newer SDK grew the struct
-    ]
-
-
-class PMDError(RuntimeError):
-    pass
-
-
-SDK_ROOTS = [os.environ.get("PMDDIR"), "pmd/Linux/Linux64bit/PMDSDK", "/usr/local/pmd", "PMDSDK"]
-
-
-def find_sdk(sdk_dir=None):
-    """Return (path to libpmdaccess2.so, plugin dir) or raise with a helpful message."""
-    roots = [d for d in [sdk_dir] + SDK_ROOTS if d]
-    for root in roots:
-        libs = glob.glob(os.path.join(root, "*", "libpmdaccess2.so*")) + glob.glob(
-            os.path.join(root, "libpmdaccess2.so*"))
-        plugins = glob.glob(os.path.join(root, "*", "camboardnano.L64.pap")) + glob.glob(
-            os.path.join(root, "camboardnano.L64.pap"))
-        if libs and plugins:
-            return os.path.abspath(sorted(libs)[0]), os.path.abspath(os.path.dirname(plugins[0]))
-    raise PMDError(
-        "PMDSDK not found (looked in %s).\n"
-        "Unpack pmd's Linux64bit.tar.gz and point --sdk-dir or $PMDDIR at its PMDSDK folder "
-        "(containing bin/libpmdaccess2.so and camboardnano.L64.pap / camboardnanoproc.L64.ppp)."
-        % ", ".join(roots))
-
-
-class PMDSDK:
-    """ctypes binding of the handful of pmdsdk2.h functions the viewer needs."""
-
-    def __init__(self, lib_path, plugin_dir):
-        # The 2013 camboardnano plugin needs libusb-0.1.so.4, which modern distros no longer
-        # ship. If a copy sits next to the SDK, preload it globally so the plugin's dlopen resolves.
-        for usb in glob.glob(os.path.join(os.path.dirname(lib_path), "libusb-0.1.so*")) + glob.glob(
-                os.path.join(plugin_dir, "libusb-0.1.so*")):
-            ctypes.CDLL(usb, mode=ctypes.RTLD_GLOBAL)
-            break
-        self.lib = ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
-        self.plugin_dir = plugin_dir
-        L = self.lib
-        c_char_p, c_size_t, c_uint = ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint
-        L.pmdOpen.argtypes = [ctypes.POINTER(PMDHandle), c_char_p, c_char_p, c_char_p, c_char_p]
-        L.pmdClose.argtypes = [PMDHandle]
-        L.pmdUpdate.argtypes = [PMDHandle]
-        L.pmdGetLastError.argtypes = [PMDHandle, c_char_p, c_size_t]
-        L.pmdGetSourceDataDescription.argtypes = [PMDHandle, ctypes.POINTER(PMDDataDescription)]
-        for name in ("pmdGetDistances", "pmdGetAmplitudes", "pmdGet3DCoordinates"):
-            getattr(L, name).argtypes = [PMDHandle, ctypes.c_void_p, c_size_t]
-        L.pmdGetFlags.argtypes = [PMDHandle, ctypes.c_void_p, c_size_t]
-        L.pmdSourceCommand.argtypes = [PMDHandle, c_char_p, c_size_t, c_char_p]
-        L.pmdProcessingCommand.argtypes = [PMDHandle, c_char_p, c_size_t, c_char_p]
-        L.pmdGetIntegrationTime.argtypes = [PMDHandle, ctypes.POINTER(c_uint), c_uint]
-        L.pmdSetIntegrationTime.argtypes = [PMDHandle, c_uint, c_uint]
-        L.pmdGetValidIntegrationTime.argtypes = [PMDHandle, ctypes.POINTER(c_uint), c_uint, ctypes.c_int, c_uint]
-
-    def plugin(self, name):
-        # The SDK appends .L64.pap / .ppp itself; a path prefix avoids depending on the cwd.
-        return os.path.join(self.plugin_dir, name).encode()
-
-
-class CamboardNano:
-    def __init__(self, sdk, serial="", calib=None, integration_us=None, illumination=True):
-        self.sdk, self.L = sdk, sdk.lib
-        self.h = PMDHandle(0)
-        ret = self.L.pmdOpen(ctypes.byref(self.h), sdk.plugin("camboardnano"), serial.encode(),
-                             sdk.plugin("camboardnanoproc"), b"")
-        if ret != PMD_OK:
-            raise PMDError("pmdOpen failed (%d): %s" % (ret, self._last_error()))
-        try:
-            self._setup(serial, calib, integration_us, illumination)
-        except PMDError:
-            self.close()
-            raise
-
-    def _setup(self, serial, calib, integration_us, illumination):
-        self.serial = self.source_command("GetSerialNumber")
-        if serial and self.serial != serial:
-            raise PMDError("opened camera %s, not the requested %s" % (self.serial, serial))
-        if calib and os.path.isdir(calib):
-            calib = os.path.join(calib, self.serial + ".dat")
-            if not os.path.isfile(calib):
-                print("warning: no calibration file %s (SDK falls back to the cwd / defaults)" % calib)
-                calib = None
-        if calib:
-            self.source_command("LoadCalibrationData " + os.path.abspath(calib))
-        self.calibrated = self.source_command("IsCalibrationDataLoaded")
-        # Settings that lower the LED current go in before the first frame is requested:
-        # the illumination switches on with the first pmdUpdate.
-        if integration_us is not None:
-            self.set_integration_time(integration_us)
-        if not illumination:
-            self.source_command("SetIllumination 0 0")
-        self.check(self.L.pmdUpdate(self.h), "pmdUpdate")
-        dd = PMDDataDescription()
-        self.check(self.L.pmdGetSourceDataDescription(self.h, ctypes.byref(dd)), "pmdGetSourceDataDescription")
-        self.width, self.height = int(dd.img.numColumns), int(dd.img.numRows)
-        if not (0 < self.width < 4096 and 0 < self.height < 4096):
-            self.width, self.height = 165, 120  # CamBoard nano sensor size
-        self.n = self.width * self.height
-
-    # --- SDK plumbing ---------------------------------------------------
-    def _last_error(self):
-        buf = ctypes.create_string_buffer(256)
-        self.L.pmdGetLastError(self.h, buf, len(buf))
-        return buf.value.decode(errors="replace")
-
-    def check(self, ret, what):
-        if ret != PMD_OK:
-            raise PMDError("%s failed (%d): %s" % (what, ret, self._last_error()))
-
-    def source_command(self, cmd):
-        buf = ctypes.create_string_buffer(256)
-        self.check(self.L.pmdSourceCommand(self.h, buf, len(buf), cmd.encode()), cmd)
-        return buf.value.decode(errors="replace").strip()
-
-    def processing_command(self, cmd):
-        buf = ctypes.create_string_buffer(256)
-        self.check(self.L.pmdProcessingCommand(self.h, buf, len(buf), cmd.encode()), cmd)
-        return buf.value.decode(errors="replace").strip()
-
-    def _get_array(self, fn, dtype, per_pixel=1):
-        arr = np.empty((self.height, self.width) if per_pixel == 1 else (self.height, self.width, per_pixel), dtype)
-        self.check(fn(self.h, arr.ctypes.data, arr.nbytes), fn.__name__)
-        return arr
-
-    # --- data -----------------------------------------------------------
-    def update(self):
-        self.check(self.L.pmdUpdate(self.h), "pmdUpdate")
-
-    def distances(self):
-        """Radial distance per pixel, float32 (metres as delivered by the SDK)."""
-        return self._get_array(self.L.pmdGetDistances, np.float32)
-
-    def amplitudes(self):
-        return self._get_array(self.L.pmdGetAmplitudes, np.float32)
-
-    def flags(self):
-        return self._get_array(self.L.pmdGetFlags, np.uint32)
-
-    def xyz(self):
-        return self._get_array(self.L.pmdGet3DCoordinates, np.float32, 3)
-
-    # --- settings -------------------------------------------------------
-    def get_integration_time(self):
-        t = ctypes.c_uint()
-        self.check(self.L.pmdGetIntegrationTime(self.h, ctypes.byref(t), 0), "pmdGetIntegrationTime")
-        return int(t.value)
-
-    def set_integration_time(self, us):
-        valid = ctypes.c_uint()
-        self.check(self.L.pmdGetValidIntegrationTime(self.h, ctypes.byref(valid), 0, CLOSE_TO, int(us)),
-                   "pmdGetValidIntegrationTime")
-        self.check(self.L.pmdSetIntegrationTime(self.h, 0, valid), "pmdSetIntegrationTime")
-        return int(valid.value)
-
-    def set_averaging(self, frames):
-        if frames:
-            self.processing_command("SetAveraging On")
-            self.processing_command("SetAveragingFrames %d" % frames)
-        else:
-            self.processing_command("SetAveraging Off")
-
-    def set_bilateral_filter(self, enable):
-        self.processing_command("SetBilateralFilter %s" % ("On" if enable else "Off"))
-
-    def close(self):
-        if self.h.value:
-            self.L.pmdClose(self.h)
-            self.h = PMDHandle(0)
+try:
+    from lerobot_mp.twin.pmd import (  # noqa: F401 - binding SDK i stale sa w pakiecie
+        AT_LEAST, AT_MOST, BAD_PIXEL_MASK, CLOSE_TO, PMD_FLAG_INCONSISTENT, PMD_FLAG_INVALID,
+        PMD_FLAG_LOW_SIGNAL, PMD_FLAG_SATURATED, PMD_FLAG_SBI_ACTIVE, PMD_OK, WRAP_M, CamboardNano,
+        PMDDataDescription, PMDError, PMDHandle, PMDImageData, PMDSDK, find_sdk, unwrap)
+except ImportError:  # pragma: no cover
+    sys.exit("pmd_view.py potrzebuje pakietu lerobot_mp (pip install -e .) - binding PMDSDK jest w lerobot_mp.twin.pmd")
 
 
 def open_cameras(sdk, serials, count, calib, **kw):
@@ -277,16 +64,6 @@ def open_cameras(sdk, serials, count, calib, **kw):
                 break
             cams.append(cam)
     return cams
-
-
-WRAP_M = 5.0  # unambiguous range at the nano's fixed 30 MHz modulation
-
-
-def unwrap(dist):
-    """Fold distances just below the 5 m wrap-around (noise around 0 m) back to negative values."""
-    d = dist.copy()
-    d[d > WRAP_M * 0.9] -= WRAP_M
-    return d
 
 
 def display_range(dist, good, min_dist, max_dist):
