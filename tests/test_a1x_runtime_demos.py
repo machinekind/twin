@@ -1,6 +1,7 @@
 """Demonstrations must exercise the guarded runtime and record its exact inputs."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -76,3 +77,19 @@ def test_rejected_approach_is_a_failed_demonstration(runtime_env):
     assert report["guard_rejection"] and not report["success"]
     assert not report["collision"] and not report["numerical"]
     assert "motion rejected" in report["runtime_stop"]
+
+
+def test_corrective_labels_are_teacher_commands_not_executed_learner_actions(runtime_env):
+    from collect_a1x_lift_demos import trial
+    # A learner that never moves the arm cannot reach the first waypoint. Its
+    # controls must be recorded for audit but must never become expert labels.
+    command = np.r_[np.zeros(6), .2].astype(np.float32)
+    learner = SimpleNamespace(act=lambda obs: command.copy())
+    executed = []
+    report, obs, labels = trial(runtime_env, 42000, state_triggered=True, synchronized=True,
+        measured_close=True, lift_rate=.25, learner=learner, learner_probability=1,
+        executed_actions=executed)
+    assert not report["success"] and not report["scripted"] and report["corrective_teacher_labels"]
+    assert report["learner_steps"] == len(executed) == len(labels) == len(obs) > 0
+    np.testing.assert_array_equal(executed, np.tile(command, (len(executed), 1)))
+    assert np.max(np.abs(np.asarray(labels)[:, :6])) > .9

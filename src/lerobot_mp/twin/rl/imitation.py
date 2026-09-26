@@ -31,8 +31,33 @@ class Demonstrations:
     provenance: dict
 
 
-def load_demonstrations(path: Path, *, seed: int = 0, validation_fraction: float = .2) -> Demonstrations:
-    """Load successful finite episodes only; split by episode, never by frame."""
+def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
+                        validation_fraction: float = .2) -> Demonstrations:
+    """Load successful teacher labels; keep each source's episode split when aggregating.
+
+    Corrective datasets distinguish teacher targets (`actions`) from the actual
+    mixed controls (`executed_actions`). Only teacher targets train the actor.
+    """
+    if isinstance(path, (list, tuple)):
+        if not path:
+            raise ValueError("At least one demonstration source is required")
+        sources = [load_demonstrations(p, seed=seed, validation_fraction=validation_fraction) for p in path]
+        if len(sources) == 1:
+            return sources[0]
+        first, seen = sources[0], set()
+        keys = ("train_seeds", "validation_seeds", "excluded_seeds")
+        for data in sources:
+            if data.task != first.task or data.randomization != first.randomization:
+                raise ValueError("Demonstration sources must have identical task and observation contracts")
+            recorded = set(sum([data.provenance[k] for k in keys], []))
+            if seen & recorded:
+                raise ValueError("Episode seeds overlap across demonstration sources")
+            seen.update(recorded)
+        provenance = dict(sources=[d.provenance for d in sources], split_seed=seed,
+                          **{key: sum([d.provenance[key] for d in sources], []) for key in keys})
+        return Demonstrations(first.task, first.randomization,
+            *[np.concatenate([getattr(d, key) for d in sources]) for key in
+              ("train_obs", "train_actions", "valid_obs", "valid_actions")], provenance)
     path = Path(path)
     if not 0 < validation_fraction < 1:
         raise ValueError("validation_fraction must be between zero and one")

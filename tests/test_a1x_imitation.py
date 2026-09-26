@@ -15,14 +15,15 @@ from lerobot_mp.twin.rl.task import make_task
 from lerobot_mp.twin.robots import A1X
 
 
-def dataset(path):
+def dataset(path, offset=0):
     task = make_task("lift", A1X)
     (path / "manifest.json").write_text(json.dumps({"task": asdict(task),
         "randomization": asdict(Randomization.none())}))
     reports = []
-    for seed in range(5):
-        reports.append(dict(seed=seed, success=seed != 4, collision=seed == 4, numerical=False, steps=3))
-        if seed != 4:  # Failed data must be excluded even if its sample file is absent.
+    for seed in range(offset, offset + 5):
+        failed = seed == offset + 4
+        reports.append(dict(seed=seed, success=not failed, collision=failed, numerical=False, steps=3))
+        if not failed:  # Failed data must be excluded even if its sample file is absent.
             np.savez(path / f"seed-{seed}.npz", obs=np.full((3, task.obs_dim), seed, np.float32),
                      actions=np.zeros((3, 7), np.float32))
     (path / "report.json").write_text(json.dumps({"episodes": reports}))
@@ -37,6 +38,38 @@ def test_whole_episode_split_excludes_failures_and_tracks_exact_files(tmp_path):
     assert demos.provenance["excluded_seeds"] == [4]
     assert len(demos.provenance["file_sha256"]) == 6
     assert demos.provenance == load_demonstrations(tmp_path, seed=8).provenance
+
+
+def test_aggregation_preserves_each_sources_validation_split_and_hashes(tmp_path):
+    paths = [tmp_path / "first", tmp_path / "second"]
+    for path, offset in zip(paths, (0, 10)):
+        path.mkdir()
+        dataset(path, offset)
+    individual = [load_demonstrations(p, seed=8) for p in paths]
+    merged = load_demonstrations(paths, seed=8)
+    assert merged.provenance["sources"] == [d.provenance for d in individual]
+    for field in ("train_seeds", "validation_seeds", "excluded_seeds"):
+        assert merged.provenance[field] == sum([d.provenance[field] for d in individual], [])
+    np.testing.assert_array_equal(merged.train_obs, np.concatenate([d.train_obs for d in individual]))
+    np.testing.assert_array_equal(merged.valid_actions, np.concatenate([d.valid_actions for d in individual]))
+    assert set(merged.train_obs[:, 0]).isdisjoint(merged.valid_obs[:, 0])
+    assert merged.provenance["excluded_seeds"] == [4, 14]
+
+
+def test_aggregation_rejects_overlapping_seeds_and_mismatched_tasks(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    dataset(a)
+    dataset(b, 10)
+    with pytest.raises(ValueError, match="seeds overlap"):
+        load_demonstrations([a, a])
+    path = b / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["task"]["cube_half"] = .016
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="identical task"):
+        load_demonstrations([a, b])
 
 
 @pytest.mark.parametrize("problem", ["nan", "out_of_range", "missing_step", "duplicate_seed"])

@@ -22,7 +22,7 @@ from lerobot_mp.twin.workspace import Workspace
 
 
 class RuntimeLiftEnv:
-    def __init__(self, task):
+    def __init__(self, task, *, view=False):
         if task.name != "lift" or task.n_joints != 7 or task.control_hz != 20 or task.timestep != .005:
             raise ValueError("This adapter supports only A1X lift at 20 Hz / 5 ms physics")
         self.task = task
@@ -30,8 +30,8 @@ class RuntimeLiftEnv:
         self.rand = replace(Randomization.none(), fold_yaw=True)
         self.resetter = TwinEnv(task, workspace=workspace, randomization=self.rand)
         self.twin = Twin(workspace)
-        config = scene_config(task, workspace)
-        self.twin.configure(objects=config.objects, grasp_sensors=config.grasp_sensors)
+        config = scene_config(task, workspace, view=view)
+        self.twin.configure(objects=config.objects, grasp_sensors=config.grasp_sensors, cameras=config.cameras)
         self.scene, self.kin = self.twin.scene, self.twin.scene.kin
         self.limits = Limits.of(self.kin)
         self.transform = np.linalg.inv(self.scene.T_base2world)
@@ -118,6 +118,10 @@ class RuntimeLiftEnv:
         if self.monitor is not None:
             self.scene.step = self.monitor.original_step
         self.twin.disconnect()
+
+    def render(self):
+        cameras = self.scene.cfg.cameras
+        return self.scene.render(cameras[0].name) if cameras else None
 
     def close(self):
         self._stop()

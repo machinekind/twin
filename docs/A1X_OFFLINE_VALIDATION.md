@@ -519,6 +519,90 @@ neither new candidate qualifies deployment. Next investigate the learner's
 departures from the demonstrated trajectories, particularly grasp retention,
 and collect corrective examples before another unanchored PPO refinement.
 
+### Corrective teaching after learner deviations
+
+`runtime-drift-001` compares candidate 003 and the scripted teacher on development
+seeds 50000, 50001 and 50006 through the same guarded runtime. In the first two
+learned trials both finger contacts persist after grasp, but the arm repeatedly
+raises and lowers the held block. Peak heights are 65.13 and 83.51 mm; continuous
+holds reach only 0.75 and 1.41 s. This is commanded arm drift, not a demonstrated
+loss of gripper contact. The third trial is rejected for table clearance during
+approach, before grasp. The teacher succeeds on all three. Recorded observations,
+actions, joint targets, measured joints and object trajectories support this
+diagnosis; these trials are not new qualification cases.
+
+The collector now optionally executes a supplied learner with probability 0.2
+and the teacher otherwise. At every visited state it records the teacher's
+recommended action as the training label; `executed_actions` separately preserves
+the actual controls. The manifest records the learner checkpoint hash, mixing
+probability and deterministic sampling seeds. Corrective collection requires the
+guarded runtime, state-triggered teacher and matching robot/task/yaw convention.
+Mixed rollouts are explicitly marked as teacher-assisted, not autonomous learned
+successes. Existing failed-episode exclusion and full-duration success checks apply.
+
+`lift-demos-corrective-001`: 19/20 teacher-assisted pilot holds on seeds
+42000-42019, with one guarded descent rejection. `lift-demos-corrective-002`
+expands to seeds 42000-42199: **188/200 teacher-assisted holds**, 162.41 s,
+5,251 learner-selected actions among 25,920 total actions. Twelve failed attempts
+(eight descents, one closure, three lifts) remain in the report and are excluded
+from training. All 200 have zero actual prohibited contacts and numerical faults.
+These collection seeds are separate from both the original teacher dataset and
+the fixed development evaluation seeds 50000-50019.
+
+`corrective-demo-contracts-001.log`: 13 focused tests pass. The new test supplies
+a learner that never moves the arm: its zero arm commands are preserved as actual
+controls while nonzero teacher corrections remain the labels, and the unfinished
+attempt cannot become a successful example.
+
+`lift-imitation-005` fits the first corrective dataset with the same seed 23,
+5,000-update / 120 s ceiling and network as candidate 003. It selects update
+4,900 after 21.51 s, validation loss 0.003442. Despite higher prediction error,
+autonomous results improve to **17/20 nominal CPU**, **11/20 randomized CPU**,
+and **12/20 guarded-runtime holds** (`lift-imitation-runtime-007.json`). Bare
+evaluations have two/six collision episodes respectively. The guarded set has
+seven rejected paths and one timeout, zero actual prohibited contacts and
+numerical failures, and 2.000-2.055 s independent holds in successful trials.
+The same reused development seeds 50000-50019 remain below the proposed 18/20 gate.
+Candidate 005 SHA256:
+`b51ed8d0040dc1a443688d477427614b98fa6d7a93148bdc05f1f23b25040131`.
+
+`lift-demos-corrective-003` uses candidate 005 for half the actions on new
+seeds 43000-43199: **160/200 teacher-assisted holds**, 152.85 s, 11,894 learner
+actions among 24,167. No actual prohibited contacts or numerical faults occurred.
+Forty failed attempts (7 above, 18 descent, 8 close, 7 lift) remain excluded.
+The loader now accepts disjoint sources and preserves each source's existing
+train/validation split and hashes; duplicate seeds or mismatched task/observation
+contracts are rejected. Aggregation does not move prior validation episodes into
+training. `corrective-demo-contracts-002.log`: 15 tests pass, including these checks.
+
+`lift-imitation-006` combines both corrective sources: 278 training episodes,
+70 validation episodes, 52 failures excluded. Its 10,000-update / 120 s ceiling
+selects update 9,700 after 33.68 s, validation loss 0.003745. Results regress to
+12/20 nominal CPU, 7/20 randomized CPU, and **10/20 guarded holds**
+(`lift-imitation-runtime-008.json`). The bare evaluations have five/six collision
+episodes; guarded evaluation has ten rejections, zero actual prohibited contacts
+and numerical faults. Keep candidate 005 as the best guarded lift candidate.
+Candidate 006 SHA256:
+`c8ee5e7c44286866fbcd05f5fa4d3e380d53f427c551ec7c66b5acfc2f9073df`.
+
+The remaining guarded rejections predominantly occur during approach near the
+table or cube. Next measure the teacher's actual approach clearance and test
+whether a higher grasp point can leave useful tracking margin while retaining
+bilateral contact, the full workspace, height/hold requirements and existing
+collision thresholds. This is a proposed teacher adjustment, not a relaxed gate.
+
+`render_a1x_candidate.py --runtime` now records a policy through the same guarded
+adapter, with a visible simulation/imitation label. The inspected replay
+`lift-imitation-runtime-video-001/seed-50001.mp4` shows candidate 005 lifting and
+holding the block: 149 frames, 7.40 s simulated duration, 72.03 mm final height,
+2.010 s independent hold. Final height, hold duration and maximum coupling error
+match the unrendered evaluation exactly for this seed. The preview is saved next
+to the video. This is a selected successful simulation trial, not overall
+qualification or hardware evidence.
+`corrective-demo-contracts-003.log` repeats all 15 focused checks after adding
+the guarded-render option: all pass. No physical or Brev commands were sent
+during these corrective experiments.
+
 ### IK retry must preserve gripper state
 
 Source review found that the home-pose IK restart included the home gripper

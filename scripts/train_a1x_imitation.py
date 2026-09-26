@@ -19,7 +19,8 @@ from lerobot_mp.twin.workspace import Workspace
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("demonstrations", type=Path)
+    parser.add_argument("demonstrations", type=Path, nargs="+",
+                        help="One or more disjoint demonstration sources; existing per-source splits are retained")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--updates", type=int, default=3000)
@@ -40,7 +41,8 @@ def main():
     torch.set_num_threads(2)
     root = Path(__file__).resolve().parents[1]
     report = dict(purpose="simulation imitation candidate; requires independent runtime validation",
-                  arguments={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+                  arguments={k: ([str(p) for p in v] if k == "demonstrations" else
+                                 str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
                   dataset=demos.provenance, task=demos.task, randomization=demos.randomization,
                   git_head=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
                            if (root / ".git").exists() else None,

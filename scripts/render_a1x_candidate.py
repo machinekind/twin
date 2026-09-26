@@ -19,12 +19,15 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=32000)
     parser.add_argument("--episodes", type=int, default=1)
+    parser.add_argument("--runtime", action="store_true", help="Render A1X lift through the guarded controller")
     args = parser.parse_args()
     if not 1 <= args.episodes <= 20:
         parser.error("episodes must be in [1, 20]")
     policy = Policy.load(args.policy)
     if policy.meta.robot != "a1x":
         parser.error("Expected an A1X checkpoint")
+    if args.runtime and (policy.task.name != "lift" or not policy.meta.randomization.get("fold_yaw", False)):
+        parser.error("Runtime rendering requires an A1X lift policy with folded-yaw observations")
     args.out.mkdir(parents=True, exist_ok=False)
     results = []
     for seed in range(args.seed, args.seed + args.episodes):
@@ -42,15 +45,31 @@ def main():
                 if not writer.isOpened():
                     raise RuntimeError("Could not open video output")
             cv2.rectangle(bgr, (0, 0), (bgr.shape[1], 47), (20, 20, 20), -1)
-            for y, text in ((18, f"A1X learned {policy.task.name} | CPU simulation | seed {seed}"),
+            route = "guarded simulation" if args.runtime else "bare CPU simulation"
+            method = "imitation" if policy.meta.steps == 0 else "learned"
+            for y, text in ((18, f"A1X {method} {policy.task.name} | {route} | seed {seed}"),
                             (38, f"{frame_count / policy.task.control_hz:.2f} s | provisional model, no hardware validation")):
                 cv2.putText(bgr, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, .42, (240, 240, 240), 1, cv2.LINE_AA)
             writer.write(bgr)
             frame_count += 1
 
         try:
-            result = evaluate(policy, episodes=1, workspace=Workspace(robot="a1x"),
-                              randomization=Randomization.none(), seed=seed, on_frame=frame)
+            if args.runtime:
+                from a1x_runtime_env import RuntimeLiftEnv
+                env = RuntimeLiftEnv(policy.task, view=True)
+                try:
+                    obs, _ = env.reset(seed=seed)
+                    for _ in range(policy.task.episode_steps):
+                        obs, _, term, trunc, info = env.step(policy.act(obs))
+                        frame(env.render())
+                        if term or trunc:
+                            break
+                    result = dict(success=info["finished"], **info, simulation_time_s=env.scene.data.time)
+                finally:
+                    env.close()
+            else:
+                result = evaluate(policy, episodes=1, workspace=Workspace(robot="a1x"),
+                                  randomization=Randomization.none(), seed=seed, on_frame=frame)
             result.update(seed=seed, frames=frame_count)
             results.append(result)
             print(json.dumps(result), flush=True)
@@ -59,7 +78,11 @@ def main():
                 writer.release()
             (args.out / "report.json").write_text(json.dumps({
                 "policy": str(args.policy), "policy_sha256": hashlib.sha256(args.policy.read_bytes()).hexdigest(),
-                "simulation_only": True, "path": "saved policy -> TwinEnv (CPU)", "episodes": results,
+                "simulation_only": True,
+                "path": "PolicyRunner -> Twin -> SafetySupervisor -> SceneBackend" if args.runtime
+                        else "saved policy -> TwinEnv (CPU)",
+                "renderer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "episodes": results,
             }, indent=2) + "\n")
 
 

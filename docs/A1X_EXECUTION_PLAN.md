@@ -167,20 +167,22 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **diagnose learned grasp/hold drift and collect corrective
-examples from the states the learned controller actually visits**. Guarded
-demonstration collection is implemented: coordinated arm increments, measured
-gentle closure and smaller lift steps achieve 197/200 scripted runtime holds,
-with three guard rejections and zero actual prohibited contacts. Training on
-these examples reaches only 3/20 guarded lifts; a four-times-longer supervised
-fit reduces prediction error but reaches 2/20. More supervised updates alone
-did not solve the controller gap. All comparisons reuse development cases.
-Keep candidate 002 (16/20 nominal CPU, 3/20 guarded runtime) and the new candidates
-separate. Each counted runtime success has a full 2 s hold and zero prohibited
-contacts. This is imitation learning, not an RL success or physical readiness.
+Current next action: **measure grasp-approach clearance and test a higher grasp
+point if it preserves bilateral contact and leaves more tracking margin**.
+Corrective teaching improved learned guarded lifts from 3/20 to **12/20** with
+candidate 005 (17/20 nominal CPU, 11/20 randomized CPU). Traces showed held-block
+height oscillation without loss of finger contact; occasional learner moves
+during teacher practice supplied recovery examples. A second corrective round
+and aggregated fit reached only 10/20 guarded holds, so retain candidate 005.
+Remaining rejections predominantly occur near the table or cube during approach.
+All comparisons reuse development cases and remain below the proposed 18/20 gate.
+The scripted baseline achieved 197/200 guarded holds. Each counted
+runtime success has a full 2 s hold and zero prohibited contacts. The inspected
+candidate-005 replay uses the actual guarded controller. These are imitation
+learning results, not an RL success or physical readiness.
 The five-minute H100 PPO refinement of the earlier imitation candidate finished
 and lost the grasp behavior (0/20 nominal and randomized). No training job is
-currently running. Keep the improved imitation checkpoint and failed refinement
+currently running. Keep the best imitation checkpoint and failed refinement
 separate; do not weaken collision or sustained-hold criteria to pass the gate.
 The user's preference for longer unattended H100 runs remains pending.
 See [offline evidence](A1X_OFFLINE_VALIDATION.md)
@@ -256,6 +258,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Scripted teacher now runs through the guarded controller | `lift-demos-runtime-001` to `005`: matched 20-case development comparisons improve 10/20 to 20/20; `lift-demos-runtime-006`: 197/200, three guarded rejections, no actual prohibited contacts or numerical failures | Train a separate imitation candidate on successful runtime examples |
 | 2026-09-26 | Runtime demonstrations and longer fitting do not yet improve learned reliability | `lift-imitation-003` / `004`: 3/20 and 2/20 guarded holds; lower prediction loss does not imply grasp retention | Diagnose trajectory drift and collect corrective examples; retain earlier candidate and unchanged criteria |
 | 2026-09-26 | Reproduced and corrected IK home-restart gripper reset | Requests for 0% / 100% both returned 60% before fix; two regressions now pass. `runtime-demo-contracts-003.log`: 18 passed; `ik-ui-regression-001.log`: existing branch-jump test passes | Preserve scoped code/data evidence; physical access remains deferred |
+| 2026-09-26 | Corrective teaching substantially improves autonomous guarded lifts | `runtime-drift-001` identifies height oscillation despite retained grip; `lift-demos-corrective-002`: 188/200 teacher-assisted holds; candidate 005: 17/20 nominal CPU, 11/20 randomized CPU, 12/20 guarded | Keep candidate 005; investigate approach clearance before fresh qualification |
+| 2026-09-26 | Second corrective round and aggregation verified, but not promoted | `lift-demos-corrective-003`: 160/200 teacher-assisted holds; candidate 006: 10/20 guarded. Per-source validation splits preserved; 15 focused tests passed | Retain both experiments; do not equate more data with improvement |
+| 2026-09-26 | Guarded learned lift replay inspected | `lift-imitation-runtime-video-001/seed-50001.mp4`: 72.03 mm final lift, 2.010 s hold; metrics exactly match unrendered evaluation | Simulation-only demonstration; physical tests remain deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

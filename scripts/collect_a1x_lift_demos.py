@@ -21,7 +21,8 @@ from lerobot_mp.twin.robots import A1X
 from lerobot_mp.twin.workspace import Workspace
 
 
-def trial(env, seed, *, state_triggered=False, synchronized=False, measured_close=False, lift_rate=1.0):
+def trial(env, seed, *, state_triggered=False, synchronized=False, measured_close=False, lift_rate=1.0,
+          learner=None, learner_probability=.2, executed_actions=None):
     obs, _ = env.reset(seed=seed)
     state = env.state()
     cube = state["cube_pos"].copy()
@@ -31,10 +32,12 @@ def trial(env, seed, *, state_triggered=False, synchronized=False, measured_clos
     kin.tcp(current)
     midpoint = np.mean([kin.data.geom_xpos[m.geom(kin.prefix + name).id] for name in A1X.fingertips], axis=0)
     offset = kin.data.site_xmat[kin.site_id].reshape(3, 3).T @ (midpoint - kin.data.site_xpos[kin.site_id])
-    report = {"seed": seed, "scripted": True, "success": False, "cube_m": cube.tolist(),
+    report = {"seed": seed, "scripted": learner is None, "success": False, "cube_m": cube.tolist(),
               "collision": False, "numerical": False, "max_coupling_mm": 0.0,
               "state_triggered": state_triggered, "synchronized": synchronized,
-              "measured_close": measured_close, "lift_rate": lift_rate, "phase_ends": {}}
+              "measured_close": measured_close, "lift_rate": lift_rate, "phase_ends": {},
+              "corrective_teacher_labels": learner is not None, "learner_steps": 0}
+    rng = np.random.default_rng(np.random.SeedSequence([seed, 9127]))
     observations, actions = [], []
     # A square block permits four equivalent jaw orientations. Keep the same
     # physical limits and try another orientation if a wrist limit rejects one.
@@ -87,8 +90,17 @@ def trial(env, seed, *, state_triggered=False, synchronized=False, measured_clos
                     opening = max(float(q[-1]), float(state["q"][-1]) - .001)
                     action[-1] = 2 * (opening - env.limits.lo[-1]) / (env.limits.hi[-1] - env.limits.lo[-1]) - 1
             observations.append(obs.copy())
+            # Labels always come from the teacher at the current observed state.
+            # Occasional learner actions expose its own errors to later teacher
+            # corrections. Record what was executed separately for replay/audit.
             actions.append(action.copy())
-            obs, _, term, trunc, info = env.step(action)
+            applied = action
+            if learner is not None and rng.random() < learner_probability:
+                applied = learner.act(obs)
+                report["learner_steps"] += 1
+            if executed_actions is not None:
+                executed_actions.append(np.asarray(applied).copy())
+            obs, _, term, trunc, info = env.step(applied)
             report["max_coupling_mm"] = max(report["max_coupling_mm"],
                 abs(float(d.qpos[kin.qadr[-1]] + d.qpos[kin.mirror[0][1]])) * 1000,
                 info.get("max_coupling_mm", 0.0))
@@ -134,21 +146,38 @@ def main():
                         help="Approach bilateral contact with a 1 mm measured-opening lead")
     parser.add_argument("--lift-rate", type=float, default=1.0,
                         help="Maximum synchronized lift increment as a fraction of the normal arm step")
+    parser.add_argument("--learner", type=Path,
+                        help="Optional A1X checkpoint whose occasional actions elicit teacher corrections")
+    parser.add_argument("--learner-probability", type=float, default=.2,
+                        help="Chance of executing the learner instead of the teacher; labels remain teacher actions")
     args = parser.parse_args()
     if not (1 <= args.episodes <= 200 and 1 <= args.seconds <= 600):
         parser.error("Limits: 200 episodes, 600 seconds")
     if not (0 < args.lift_rate <= 1) or (args.lift_rate != 1 and not args.synchronized):
         parser.error("Lift rate must be in (0, 1] and requires --synchronized")
-    args.out.mkdir(parents=True, exist_ok=False)
     task = make_task("lift", A1X)
     rand = replace(Randomization.none(), fold_yaw=True)
+    learner = None
+    if args.learner:
+        from lerobot_mp.twin.rl.policy import Policy
+        if not (args.runtime and args.state_triggered and 0 < args.learner_probability <= .5):
+            parser.error("Corrective collection requires --runtime, --state-triggered and learner probability in (0, .5]")
+        learner = Policy.load(args.learner)
+        if (learner.meta.robot != "a1x" or asdict(learner.task) != asdict(task)
+                or not learner.meta.randomization.get("fold_yaw", False)):
+            parser.error("Learner must match the A1X lift task and folded-yaw observation contract")
+    args.out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
-    manifest = dict(purpose="scripted simulation demonstrations; not learned or physical results",
+    manifest = dict(purpose="teacher-assisted simulation examples; not autonomous learned or physical results",
                     controller="state-triggered waypoints" if args.state_triggered else "timed waypoints",
                     execution_path="guarded runtime simulation" if args.runtime else "bare CPU physics",
                     synchronized=args.synchronized,
                     measured_close=args.measured_close,
                     lift_rate=args.lift_rate,
+                    learner=str(args.learner) if learner else None,
+                    learner_sha256=hashlib.sha256(args.learner.read_bytes()).hexdigest() if learner else None,
+                    learner_probability=args.learner_probability if learner else 0.0,
+                    action_labels="teacher actions; executed_actions stores the actual mixed controls",
                     task=asdict(task), randomization=asdict(rand), seed=args.seed, max_episodes=args.episodes,
                     max_seconds=args.seconds, git_head=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                     script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -171,12 +200,14 @@ def main():
         for seed in range(args.seed, args.seed + args.episodes):
             if time.monotonic() - started >= args.seconds:
                 break
+            executed = []
             report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
                                     synchronized=args.synchronized, measured_close=args.measured_close,
-                                    lift_rate=args.lift_rate)
+                                    lift_rate=args.lift_rate, learner=learner,
+                                    learner_probability=args.learner_probability, executed_actions=executed)
             results.append(report)
             np.savez_compressed(args.out / f"seed-{seed}.npz", obs=np.asarray(obs, np.float32),
-                                actions=np.asarray(act, np.float32))
+                                actions=np.asarray(act, np.float32), executed_actions=np.asarray(executed, np.float32))
             print(json.dumps(report), flush=True)
     finally:
         env.close()
