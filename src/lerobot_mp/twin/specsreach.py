@@ -789,7 +789,9 @@ class SpecsReach:
         return _Leg(back, self.speed * 0.5, "descend", "w gore", close_gripper=bool(gripper))
 
     def _solve(self, kin: RobotKinematics, wp: _Waypoint, seed: Joints) -> Joints:
-        sol = kin.ik(wp.pos, rotation=wp.rotation, seed=seed, tol=self.ik_tol)
+        _, checker = self._tools()
+        sol = kin.ik(wp.pos, rotation=wp.rotation, seed=seed, tol=self.ik_tol,
+                     accept=lambda joints: checker.config_clear(joints) is None)
         if not sol.ok:
             raise _Rejected("ik", f"IK {wp.what}: blad {sol.pos_err * 1000:.1f} mm")
 

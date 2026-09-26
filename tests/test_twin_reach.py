@@ -35,7 +35,7 @@ def test_every_grid_point_of_the_default_volume_is_reachable_and_collision_free(
     assert corners <= {tuple(np.round(p, 6)) for p in points}
     bad = []
     for p in points:
-        sol = kin.ik(p, seed=spec.home, tol=0.003)
+        sol = kin.ik(p, seed=spec.home, tol=0.003, accept=lambda j: checker.config_clear(j) is None)
         why = checker.config_clear(sol.joints) if sol.ok else f"IK {sol.pos_err * 1000:.1f} mm"
         if why is not None:
             bad.append((p.round(3).tolist(), why))
