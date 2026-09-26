@@ -174,7 +174,7 @@ stanu.
 | **Kalibracja** | arkusze do druku (tablica ChArUco, karta z tagami); **1.** intrynsyki — tablica w ręku, kadry zapisują się same, gdy wnoszą nowe ujęcie; **2.** położenie wszystkich kamer naraz — fala z kartą w chwytaku; **szybka relokalizacja** jednej przestawionej kamery |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
 | **Trening** | PPO na GPU w osobnym procesie, z wykresem sukcesu; **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako środka randomizacji |
-| **Polityki** | lista z wynikami (GPU, CPU z randomizacją i bez), ewaluacja na CPU, **uruchomienie na bliźniaku** — sim albo prawdziwe ramię; `reach`: cel przeciągany w 3D; `lift`: kostka z symulacji albo **z kamer** |
+| **Polityki** | lista z wynikami (GPU, CPU z randomizacją i bez), ewaluacja na CPU, **uruchomienie na bliźniaku** — sim albo prawdziwe ramię; `reach`: cel przeciągany w 3D; `lift`: kostka z symulacji albo **z kamer**; folder **Spectacles** — cele z okularów ([niżej](#spectacles-pudełko-zasięgu-i-pinch)) |
 | **Sim-Real** | kadr prawdziwej kamery z nałożonymi krawędziami renderu bliźniaka z tej samej pozy i K, mediana rozjazdu w pikselach |
 
 ---
@@ -617,6 +617,191 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 
 ---
 
+## Spectacles: pudełko zasięgu i pinch
+
+Okulary Snap Spectacles pokazują przed ramieniem półprzezroczyste **pudełko
+zasięgu** i kulkę na TCP. Pinch w pudełku (albo na obiekcie wykrytym z kamer
+okularów) wysyła punkt jako cel, a bliźniak prowadzi tam ramię — jako jeden
+z właścicieli ruchu, przez ten sam nadzór co panel. Soczewka i przekaźnik żyją
+w repozytorium `alien-bazaar` (`specs-lens`, README, sekcja „Reach box”);
+tutaj jest strona bliźniaka. **Nic z tego nie jechało jeszcze na okularach ani
+na prawdziwym ramieniu** — sprawdzone tylko w symulacji, z udawanym
+przekaźnikiem i udawanymi okularami.
+
+```
+okulary (Lens) --ws /specs--> przekaźnik (server.js) --ws /twin--> lerobot-twin specs --> Twin --> sim / A1X
+   ^ rejestracja (T_world2base) z register.py przez przekaźnik
+   ^ nakładka: pudełko zasięgu, kulka TCP, zaplanowany cel  (od bliźniaka)
+   | target: punkt dłoni albo środek obiektu, w układzie podstawy [m]  (od okularów)
+   v targetState: accepted / rejected / moving / reached / backoff / hold  (od bliźniaka)
+```
+
+**Pudełko zasięgu** zna tylko bliźniak (`twin/reach.py`) i wysyła je okularom
+jako obiekt nakładki `kind: "volume"`. Każdy punkt siatki 4 × 4 × 3 (z
+narożnikami) ma rozwiązanie IK do 3 mm i pozę bez kolizji na pustym stole:
+
+| ramię | x [m] | y [m] | z [m] | skąd |
+|---|---|---|---|---|
+| A1X | 0,20 … 0,50 | −0,30 … 0,30 | 0,05 … 0,30 | tabela `DEFAULTS`; przy x 0,18 palce dotykały stołu w dolnych przednich narożnikach |
+| SO-101 | 0,17 … 0,289 | −0,138 … 0,138 | 0,05 … 0,22 | z pierścienia celów `Desk`; bliżej niż 0,16 stała szczęka dotykała barku |
+
+Dół pudełka nigdy nie schodzi poniżej 5 cm (`MIN_Z`): wysokość blatu też jest
+tylko skalibrowana. Własne pudełko w pliku stanowiska (`workspace/twin.json`,
+układ podstawy, metry; bez klucza obowiązuje domyślne):
+
+```json
+{"robot": "a1x", "reach": {"lo": [0.22, -0.20, 0.08], "hi": [0.45, 0.20, 0.25]}}
+```
+
+Bliźniak nie sprawdza, czy własne pudełko jest osiągalne — punkt poza zasięgiem
+kończy się odmową `ik`, nie ruchem. Zmniejszaj je, nie powiększaj.
+
+### Uruchomienie
+
+```bash
+cd server && npm start                                  # przekaźnik, port 8080 (repo alien-bazaar/specs-lens)
+PYTHON=.venv/bin/python npm run register                # rejestracja okularów po tagu na biurku
+lerobot-twin specs --mode dry                           # bliźniak: ws://127.0.0.1:8080/twin
+```
+
+To samo z panelu: zakładka **Polityki**, folder **Spectacles** (adres
+przekaźnika, tryb, *Okulary moga ruszac prawdziwym ramieniem*, *Polacz z
+okularami* / *Rozlacz okulary*, stan: sesja i ostatni cel). Zmiana trybu albo
+pola wyboru działa od razu na połączonym kierowcy. Z `lerobot-twin specs`
+**Enter** albo **Ctrl-C** to STOP: ramię trzyma zmierzoną pozę, bliźniak się
+rozłącza. Każdy `targetState` idzie na wyjście jako jedna linia JSON.
+
+| opcja | znaczenie |
+|---|---|
+| `--relay URL` | przekaźnik, domyślnie `ws://127.0.0.1:8080/twin` |
+| `--mode dry\|sim\|real` | domyślnie `dry` |
+| `--backend`, `--port` | w `dry` i `sim` domyślnie `sim` (sprzętu nie otworzy przypadkiem); w `real` backend i port ze stanowiska |
+| `--grasp` | cel obiektu: zejście, chwyt i powrót nad obiekt (inaczej tylko nad obiekt) |
+| `--allow-untrusted` | przyjmuj cele z niezaufanej rejestracji (tylko do prób w symulacji) |
+| `--i-know` | wymagane w `real`; bez niego polecenie kończy się kodem 2 |
+| `--workspace`, `--seconds` | plik stanowiska; koniec po N sekundach (testy) |
+
+**Tryby, zawsze w tej kolejności:**
+1. **`dry`** — wszystkie sprawdzenia i zaplanowany cel w okularach (zielona
+   kulka), ale bez ruchu: `accepted`, potem `hold`. Tak sprawdzasz rejestrację:
+   czy kulka TCP siedzi na chwytaku i czy pudełko stoi tam, gdzie ramię sięga.
+   Z prawdziwym ramieniem: `lerobot-twin specs --mode dry --backend a1x --port can0`
+   (ramię tylko czytane).
+2. **`sim`** — rusza tylko ramieniem w symulacji. Na backendzie sprzętowym
+   każdy cel dostaje odmowę `not armed`.
+3. **`real`** — prawdziwe ramię, tylko z `--i-know` (w panelu: z zaznaczonym
+   polem wyboru). Cel dłoni rusza dopiero po 1 s od przyjęcia (`hold_off_s`);
+   nowy cel albo STOP w tym czasie go anuluje.
+
+### Wiadomości
+
+Klucz `type` zawsze pierwszy — przekaźnik rozpoznaje typ po początku tekstu.
+
+```
+okulary → bliźniak:
+{"type":"target","source":"hand"|"object","pos":[x,y,z],"session":"...","ts":<ms>,
+ "trusted":true,"depthMeasured"?:true,"label"?:"cup","id"?:3,"cam"?:"left"}
+
+bliźniak → okulary i podgląd:
+{"type":"targetState","state":"accepted"|"rejected"|"moving"|"reached"|"backoff"|"hold",
+ "reason"?:"...","pos":[x,y,z],"tcp":[x,y,z],"ts":<ts celu>,"mode":"dry"|"sim"|"real"}
+
+bliźniak → okulary (nakładka):
+{"type":"overlay","objects":[{"id":"reach","kind":"volume","pos":[cx,cy,cz],"size":[sx,sy,sz],
+ "color":[0.2,0.65,1.0],"alpha":0.35,"label":"zasieg"}, {"id":"tcp","kind":"sphere",...}]}
+```
+
+`pos` w układzie podstawy, metry. Po połączeniu bliźniak wysyła pudełko i kulkę
+TCP, potem samą kulkę TCP co 0,2 s. Przyjęty cel to kulka `target` (punkt
+dłoni albo punkt nad obiektem), zdejmowana 2 s po `reached`, `backoff` albo
+`hold`. Kolejność stanów: `accepted`, `moving` (raz na odcinek), potem
+`reached`, `backoff` albo `hold`; w `dry` tylko `accepted`, `hold`.
+
+**Cel dłoni.** Pinch zaznacza punkt, a okulary wysyłają go dopiero, gdy dłoń
+wyjdzie z pudełka — ramię nie rusza w stronę ręki, która jeszcze w nim jest.
+TCP jedzie do punktu, orientacja dowolna. **Cel obiektu** (pinch na znaczniku
+wykrytym z kamer okularów): TCP staje 8 cm nad środkiem obiektu, oś podejścia
+w dół (do 15° odchyłki). Tylko z `--grasp`: zejście do 1 cm nad środek z połową
+prędkości i ostrzejszym strażnikiem, zamknięcie chwytaka, powrót w górę.
+Obiekt bez zmierzonej głębi (`depthMeasured` różne od `true`) dostaje odmowę
+`no depth` — okulary umieszczają go wtedy na zgadywanych 150 cm.
+
+### Łańcuch bezpieczeństwa
+
+Okulary sprawdzają punkt tylko dla kursora. **Bliźniak sprawdza wszystko od
+nowa**, na własnym wątku, w tej kolejności — pierwsza porażka to
+`rejected` z powodem:
+
+| powód | kiedy |
+|---|---|
+| `not connected` | bliźniak bez ramienia |
+| `stop` | aktywny STOP |
+| `busy` | ramię ma inny właściciel (UZBROJONY panel, polityka, fala) albo kierowca akurat cofa ramię lub zamyka chwytak |
+| `not armed` | `real` bez zgody (`--i-know` / pole wyboru w panelu), albo `sim` na backendzie sprzętowym |
+| `untrusted` | cel z niezaufanej rejestracji (bez `--allow-untrusted`) |
+| `session` | sesja celu różna od sesji **ostatniej zaufanej** rejestracji, którą bliźniak dostał od przekaźnika — sama flaga `trusted` z okularów nie wystarcza |
+| `outside volume` | punkt poza pudełkiem zasięgu |
+| `no depth` | cel obiektu bez zmierzonej głębi |
+| `ik` | brak rozwiązania IK do 3 mm (albo oś podejścia ponad 15° od pionu) |
+| `jump` | któryś staw miałby przejechać ponad 45° na jednym odcinku |
+| `collision` | droga od bieżącego rozkazu do celu koliduje ze sceną |
+
+Ruch to własna rampa (smoothstep, 50 Hz, 20°/s na największym stawie) pod
+właścicielem `specs`, z tą samą obsługą własności co `Twin.move`: STOP, Dom,
+Połącz, Rozłącz i każdy inny właściciel odbierają ramię w dowolnym takcie, a gdy
+pętla stoi, stoi też zegar rampy. Nowy cel w czasie jazdy przerywa ją i jedzie
+od bieżącego rozkazu. Po dojechaniu (każdy staw do 2° od celu i stoi) ramię jest
+zwalniane, cel zostaje trzymany. Ugięcie pod ciężarem (w symulacji 8 mm na TCP)
+kierowca poprawia do 4 krokami, najwyżej 5° od rozwiązania IK.
+
+**Strażnik uderzeń** (`twin/impact.py`) słucha każdego taktu pętli:
+
+- **opóźnienie** — staw ponad 6° za rozkazem przez 0,15 s, a przy tym prawie
+  stoi (< 15°/s): rozkaz jedzie, staw nie idzie, więc coś go trzyma (przy
+  zejściu `--grasp`: 3°). Wyzwala na długo przed własnym progiem „głuchy albo
+  zablokowany” backendu A1X (3° przez 1 s → STOP);
+- **wysiłek** — |effort| stawu ponad próg przez 3 kolejne odczyty. A1X: 20
+  jednostek surowych (skala `/600` galaxeo), przy zejściu 12; symulacja:
+  0,8 × `forcerange` napędu (przy zejściu 0,5). Bez odczytów wysiłku działa
+  tylko reguła opóźnienia.
+
+Po wyzwoleniu ramię najpierw trzyma **zmierzoną** pozę (nie dociska dalej),
+potem cofa się z 8°/s do pozy sprzed ok. 0,4 s — najnowszej dobrej próbki
+starszej niż 0,4 s i co najmniej 3° dalej na największym stawie (inaczej
+najstarszej z 3 s bufora). Stan `backoff`, powód `impact lag arm_joint1` albo
+`impact effort arm_joint1`. To nie jest STOP: następny pinch działa. Drugie
+uderzenie w czasie cofania = samo trzymanie i stan `hold`, bez kolejnego
+cofania. Wszystko to jest **pod** nadzorem bliźniaka i własnymi progami backendu,
+nie zamiast nich.
+
+### Pierwsza sesja na sprzęcie — czego się spodziewać
+
+- **Progi wysiłku A1X (20 / 12) to zgadywanie** — nikt ich nie mierzył na tym
+  łączu. Do czasu pomiaru główną ochroną jest reguła opóźnienia. Zmierz effort
+  każdego stawu przy spokojnej jeździe w pudełku (log, `A1XArm.efforts()`)
+  i przy lekkim oporze ręką, potem ustaw `SpecsReach.real_effort_abs` /
+  `real_effort_abs_descend`.
+- **Pierwszy cel po połączeniu dostaje `jump`.** Z domu A1X każdy punkt pudełka
+  wymaga 47–70° na którymś stawie (limit 45°). Najpierw podjedź ramieniem
+  z panelu (uchwyt 3D) nad środek pudełka, potem zdejmij UZBROJONE (inaczej
+  `busy`) i dopiero wtedy pinch.
+- **Rejestracja ma 1–2 cm błędu** (oczekiwane, niezmierzone). W `dry`
+  porównaj kulkę TCP z chwytakiem, zanim cokolwiek ruszy.
+- Kolejność: `dry` (rejestracja i pudełko), potem `real` z ręką na STOP-ie,
+  cele dłoni daleko od przeszkód, jeden na raz. `--grasp` dopiero po kilku
+  czystych `reached` nad obiektami.
+- Kontakt ramienia z ręką albo przedmiotem ma skończyć się `backoff`, nie STOP-em
+  backendu. Jeśli wyzwala STOP „głuche albo zablokowane” zanim strażnik —
+  strażnik jest za łagodny; jeśli `backoff` strzela przy spokojnej jeździe —
+  za ostry.
+
+Kod: `twin/specsreach.py` (kierowca), `twin/reach.py`, `twin/impact.py`,
+`twin/ui/specs_panel.py`; testy: `tests/test_twin_specsreach.py` (udawany
+przekaźnik, symulacja A1X, uderzenie w ścianę z wysiłku i z opóźnienia),
+`tests/test_twin_reach.py`, `tests/test_twin_impact.py`.
+
+---
+
 ## Polecenia
 
 | | |
@@ -633,6 +818,7 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 | `lerobot-twin eval <policy.pt> --rand` | ewaluacja polityki w zwykłym MuJoCo |
 | `lerobot-twin policies` | zapisane polityki i ich wyniki |
 | `lerobot-twin workspace` | co wiadomo o stanowisku |
+| `lerobot-twin specs --mode dry` | cele z okularów Spectacles przez przekaźnik; `--mode sim`, `--mode real --i-know` — [Spectacles](#spectacles-pudełko-zasięgu-i-pinch) |
 
 ```bash
 pytest -q                                          # całość, z renderem i GPU
@@ -835,6 +1021,9 @@ src/lerobot_mp/twin/
 ├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
+├── reach.py         pudełko zasięgu (Spectacles): domyślne ramienia albo ze stanowiska
+├── impact.py        strażnik uderzeń: opóźnienie stawu, wysiłek, poza do cofnięcia
+├── specsreach.py    kierowca Spectacles: przekaźnik → sprawdzenia → rampa z cofaniem
 ├── cli.py           lerobot-twin
 ├── calib/
 │   ├── tags.py        AprilTag 36h11 + korekta półpiksela
@@ -859,7 +1048,8 @@ src/lerobot_mp/twin/
     ├── bridge.py      scena MuJoCo w przeglądarce (węzeł na ciało)
     ├── guide.py       przewodnik: kroki procedury i następna akcja ze stanu panelu
     ├── jobs.py        zadania w tle: trening (proces), kalibracje, identyfikacja
-    └── watch.py       wykrywanie przestawionej kamery
+    ├── watch.py       wykrywanie przestawionej kamery
+    └── specs_panel.py folder Spectacles (zakładka Polityki)
 
 assets/robots/so101/   model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
 assets/robots/a1x/     Galaxea A1X: URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu

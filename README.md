@@ -66,6 +66,10 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.
+- **Cele z okularów Spectacles** — pudełko zasięgu w okularach, pinch wysyła
+  cel, ramię jedzie i cofa się po uderzeniu (`lerobot-twin specs`, folder
+  *Spectacles* w panelu; niesprawdzone na sprzęcie) —
+  [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch).
 
 ## Co przyspiesza
 
