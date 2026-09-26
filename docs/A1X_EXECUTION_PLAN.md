@@ -167,8 +167,8 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **resolve the teacher/policy information mismatch around
-grasp execution before collecting another batch or fitting another policy**.
+Current next action: **inspect the first autonomous grasp/approach divergence of
+the small observation-only imitation candidate before more data or fitting**.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -191,16 +191,35 @@ on matched cases; preserve that improvement. Further clearance work is secondary
 to grasp execution unless new traces change the classification.
 
 The actor sees current joint/command positions, TCP/cube pose and previous action.
-The teacher also uses its waypoint phase/history, initial cube pose, chosen IK
+The original teacher also uses its waypoint phase/history, initial cube pose, chosen IK
 sequence and bilateral simulated touch signals. A recorded closing-state probe
 changes the teacher's gripper label by 0.492 when only its contact branch changes;
 touch signals are absent from policy input. This is a synthetic branch comparison,
 not proof of two physically reachable states with identical observations, and
 does not establish the cause of every failure. Exact teacher reproducibility is
-unproven. Next test whether closing and phase decisions can use shared observable
-signals/history; do not feed simulation-only contact truth into a physical policy
-or collect more ambiguous labels blindly. Then generate a small corrective set
-around the diagnosed grasp and lift failures, followed by autonomous evaluation.
+unproven for that original teacher.
+
+A separate observation-only teacher now uses exactly the actor's 36 inputs and
+fixed robot geometry, with no hidden phase, initial target or simulated touch
+signals. It completes all seven diagnosed cases. A 20-case corrective pilot on
+fresh training seeds 46000-46019 completes 20/20 guarded two-second holds, with
+631 learner actions restricted to close/lift stages. Its matched teacher-only
+control also completes 20/20; both have zero prohibited contacts or rejections.
+All 2,655 labels reproduce exactly when replayed in reverse order from stored
+inputs. These are scripted/assisted results, not autonomous qualification. The
+position-based grip proxy and model constants still require physical validation.
+
+A deliberately small fresh fit on this pilot (16 training / 4 validation episodes,
+3,000 updates in 8.63 s) produces candidate 010: **0/20 autonomous guarded lifts**,
+six guard rejections and fourteen timeouts, with no prohibited contacts or
+numerical failures. It is rejected; candidate 007 remains preserved at 13/20.
+The evaluator, seeds, task and runtime sources match the baseline. Teacher, data
+size and initialization differ, so this is not a causal comparison of teacher
+observability alone. Shared inputs remove explicit hidden label dependencies but
+do not establish learnability, adequate coverage or successful autonomous control.
+Do not scale from the assisted success rate. Inspect the candidate's first wrong
+commands; if refining 007 later, relabel compatible trajectories while preserving
+their original training/validation roles rather than mixing teacher contracts.
 
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
@@ -300,6 +319,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Candidate-007 corrective teaching completes, but both new fits regress | `lift-demos-raised-pilot-002`: 20/20; `lift-demos-raised-002`: 192/200; candidates 008/009: 10/20 and 12/20 guarded versus baseline 13/20 | Preserve baseline; stop scaling data/fitting and audit teacher observability |
 | 2026-09-26 | Conservative imitation refinement and split protection verified | `imitation-refinement-contracts-001.log`: 16 passed; actor restored, normalizer frozen, source untouched, mismatched checkpoints/contracts and reassigned/omitted prior split episodes rejected | Refinement is available but not a demonstrated improvement |
 | 2026-09-26 | Failure/input audit and evaluation separation saved | `lift-failure-audit-002`: identical recorded comparison conditions, four grasp/two lift/one clearance failures, teacher-only state identified, no prior held-out seed use; fixed protocol in `configs/a1x_lift_evaluation.json` | Target grasp decisions and information sufficiency before further training; no PPO/long runs; physical tests deferred |
+| 2026-09-26 | Observation-only teacher and targeted corrective pilot pass | `observable-teacher-pilot-005`: 7/7 diagnosed cases; `lift-demos-observable-001` and matched scripted control: 20/20 each; `lift-observable-label-audit-001.json`: all 2,655 labels exactly reproducible from actor inputs; 34 focused tests pass | Keep the teacher a separate data contract; grasp proxies remain model-specific |
+| 2026-09-26 | Small observable-teacher imitation fit fails autonomous comparison | Candidate 010: 3,000 updates / 8.63 s, 0/20 guarded, six rejections and fourteen timeouts; identical evaluation conditions verified in `lift-observable-candidate-comparison-001.json` | Retain 007 at 13/20; trace first policy divergence before another fit or larger collection; held-out and physical tests remain deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

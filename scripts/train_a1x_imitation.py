@@ -41,11 +41,14 @@ def main():
     evaluation_seeds = set(range(args.eval_seed, args.eval_seed + args.eval_episodes))
     recorded_seeds = set(sum([demos.provenance[k] for k in
                              ("train_seeds", "validation_seeds", "excluded_seeds")], []))
+    root = Path(__file__).resolve().parents[1]
+    held_out = json.loads((root / "configs/a1x_lift_evaluation.json").read_text())["held_out"]["seeds"]
+    if (recorded_seeds | evaluation_seeds) & set(held_out):
+        parser.error("Reserved held-out seeds cannot enter training or automatic development evaluation")
     if evaluation_seeds & recorded_seeds:
         parser.error("Physics evaluation seeds overlap the demonstration collection")
     args.out.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(2)
-    root = Path(__file__).resolve().parents[1]
     report = dict(purpose="simulation imitation candidate; requires independent runtime validation",
                   arguments={k: ([str(p) for p in v] if k == "demonstrations" else
                                  str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},

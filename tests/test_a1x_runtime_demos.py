@@ -101,3 +101,55 @@ def test_corrective_labels_are_teacher_commands_not_executed_learner_actions(run
     assert report["learner_steps"] == len(executed) == len(labels) == len(obs) > 0
     np.testing.assert_array_equal(executed, np.tile(command, (len(executed), 1)))
     assert np.max(np.abs(np.asarray(labels)[:, :6])) > .9
+
+
+def test_observable_teacher_has_no_episode_history_or_scene_contact_inputs(runtime_env):
+    from a1x_observable_teacher import ObservableLiftTeacher
+    teacher = ObservableLiftTeacher()
+    first, _ = runtime_env.reset(seed=50007)
+    expected = teacher.act(first)
+    other, _ = runtime_env.reset(seed=50003)
+    teacher.act(other)
+    runtime_env.scene.data.sensordata[:] = 100  # Hidden physics truth must have no influence.
+    np.testing.assert_array_equal(teacher.act(first), expected)
+    np.testing.assert_array_equal(ObservableLiftTeacher().act(first), expected)
+    for invalid in (np.zeros(35), np.full(36, np.nan), np.full(36, np.inf)):
+        with pytest.raises(ValueError, match='finite A1X lift observation'):
+            teacher.act(invalid)
+
+
+@pytest.mark.parametrize('seed', [50007, 50003])
+def test_observation_only_teacher_completes_guarded_grasp_and_full_hold(runtime_env, seed):
+    from a1x_observable_teacher import observable_trial
+    report, observations, labels = observable_trial(runtime_env, seed)
+    assert report['success'] and report['max_continuous_hold_s'] >= 2 - 1e-8
+    assert not report['collision'] and not report['numerical'] and not report['guard_rejection']
+    assert report['teacher_contract'] == 'a1x-lift-observable-v1'
+    assert len(observations) == len(labels) == report['steps']
+
+
+def test_observable_corrections_reproduce_labels_and_target_close_or_lift(runtime_env):
+    from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
+    teacher = ObservableLiftTeacher()
+    command = np.r_[np.zeros(6), .2].astype(np.float32)
+    learner = SimpleNamespace(act=lambda obs: command.copy())
+    executed = []
+    report, observations, labels = observable_trial(runtime_env, 50007, learner=learner,
+        learner_probability=1, executed_actions=executed)
+    assert not report['success'] and report['corrective_teacher_labels']
+    assert 0 < report['learner_steps'] < len(labels)
+    for obs, label, applied in zip(observations, labels, executed):
+        replayed, decision = teacher.decide(obs)
+        np.testing.assert_array_equal(replayed, label)
+        np.testing.assert_array_equal(applied, command if decision['stage'] in ('close', 'lift') else label)
+
+
+def test_collector_rejects_reserved_holdout_before_creating_output(runtime_env, monkeypatch, tmp_path, capsys):
+    import collect_a1x_lift_demos
+    import sys
+    target = tmp_path / 'must-not-exist'
+    monkeypatch.setattr(sys, 'argv', ['collect', '--out', str(target), '--seed', '51000'])
+    with pytest.raises(SystemExit) as exc:
+        collect_a1x_lift_demos.main()
+    assert exc.value.code == 2 and 'held-out seeds' in capsys.readouterr().err
+    assert not target.exists() and not runtime_env.twin.connected

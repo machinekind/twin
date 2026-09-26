@@ -769,6 +769,98 @@ and delay tests/training follow nominal reliability. Simulated robustness cannot
 validate actual two-camera calibration/perception. Physical work remains deferred;
 the adjacent task's reported table/tool model discrepancy remains unresolved.
 
+### Observation-only teacher and bounded corrective pilot
+
+`scripts/a1x_observable_teacher.py` implements a separate simulation teaching
+contract, `a1x-lift-observable-v1`. Its decisions use exactly the actor's 36 inputs
+plus fixed task/robot geometry. It does not receive scene contacts, initial cube
+pose, waypoint history or elapsed time. Closing continuity uses the already
+observed previous action; grip/holding decisions use measured versus commanded
+opening. These are model-specific proxies, not independent success detection.
+The actual guarded runtime and independent physics monitor still determine
+two-second holds, prohibited contacts and failures.
+
+Short scripted probes retained each unsuccessful attempt:
+
+| Probe under `workspace/validation/` | Cases / successes | Finding |
+|---|---:|---|
+| `observable-teacher-pilot-001` | 2 / 0 | Closing lost its condition and reopened |
+| `observable-teacher-pilot-002` | 2 / 1 | Previous action fixes closing continuity; chasing held-cube XY causes IK drift |
+| `observable-teacher-pilot-003` | 2 / 2 | Preserve commanded XY/orientation during lift; use observed height for vertical correction |
+| `observable-teacher-pilot-004` | 7 / 4 | Measured tracking offsets prevent three approaches from reaching the closing condition |
+| `observable-teacher-pilot-005` | 7 / 7 | Require commanded arrival plus bounded measured error; all seven diagnosed baseline cases hold for 2.020-2.045 s |
+
+The final probe has no guard rejections, prohibited contacts or numerical failures.
+It is scripted development evidence on previously inspected cases, not a new
+learned result or held-out qualification. Original probe sources are retained in
+the artifact directories; the successful control is integrated in the new module.
+
+A fresh training pilot uses seeds 46000-46019, excluded from both development and
+reserved qualification. Learner 007 executes with probability 0.3 only when the
+observation-derived teacher stage is close or lift, targeting the dominant grasp
+and holding failures. Labels always come from the teacher; executed actions are
+recorded separately. Reproduce with a new output directory:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 MUJOCO_GL=disable OMP_NUM_THREADS=2 \
+  /home/kuba/.venvs/a1x-twin/bin/python scripts/collect_a1x_lift_demos.py \
+  --teacher observable --runtime \
+  --learner workspace/validation/lift-imitation-007/policy.pt \
+  --learner-probability .3 --episodes 20 --seed 46000 --seconds 60 \
+  --out workspace/validation/NEW_CORRECTIVE_PILOT
+```
+
+| Pilot | Full guarded holds | Executed learner actions | Elapsed |
+|---|---:|---:|---:|
+| `lift-demos-observable-001` | 20/20 | 631/2,655 | 19.48 s |
+| `lift-observable-paired-teacher-001`, same seeds without learner | 20/20 | 0/2,643 | 18.76 s |
+
+Both have zero prohibited contacts, guard rejections and numerical failures;
+maximum finger coupling error is 1.244 mm. The assisted minimum hold is 2.000 s
+(within floating-point rounding), independently checked at physics substeps.
+`lift-observable-label-audit-001.json` replays every saved label in reverse order:
+all 2,655 are exactly equal. It also verifies the frozen 007 bundle, original
+checkpoint and protocol hashes, and no overlap with development/held-out seeds.
+This establishes reproducible labels for these observations, not adequate data
+coverage or physical observability. Actual calibrated G1 measurement is unverified.
+
+Dataset aggregation now rejects mixed teacher contracts. The collector and
+imitation CLI reject reserved held-out seeds before creating outputs. Existing
+episode-level split and refinement-lineage protections remain unchanged.
+`observable-teacher-contracts-001.log`: 34 focused tests pass in 23.23 s, covering
+history/contact independence, full guarded holds, targeted corrective labels,
+protected seeds and prior imitation behavior.
+
+One fresh imitation diagnostic uses only this pilot: 16 training / 4 validation
+episodes (split seed 23), no exclusions or baseline initialization, 3,000 updates
+with a 60 s ceiling. `lift-imitation-010` finishes fitting in 8.63 s, selects
+update 2,100 with whole-episode validation loss 0.0045898. Its SHA256 is
+`5e08c5f77821f8c84a38fd551a6c56e3582c383f8abc0953aabd7d49afde5bad`.
+
+| Policy | Nominal CPU /20 | Randomized CPU /20 | Autonomous guarded /20 | Rejections | Timeouts |
+|---|---:|---:|---:|---:|---:|
+| 007, retained baseline | 15 | 13 | 13 | 2 | 5 |
+| 010, small observation-only pilot fit | 0 | 2 | 0 | 6 | 14 |
+
+`lift-imitation-runtime-012.json` uses the actual controller without intervention,
+development seeds 50000-50019 and unchanged full-hold/contact criteria. Four guard
+rejections concern table/finger clearance and two concern finger/cube motion.
+All candidate episodes have zero qualifying hold; actual prohibited contacts and
+numerical failures are zero. Bare CPU evaluations have 2/9 collision episodes
+respectively; those exploratory randomized results are not camera robustness.
+`lift-observable-candidate-comparison-001.json` verifies identical evaluation
+seed order, task, evaluator hash and recorded runtime sources. Training-only
+modules differ. Teacher, dataset size and initialization also differ, so the
+score change cannot isolate the effect of removing hidden teacher information.
+
+Candidate 010 is rejected. The improvement is the audited teaching contract and
+successful targeted data collection, not autonomous reliability. Next inspect
+the earliest wrong approach/grasp commands before collecting more data or fitting.
+Any later refinement of 007 must retain its original episode split roles, with
+consistent relabeling if changing teacher; do not mix incompatible label sources.
+The frozen baseline and reserved qualification cases remain untouched. No long
+run, H100 operation, camera-noise campaign or physical test was started.
+
 ### IK retry must preserve gripper state
 
 Source review found that the home-pose IK restart included the home gripper

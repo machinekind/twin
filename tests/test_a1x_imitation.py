@@ -71,6 +71,27 @@ def test_aggregation_rejects_overlapping_seeds_and_mismatched_tasks(tmp_path):
     path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="identical task"):
         load_demonstrations([a, b])
+    manifest["task"]["cube_half"] = .015
+    manifest["teacher_contract"] = "a1x-lift-observable-v1"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="same teacher contract"):
+        load_demonstrations([a, b])
+
+
+@pytest.mark.parametrize('reserved_source', [False, True])
+def test_imitation_runner_protects_reserved_holdout(tmp_path, monkeypatch, capsys, reserved_source):
+    import sys
+    from pathlib import Path
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / 'scripts'))
+    import train_a1x_imitation
+    dataset(tmp_path, offset=51000 if reserved_source else 0)
+    target = tmp_path / 'must-not-exist'
+    monkeypatch.setattr(sys, 'argv', ['train', str(tmp_path), '--out', str(target),
+        '--eval-seed', '50000' if reserved_source else '51000'])
+    with pytest.raises(SystemExit) as exc:
+        train_a1x_imitation.main()
+    assert exc.value.code == 2 and 'held-out seeds' in capsys.readouterr().err
+    assert not target.exists()
 
 
 @pytest.mark.parametrize("problem", ["nan", "out_of_range", "missing_step", "duplicate_seed"])

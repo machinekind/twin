@@ -138,6 +138,8 @@ def trial(env, seed, *, state_triggered=False, synchronized=False, measured_clos
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--teacher", choices=("waypoints", "observable"), default="waypoints",
+                        help="Observable teacher uses only actor inputs; corrective moves target close/lift")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=40000)
     parser.add_argument("--seconds", type=int, default=300)
@@ -160,6 +162,13 @@ def main():
     args = parser.parse_args()
     if not (1 <= args.episodes <= 200 and 1 <= args.seconds <= 600):
         parser.error("Limits: 200 episodes, 600 seconds")
+    root = Path(__file__).resolve().parents[1]
+    held_out = json.loads((root / "configs/a1x_lift_evaluation.json").read_text())["held_out"]["seeds"]
+    if set(range(args.seed, args.seed + args.episodes)) & set(held_out):
+        parser.error("Reserved held-out seeds cannot supply demonstrations")
+    if args.teacher == "observable" and (not args.runtime or args.state_triggered or args.synchronized
+            or args.measured_close or args.lift_rate != 1 or args.grasp_offset_mm != 0):
+        parser.error("Observable teacher requires --runtime and uses its own recorded controller parameters")
     if not (0 < args.lift_rate <= 1) or (args.lift_rate != 1 and not args.synchronized):
         parser.error("Lift rate must be in (0, 1] and requires --synchronized")
     task = make_task("lift", A1X)
@@ -169,21 +178,29 @@ def main():
     learner = None
     if args.learner:
         from lerobot_mp.twin.rl.policy import Policy
-        if not (args.runtime and args.state_triggered and 0 < args.learner_probability <= .5):
-            parser.error("Corrective collection requires --runtime, --state-triggered and learner probability in (0, .5]")
+        if not (args.runtime and (args.state_triggered or args.teacher == "observable")
+                and 0 < args.learner_probability <= .5):
+            parser.error("Corrective collection requires --runtime, a state-triggered or observable teacher, "
+                         "and learner probability in (0, .5]")
         learner = Policy.load(args.learner)
         if (learner.meta.robot != "a1x" or asdict(learner.task) != asdict(task)
                 or not learner.meta.randomization.get("fold_yaw", False)):
             parser.error("Learner must match the A1X lift task and folded-yaw observation contract")
     args.out.mkdir(parents=True, exist_ok=False)
-    root = Path(__file__).resolve().parents[1]
+    teacher = None
+    if args.teacher == "observable":
+        from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
+        teacher = ObservableLiftTeacher()
     manifest = dict(purpose="teacher-assisted simulation examples; not autonomous learned or physical results",
-                    controller="state-triggered waypoints" if args.state_triggered else "timed waypoints",
+                    controller="observation-only feedback" if teacher else
+                               "state-triggered waypoints" if args.state_triggered else "timed waypoints",
+                    teacher_contract=teacher.contract if teacher else "legacy-waypoints",
+                    learner_phases=["close", "lift"] if teacher else "all phases",
                     execution_path="guarded runtime simulation" if args.runtime else "bare CPU physics",
-                    synchronized=args.synchronized,
-                    measured_close=args.measured_close,
-                    lift_rate=args.lift_rate,
-                    grasp_offset_m=args.grasp_offset_mm / 1000,
+                    synchronized=True if teacher else args.synchronized,
+                    measured_close=True if teacher else args.measured_close,
+                    lift_rate=.25 if teacher else args.lift_rate,
+                    grasp_offset_m=.005 if teacher else args.grasp_offset_mm / 1000,
                     learner=str(args.learner) if learner else None,
                     learner_sha256=hashlib.sha256(args.learner.read_bytes()).hexdigest() if learner else None,
                     learner_probability=args.learner_probability if learner else 0.0,
@@ -196,6 +213,9 @@ def main():
     if args.runtime:
         manifest["helper_sha256"] = {name: hashlib.sha256((root / "scripts" / name).read_bytes()).hexdigest()
                                     for name in ("a1x_runtime_env.py", "evaluate_a1x_runtime.py")}
+        if teacher:
+            manifest["helper_sha256"]["a1x_observable_teacher.py"] = hashlib.sha256(
+                (root / "scripts/a1x_observable_teacher.py").read_bytes()).hexdigest()
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if args.runtime:
         from a1x_runtime_env import RuntimeLiftEnv
@@ -211,11 +231,15 @@ def main():
             if time.monotonic() - started >= args.seconds:
                 break
             executed = []
-            report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
-                                    synchronized=args.synchronized, measured_close=args.measured_close,
-                                    lift_rate=args.lift_rate, learner=learner,
-                                    learner_probability=args.learner_probability, executed_actions=executed,
-                                    grasp_offset_m=args.grasp_offset_mm / 1000)
+            if teacher:
+                report, obs, act = observable_trial(env, seed, teacher=teacher, learner=learner,
+                    learner_probability=args.learner_probability, executed_actions=executed)
+            else:
+                report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
+                                        synchronized=args.synchronized, measured_close=args.measured_close,
+                                        lift_rate=args.lift_rate, learner=learner,
+                                        learner_probability=args.learner_probability, executed_actions=executed,
+                                        grasp_offset_m=args.grasp_offset_mm / 1000)
             results.append(report)
             np.savez_compressed(args.out / f"seed-{seed}.npz", obs=np.asarray(obs, np.float32),
                                 actions=np.asarray(act, np.float32), executed_actions=np.asarray(executed, np.float32))

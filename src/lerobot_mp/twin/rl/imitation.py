@@ -49,11 +49,14 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
         for data in sources:
             if data.task != first.task or data.randomization != first.randomization:
                 raise ValueError("Demonstration sources must have identical task and observation contracts")
+            if data.provenance["teacher_contract"] != first.provenance["teacher_contract"]:
+                raise ValueError("Demonstration sources must use the same teacher contract")
             recorded = set(sum([data.provenance[k] for k in keys], []))
             if seen & recorded:
                 raise ValueError("Episode seeds overlap across demonstration sources")
             seen.update(recorded)
         provenance = dict(sources=[d.provenance for d in sources], split_seed=seed,
+                          teacher_contract=first.provenance["teacher_contract"],
                           **{key: sum([d.provenance[key] for d in sources], []) for key in keys})
         return Demonstrations(first.task, first.randomization,
             *[np.concatenate([getattr(d, key) for d in sources]) for key in
@@ -93,6 +96,7 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
     for name in ("manifest.json", "report.json"):
         hashes[name] = hashlib.sha256((path / name).read_bytes()).hexdigest()
     provenance = dict(directory=str(path), file_sha256=hashes, split_seed=seed,
+                      teacher_contract=manifest.get("teacher_contract", "legacy-waypoints"),
                       train_seeds=[x[0] for x in train], validation_seeds=[x[0] for x in valid],
                       excluded_seeds=excluded)
     return Demonstrations(manifest["task"], manifest["randomization"],
