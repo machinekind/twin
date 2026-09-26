@@ -289,8 +289,7 @@ Backend `a1x` rozmawia z ramieniem po CAN-FD przez pakiet `galaxeo`
 (protokół i łącze, repozytorium galaxeo-manipulators):
 
 ```bash
-pip install -e ".[twin,a1x,dev]" -c constraints.txt   # wymaga scalonej gałęzi `pkg` w galaxeo-manipulators
-# do czasu scalenia: ".[twin,dev]" i pip install -e ../galaxeo-manipulators   (klon na gałęzi pkg)
+pip install -e ".[twin,a1x,dev]" -c constraints.txt   # galaxeo z gita razem z galaxeo.arm
 # macOS (dongiel XCAN): dodatkowo pip install pyusb i brew install libusb
 # Windows (PCAN): dodatkowo pip install python-can
 lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji (istniejącego nie nadpisze bez --force)

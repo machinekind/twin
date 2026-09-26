@@ -363,17 +363,16 @@ sprawdzenie, zanim panel się połączy.
 pip install -e ".[twin,a1x,dev]" -c constraints.txt
 ```
 
-Extra `a1x` pobiera pakiet `galaxeo` z gita (`galaxeo-manipulators@main`).
-**Pakiet jest na razie tylko na gałęzi `pkg`** — `main` nie ma jeszcze
-`pyproject.toml`, więc dopóki `pkg` nie jest scalona, instalacja z `.[a1x]`
-się nie uda (zainstaluj bez `a1x`). Do tego czasu zainstaluj go z lokalnego
-klonu na gałęzi `pkg`:
+Extra `a1x` pobiera pakiet `galaxeo` z gita (`galaxeo-manipulators@main`) razem
+z jego extra `arm` (numpy, mujoco): protokół i łącze CAN oraz ramię jako biblioteka
+(`galaxeo.arm`: model, IK, kolizje, pudełko zasięgu, ruch ze strażnikiem uderzeń).
+Do pracy nad oboma repozytoriami naraz wygodniej z lokalnego klonu:
 
 ```bash
-pip install -e ../galaxeo-manipulators            # Linux: sama biblioteka standardowa
-pip install -e "../galaxeo-manipulators[xcan]"    # macOS: + pyusb (i brew install libusb)
-pip install -e "../galaxeo-manipulators[pcan]"    # Windows: + python-can
-python -c "from galaxeo import protocol; protocol.selftest(); import lerobot_mp.robot.a1x"
+pip install -e "../galaxeo-manipulators[arm]"         # Linux
+pip install -e "../galaxeo-manipulators[arm,xcan]"    # macOS: + pyusb (i brew install libusb)
+pip install -e "../galaxeo-manipulators[arm,pcan]"    # Windows: + python-can
+python -c "from galaxeo import protocol; protocol.selftest(); from galaxeo.arm import Arm; import lerobot_mp.robot.a1x"
 ```
 
 Extra `a1x` nie dociąga `pyusb` ani `python-can` — na macOS i Windows doinstaluj

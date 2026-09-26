@@ -258,9 +258,6 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
    przychodzi z pakietem `galaxeo` (extra `a1x`) i jest potrzebny tylko na macOS. Do
    decyzji: licencja galaxeo-manipulators (brak pliku licencji) i czy moduł GPL zostaje
    w pakiecie importowanym z projektu Apache-2.0.
-7. **Scalenie gałęzi `pkg` w galaxeo-manipulators** — extra `a1x` wskazuje
-   `galaxeo-manipulators@main`, a pakiet `galaxeo` jest na razie tylko na `pkg`. Do
-   scalenia instalacja z lokalnego klonu (`pip install -e ../galaxeo-manipulators`).
 
 ---
 
