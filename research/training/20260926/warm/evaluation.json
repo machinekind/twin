@@ -1,0 +1,1716 @@
+{
+  "policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-002-warm\\policy.pt",
+  "seed": 30000,
+  "scale": 1.0,
+  "requested_episodes": 5,
+  "complete": true,
+  "cases": {
+    "nominal/cube": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 43.6,
+      "command_jerk_rms": 50.24463648471655,
+      "actual_jerk_rms": 217.02884421246094,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 106.55962429102209,
+          "velocity_rms": 0.7127146400987071,
+          "acceleration_rms": 6.4183809483099825,
+          "jerk_rms": 221.5674980716734,
+          "command_jerk_rms": 49.909151658811055,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 40,
+          "height_mm": 78.46418388080485,
+          "velocity_rms": 0.6560531783456702,
+          "acceleration_rms": 5.988647199316976,
+          "jerk_rms": 211.62359101085192,
+          "command_jerk_rms": 31.467806899793505,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 60,
+          "height_mm": 98.35976641332181,
+          "velocity_rms": 0.6685169525583192,
+          "acceleration_rms": 6.9316124109357204,
+          "jerk_rms": 231.07502264259156,
+          "command_jerk_rms": 60.38467486131291,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 43,
+          "height_mm": 96.57855225734468,
+          "velocity_rms": 0.7220629088189585,
+          "acceleration_rms": 7.186091495894515,
+          "jerk_rms": 231.1735656456873,
+          "command_jerk_rms": 67.264197163235,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 37,
+          "height_mm": 94.38606023192284,
+          "velocity_rms": 0.7067859971835185,
+          "acceleration_rms": 5.730110531755588,
+          "jerk_rms": 189.70454369150065,
+          "command_jerk_rms": 42.19735184043028,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/flat": {
+      "episodes": 5,
+      "finished": 2,
+      "success": 0.4,
+      "mean_steps": 161.8,
+      "command_jerk_rms": 71.89823182933152,
+      "actual_jerk_rms": 277.005495980143,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.10893408273287587,
+          "velocity_rms": 0.6622774253591203,
+          "acceleration_rms": 9.825140289101318,
+          "jerk_rms": 315.23836966272506,
+          "command_jerk_rms": 65.19519287079821,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 56,
+          "height_mm": 80.38780839347383,
+          "velocity_rms": 0.6394472358082307,
+          "acceleration_rms": 6.743412720197635,
+          "jerk_rms": 219.43196145176896,
+          "command_jerk_rms": 54.506825097289685,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 153,
+          "height_mm": 105.04380951641444,
+          "velocity_rms": 0.6389116552966487,
+          "acceleration_rms": 8.675422743332676,
+          "jerk_rms": 280.2327229604148,
+          "command_jerk_rms": 78.35911228270137,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.11647775658620627,
+          "velocity_rms": 0.7026610925279789,
+          "acceleration_rms": 9.173344914563703,
+          "jerk_rms": 264.7196802513401,
+          "command_jerk_rms": 90.46712740358142,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.12007456857494447,
+          "velocity_rms": 0.6652426759037359,
+          "acceleration_rms": 9.545780519000104,
+          "jerk_rms": 305.40474557446606,
+          "command_jerk_rms": 70.96290149228689,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/triangle": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 39.0,
+      "command_jerk_rms": 43.30716249527308,
+      "actual_jerk_rms": 222.30383361358614,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 40,
+          "height_mm": 95.46281204910393,
+          "velocity_rms": 0.7324014564431954,
+          "acceleration_rms": 7.508738844469429,
+          "jerk_rms": 250.49320114844548,
+          "command_jerk_rms": 52.09752762779643,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 44,
+          "height_mm": 73.08527792734304,
+          "velocity_rms": 0.6438034327931729,
+          "acceleration_rms": 6.135664695637974,
+          "jerk_rms": 216.04534589078986,
+          "command_jerk_rms": 38.75256041077449,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 79.90523324673107,
+          "velocity_rms": 0.7174995889180413,
+          "acceleration_rms": 6.875680929543929,
+          "jerk_rms": 239.2151319605528,
+          "command_jerk_rms": 47.226265210898575,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 35,
+          "height_mm": 77.38931035604104,
+          "velocity_rms": 0.70426707154896,
+          "acceleration_rms": 6.632951674272673,
+          "jerk_rms": 222.77907867793957,
+          "command_jerk_rms": 31.938392934055145,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 85.44067228390799,
+          "velocity_rms": 0.6766665814471142,
+          "acceleration_rms": 5.530460822985003,
+          "jerk_rms": 182.98641039020282,
+          "command_jerk_rms": 46.52106629284077,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/cylinder": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 36.4,
+      "command_jerk_rms": 43.53295628602776,
+      "actual_jerk_rms": 213.2201979231203,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 101.55683836735905,
+          "velocity_rms": 0.7267063858930922,
+          "acceleration_rms": 6.082989972620803,
+          "jerk_rms": 203.4345472302866,
+          "command_jerk_rms": 49.735075585914856,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 39,
+          "height_mm": 85.45716148294822,
+          "velocity_rms": 0.6903628099583234,
+          "acceleration_rms": 5.5872145498216925,
+          "jerk_rms": 202.56906778140308,
+          "command_jerk_rms": 32.97598977440218,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 36,
+          "height_mm": 90.09726771108548,
+          "velocity_rms": 0.7263096699464267,
+          "acceleration_rms": 5.966665431951715,
+          "jerk_rms": 204.77603519887396,
+          "command_jerk_rms": 42.83589116493912,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 31,
+          "height_mm": 89.07376950624912,
+          "velocity_rms": 0.7520999854609236,
+          "acceleration_rms": 5.686152762799362,
+          "jerk_rms": 202.6294192005814,
+          "command_jerk_rms": 41.551763842122114,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 93.90399618878352,
+          "velocity_rms": 0.7458625349850304,
+          "acceleration_rms": 7.37068716345154,
+          "jerk_rms": 252.69192020445647,
+          "command_jerk_rms": 50.56606106276056,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/pliers": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 94.2,
+      "command_jerk_rms": 59.647967692934934,
+      "actual_jerk_rms": 279.6763139581998,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 69,
+          "height_mm": 67.65492300176254,
+          "velocity_rms": 0.7544010850194894,
+          "acceleration_rms": 9.774483331037242,
+          "jerk_rms": 303.10439547855907,
+          "command_jerk_rms": 48.74466475210293,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 117,
+          "height_mm": 82.03873675951013,
+          "velocity_rms": 0.544679104517132,
+          "acceleration_rms": 6.208084651657449,
+          "jerk_rms": 206.87108500499497,
+          "command_jerk_rms": 49.64552924452029,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 92,
+          "height_mm": 89.80387897194836,
+          "velocity_rms": 0.6738385842147124,
+          "acceleration_rms": 8.694583012946651,
+          "jerk_rms": 279.7218980409153,
+          "command_jerk_rms": 64.09251018126473,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 103,
+          "height_mm": 96.85909277592486,
+          "velocity_rms": 0.7348417985918438,
+          "acceleration_rms": 9.611240999054235,
+          "jerk_rms": 285.56904975376347,
+          "command_jerk_rms": 78.73420565416019,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 90,
+          "height_mm": 101.28854106595453,
+          "velocity_rms": 0.7328410070352558,
+          "acceleration_rms": 10.305295942967097,
+          "jerk_rms": 323.11514151276634,
+          "command_jerk_rms": 57.02292863262652,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/screw": {
+      "episodes": 5,
+      "finished": 1,
+      "success": 0.2,
+      "mean_steps": 183.2,
+      "command_jerk_rms": 68.49808774428456,
+      "actual_jerk_rms": 254.24270360625042,
+      "limit_ticks_per_episode": 5.2,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": false,
+          "steps": 200,
+          "height_mm": 115.15228209695016,
+          "velocity_rms": 0.6870639126421278,
+          "acceleration_rms": 8.81665610800594,
+          "jerk_rms": 280.19979251523023,
+          "command_jerk_rms": 75.98940814486042,
+          "limit_ticks": 26,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": false,
+          "steps": 200,
+          "height_mm": 97.84694986431447,
+          "velocity_rms": 0.6349456125011299,
+          "acceleration_rms": 7.284389777872362,
+          "jerk_rms": 236.85804890277015,
+          "command_jerk_rms": 69.92743939188797,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -4.802169679378774,
+          "velocity_rms": 0.6106737360570933,
+          "acceleration_rms": 7.485117078919462,
+          "jerk_rms": 243.75155277990103,
+          "command_jerk_rms": 58.7277079044296,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 116,
+          "height_mm": 92.72286113451429,
+          "velocity_rms": 0.6369262317918946,
+          "acceleration_rms": 8.609875568178015,
+          "jerk_rms": 267.8542479237064,
+          "command_jerk_rms": 69.68660095101512,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.34477546072807924,
+          "velocity_rms": 0.5685454465039098,
+          "acceleration_rms": 7.379351548572852,
+          "jerk_rms": 242.5498759096442,
+          "command_jerk_rms": 68.15928232922977,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/nut": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 38.2,
+      "command_jerk_rms": 42.036891907689835,
+      "actual_jerk_rms": 244.61214397630616,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 40,
+          "height_mm": 92.39815154587185,
+          "velocity_rms": 0.7239078086056216,
+          "acceleration_rms": 7.388171012988733,
+          "jerk_rms": 255.01920971365777,
+          "command_jerk_rms": 48.66889113254991,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 43,
+          "height_mm": 72.4984801384152,
+          "velocity_rms": 0.640899408732886,
+          "acceleration_rms": 5.730226907727014,
+          "jerk_rms": 197.15235730293125,
+          "command_jerk_rms": 34.28664026453655,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 37,
+          "height_mm": 89.37223203578374,
+          "velocity_rms": 0.7475810351214242,
+          "acceleration_rms": 7.677162797641848,
+          "jerk_rms": 261.49086670333185,
+          "command_jerk_rms": 49.90155895452842,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 88.62235563381675,
+          "velocity_rms": 0.7340157723409446,
+          "acceleration_rms": 7.3601441608510045,
+          "jerk_rms": 254.81908687564325,
+          "command_jerk_rms": 37.0136990963162,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 37,
+          "height_mm": 92.71335699950647,
+          "velocity_rms": 0.7165408924775739,
+          "acceleration_rms": 7.5088663348777605,
+          "jerk_rms": 254.57919928596644,
+          "command_jerk_rms": 40.313670090518094,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/washer": {
+      "episodes": 5,
+      "finished": 4,
+      "success": 0.8,
+      "mean_steps": 107.6,
+      "command_jerk_rms": 65.98188387498722,
+      "actual_jerk_rms": 264.6755623384946,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 170,
+          "height_mm": 126.87033185685326,
+          "velocity_rms": 0.6205123701760364,
+          "acceleration_rms": 8.667868391973222,
+          "jerk_rms": 285.2744117765928,
+          "command_jerk_rms": 66.80405080360445,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": false,
+          "steps": 200,
+          "height_mm": 0.5959547765821311,
+          "velocity_rms": 0.60830508199633,
+          "acceleration_rms": 8.505230027827412,
+          "jerk_rms": 266.35176863868924,
+          "command_jerk_rms": 69.87293193784,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 54,
+          "height_mm": 79.45863863529328,
+          "velocity_rms": 0.74576625319941,
+          "acceleration_rms": 8.889251362817998,
+          "jerk_rms": 287.82625478993543,
+          "command_jerk_rms": 85.22110389273871,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 104.95611093059536,
+          "velocity_rms": 0.7483641150408212,
+          "acceleration_rms": 6.552786427533427,
+          "jerk_rms": 215.23763030620162,
+          "command_jerk_rms": 39.03467878026928,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 80,
+          "height_mm": 101.65195834459207,
+          "velocity_rms": 0.6852290916400253,
+          "acceleration_rms": 8.28850314000318,
+          "jerk_rms": 268.687746181054,
+          "command_jerk_rms": 68.97665396048362,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/l_bracket": {
+      "episodes": 5,
+      "finished": 4,
+      "success": 0.8,
+      "mean_steps": 91.2,
+      "command_jerk_rms": 62.90498593501813,
+      "actual_jerk_rms": 262.92755792237045,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.05452350177841906,
+          "velocity_rms": 0.6844819519974817,
+          "acceleration_rms": 9.105680425318067,
+          "jerk_rms": 276.06874780817895,
+          "command_jerk_rms": 70.62575570911243,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 43,
+          "height_mm": 96.68650014025287,
+          "velocity_rms": 0.6715352526836447,
+          "acceleration_rms": 6.184077665399907,
+          "jerk_rms": 205.14863721856167,
+          "command_jerk_rms": 35.38094468851082,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 51,
+          "height_mm": 113.26054133724398,
+          "velocity_rms": 0.7396106185035192,
+          "acceleration_rms": 8.510236013549799,
+          "jerk_rms": 287.9533731114238,
+          "command_jerk_rms": 74.4860071667686,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 110,
+          "height_mm": 109.0828818904708,
+          "velocity_rms": 0.6682980814461862,
+          "acceleration_rms": 9.307311698890983,
+          "jerk_rms": 295.88112580519623,
+          "command_jerk_rms": 71.55250523082736,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 52,
+          "height_mm": 123.39100840006014,
+          "velocity_rms": 0.6953339152385222,
+          "acceleration_rms": 7.487852829581481,
+          "jerk_rms": 249.58590566849148,
+          "command_jerk_rms": 62.47971687987147,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/t_bracket": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 42.4,
+      "command_jerk_rms": 48.55791335214569,
+      "actual_jerk_rms": 230.57078535875607,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 39,
+          "height_mm": 104.86740030675072,
+          "velocity_rms": 0.7367010214363527,
+          "acceleration_rms": 7.011988528165789,
+          "jerk_rms": 229.80782831379227,
+          "command_jerk_rms": 48.38472290052183,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 48,
+          "height_mm": 103.72987783279657,
+          "velocity_rms": 0.6780764268562931,
+          "acceleration_rms": 6.372570558911082,
+          "jerk_rms": 221.25147374947522,
+          "command_jerk_rms": 46.41218654761579,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 39,
+          "height_mm": 95.11601561274419,
+          "velocity_rms": 0.7259901569772572,
+          "acceleration_rms": 6.723022147654136,
+          "jerk_rms": 229.23996509692768,
+          "command_jerk_rms": 49.37498432582649,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 46,
+          "height_mm": 101.09653242898428,
+          "velocity_rms": 0.716023861450574,
+          "acceleration_rms": 6.97294880396463,
+          "jerk_rms": 222.87819407390577,
+          "command_jerk_rms": 59.497949306092025,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 40,
+          "height_mm": 99.22664825314442,
+          "velocity_rms": 0.6875829293211237,
+          "acceleration_rms": 7.248356805433092,
+          "jerk_rms": 249.67646555967934,
+          "command_jerk_rms": 39.11972368067235,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/capsule": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 54.8,
+      "command_jerk_rms": 53.532828439970714,
+      "actual_jerk_rms": 228.07286198688934,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 69,
+          "height_mm": 93.93144899905334,
+          "velocity_rms": 0.69091809420973,
+          "acceleration_rms": 6.984989732493022,
+          "jerk_rms": 226.13295666613143,
+          "command_jerk_rms": 55.13346855341766,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 41,
+          "height_mm": 83.39673667842473,
+          "velocity_rms": 0.6525569929356828,
+          "acceleration_rms": 5.817719271384526,
+          "jerk_rms": 202.93876727367882,
+          "command_jerk_rms": 32.24047643379312,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 67,
+          "height_mm": 83.05116786723998,
+          "velocity_rms": 0.712576796350309,
+          "acceleration_rms": 7.724081460575478,
+          "jerk_rms": 252.55942392531966,
+          "command_jerk_rms": 55.27400613333041,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 59,
+          "height_mm": 101.31885130473111,
+          "velocity_rms": 0.6907876201535625,
+          "acceleration_rms": 6.398714566095115,
+          "jerk_rms": 215.06010805201376,
+          "command_jerk_rms": 57.74439496754146,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 110.95462815837553,
+          "velocity_rms": 0.7580052075108724,
+          "acceleration_rms": 7.465054746805153,
+          "jerk_rms": 243.6730540173031,
+          "command_jerk_rms": 67.27179611177091,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "nominal/wedge": {
+      "episodes": 5,
+      "finished": 3,
+      "success": 0.6,
+      "mean_steps": 137.8,
+      "command_jerk_rms": 67.93192270578126,
+      "actual_jerk_rms": 240.6844591168824,
+      "limit_ticks_per_episode": 5.4,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.22606282532829622,
+          "velocity_rms": 0.5784189486503211,
+          "acceleration_rms": 7.714375613939263,
+          "jerk_rms": 242.86660543134855,
+          "command_jerk_rms": 64.62376672339391,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 75,
+          "height_mm": 61.82278348094649,
+          "velocity_rms": 0.48969025570753066,
+          "acceleration_rms": 4.343402498745391,
+          "jerk_rms": 152.40558634204314,
+          "command_jerk_rms": 22.486481945625005,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.14219061876098898,
+          "velocity_rms": 0.7016556011281867,
+          "acceleration_rms": 10.33800278806028,
+          "jerk_rms": 322.7337726287064,
+          "command_jerk_rms": 112.50165442790023,
+          "limit_ticks": 27,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 63,
+          "height_mm": 90.31823324447168,
+          "velocity_rms": 0.651688522283728,
+          "acceleration_rms": 7.213513284254127,
+          "jerk_rms": 226.88195586155166,
+          "command_jerk_rms": 72.95031446148994,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 151,
+          "height_mm": 111.37778767583622,
+          "velocity_rms": 0.5920132888493315,
+          "acceleration_rms": 8.041489567091235,
+          "jerk_rms": 258.53437532076236,
+          "command_jerk_rms": 67.09739597049719,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/cube": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 34.4,
+      "command_jerk_rms": 60.247767852520475,
+      "actual_jerk_rms": 195.83783347372142,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 35,
+          "height_mm": 86.40783834888761,
+          "velocity_rms": 0.7367316087003212,
+          "acceleration_rms": 7.006183250650271,
+          "jerk_rms": 228.8876411839021,
+          "command_jerk_rms": 65.85156056197654,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 31,
+          "height_mm": 93.49181445062798,
+          "velocity_rms": 0.6905366904313043,
+          "acceleration_rms": 5.9572910924460665,
+          "jerk_rms": 187.09923583619104,
+          "command_jerk_rms": 65.46444723946746,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 35,
+          "height_mm": 87.49356017733383,
+          "velocity_rms": 0.6813580381102812,
+          "acceleration_rms": 5.284373479034861,
+          "jerk_rms": 184.30193778896958,
+          "command_jerk_rms": 55.40025944162129,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 38,
+          "height_mm": 75.80313428267449,
+          "velocity_rms": 0.5907949585275585,
+          "acceleration_rms": 4.9892629529552455,
+          "jerk_rms": 175.823408026389,
+          "command_jerk_rms": 49.58980054597699,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 33,
+          "height_mm": 86.94052027817844,
+          "velocity_rms": 0.6832372716372327,
+          "acceleration_rms": 5.907886768396487,
+          "jerk_rms": 203.07694453315537,
+          "command_jerk_rms": 64.93277147356005,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/flat": {
+      "episodes": 5,
+      "finished": 4,
+      "success": 0.8,
+      "mean_steps": 152.0,
+      "command_jerk_rms": 91.39252606449057,
+      "actual_jerk_rms": 242.5272538175488,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 176,
+          "height_mm": 121.60648608579808,
+          "velocity_rms": 0.6872181688217904,
+          "acceleration_rms": 8.118277340372467,
+          "jerk_rms": 238.88586176782965,
+          "command_jerk_rms": 81.79845475070644,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 119,
+          "height_mm": 104.51156683423426,
+          "velocity_rms": 0.6374782811235407,
+          "acceleration_rms": 7.896829426621614,
+          "jerk_rms": 246.2563266847435,
+          "command_jerk_rms": 96.09329875156874,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 182,
+          "height_mm": 97.61239680838827,
+          "velocity_rms": 0.6239955165468312,
+          "acceleration_rms": 7.180409720077188,
+          "jerk_rms": 215.35371032834755,
+          "command_jerk_rms": 84.40659081308769,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": false,
+          "steps": 200,
+          "height_mm": 18.93973006926651,
+          "velocity_rms": 0.6340171972004452,
+          "acceleration_rms": 8.928660833638947,
+          "jerk_rms": 277.72414192866796,
+          "command_jerk_rms": 105.64569766494887,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 2
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 83,
+          "height_mm": 108.65092550313021,
+          "velocity_rms": 0.6570136800319013,
+          "acceleration_rms": 7.691866228187853,
+          "jerk_rms": 234.41622837815538,
+          "command_jerk_rms": 89.01858834214099,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/triangle": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 51.4,
+      "command_jerk_rms": 82.30015066916528,
+      "actual_jerk_rms": 239.94117757551516,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 35,
+          "height_mm": 83.30597933453053,
+          "velocity_rms": 0.7880642754701653,
+          "acceleration_rms": 8.341427650201275,
+          "jerk_rms": 274.4333826851649,
+          "command_jerk_rms": 70.4036471788221,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 53,
+          "height_mm": 86.96461419125379,
+          "velocity_rms": 0.6948643290759975,
+          "acceleration_rms": 7.64865470054951,
+          "jerk_rms": 224.6182132990947,
+          "command_jerk_rms": 100.10493668123208,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 88,
+          "height_mm": 91.33461535143724,
+          "velocity_rms": 0.6707081524421411,
+          "acceleration_rms": 6.821816442399557,
+          "jerk_rms": 208.33153727167652,
+          "command_jerk_rms": 88.5728042066944,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 48,
+          "height_mm": 91.94194921126342,
+          "velocity_rms": 0.6375821603751121,
+          "acceleration_rms": 7.609936827229947,
+          "jerk_rms": 256.05793268040486,
+          "command_jerk_rms": 72.21638198249344,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 33,
+          "height_mm": 85.41408230786062,
+          "velocity_rms": 0.7305522594411175,
+          "acceleration_rms": 6.856551908661114,
+          "jerk_rms": 236.26482194123486,
+          "command_jerk_rms": 80.20298329658435,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/cylinder": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 34.2,
+      "command_jerk_rms": 61.1310488679927,
+      "actual_jerk_rms": 206.26389462052913,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 33,
+          "height_mm": 95.14351693901673,
+          "velocity_rms": 0.7711480751298511,
+          "acceleration_rms": 7.487290115415237,
+          "jerk_rms": 257.5565021384635,
+          "command_jerk_rms": 65.52789890645313,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 32,
+          "height_mm": 83.1149210679758,
+          "velocity_rms": 0.6871836384921093,
+          "acceleration_rms": 5.465107250963897,
+          "jerk_rms": 173.78380297962906,
+          "command_jerk_rms": 63.54228622474378,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 36,
+          "height_mm": 73.60309869212463,
+          "velocity_rms": 0.6837617298010762,
+          "acceleration_rms": 4.320980004550945,
+          "jerk_rms": 147.60285027369426,
+          "command_jerk_rms": 52.909166086255034,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 37,
+          "height_mm": 72.73440015596994,
+          "velocity_rms": 0.6133006422695751,
+          "acceleration_rms": 6.566253363375854,
+          "jerk_rms": 243.06349428306837,
+          "command_jerk_rms": 55.79759015531708,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 33,
+          "height_mm": 80.38448911826572,
+          "velocity_rms": 0.6950767172391614,
+          "acceleration_rms": 5.9089010118225875,
+          "jerk_rms": 209.31282342779042,
+          "command_jerk_rms": 67.87830296719447,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/pliers": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 68.4,
+      "command_jerk_rms": 80.29046184642473,
+      "actual_jerk_rms": 240.96245416570338,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 94.80988800392927,
+          "velocity_rms": 0.7989596779588203,
+          "acceleration_rms": 8.565234911682465,
+          "jerk_rms": 279.5266306919601,
+          "command_jerk_rms": 72.46478946325489,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 113,
+          "height_mm": 85.12690325388247,
+          "velocity_rms": 0.624795758706582,
+          "acceleration_rms": 7.9820319630379934,
+          "jerk_rms": 240.74687516706783,
+          "command_jerk_rms": 84.2612693226846,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 78,
+          "height_mm": 83.40920921909266,
+          "velocity_rms": 0.6640167631211388,
+          "acceleration_rms": 6.460439859722741,
+          "jerk_rms": 208.20606648508848,
+          "command_jerk_rms": 73.90859537484454,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 82,
+          "height_mm": 96.25019030199933,
+          "velocity_rms": 0.6144673080009073,
+          "acceleration_rms": 7.796280140579442,
+          "jerk_rms": 256.21709242606045,
+          "command_jerk_rms": 91.53615627667467,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 35,
+          "height_mm": 71.73362961031664,
+          "velocity_rms": 0.6910697764621394,
+          "acceleration_rms": 6.339751886872339,
+          "jerk_rms": 220.11560605833984,
+          "command_jerk_rms": 79.28149879466497,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/screw": {
+      "episodes": 5,
+      "finished": 2,
+      "success": 0.4,
+      "mean_steps": 170.8,
+      "command_jerk_rms": 102.262042913074,
+      "actual_jerk_rms": 252.94647299565386,
+      "limit_ticks_per_episode": 3.6,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 106,
+          "height_mm": 108.370784848958,
+          "velocity_rms": 0.6876497559824428,
+          "acceleration_rms": 7.315450773564804,
+          "jerk_rms": 229.26884046971855,
+          "command_jerk_rms": 78.36503079402664,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.28725801606023593,
+          "velocity_rms": 0.7199638116323115,
+          "acceleration_rms": 9.29389380060741,
+          "jerk_rms": 290.70003007532466,
+          "command_jerk_rms": 136.570623422973,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.39113821868333365,
+          "velocity_rms": 0.6837455813540702,
+          "acceleration_rms": 8.786814854565268,
+          "jerk_rms": 264.3570161691711,
+          "command_jerk_rms": 97.3984796951538,
+          "limit_ticks": 14,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 148,
+          "height_mm": 106.31686312203828,
+          "velocity_rms": 0.5509911435844396,
+          "acceleration_rms": 7.17741947518022,
+          "jerk_rms": 220.27709857841958,
+          "command_jerk_rms": 96.64126699791868,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 2
+        },
+        {
+          "seed": 30004,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.5374009858257929,
+          "velocity_rms": 0.6730982011403175,
+          "acceleration_rms": 8.255691308663318,
+          "jerk_rms": 260.1293796856354,
+          "command_jerk_rms": 102.33481365529786,
+          "limit_ticks": 4,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/nut": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 41.4,
+      "command_jerk_rms": 71.85488184249047,
+      "actual_jerk_rms": 236.4436369745475,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 48,
+          "height_mm": 97.34381667539252,
+          "velocity_rms": 0.8017127164205384,
+          "acceleration_rms": 10.496257191813243,
+          "jerk_rms": 353.13561702123957,
+          "command_jerk_rms": 86.55878659071094,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 61,
+          "height_mm": 95.83558012134743,
+          "velocity_rms": 0.6234364432108549,
+          "acceleration_rms": 6.2908219043207945,
+          "jerk_rms": 202.2978642126691,
+          "command_jerk_rms": 84.68881051968029,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 85.06932948409911,
+          "velocity_rms": 0.7269491737810642,
+          "acceleration_rms": 5.112323063377649,
+          "jerk_rms": 163.6048435436656,
+          "command_jerk_rms": 53.5479801962851,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 31,
+          "height_mm": 103.99602767317491,
+          "velocity_rms": 0.695986633525352,
+          "acceleration_rms": 7.623473280865396,
+          "jerk_rms": 279.5974557129819,
+          "command_jerk_rms": 59.32310664204121,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 33,
+          "height_mm": 83.81978658131678,
+          "velocity_rms": 0.7036770859702031,
+          "acceleration_rms": 5.665581231412834,
+          "jerk_rms": 183.58240438218144,
+          "command_jerk_rms": 75.1557252637349,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/washer": {
+      "episodes": 5,
+      "finished": 2,
+      "success": 0.4,
+      "mean_steps": 151.2,
+      "command_jerk_rms": 91.15747451794087,
+      "actual_jerk_rms": 252.0722776104787,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.010930153924223768,
+          "velocity_rms": 0.6863323726075117,
+          "acceleration_rms": 8.209131165930415,
+          "jerk_rms": 254.2272229321345,
+          "command_jerk_rms": 80.45536881979923,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.7065413879724226,
+          "velocity_rms": 0.6152955540320313,
+          "acceleration_rms": 8.052561075395557,
+          "jerk_rms": 246.08304513144162,
+          "command_jerk_rms": 82.26318548580142,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 110,
+          "height_mm": 93.86599968418972,
+          "velocity_rms": 0.651003032056332,
+          "acceleration_rms": 7.013107041847272,
+          "jerk_rms": 215.44119561598114,
+          "command_jerk_rms": 84.6659853372195,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.2612792609520548,
+          "velocity_rms": 0.607653836883024,
+          "acceleration_rms": 8.474071876071145,
+          "jerk_rms": 269.8454232013581,
+          "command_jerk_rms": 111.17970694442134,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 2
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 46,
+          "height_mm": 104.81438754201365,
+          "velocity_rms": 0.7256323313124935,
+          "acceleration_rms": 8.4009531878293,
+          "jerk_rms": 274.7645011714783,
+          "command_jerk_rms": 97.2231260024628,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/l_bracket": {
+      "episodes": 5,
+      "finished": 5,
+      "success": 1.0,
+      "mean_steps": 36.2,
+      "command_jerk_rms": 68.09412765495622,
+      "actual_jerk_rms": 251.49240881629368,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 103.42646667727,
+          "velocity_rms": 0.8136029954619534,
+          "acceleration_rms": 9.58394296094857,
+          "jerk_rms": 318.4879999789459,
+          "command_jerk_rms": 76.31136960964805,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 32,
+          "height_mm": 114.30628401374062,
+          "velocity_rms": 0.7346353006067232,
+          "acceleration_rms": 7.684161186044361,
+          "jerk_rms": 261.0020315116728,
+          "command_jerk_rms": 79.77980392503811,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 39,
+          "height_mm": 94.65621121666749,
+          "velocity_rms": 0.7106599139078044,
+          "acceleration_rms": 5.464095359900219,
+          "jerk_rms": 173.81514312356094,
+          "command_jerk_rms": 56.867446350235895,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 98.88449549003043,
+          "velocity_rms": 0.6660050974711893,
+          "acceleration_rms": 7.1956248453502285,
+          "jerk_rms": 253.3574580546154,
+          "command_jerk_rms": 57.61776521892366,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 42,
+          "height_mm": 106.52446884041859,
+          "velocity_rms": 0.721650444227468,
+          "acceleration_rms": 7.866741661705055,
+          "jerk_rms": 250.79941141267335,
+          "command_jerk_rms": 69.89425317093536,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/t_bracket": {
+      "episodes": 5,
+      "finished": 4,
+      "success": 0.8,
+      "mean_steps": 109.8,
+      "command_jerk_rms": 82.88412045222742,
+      "actual_jerk_rms": 245.4465832899819,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": false,
+          "steps": 200,
+          "height_mm": 43.436443898102056,
+          "velocity_rms": 0.6431634104441855,
+          "acceleration_rms": 8.68563340453837,
+          "jerk_rms": 271.3054592050816,
+          "command_jerk_rms": 83.97621334596137,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 31,
+          "height_mm": 95.50006209583908,
+          "velocity_rms": 0.7168441413874963,
+          "acceleration_rms": 6.600984158878292,
+          "jerk_rms": 212.86560549091783,
+          "command_jerk_rms": 66.89344850982482,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 142,
+          "height_mm": 112.00072537849914,
+          "velocity_rms": 0.6575211481049124,
+          "acceleration_rms": 7.962334947016473,
+          "jerk_rms": 237.32784253353591,
+          "command_jerk_rms": 103.50217044119422,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": true,
+          "steps": 31,
+          "height_mm": 97.0457349403686,
+          "velocity_rms": 0.6823133732413378,
+          "acceleration_rms": 7.523509916312081,
+          "jerk_rms": 269.68750689187965,
+          "command_jerk_rms": 62.47391554688128,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 145,
+          "height_mm": 97.50241024623054,
+          "velocity_rms": 0.6400606172754524,
+          "acceleration_rms": 7.786030198113672,
+          "jerk_rms": 236.0465023284943,
+          "command_jerk_rms": 97.57485441727536,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/capsule": {
+      "episodes": 5,
+      "finished": 4,
+      "success": 0.8,
+      "mean_steps": 50.8,
+      "command_jerk_rms": 72.98705090274993,
+      "actual_jerk_rms": 228.8888027356299,
+      "limit_ticks_per_episode": 9.2,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 94.79812197996041,
+          "velocity_rms": 0.7845667135652812,
+          "acceleration_rms": 7.798358972047388,
+          "jerk_rms": 259.5237832561434,
+          "command_jerk_rms": 69.8513616783968,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 52,
+          "height_mm": 86.44218705921871,
+          "velocity_rms": 0.6878225506315592,
+          "acceleration_rms": 7.186266137108068,
+          "jerk_rms": 224.70935453403172,
+          "command_jerk_rms": 71.21900412903935,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 34,
+          "height_mm": 92.24532323078157,
+          "velocity_rms": 0.7082436013962029,
+          "acceleration_rms": 5.418220458201588,
+          "jerk_rms": 186.6676305863002,
+          "command_jerk_rms": 52.25584706146773,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": false,
+          "steps": 101,
+          "height_mm": -50.20982207090687,
+          "velocity_rms": 0.6154553436403792,
+          "acceleration_rms": 7.962807170854349,
+          "jerk_rms": 261.63381381785746,
+          "command_jerk_rms": 99.06451772637327,
+          "limit_ticks": 46,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 33,
+          "height_mm": 88.56002707637911,
+          "velocity_rms": 0.7035732808145762,
+          "acceleration_rms": 6.2150322602932535,
+          "jerk_rms": 211.90943148381683,
+          "command_jerk_rms": 72.54452391847245,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    },
+    "moderate/wedge": {
+      "episodes": 5,
+      "finished": 4,
+      "success": 0.8,
+      "mean_steps": 88.8,
+      "command_jerk_rms": 90.86286744301724,
+      "actual_jerk_rms": 246.78995355573957,
+      "limit_ticks_per_episode": 0.0,
+      "rows": [
+        {
+          "seed": 30000,
+          "finished": true,
+          "steps": 72,
+          "height_mm": 90.05401313927675,
+          "velocity_rms": 0.7243159132345857,
+          "acceleration_rms": 8.758784154046369,
+          "jerk_rms": 272.75258121961446,
+          "command_jerk_rms": 84.45313160720026,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30001,
+          "finished": true,
+          "steps": 61,
+          "height_mm": 90.96293376744107,
+          "velocity_rms": 0.7039300706165642,
+          "acceleration_rms": 7.956611951512786,
+          "jerk_rms": 249.91609486723294,
+          "command_jerk_rms": 82.82205601941081,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30002,
+          "finished": true,
+          "steps": 51,
+          "height_mm": 104.95379079469684,
+          "velocity_rms": 0.7107886730953089,
+          "acceleration_rms": 6.364157785154102,
+          "jerk_rms": 206.19889188041662,
+          "command_jerk_rms": 79.36751961704093,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        },
+        {
+          "seed": 30003,
+          "finished": false,
+          "steps": 200,
+          "height_mm": -0.1422799286556163,
+          "velocity_rms": 0.5819579542918397,
+          "acceleration_rms": 8.111856507269957,
+          "jerk_rms": 263.57414629760603,
+          "command_jerk_rms": 101.55496363842462,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 2
+        },
+        {
+          "seed": 30004,
+          "finished": true,
+          "steps": 60,
+          "height_mm": 89.97613603962078,
+          "velocity_rms": 0.6903415165217626,
+          "acceleration_rms": 7.6137262275395745,
+          "jerk_rms": 241.5080535138279,
+          "command_jerk_rms": 106.11666633300953,
+          "limit_ticks": 0,
+          "stale_pause_ticks": 0
+        }
+      ]
+    }
+  },
+  "videos": [
+    "D:\\digital-twin-training\\sukcesy\\block-002-validation_screw_nominal_seed30003.mp4"
+  ]
+}
