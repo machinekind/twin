@@ -8,6 +8,7 @@ na prawdziwe ramie.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,9 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     task = policy.task
     rand = randomization if randomization is not None else \
         Randomization.nominal(Dynamics.from_dict(workspace.dynamics) if workspace is not None else None)
+    # Cube symmetry is the saved policy's input convention, not observation
+    # noise. Disabling randomization must not change it relative to runtime.
+    rand = replace(rand, fold_yaw=bool(policy.meta.randomization.get("fold_yaw", False)))
     env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None)
     succ, final, ever, place, final_state = [], [], [], [], []
     collisions = numerical = 0
@@ -60,6 +64,7 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
            "collision_episodes": collisions, "numerical_failures": numerical,
            "final_state_success": float(np.mean(final_state)),
            "required_hold_s": task.end_on_success / task.control_hz,
+           "fold_yaw": rand.fold_yaw,
            "randomized": rand.randomized, "centre": rand.centre.source}
     key = "final_distance_mm" if task.name == "reach" else "final_height_mm"
     out[key] = float(np.median(final) * 1000)

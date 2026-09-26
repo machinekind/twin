@@ -166,8 +166,10 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **train and evaluate the corrected lift candidate against
-the completed original-reward baseline**. See [offline evidence](A1X_OFFLINE_VALIDATION.md)
+Current next action: **prepare the user-provided H100, verify GPU compatibility,
+then use a bounded grasp-learning experiment**. Both local lift candidates
+finished without successful lifts; reward shaping alone is insufficient so far.
+See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
 
 Selected available compute: local RTX 2000 Ada laptop GPU, 8188 MiB total,
@@ -178,6 +180,17 @@ neither short run learned the task. Five scripted lifts held for two seconds on
 both CPU and GPU, with zero reported capacity overflow. These are narrow,
 measured workloads, not a promise that every training configuration fits 8 GB.
 The adjacent driver checkout has concurrent team changes and must remain untouched.
+
+The user has now provided Brev H100 compute for this training: organization
+`wysocki-55ff9e-nih0`, machine `empty-peach-tortoise`, verified unique ID
+`cdeczltwl`. Direct inspection shows H100 PCIe, 81,559 MiB, driver 570.148.08.
+Use the separate task-local SSH config at `workspace/validation/brev/ssh_config`
+from WSL. The existing active Brev organization belongs to another project:
+do not switch it, run a global refresh, change shared SSH configuration, or
+stop/reset/delete other instances. Shared WSL SSH config hashes were unchanged
+after connecting. Remote project root: `/home/ubuntu/a1x-twin-training`.
+Environment setup and a short compatibility check are underway; a question
+about the longer H100 training budget is pending.
 
 A 1,024-world lift smoke check used 2,074.5 MiB total GPU memory without capacity
 overflow. The 8 GB GPU is sufficient for these measured workloads. Learned reach
@@ -204,6 +217,10 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Lift approach reward diagnosed as nearly absent at home | `lift-reward-diagnosis.json`: old float32 reward exactly zero on 99/100 starts; corrected coarse/fine fingertip reward nonzero on all 100. `lift-reward-contracts-001.log`: 11 passed | Complete original bounded baseline; compare new task definition separately |
 | 2026-09-26 | Updated suite and fresh guarded reach holdout pass | `offline-suite-004.log`: 166 passed; `reach-final-holdout-003.json`: 20/20 on seeds 32000-32019, zero contacts at every substep; `runtime-lift-substeps-001.json`: scripted 5/5 | Preserve source checkpoint and proceed with lift |
 | 2026-09-26 | Original-reward lift baseline completed with no learned lifts | `lift-candidate-001/report.json`: 606 iterations, 14,893,056 transitions in 900.2 s; 0/20 nominal and 0/20 randomized, no numerical/capacity failure | Corrected reward comparison: same seed/worlds, at most 606 iterations and 900 s; same validation seeds |
+| 2026-09-26 | Corrected reward learns approach but no sustained lift | `lift-candidate-002`: 476 iterations, 11,698,176 transitions in 900.9 s, 0/20 nominal and randomized. Intermediate 150-iteration inspection approaches within 26-37 mm while leaving jaws open | Use grasp demonstrations or a measured curriculum; do not equate reward growth with task success |
+| 2026-09-26 | Nominal CPU evaluation now preserves saved cube-yaw convention | `evaluation-yaw-contract-001.log`: 11 passed, including two actual CPU/runtime observation agreement cases | Reevaluate lift candidates with corrected input convention; previous run reports retain original evaluator hashes |
+| 2026-09-26 | Scripted demonstration collection explored broader task region | `lift-demos-005`: 18/20 completed 2 s holds, two collision failures retained; observations/actions saved separately for every attempted seed | Successful samples can seed imitation, but these are not learned-policy results or hardware instructions |
+| 2026-09-26 | User supplied H100; isolated read-only connection verified | `brev/target.json` and shared-config hashes under validation; remote hostname `brev-cdeczltwl` | Isolated dependencies and simulation-only source transfer; short smoke test before longer training |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
@@ -266,3 +283,15 @@ G1/dual mount envelopes; they do not establish self/obstacle/plate collision,
 installed camera coverage, calibration, or continuous controller safety. Eight
 hardware-free geometry/frame tests pass. No motor commands were sent. This
 remains adjacent knife-grasp work and does not complete a twin-training stage.
+
+Further knife-task follow-up: the user aligned the knife and confirmed they
+will supervise. Fresh receive-only feedback remains healthy. The hover path
+was screened with the existing MuJoCo collision model plus mount, plate and
+knife proxies: no sampled intersections, but a 2.17 mm nominal base/arm_link2
+gap warrants reviewing the full route. Only an initial two-degree arm step
+is prepared for operator-controlled execution; its sampled nonadjacent gap is
+3.38 mm. The new `../grasping/hover_step_a1x.py` is disarmed on opening,
+hold-to-run, single-use, and sends no gripper or enable frames. Six fake-arm
+tests, a fake GUI smoke check, and a real receive-only check pass. No physical
+movement has been performed by this task; this does not advance twin-training
+validation. Reports and instructions are in the knife-grasp README.

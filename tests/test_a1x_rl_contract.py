@@ -82,12 +82,44 @@ def test_evaluation_does_not_count_a_last_frame_lift_as_a_completed_hold(monkeyp
             pass
 
     monkeypatch.setattr(evaluation, "TwinEnv", Episode)
-    policy = SimpleNamespace(meta=SimpleNamespace(robot="a1x"), task=tk.make_task("lift", A1X),
+    policy = SimpleNamespace(meta=SimpleNamespace(robot="a1x", randomization={}), task=tk.make_task("lift", A1X),
                              act=lambda obs: np.zeros(7))
     result = evaluation.evaluate(policy, episodes=1, workspace=Workspace(robot="a1x"))
     assert result["success"] == expected
     assert result["ever_success"] == result["final_state_success"] == 1.0
     assert result["required_hold_s"] == 2.0
+
+
+@pytest.mark.parametrize("fold_yaw", [False, True])
+def test_nominal_evaluation_keeps_the_saved_runtime_observation_convention(fold_yaw):
+    from types import SimpleNamespace
+    from lerobot_mp.twin.rl.evaluate import evaluate
+    from lerobot_mp.twin.rl.policy import PolicyMeta
+    from lerobot_mp.twin.rl.runner import PolicyRunner
+
+    task = tk.make_task("lift", A1X, episode_steps=1)
+    ws, rand, observed = Workspace(robot="a1x"), Randomization.none(), []
+
+    def act(obs):
+        observed.append(obs.copy())
+        return np.zeros(7)
+
+    policy = SimpleNamespace(task=task, act=act, meta=PolicyMeta(
+        task={}, hidden=[], obs_dim=task.obs_dim, act_dim=7, robot="a1x", randomization={"fold_yaw": fold_yaw}))
+    result = evaluate(policy, episodes=1, workspace=ws, randomization=rand, seed=19)
+    raw = TwinEnv(task, workspace=ws, randomization=rand)
+    try:
+        raw.reset(seed=19)
+        state = raw.state()
+        runner = PolicyRunner(SimpleNamespace(workspace=ws, status=SimpleNamespace(simulated=True)), policy,
+                              cube_provider=lambda: (state["cube_pos"], state["cube_rot"], "symulacja"))
+        runner.q_cmd = raw.q_cmd.copy()
+        expected = runner.observation(raw.scene.joints())
+        np.testing.assert_allclose(observed[0], expected, atol=1e-6)
+        assert result["fold_yaw"] == fold_yaw
+        assert not rand.fold_yaw  # Caller configuration was not mutated.
+    finally:
+        raw.close()
 
 
 @pytest.mark.parametrize("linear_noise", [0.0, 0.0003])

@@ -56,7 +56,10 @@ def main():
         "initial_policy_sha256": hashlib.sha256(args.init.read_bytes()).hexdigest() if init else None,
         "prior_steps": init.meta.steps if init else 0,
         "continuation": "Actor, normalizer and critic restored; optimizer and action variance restart" if init else None,
-        "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+        "git_head": (subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+                     if (root / ".git").exists() else None),
+        "source_snapshot": json.loads((root / "SOURCE_SNAPSHOT.json").read_text())
+                           if (root / "SOURCE_SNAPSHOT.json").exists() else None,
         "source_sha256": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in sorted((root / "src").rglob("*.py"))},
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),

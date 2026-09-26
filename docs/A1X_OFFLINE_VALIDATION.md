@@ -248,6 +248,60 @@ and fingertip position agreement plus legacy compatibility pass 11 focused
 tests (`lift-reward-contracts-001.log`); diagnostic samples are in
 `lift-reward-diagnosis.json`.
 
+`lift-candidate-002`: same seed 17, 1,024 worlds, at most 606 iterations / 900 s.
+The time limit ended this run at 476 iterations (11,698,176 transitions), so this
+is a same-time-ceiling comparison, not equal training steps. Total elapsed
+935.97 s, peak total GPU memory 2,074.5 MiB. No numerical failures or capacity
+overflow; 7,990 collision-ended exploration episodes. CPU results remained 0/20
+nominal and 0/20 randomized, with no evaluation collisions. At iteration 150,
+five CPU traces showed approach within 25.9-36.5 mm and fully open jaws, with no
+bilateral grasp (`lift-inspection-002a`). Reward growth alone did not solve lift.
+
+While that run was active, evaluation was corrected to preserve the saved
+policy's folded cube-yaw representation even when randomization is disabled.
+Previously nominal CPU evaluation supplied raw yaw, unlike the physical runner.
+Two new tests compare actual initial CPU and runtime observations; all 11 focused
+RL tests passed (`evaluation-yaw-contract-001.log`). Both earlier lift reports
+used the old evaluator loaded at process start and are retained as such.
+
+`collect_a1x_lift_demos.py` provides a bounded scripted-demonstration experiment.
+It samples the full original lift region, cube yaw and noisy starting joints,
+records observations/actions and retains failed cases. Its own first attempt
+had an incorrect world/base-frame offset; `lift-demos-001` is invalid and retained.
+The corrected collector initially completed 15/20 (`002`, `003`), then 16/20
+when IK searched within configured controller bounds (`004`). A 7.5 cm approach
+waypoint instead of 10 cm completed 18/20 (`005`); two collision-ended episodes
+remain failures, not training successes. No limits or success thresholds were
+relaxed. Successful trajectories may seed imitation; no imitator has yet been
+trained, and these broader scripted sequences have not passed the runtime guard.
+
+`reach-video-003/seed-32000.mp4` is a labeled, visually inspected CPU replay of
+the learned reach candidate (1.05 mm final error, zero collisions). Reproduce
+with `scripts/render_a1x_candidate.py`; the report includes checkpoint hash.
+
+## Additional H100 compute
+
+The user supplied Brev organization `wysocki-55ff9e-nih0` and machine
+`empty-peach-tortoise` (ID `cdeczltwl`). Read-only inspection confirms hostname
+`brev-cdeczltwl`, H100 PCIe with 81,559 MiB and driver 570.148.08. Brev CLI v0.6.335
+can list a specific organization without changing context, but its connection
+lookup uses the active organization. The other project remains active.
+
+The task read only the designated workspace metadata through the same official
+Brev API used by the CLI, using existing authentication without printing tokens.
+It verified organization and instance identities, then wrote a separate local
+SSH config/known-hosts file under `workspace/validation/brev/`. No shared config
+or organization switch was required. WSL shared file hashes before/after:
+
+- `/home/kuba/.brev/ssh_config`: `64a3b978e9f0bb1c53530f103c72e239fdd4fe99e4630ab28e0eabcea96c8cf9`
+- `/home/kuba/.ssh/config`: `1d4cd26da5cc01120cc0576762e9dc28e40c614dfeffd67775ab6bbc6898a3c0`
+
+Remote files and dependencies belong only under `/home/ubuntu/a1x-twin-training`.
+Transfer simulation source/assets and explicit experiment artifacts, excluding
+local credentials, calibration, live workspace files and the adjacent driver.
+Snapshot manifests accompany non-Git source exports. Start with a bounded smoke
+check; the longer training budget is pending the user's answer.
+
 ## Remaining validation
 
 - Preserve the verified implementation checkpoint; relevant historical README/test

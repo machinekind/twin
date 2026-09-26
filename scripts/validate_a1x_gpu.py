@@ -39,7 +39,10 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     result = {
         "purpose": "plumbing only, not policy performance",
-        "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+        "git_head": (subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+                     if (root / ".git").exists() else None),
+        "source_snapshot": json.loads((root / "SOURCE_SNAPSHOT.json").read_text())
+                           if (root / "SOURCE_SNAPSHOT.json").exists() else None,
         "source_sha256": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in sorted((root / "src").rglob("*.py"))},
         "versions": {p: importlib.metadata.version(p) for p in
