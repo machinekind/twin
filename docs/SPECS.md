@@ -62,7 +62,7 @@ would both send commands and the arm would follow neither.
 
 ```bash
 lerobot-twin specs [--relay URL] [--mode dry|sim|real] [--i-know] [--start-center]
-                   [--backend NAME] [--port PORT] [--trusted-only] [--max-jump-deg DEG]
+                   [--backend NAME] [--port PORT] [--trusted-only] [--max-jump-deg DEG] [--hold-off S]
                    [--grasp] [--workspace FILE] [--seconds S] [--config FILE]
 ```
 
@@ -76,6 +76,7 @@ lerobot-twin specs [--relay URL] [--mode dry|sim|real] [--i-know] [--start-cente
 | `--port PORT` | The arm port: `xcan` on macOS, `can0` on Linux, `PCAN_USBBUS1` on Windows. Default: the port saved in the workspace. |
 | `--trusted-only` | Accept targets only from a trusted glasses registration. Without it, any registration is enough. |
 | `--max-jump-deg DEG` | Refuse a target (`jump`) when any joint would turn more than this on one leg. Default 150. A leg is always driven as one move; it is never cut into pieces. |
+| `--hold-off S` | Seconds to wait after accepting a hand target in `real` mode before the arm moves. Default 1; 0 means at once. |
 | `--grasp` | Object targets: go down, close the gripper and come back up. Without it the arm only stops above the object. |
 | `--workspace FILE` | The workspace file. Default `workspace/twin.json`. |
 | `--seconds S` | Stop after S seconds (used by tests). |
@@ -194,7 +195,10 @@ end of the one before it.
 
 1. The driver sends `accepted` and shows a green `target` sphere in the
    glasses. In `dry` it then sends `hold` and stops there.
-2. **Hold-off, `real` mode, hand targets only.** The driver waits 1 s. A new
+2. **Hold-off, `real` mode, hand targets only.** The driver waits `--hold-off`
+   seconds, 1 by default; the panel has the same as a slider, "Odczekanie przed
+   ruchem". This is the only fixed delay between the pinch and the move: the
+   checks take under 60 ms. Set it to 0 for an immediate start. A new
    target in that second ends this one with `hold`, reason `retargeted`, and
    the new one runs. A mode change ends it with `hold`, reason `mode`. Losing
    the relay ends it with `hold`, reason `relay`. STOP pressed in that second
