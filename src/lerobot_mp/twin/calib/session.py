@@ -31,6 +31,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
+import time
+
 import numpy as np
 
 from ..collision import CollisionChecker
@@ -48,6 +50,35 @@ class Robot(Protocol):
 
 class Cameras(Protocol):
     def grab(self) -> dict[str, np.ndarray]: ...                     # {nazwa: kadr RGB}
+
+
+#: Kadr do obserwacji musi byc zlapany tyle sekund PO zatrzymaniu ramienia (opoznienie
+#: potoku kamery: bufor sterownika, MJPG) - inaczej pokazuje karte jeszcze w ruchu.
+FRESH_MARGIN_S = 0.15
+FRESH_TIMEOUT_S = 1.5
+
+
+def fresh_frames(cameras, t_stop: float) -> dict[str, np.ndarray]:
+    """Kadry zlapane po `t_stop` (+ margines) z kamer, ktore podaja czas kadru (`grab_t`);
+    kamera bez swiezego kadru w `FRESH_TIMEOUT_S` jest w tej pozie pomijana. Kamery bez
+    `grab_t` (symulacja) - zwykly `grab`."""
+    grab_t = getattr(cameras, "grab_t", None)
+    if grab_t is None:
+        return cameras.grab()
+    need = t_stop + FRESH_MARGIN_S
+    deadline = time.monotonic() + FRESH_TIMEOUT_S
+    out: dict[str, np.ndarray] = {}
+    pending = None
+    while True:
+        got = grab_t()
+        pending = set(got) if pending is None else pending
+        for name, (img, t) in got.items():
+            if name in pending and img is not None and t >= need:
+                out[name] = img
+                pending.discard(name)
+        if not pending or time.monotonic() >= deadline:
+            return out
+        time.sleep(0.03)
 
 
 @dataclass
@@ -70,6 +101,13 @@ class WaveConfig:
     max_px: float = 1.5
     #: Srodek karty ma wpasc w te czesc kadru namierzonej kamery (margines od krawedzi).
     frame_margin: float = 0.12
+    #: Faza szukania zamiata staw podstawy sektorami (tam i z powrotem), a nie bladzi
+    #: losowo: przy limicie `step` losowy spacer zostawal po jednej stronie stolu.
+    sweep_sectors: int = 5
+    #: Tyle detekcji, zanim przyblizona poza kamery steruje celowaniem i kadrem: jedna
+    #: detekcja malego taga z daleka daje poze PnP zle albo lustrzanie - i kazda
+    #: druga poza celowala w miejsce, gdzie kamery nie ma.
+    min_estimates: int = 2
     #: Gdzie zwykle stoja kamery - tam celuje faza szukania, zanim ktoras cos zobaczy.
     #: Odleglosc od srodka stolu [m], azymut od osi x podstawy [rad], wysokosc nad blatem [m].
     search_dist: tuple[float, float] = (0.4, 0.9)
@@ -163,6 +201,19 @@ class Session:
         self._home = dict(spec.home)
         if spec.gripper:
             self._home[spec.gripper] = 0.0      # karta scisnieta w szczekach przez cala sesje
+        # Zamiatanie stawu podstawy: sektory od srodka na jedna strone, z powrotem na druga
+        # i znow do srodka - sasiednie sektory miesza sie w jednym przejezdzie (`step`).
+        self._pan = spec.joints[0] if spec.joints[0] in spec.wave_ranges else next(iter(spec.wave_ranges), None)
+        n = max(1, self.cfg.sweep_sectors)
+        lo, hi = spec.wave_ranges.get(self._pan, (0.0, 0.0))
+        edges = np.linspace(lo, hi, n + 1)
+        self._sectors = [(float(edges[i]), float(edges[i + 1])) for i in range(n)]
+        c = n // 2
+        self._sweep = list(range(c, n)) + list(range(n - 2, -1, -1)) + list(range(1, c))
+        self._sweep_i = 0
+        self._skipped = 0                       # przejazdy z rzedu, ktore nie dojechaly
+        #: Diagnostyka: kazda poza (numer, stawy, co ktora kamera widziala, uwaga).
+        self.log: list[dict] = []
 
     # --------------------------------------------------------------- stan
     @property
@@ -174,9 +225,13 @@ class Session:
         return StepReport(self.index, joints, seen, prog, self.done, note, frames, corners)
 
     # -------------------------------------------------------------- fala
+    def _located(self, p: CameraProgress) -> bool:
+        """Kamera namierzona na tyle pewnie, zeby w nia celowac (`min_estimates` detekcji)."""
+        return len(p.estimates) >= self.cfg.min_estimates
+
     def _target_camera(self) -> str | None:
         """Kamera, ktora najbardziej potrzebuje karty - i ktora juz namierzylismy."""
-        located = [(n, p) for n, p in self.progress.items() if p.hint is not None and not p.ready(self.cfg)]
+        located = [(n, p) for n, p in self.progress.items() if self._located(p) and not p.ready(self.cfg)]
         if not located:
             return None
         def need(item):
@@ -229,7 +284,8 @@ class Session:
 
     def _in_frame(self, cam: str, point: np.ndarray) -> bool:
         """Czy punkt wpada w kadr kamery - wedlug jej przyblizonej pozy i K."""
-        T = self.progress[cam].rough_pose
+        p_ = self.progress[cam]
+        T = p_.rough_pose if self._located(p_) else None
         if T is None:
             return True
         p = np.linalg.inv(T) @ np.r_[point, 1.0]
@@ -241,11 +297,14 @@ class Session:
         m = self.cfg.frame_margin
         return m * W <= u <= (1 - m) * W and m * H <= v <= (1 - m) * H
 
-    def _candidate(self, towards: np.ndarray, cam: str | None) -> dict[str, float] | None:
+    def _candidate(self, towards: np.ndarray, cam: str | None,
+                   pan: tuple[float, float] | None = None) -> dict[str, float] | None:
         spec, cfg = self.kin.spec, self.cfg
         joints = dict(self._home)
         for name, (lo, hi) in spec.wave_ranges.items():
             joints[name] = float(self.rng.uniform(lo, hi))
+        if pan is not None and self._pan is not None:
+            joints[self._pan] = float(self.rng.uniform(*pan))
         joints = self._aim_roll(joints, towards)
         if joints is None:
             return None
@@ -264,17 +323,18 @@ class Session:
             return None
         return joints
 
-    def _next_pose(self, current: dict[str, float]) -> dict[str, float] | None:
-        target = self._target_camera()
-        # Gdy jakas kamera jeszcze nie widziala karty, co druga poza szuka dla niej.
-        searching = target is None or (any(p.hint is None for p in self.progress.values())
-                                       and self.index % 2 == 1)
-        seen_R = [] if searching else self.progress[target].rotations
+    def _candidates(self, current: dict[str, float], target: str | None) -> list[dict[str, float]]:
+        """Do `candidates` poz osiagalnych jednym przejazdem: w kolejny sektor zamiatania
+        (bez celu) albo w kadr namierzonej kamery `target`."""
+        pan = None
+        if target is None:
+            pan = self._sectors[self._sweep[self._sweep_i % len(self._sweep)]]
+            self._sweep_i += 1
         q_now = self.kin.to_q(current)
         cands = []
         for _ in range(self.cfg.candidates * 12):
-            if searching:
-                j = self._candidate(self._search_point(), None)
+            if target is None:
+                j = self._candidate(self._search_point(), None, pan)
             else:
                 j = self._candidate(self.progress[target].hint, target)
             if j is None:
@@ -284,7 +344,20 @@ class Session:
             cands.append(j)
             if len(cands) >= self.cfg.candidates:
                 break
-        if seen_R:
+        return cands
+
+    def _next_pose(self, current: dict[str, float]) -> dict[str, float] | None:
+        target = self._target_camera()
+        # Gdy jakas kamera jeszcze nie jest namierzona, co druga poza zamiata dla niej.
+        searching = target is None or (any(not self._located(p) for p in self.progress.values())
+                                       and self.index % 2 == 1)
+        cands = self._candidates(current, None if searching else target)
+        if not searching and not cands:
+            # Kadru namierzonej kamery nie da sie trafic jednym przejazdem stad -
+            # sektor zamiatania zamiast powrotu do domu (ten sam widok, stracony przejazd).
+            searching, cands = True, self._candidates(current, None)
+        if not searching:
+            seen_R = self.progress[target].rotations
             cands.sort(key=lambda j: -rotation_spread_R(seen_R + [self.kin.tcp(j)[:3, :3]]))
         for j in cands:
             if self.checker is None or (self.checker.config_clear(j) is None
@@ -304,12 +377,26 @@ class Session:
         if target is None:
             note = "brak czystej pozy stad - wracam do pozycji domowej"
             target = self._home
-        self.robot.move(target, move_time(self.kin.to_q(current), self.kin.to_q(target), self.cfg))
+        try:
+            self.robot.move(target, move_time(self.kin.to_q(current), self.kin.to_q(target), self.cfg))
+        except RuntimeError as exc:
+            # Przejazd, ktory nie dojechal (nadzor wolniejszy niz rampa, staw przy limicie), to jedna
+            # stracona poza, nie koniec sesji z dorobkiem - fala z 21 i 11 obserwacjami padala na
+            # jednym obrocie nadgarstka. Trzy z rzedu = cos jest naprawde nie tak.
+            if "nie dojechal" not in str(exc):
+                raise
+            self._skipped += 1
+            self.index += 1
+            if self._skipped >= 3:
+                raise RuntimeError(f"trzy przejazdy z rzedu nie dojechaly: {exc}") from exc
+            return self._report(self.robot.joints(), {}, f"przejazd pominiety: {exc}", {}, {})
+        self._skipped = 0
         self.index += 1
+        t_stop = time.monotonic()
 
         measured = self.robot.joints()
         T_tcp = self.kin.tcp(measured)                   # FK z ZMIERZONYCH katow: blad serw w dopasowaniu
-        frames = self.cameras.grab()
+        frames = fresh_frames(self.cameras, t_stop)
         seen, corners_out = {}, {}
         for cam, img in frames.items():
             if cam not in self.intrinsics:
@@ -322,7 +409,11 @@ class Session:
             p = self.progress[cam]
             K, dist = self.intrinsics[cam]
             for tid, corners in found.items():
-                self.obs.append(Observation(T_tcp, self.tags[tid], corners, tid, "card", cam))
+                # Kazdy tag to osobny "montaz" o wlasnej, swobodnej pozie w chwytaku. Wspolna poza
+                # karty zakladala, ze oba tagi maja DOKLADNIE ten sam srodek plecami do siebie; dwa
+                # wydruki sklejone recznie z przesunieciem kilku mm dawaly 7-10 px residuum na obu
+                # kamerach naraz (kazda widziala inna strone; 2026-09-26).
+                self.obs.append(Observation(T_tcp, np.eye(4), corners, tid, f"tag{tid}", cam, self.index))
                 p.obs += 1
                 # Gdzie jest kamera, wedlug tej jednej detekcji i nominalnej karty.
                 # Pierwsza wystarczy, zeby celowac; mediana kolejnych - zeby
@@ -331,7 +422,13 @@ class Session:
                     tag_pose(corners, self.card.tag_size, K, dist)))
             p.poses += 1
             p.rotations.append(T_tcp[:3, :3])
+        self.log.append({"poza": self.index, "stawy": {k: round(float(v), 2) for k, v in measured.items()},
+                         "widzi": {c: list(t) for c, t in seen.items()}, "uwaga": note})
         return self._report(measured, seen, note, frames if self.keep_frames else {}, corners_out)
+
+    def mounts_nominal(self) -> dict[str, np.ndarray]:
+        """Nominalna poza kazdego taga w ukladzie TCP: karta nominalna razy tag na karcie."""
+        return {f"tag{tid}": self.card_nominal @ T for tid, T in self.tags.items()}
 
     @staticmethod
     def _far_from(a: Mapping[str, float], b: Mapping[str, float], tol: float = 3.0) -> bool:
@@ -344,7 +441,7 @@ class Session:
         if not cams:
             raise RuntimeError("zadna kamera nie zobaczyla karty - nie ma czego dopasowac")
         fit = solve(self.obs, {c: self.intrinsics[c] for c in cams}, self.card.tag_size,
-                    {"card": self.card_nominal}, max_px=self.cfg.max_px)
+                    self.mounts_nominal(), max_px=self.cfg.max_px, min_keep=self.cfg.min_obs)
         judge(fit, self.cfg.max_px, self.cfg.min_spread, self.cfg.min_obs)
         return fit
 

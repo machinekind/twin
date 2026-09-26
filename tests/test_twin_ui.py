@@ -483,3 +483,89 @@ def test_fixed_texts_written_at_creation_reach_the_browser(app):
         assert GuiMarkdownHandle.content.fset._dedup
     finally:
         h.remove()
+
+
+@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt", "ueye_calib.txt"))
+def test_shipped_lens_files_parse(filename):
+    """Pliki z obiektywami w assets/calib czyta ten sam parser, co przycisk w panelu."""
+    from lerobot_mp.twin.calib import intrinsics as intr
+    from lerobot_mp.twin.ui.app import LENS_DIR
+
+    res = intr.read_file(LENS_DIR / filename)
+    assert res.K.shape == (3, 3) and res.K[0, 0] > 500 and res.dist.shape == (5,)
+    assert res.trusted and res.reason == f"z pliku {filename}"
+
+
+def test_lens_from_file_lands_on_the_chosen_camera_and_refuses_another_resolution(app, monkeypatch, tmp_path):
+    """Krok 1 bez szachownicy: obiektyw z pliku .txt (K, dystorsja) wpisuje sie do wybranej kamery,
+    plik z innej rozdzielczosci jest odrzucany, a poza ustalona ze starym K przestaje byc zaufana."""
+    from lerobot_mp.twin.ui import app as app_mod
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    (tmp_path / "brio.txt").write_text(
+        "# camera_matrix (3x3, row-major)\n937.5 0 628.3\n0 937.7 348.0\n0 0 1\n"
+        "# dist_coeffs (5: k1 k2 p1 p2 k3)\n0.195 -0.519 0.0002 -0.0001 0.361\nnum_views: 81\n")
+    (tmp_path / "ueye.txt").write_text(
+        "image_size (w h): 1280 1024\nfx: 1512.4\nfy: 1509.8\ncx: 665.1\ncy: 545.7\n"
+        "# dist_coeffs (5: k1 k2 p1 p2 k3)\n-0.237 0.177 0.0006 0.0015 0.0\n")
+    monkeypatch.setattr(app_mod, "LENS_DIR", tmp_path)
+    rec = app.ws.add_camera(CameraRecord("u1", "5", 1280, 720))
+    rec.T_cam2base = np.eye(4).tolist()
+    rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.2}
+    try:
+        app._render_calibration()
+        assert app.lens_file_box.visible and app.lens_file.options == ("brio.txt", "ueye.txt")
+        assert "u1" in app._lens_todo()
+        with pytest.raises(RuntimeError, match="1280x1024"):
+            app._import_lens("u1", "ueye.txt")
+        assert rec.K is None
+        assert app._import_lens("u1", "brio.txt") == "u1"
+        assert rec.K[0][0] == 937.5 and rec.dist[4] == 0.361 and rec.intrinsics_from == "szachownica"
+        assert rec.intrinsics_info["trusted"] and rec.intrinsics_info["n_views"] == 81
+        assert not rec.intrinsics_problem() and "u1" not in app._lens_todo()
+        assert not rec.calibration["trusted"] and "krok 2" in rec.calibration["reason"]
+        assert "u1** wczytany z pliku brio.txt" in app.intr_md.content
+        app._render_calibration()
+        assert "OBIEKTYW OK" in app.calib_html.content
+    finally:
+        app.ws.remove_camera("u1")
+
+
+def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):
+    """Brio i uEye przegrywaly wyscig z resetem USB przy starcie panelu i zostawaly BEZ OBRAZU,
+    az ktos wylaczyl i wlaczyl kamere w panelu. Panel probuje sam, co HEAL_S, poki jest blad."""
+    from lerobot_mp.twin.ui import app as app_mod
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    calls = []
+    hub = app.twin.cameras
+    monkeypatch.setattr(hub, "sync", lambda: calls.append(1))
+    errors = {"u9": "nie otworzyla sie"}
+    monkeypatch.setattr(hub, "error", lambda name: errors.get(name))
+    app.ws.add_camera(CameraRecord("u9", "77"))
+    try:
+        app._heal_cameras(now=1000.0)
+        app._heal_cameras(now=1000.0 + app_mod.HEAL_S / 2)
+        assert calls == [1]                                    # nie czesciej niz HEAL_S
+        app._heal_cameras(now=1000.0 + app_mod.HEAL_S)
+        assert calls == [1, 1]
+        errors.clear()
+        app._heal_cameras(now=1000.0 + 2 * app_mod.HEAL_S)
+        assert calls == [1, 1]                                 # bez bledu nic nie robi
+    finally:
+        app.ws.remove_camera("u9")
+
+
+def test_home_works_straight_after_a_stop(app):
+    """Po STOP-ie ramie bez hamulcow moglo stac w gorze, a Dom byl wylaczony do Skasuj STOP.
+    Dom ma byc jednym kliknieciem: sam kasuje STOP i jedzie."""
+    app.twin.connect("sim", threaded=False)
+    try:
+        app.twin.estop("test")
+        assert app._estop_active()
+        app._render_arm(force=True)
+        assert not app.home_btn.disabled
+        app._go_home()
+        assert not app._estop_active()
+    finally:
+        app.twin.disconnect()

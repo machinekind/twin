@@ -111,8 +111,10 @@ i dane:
 | `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
 | `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
 | `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
+| `assets/calib/*.txt` | gotowe obiektywy kamer autora (Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
 | `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
+| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | nie |
 | `workspace/policies/` | polityki, które sam wytrenujesz | nie |
 | `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
 
@@ -806,4 +808,3 @@ Apache-2.0. Geometria SO-101 pochodzi z
 [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)
 (Apache-2.0) przez repozytorium
 [Articulus](https://github.com/przemeknowak781/articulus).
-| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | nie |

@@ -32,15 +32,22 @@ from viser import uplot
 
 from .. import scene as sc
 from ..calib.card import Card
+from ..calib import intrinsics as intr
 from ..calib.intrinsics import Board
 from ..kinematics import inverse, pose
 from ..perception import CubeDetector, CubeTracker, TableMapper
 from ..runtime import Twin
+from ...paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
 from .watch import CameraWatch, arm_mask, distort_mask
+
+#: Gotowe obiektywy z innych kalibracji (pliki tekstowe: K, dystorsja) - do wczytania w kroku 1.
+LENS_DIR = REPO_ROOT / "assets" / "calib"
+#: Co ile sekund panel probuje na nowo otworzyc kamere, ktorej strumien padl albo sie nie otworzyl.
+HEAL_S = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -529,6 +536,7 @@ class TwinApp:
         self._arm_key = None
         self._sliders_armed = None
         self._render_lock = threading.RLock()
+        self._heal_t = 0.0                          # ostatnia proba `_heal_cameras`
         self._chip_last = ""
         #: Ostatni przewodnik (`_tick_guide`) - linia "Teraz" zakladki Kalibracja bierze z niego kroki 1-3.
         self._guide_last: gd.Guide | None = None
@@ -1115,7 +1123,7 @@ class TwinApp:
             self.tcp_gizmo_on.on_look = GIZMO_ON_ARMED if armed else GIZMO_ON_IDLE
             self.tcp_gizmo_on.set_override(GIZMO_ESTOP if estop else None)
             self.tcp_gizmo_on._apply()
-            set_if(self.home_btn, "disabled", estop)
+            set_if(self.home_btn, "disabled", not conn)     # Dom takze pod STOP-em: sam go kasuje
             set_if(self.set_home_btn, "disabled", not conn)
             if armed != self._sliders_armed:
                 self._sliders_armed = armed
@@ -1169,8 +1177,12 @@ class TwinApp:
         return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]
 
     def _go_home(self) -> None:
-        """Pozycja domowa: odbiera ramie kazdemu (panel, polityka, fala) - takze startowi w toku."""
+        """Pozycja domowa: odbiera ramie kazdemu (panel, polityka, fala) - takze startowi w toku.
+        Pod STOP-em najpierw go kasuje: po zatrzymaniu zawsze ma byc jedno klikniecie do domu
+        (ramie bez hamulcow w gorze - operator nie ma szukac zoltego przycisku)."""
         self._motion_gen += 1
+        if self._estop_active():
+            self.twin.clear_estop()
         self.twin.home()
         self._gizmo_seed = None
 
@@ -1834,8 +1846,14 @@ class TwinApp:
                  f"K ({rec.intrinsics_from}): fx {K[0, 0]:.0f} fy {K[1, 1]:.0f} cx {K[0, 2]:.0f} cy {K[1, 2]:.0f}"]
         if rec.intrinsics_info:
             ii = rec.intrinsics_info
-            lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow, "
-                         f"pokrycie {ii.get('coverage', 0):.0%}{'' if ii.get('trusted') else ' - ' + ii.get('reason', '')}")
+            if str(ii.get("reason", "")).startswith("z pliku "):
+                rms = ii.get("rms_px", 0)
+                lines.append(f"intrynsyki {ii['reason']}, {ii.get('n_views', 0)} kadrow"
+                             + (f", residuum {rms:.2f} px" if rms else ""))
+            else:
+                lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow, "
+                             f"pokrycie {ii.get('coverage', 0):.0%}"
+                             f"{'' if ii.get('trusted') else ' - ' + ii.get('reason', '')}")
         sh = self.watch.shift.get(rec.name)
         if sh is not None:
             lines.append(f"przesuniecie kadru od odniesienia: {_px(sh)}")
@@ -1886,6 +1904,14 @@ class TwinApp:
                 "Zacznij", icon=viser.Icon.PLAYER_RECORD, color="green",
                 hint="Wlacza robienie zdjec szachownicy z wybranej kamery. Zdjecie robi sie samo, gdy szachownica "
                      "jest w nowym miejscu. Ramieniem nie rusza.")
+            self.lens_file_box = g.add_folder(None, visible=False)
+            with self.lens_file_box:
+                self.lens_file = g.add_dropdown("Gotowy obiektyw z pliku", ("-",), initial_value="-",
+                                                hint=f"Obiektyw zmierzony gdzie indziej: pliki .txt w {LENS_DIR} "
+                                                     "(camera_matrix i dist_coeffs, opcjonalnie image_size).")
+                lens_load = g.add_button("Wczytaj obiektyw z pliku", icon=viser.Icon.FILE_IMPORT, color="gray",
+                                         hint="Zamiast szachownicy: wpisuje K i dystorsje z pliku do wybranej "
+                                              "kamery. Plik musi byc z tej samej rozdzielczosci.")
             self.intr_img = g.add_image(np.zeros((240, 320, 3), np.uint8), format="jpeg", jpeg_quality=70,
                                         visible=False)
             self.intr_md = g.add_markdown("")
@@ -1977,6 +2003,14 @@ class TwinApp:
             self.intr_md.content = ""
             self.calib_ask.reset()
             self._render_calibration()
+
+        @lens_load.on_click
+        @self._safe
+        def _(event):
+            if self.intr_job.running:
+                raise RuntimeError("trwa mierzenie szachownica - Gotowe albo Anuluj")
+            name = self._import_lens(self.intr_cam.value, self.lens_file.value)
+            self._notify(event, "Obiektyw wczytany", f"{name}: {self.ws.camera(name).intrinsics_info['reason']}")
 
         @self.intr_solve.on_click
         @self._safe
@@ -2072,6 +2106,60 @@ class TwinApp:
         return [c for c in self.ws.cameras if c.enabled and c.simulated and c.sim_pose is not None
                 and (not c.trusted or self.watch.moved(c.name))]
 
+    def _set_lens(self, rec: CameraRecord, res: intr.Result) -> None:
+        """Zapis obiektywu (K, dystorsja) kamery - z szachownicy albo z pliku. Poza ustalona ze starym K
+        przestaje byc zaufana: krok 2 trzeba powtorzyc."""
+        rec.K, rec.dist = res.K.tolist(), res.dist.tolist()
+        rec.intrinsics_from = "szachownica"
+        self._simreal_px.pop(rec.name, None)            # nowe K - Sim-Real do sprawdzenia od nowa
+        rec.intrinsics_info = {"rms_px": res.rms_px, "n_views": res.n_views, "coverage": res.coverage,
+                               "trusted": res.trusted, "reason": res.reason,
+                               "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if rec.calibrated:
+            rec.calibration["reason"] = "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
+            rec.calibration["trusted"] = False
+        self._save()
+        self.twin.rebuild()
+        self._refresh_cameras()
+
+    def _lens_files(self) -> list[str]:
+        """Nazwy plikow z gotowym obiektywem w `LENS_DIR` (posortowane)."""
+        return sorted(f.name for f in LENS_DIR.glob("*.txt")) if LENS_DIR.is_dir() else []
+
+    def _import_lens(self, name: str, filename: str) -> str:
+        """Obiektyw kamery `name` z pliku `LENS_DIR/filename`. Odmawia, gdy plik jest z innej
+        rozdzielczosci (K zalezy od niej) - albo, bez `image_size` w pliku, gdy punkt glowny
+        lezy daleko od srodka kadru kamery."""
+        try:
+            rec = self.ws.camera(name)
+        except KeyError:
+            raise RuntimeError("wybierz kamere") from None
+        if rec.simulated:
+            raise RuntimeError("kamera symulowana nie potrzebuje kroku 1")
+        if filename == "-" or not filename:
+            raise RuntimeError(f"brak pliku z obiektywem - wgraj .txt do {LENS_DIR}")
+        path = LENS_DIR / filename
+        if not path.is_file():
+            raise RuntimeError(f"nie ma pliku {path}")
+        try:
+            res = intr.read_file(path)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from None
+        W, H = rec.width, rec.height
+        if res.size != (0, 0) and res.size != (W, H):
+            raise RuntimeError(f"{filename} jest z rozdzielczosci {res.size[0]}x{res.size[1]}, "
+                               f"a kamera {name} ma {W}x{H}")
+        cx, cy = res.K[0, 2], res.K[1, 2]
+        if res.size == (0, 0) and (abs(2 * cx - W) > 0.3 * W or abs(2 * cy - H) > 0.3 * H):
+            raise RuntimeError(f"{filename}: punkt glowny ({cx:.0f}, {cy:.0f}) nie pasuje do kadru {W}x{H} "
+                               f"kamery {name} - plik z innej rozdzielczosci?")
+        self._set_lens(rec, res)
+        self.intr_md.content = f"Obiektyw **{name}** wczytany {res.reason}."
+        todo = self._lens_todo()
+        if todo and self.intr_cam.value not in todo:
+            self.intr_cam.value = todo[0]
+        return name
+
     def _lens_todo(self) -> list[str]:
         """Prawdziwe wlaczone kamery bez zmierzonego obiektywu (krok 1)."""
         return [c.name for c in self.ws.cameras if c.enabled and not c.simulated and c.intrinsics_problem()]
@@ -2127,6 +2215,12 @@ class TwinApp:
             set_if(self.intr_sheet_box, "visible", not done and not ij.running)
             set_if(self.intr_cam, "visible", not ij.running and len(real) > 1)
             set_if(self.intr_start_box, "visible", not ij.running)
+            files = tuple(self._lens_files())
+            set_if(self.lens_file_box, "visible", bool(files) and not ij.running)
+            if files and tuple(self.lens_file.options) != files:
+                cur = self.lens_file.value
+                self.lens_file.options = files
+                self.lens_file.value = cur if cur in files else files[0]
             cam = self.intr_cam.value
             label = (f"Zmierz jeszcze raz: {cam}" if cam not in todo else
                      f"Zacznij: pokazuj szachownice kamerze {cam}")
@@ -2274,10 +2368,6 @@ class TwinApp:
             except RuntimeError:
                 pass
         self._refresh_cameras()
-        self._calib_pending = False
-        self.calib_md.content = f"Zapisano polozenie: {', '.join(names)}."
-        self._render_calibration()
-        return names
 
     def _start_card_calibration(self, event, cameras: list[str], quick: bool) -> None:
         mark = self._motion_mark()                      # STOP/Dom/Polacz od teraz - fala nie bierze ramienia
@@ -2366,18 +2456,7 @@ class TwinApp:
             except KeyError:
                 self.intr_md.content = f"**Kamery {name} juz nie ma** - nic nie zapisano"
                 return
-            rec.K, rec.dist = res.K.tolist(), res.dist.tolist()
-            rec.intrinsics_from = "szachownica"
-            self._simreal_px.pop(name, None)            # nowe K - Sim-Real do sprawdzenia od nowa
-            rec.intrinsics_info = {"rms_px": res.rms_px, "n_views": res.n_views, "coverage": res.coverage,
-                                   "trusted": res.trusted, "reason": res.reason,
-                                   "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
-            if rec.calibrated:
-                rec.calibration["reason"] = "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
-                rec.calibration["trusted"] = False
-            self._save()
-            self.twin.rebuild()
-            self._refresh_cameras()
+            self._set_lens(rec, res)
             self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze." if res.trusted else
                                     f"Obiektyw **{name}**: wynik niepewny ({res.reason}). Zmierz jeszcze raz - "
                                     f"wiecej pochylen i rogow obrazu.")
@@ -3306,6 +3385,19 @@ class TwinApp:
                 return dict(self.frames)
         return self._grab()
 
+    def _heal_cameras(self, now: float | None = None) -> None:
+        """Kamera, ktora sie nie otworzyla albo ktorej strumien padl, otwiera sie sama: `sync` co
+        `HEAL_S`, poki ktoras wlaczona prawdziwa kamera zglasza blad. Dotad trzeba bylo ja wylaczyc
+        i wlaczyc w panelu - 2026-09-26: Brio i uEye przegrywaly wyscig z resetem USB przy starcie
+        panelu (zamkniecie uchwytu w starym procesie resetuje kamere), uEye po restarcie tez."""
+        now = time.monotonic() if now is None else now
+        if now - self._heal_t < HEAL_S:
+            return
+        hub = self.twin.cameras
+        if any(hub.error(c.name) for c in self.ws.cameras if c.enabled and not c.simulated):
+            self._heal_t = now
+            hub.sync()
+
     def _tick_slow(self, frames: dict[str, np.ndarray] | None = None) -> dict[str, np.ndarray]:
         status = self._status_text()
         self.status_md.content = status
@@ -3318,6 +3410,7 @@ class TwinApp:
                 cur = dd.value
                 dd.options = opts
                 dd.value = cur if cur in opts else opts[0]
+        self._heal_cameras()
         if frames is None:
             frames = self._grab()
         self._render_cameras()

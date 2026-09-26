@@ -154,7 +154,8 @@ def run(seed: int, n_cameras: int = 1, spec: RobotSpec = SO101, card: Card | Non
         dt, dr = pose_error(v.T_cam2base, cam.T_cam2base)
         err_mm[v.name], err_deg[v.name], rms[v.name] = dt * 1000, np.degrees(dr), cam.rms_px
         trusted[v.name], reasons[v.name] = cam.trusted, cam.reason
-    ct, cr = pose_error(truth, fit.mounts["card"])
+    tid0 = card.ids[0]
+    ct, cr = pose_error(truth @ card.tag_poses()[tid0], fit.mounts[f"tag{tid0}"])
     return Result(seed, session.index, trusted, reasons, rms, err_mm, err_deg, ct * 1000, np.degrees(cr))
 
 

@@ -843,7 +843,7 @@ class Twin:
     def set_target(self, joints: Mapping[str, float], owner: str | None = None) -> None:
         """Nowy cel. Z `owner` - tylko, jesli ten wlasciciel wciaz ma ramie (inaczej RuntimeError):
         watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego."""
-        cmd = self.status.command or self.joints()
+        cmd = self._ramp_start(joints)
         target = {**cmd, **{k: float(v) for k, v in joints.items()}}
         with self._own_lock:
             if owner is not None and self._owner != owner:
@@ -942,7 +942,7 @@ class Twin:
             checker = CollisionChecker(self.scene)
             keep = self._squeeze_keep()
             home = self.home_pose
-            start = {k: float(v) for k, v in (self.status.command or self.joints()).items()}
+            start = self._ramp_start(home)
 
             def plan(stages):
                 """[(etap, cel)] po kolei, albo opis pierwszej kolizji."""
@@ -1058,7 +1058,7 @@ class Twin:
             # Sprzeglo razem z wlasnoscia: odebranie ramienia (STOP) tuz po tym
             # bloku nie zostawi wlaczonego sprzegla bez wlasciciela.
             self._engaged = True
-        start = dict(self.status.command or self.joints())
+        start = self._ramp_start(joints)
         goal = {k: float(joints.get(k, v)) for k, v in start.items()}
         t0 = t_prev = time.monotonic()
         paused = 0.0
@@ -1081,7 +1081,7 @@ class Twin:
         while time.monotonic() < t_end:
             self._check_move(gen)
             time.sleep(min(0.05, settle))
-        deadline = t_end + self.move_arrive_s
+        deadline = t_end + self.move_arrive_s + self._command_lag(goal)
         prev_cmd: dict[str, float] | None = None
         while True:
             self._check_move(gen)
@@ -1091,6 +1091,41 @@ class Twin:
             if time.monotonic() > deadline:
                 raise RuntimeError(f"ruch nie dojechal do celu w {settle + self.move_arrive_s:.1f} s: {why}")
             time.sleep(0.05)
+
+    def _command_lag(self, goal: Mapping[str, float]) -> float:
+        """Ile sekund ROZKAZ nadzoru jeszcze pojedzie do celu po koncu rampy (z zapasem).
+
+        Nadzor ogranicza predkosc kazdego stawu (suwak Predkosc, np. 20 st./s), wiec przy
+        obrocie nadgarstka o 180 st. zostaje kilka sekund za rampa fali. Staly termin
+        `move_arrive_s` konczyl wtedy przejazd bledem "nie dojechal", choc ramie jechalo
+        prawidlowo - fala z 21 i 11 obserwacjami przepadla (2026-09-26)."""
+        sup, cmd = self._supervisor, self.status.command
+        if sup is None or not cmd:
+            return 0.0
+        lag = 0.0
+        for k, v in goal.items():
+            if k == self._grip or k not in cmd:
+                continue
+            lag = max(lag, abs(float(v) - float(cmd[k])) / sup._max_vel(k))
+        return 0.0 if lag < 1e-3 else 1.5 * lag + 0.5
+
+    def _ramp_start(self, goal: Mapping[str, float]) -> dict[str, float]:
+        """Skad rusza rampa: ostatni rozkaz, a bez niego pomiar. Chwytak o NIEZNANEJ pozycji
+        (backend bez pomiaru, zaden rozkaz jeszcze nie poszedl) startuje od celu: rampa od
+        zgadnietego "otwarty" do "zamkniety" otwierala szczeki trzymajace karte."""
+        start = {k: float(v) for k, v in (self.status.command or self.joints()).items()}
+        g = self._grip
+        if g is not None and g in goal and not self._gripper_known():
+            start[g] = float(goal[g])
+        return start
+
+    def _gripper_known(self) -> bool:
+        """Czy backend zna pozycje chwytaka (pomiar albo rozkaz, ktory naprawde poszedl)."""
+        b = self._backend
+        if self._grip is None or b is None:
+            return True
+        fn = getattr(b, "gripper_known", None)
+        return bool(fn()) if fn is not None else _gripper_measured(b)
 
     def _frozen(self) -> bool:
         """Petla stoi: lacze z serwami niepotwierdzone albo utracone."""
@@ -1299,6 +1334,13 @@ class Twin:
                     self._target = None                    # cel sprzed rampy nie moze wrocic po jej koncu
                 engaged = self._engaged
                 desired = self._target if engaged else None
+                if desired is not None and self._grip in desired and not self._gripper_known():
+                    # Chwytak o nieznanej pozycji: kazdy cel wprost, bez ogranicznika predkosci, az backend
+                    # potwierdzi, ze jakis rozkaz poszedl. Ogranicznik startowal od zgadnietego "otwarty"
+                    # (A1X: 100) i jechal do "zamkniety" - szczeki trzymajace karte OTWIERALY sie na
+                    # sekunde i karta wypadala (fala, 2026-09-26, dwa razy: za drugim razem lokalna flaga
+                    # "znany" przelaczyl cel rowny zgadywance, ktory do magistrali nigdy nie doszedl).
+                    sup.reseed({self._grip: float(desired[self._grip])})
                 # Obecnosc operatora w blizniaku to sprzeglo z UI, nie dlon w kadrze.
                 command, report = sup.step(desired, 0.0 if frozen else dt, hand_present=True, engaged=engaged)
                 floor = self._grip_floor
@@ -1637,6 +1679,12 @@ def _gripper_mismatch(b: RobotBackend, tol: float) -> str:
     fmt = "zamkniety {:.0f}, otwarty {:.0f}, zero {:.0f}"
     return (f"chwytak: backend ma tiki ({fmt.format(*got)}), a blizniak i polityki ({fmt.format(*want)}) - "
             "kat szczek w blizniaku nie zgadza sie z serwem; popraw gripper_*_ticks w konfiguracji")
+
+
+def _gripper_measured(b: RobotBackend) -> bool:
+    """Czy backend mierzy chwytak; bez metody `gripper_measured` zakladamy, ze tak (Feetech, sim)."""
+    fn = getattr(b, "gripper_measured", None)
+    return True if fn is None else bool(fn())
 
 
 def _backend_faults(b: RobotBackend) -> list[str]:

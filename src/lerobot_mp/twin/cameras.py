@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -49,11 +50,27 @@ def probe_devices(max_index: int = 6) -> list[dict]:
             ok, img = cap.read()
             if ok and img is not None:
                 w, h = int(img.shape[1]), int(img.shape[0])
-                found.append(dict(index=index, source=str(index), label=f"{index}: {w}x{h}",
-                                  width=w, height=h))
+                # Zrodlo: stala sciezka by-id, gdy jest - indeks V4L2 przesuwa sie po kazdym
+                # wpieciu czegos do USB (Brio: 2 -> 3 po wpieciu innej kamery, 2026-09-26).
+                found.append(dict(index=index, source=stable_path(index) or str(index),
+                                  label=f"{index}: {w}x{h}", width=w, height=h))
         finally:
             cap.release()
     return found
+
+
+def stable_path(index: int) -> str | None:
+    """Sciezka /dev/v4l/by-id/... (index0 = strumien obrazu) wskazujaca na /dev/video<index>; None bez niej."""
+    by_id = Path("/dev/v4l/by-id")
+    if not by_id.is_dir():
+        return None
+    for link in sorted(by_id.iterdir()):
+        try:
+            if link.resolve().name == f"video{index}":
+                return str(link)
+        except OSError:
+            continue
+    return None
 
 
 def probe_all() -> list[dict]:

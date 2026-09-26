@@ -236,14 +236,20 @@ trzymana równolegle do obiektywu nie wyznacza ogniskowej — sesja bez pochyle�
 (rozrzut < 35°) albo z ogniskową nie do wiary wychodzi jako **niepewna**, a
 kamera z takim obiektywem nie przejdzie kroku 3. *Anuluj* niczego nie liczy
 ani nie zapisuje.
+Obiektyw zmierzony gdzie indziej (eksport K i dystorsji do pliku tekstowego,
+jak `assets/calib/logitech_brio_4k_calib.txt` i `ueye_calib.txt`) wczytuje
+*Gotowy obiektyw z pliku* → *Wczytaj obiektyw z pliku* — do wybranej kamery,
+tylko z tej samej rozdzielczości; plik trafia do `assets/calib/`.
 
 **3. Położenie kamer** (w kodzie: fala). Kalibracja, krok 2: *Pobierz kartę do
 druku*, wydrukuj, zmierz bok kodu, zegnij kartę, włóż wolny koniec w szczęki
 (ok. 7 cm ma wystawać). *Start: ramię pokaże kartę kamerom (…)*; przycisk
 pyta, czy karta jest w chwytaku, a stół pusty — drugie kliknięcie w ciągu 8 s
 rusza. Przycisk jest zablokowany, dopóki któraś prawdziwa kamera nie ma
-zmierzonego obiektywu. Ramię zbiera ~20 póz; kamera, której się nie udało,
-dostaje „źle” z powodem. *Zapisz wynik* (zapisuje też użyty bok kodu —
+zmierzonego obiektywu. Ramię zbiera ~20 póz: dopóki kamera nie zobaczy karty
+co najmniej dwa razy, fala zamiata stawem podstawy sektorami po obu stronach
+stołu (nie błądzi losowo); potem co druga poza celuje w kamerę, której najbardziej
+brakuje. Kamera, której się nie udało, dostaje „źle” z powodem. *Zapisz wynik* (zapisuje też użyty bok kodu —
 zmieniony po pomiarze blokuje zapis z powodem) albo *Odrzuć*. Wyjmij kartę.
 
 **4. Sprawdzenie Sim-Real.** Zakładka Sim-Real, każda kamera: krawędzie renderu

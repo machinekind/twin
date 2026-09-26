@@ -387,6 +387,9 @@ class A1XArm(RobotBackend):
                 v = min(max(float(targets[GRIPPER]), jc.min, 0.0), jc.max, 100.0)
                 reported = self._grip_app()
                 if self._g_target is not None or abs(v - reported) > GRIP_START_DELTA:
+                    if self._g_cmd is None:
+                        logger.info("A1X chwytak: pierwszy rozkaz %.0f (zglaszane %.0f, bez pomiaru) -> p_des %.2f",
+                                    v, reported, self._pdes(v))
                     want = self._pdes(v)
                     if self._g_target is None:
                         # Pierwszy rozkaz: strumien od ZGLOSZONEGO rozwarcia, nie od celu.
@@ -439,6 +442,18 @@ class A1XArm(RobotBackend):
 
     def gripper_ticks(self) -> None:
         return None
+
+    def gripper_known(self) -> bool:
+        """Czy pozycja chwytaka jest znana: pomiar albo rozkaz, ktory NAPRAWDE poszedl w 0x051.
+        Cel rowny zglaszanemu domyslnemu (`GRIP_START_DELTA`) nic nie wysyla i niczego nie ustala."""
+        with self._lock:
+            return self.gripper_measured() or self._g_cmd is not None
+
+    def gripper_measured(self) -> bool:
+        """Czy chwytak ma pomiar (dwa punkty `gripper_fb_*`). Bez nich `joints()` zglasza ostatni
+        rozkaz, a przed pierwszym - `gripper_start`, ktore nie musi zgadzac sie ze szczekami."""
+        a = self.acfg
+        return a.gripper_fb_closed is not None and a.gripper_fb_open is not None
 
     def calibration_warnings(self) -> list[str]:
         a = self.acfg
