@@ -39,6 +39,9 @@ class SpecsFolder:
             self.real_ok = gui.add_checkbox("Okulary moga ruszac prawdziwym ramieniem", False,
                                             hint="Tylko tryb real. Obowiazuje, dopoki zaznaczone (inaczej niz "
                                                  "potwierdzenie polityki, ktore gasnie po starcie).")
+            self.hold_off = gui.add_slider("Odczekanie przed ruchem [s]", min=0.0, max=3.0, step=0.1, initial_value=1.0,
+                                           hint="Tryb real: ile sekund po przyjeciu celu z reki ramie czeka, zanim ruszy. "
+                                                "0 = od razu. Dziala od nastepnego polaczenia z okularami.")
             connect = gui.add_button("Polacz z okularami", icon=viser.Icon.PLUG_CONNECTED, color="green",
                                      hint="Laczy blizniaka z przekaznikiem: pudelko zasiegu w okularach, pinch = cel.")
             disconnect = gui.add_button("Rozlacz okulary", icon=viser.Icon.PLUG_CONNECTED_X, color="gray",
@@ -74,7 +77,8 @@ class SpecsFolder:
         self.stop(keep_consent=True)
         # Same trust rule as `lerobot-twin specs` without --trusted-only: any registration is enough.
         self.driver = SpecsReach(self.app.twin, relay_url=str(self.url.value).strip() or DEFAULT_RELAY,
-                                 mode=self.mode.value, real_ok=bool(self.real_ok.value), allow_untrusted=True)
+                                 mode=self.mode.value, real_ok=bool(self.real_ok.value), allow_untrusted=True,
+                                 hold_off_s=float(self.hold_off.value))
         self.driver.start()
         self.tick()
 
