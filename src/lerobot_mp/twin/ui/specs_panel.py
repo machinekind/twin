@@ -10,6 +10,8 @@ so while the panel is armed the glasses get a "busy" refusal.
 
 from __future__ import annotations
 
+import os
+
 import logging
 from typing import Any
 
@@ -19,7 +21,9 @@ from ..specsreach import MODES, SpecsReach
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RELAY = "ws://127.0.0.1:8080/twin"
+# The relay usually runs on the machine with Lens Studio and the glasses, not on the rig's:
+# SPECS_RELAY=ws://<that machine>:8080/twin pre-fills the field.
+DEFAULT_RELAY = os.environ.get("SPECS_RELAY", "ws://127.0.0.1:8080/twin")
 
 
 class SpecsFolder:
