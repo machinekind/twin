@@ -477,7 +477,8 @@ def _specs(a: argparse.Namespace) -> int:
         print(json.dumps(msg), flush=True)
 
     drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=not a.trusted_only,
-                     real_ok=a.mode == "real" and a.i_know, on_state=show, max_jump_deg=a.max_jump_deg)
+                     real_ok=a.mode == "real" and a.i_know, on_state=show, max_jump_deg=a.max_jump_deg,
+                     hold_off_s=a.hold_off)
     # From the home/zero pose every box point is a > 45 deg jump ("jump" refusal), so go above the centre first.
     if a.start_center:
         if not st.simulated:
@@ -667,6 +668,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--i-know", action="store_true", help="wymagane w --mode real: rozumiem, ze ramie sie ruszy")
     p.add_argument("--max-jump-deg", type=float, default=150.0,
                    help="odrzuc cel, gdy jakis staw mialby sie obrocic o wiecej w jednym ruchu (domyslnie 150)")
+    p.add_argument("--hold-off", type=float, default=1.0,
+                   help="w --mode real: ile sekund odczekac po przyjeciu celu z reki, zanim ramie ruszy (domyslnie 1; 0 = od razu)")
     p.add_argument("--start-center", action="store_true",
                    help="przed startem etapami (10 st./s, straznik uderzen) nad srodek pudelka; w real po Enter")
     p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")
