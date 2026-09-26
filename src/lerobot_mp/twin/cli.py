@@ -476,7 +476,7 @@ def _specs(a: argparse.Namespace) -> int:
     def show(msg: dict) -> None:
         print(json.dumps(msg), flush=True)
 
-    drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=a.allow_untrusted,
+    drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=not a.trusted_only,
                      real_ok=a.mode == "real" and a.i_know, on_state=show, max_jump_deg=a.max_jump_deg)
     # From the home/zero pose every box point is a > 45 deg jump ("jump" refusal), so go above the centre first.
     if a.start_center:
@@ -662,7 +662,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=("dry", "sim", "real"), default="dry",
                    help="dry - tylko sprawdzenia i nakladka; sim - rusza ramieniem w symulacji; real - prawdziwym")
     p.add_argument("--grasp", action="store_true", help="cel obiektu: zejscie, chwyt i powrot (inaczej tylko nad obiekt)")
-    p.add_argument("--allow-untrusted", action="store_true", help="przyjmuj cele z niezaufanej rejestracji okularow")
+    p.add_argument("--trusted-only", action="store_true",
+                   help="przyjmuj cele tylko przy zaufanej rejestracji okularow (domyslnie kazda rejestracja wystarczy)")
     p.add_argument("--i-know", action="store_true", help="wymagane w --mode real: rozumiem, ze ramie sie ruszy")
     p.add_argument("--max-jump-deg", type=float, default=150.0,
                    help="odrzuc cel, gdy jakis staw mialby sie obrocic o wiecej w jednym ruchu (domyslnie 150)")
