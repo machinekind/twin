@@ -408,13 +408,13 @@ def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(
     assert app.wave_btn.disabled and "polacz ramie" in app.wave_md.content.lower()
     app.twin.connect("sim", threaded=False)
     app._render_calibration()
-    assert not app.wave_btn.disabled and app.wave_btn.label == "Start fali: kam"
-    _click(app, "Start fali: kam")
+    assert not app.wave_btn.disabled and app.wave_btn.label == "Start: ramie pokaze karte kamerom (kam)"
+    _click(app, "Start: ramie pokaze karte kamerom (kam)")
     assert started == [(["kam"], False)]
     started.clear()
     monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
-    _click(app, "Start fali: kam")
-    assert started == [] and app.wave_btn.color == "orange" and "Kliknij ponownie" in app.wave_btn.label
+    _click(app, "Start: ramie pokaze karte kamerom (kam)")
+    assert started == [] and app.wave_btn.color == "orange" and "Kliknij jeszcze raz" in app.wave_btn.label
     _click(app, app.wave_btn.label)
     assert started == [(["kam"], False)]
     app.calib_ask.reset()
@@ -435,9 +435,51 @@ def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
         monkeypatch.setattr(app.watch, "moved", lambda name: name == "kam1")
         monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam1"])
         app._render_calibration()
-        assert app.reloc_box.visible and app.reloc_btn.label == "Relokalizuj kam1 (krotka fala)"
-        assert "PRZESTAWIONA" in app.calib_html.content
-        _click(app, "Relokalizuj kam1 (krotka fala)")
+        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)"
+        assert app.reloc_box.visible and app.reloc_btn.label == label
+        assert "PORUSZONA" in app.calib_html.content
+        _click(app, label)
         assert started == [(["kam1"], True)]
     finally:
         app.ws.remove_camera("kam1")
+
+
+def test_after_saving_one_lens_the_calibration_tab_moves_on_to_the_next_camera(app):
+    """Po zapisie obiektywu kamery 1 przycisk mowil dalej "kamera 1", choc zostala kamera 2."""
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    class Res:
+        K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
+        dist = np.zeros(5)
+        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+
+    for n, src in (("u1", "5"), ("u2", "6")):
+        app.ws.add_camera(CameraRecord(n, src))
+    try:
+        app._render_calibration()
+        assert app.intr_box.visible and app.intr_cam.value == "u1"
+        assert app.intr_start.label == "Zacznij: pokazuj szachownice kamerze u1"
+        assert "zostalo: u1, u2" in app.intr_title.content
+        ij = app.intr_job
+        ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "u1"}
+        app._tick_calibration()
+        assert app.intr_cam.value == "u2" and app.intr_start.label.endswith("kamerze u2")
+        assert "u1** zmierzony" in app.intr_md.content and "OBIEKTYW OK" in app.calib_html.content
+        assert app.wave_btn.disabled and "krok 1 dla: u2" in app.wave_md.content
+    finally:
+        for n in ("u1", "u2"):
+            app.ws.remove_camera(n)
+        app.intr_job.state = jobs.IDLE
+
+
+def test_fixed_texts_written_at_creation_reach_the_browser(app):
+    """Staly tekst z `add_markdown` (opis zakladki, notki Jak uzywac) nie docieral do przegladarki."""
+    from viser._gui_handles import GuiMarkdownHandle
+
+    h = app.server.gui.add_markdown("staly tekst")
+    try:
+        assert h._tw_sent == "staly tekst" and h._impl.props._markdown
+        h.content = "staly tekst"                               # ten sam tekst - bez wysylania
+        assert GuiMarkdownHandle.content.fset._dedup
+    finally:
+        h.remove()
