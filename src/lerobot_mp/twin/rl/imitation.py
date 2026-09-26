@@ -150,6 +150,8 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
                else np.ones(len(demos.train_obs), np.float32))
     weighted = not np.all(weights == weights[0])
     if init is not None:
+        if init.meta.cube_yaw_mode != "canonical":
+            raise ValueError("Continuous cube yaw requires a matching demonstration contract; current datasets are canonical")
         # JSON canonicalizes tuple/list differences in saved task configurations.
         if (init.meta.robot != "a1x" or json.dumps(init.meta.task, sort_keys=True) !=
                 json.dumps(demos.task, sort_keys=True) or

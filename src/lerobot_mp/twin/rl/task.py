@@ -265,6 +265,46 @@ def fold_yaw(xp, R):
     return xp.stack(rows, -2)
 
 
+class ContinuousCubeYaw:
+    """Keep the nearest 90-degree-equivalent yaw across delivered cube poses.
+
+    Like legacy folding, this assumes an upright square cube and discards tilt.
+    It uses only observation history, never the true pose or teacher state.
+    Call reset at episode start. Rotations of >=45 degrees between observations
+    are ambiguous; this is not a general object-orientation tracker.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self) -> None:
+        self.previous: float | None = None
+
+    def __call__(self, rotation: np.ndarray) -> np.ndarray:
+        rotation = np.asarray(rotation, float)
+        if rotation.shape != (3, 3) or not np.isfinite(rotation).all():
+            raise ValueError("Cube rotation must be a finite 3x3 matrix")
+        folded = fold_yaw(np, rotation)
+        yaw = float(np.arctan2(folded[1, 0], folded[0, 0]))
+        if self.previous is None:
+            self.previous = yaw
+            return folded
+        yaw += round((self.previous - yaw) / (np.pi / 2)) * (np.pi / 2)
+        self.previous = yaw
+        c, s = np.cos(yaw), np.sin(yaw)
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def cube_yaw_tracker(mode: str, *, task: TaskConfig, robot: str, fold: bool):
+    """Validate the saved observation mode; legacy checkpoints remain stateless."""
+    if mode == "canonical":
+        return None
+    if (mode != "continuous" or robot != "a1x" or task.name != "lift"
+            or task.obs_dim != 36 or task.act_dim != 7 or task.cube_half != .015 or not fold):
+        raise ValueError("Continuous cube yaw requires the folded 36-input A1X cube-lift contract")
+    return ContinuousCubeYaw()
+
+
 # ---------------------------------------------------------------- nagroda
 def limit_cost(xp, task: TaskConfig, limits: Limits, q_cmd):
     """(N,) kara za cele stawow ramienia blizej limitu niz `limit_margin` (0 w srodku zakresu)."""

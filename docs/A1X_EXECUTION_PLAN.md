@@ -171,10 +171,11 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **screen candidate 022 on the same 34 already inspected
-training cases, then target any remaining slow-closing or approach failures for
-joint arm/gripper teaching**. Preserve the original roles and select actual
-learner failures before collecting more examples. Candidate 022 improves the
+Current next action: **screen the next 20 already assigned training cases with
+frozen candidates 022/023 for closing/approach failures before joint arm/gripper
+teaching**. Preserve the original roles and select actual learner failures before
+collecting more examples. Add an explicit matching demonstration convention
+before fitting a continuous-yaw candidate. Candidate 022 improves the
 development score to 17/20 and solves all three previously targeted training
 failures. Its remaining development traces show a closing stall (50007), an
 approach rejection with closed jaws (50009), and a late grasp with only 1.59 s
@@ -183,6 +184,9 @@ is consistent with its 3 mm clearance; keep it unchanged. Coordinated arm/grippe
 correction improved this case where isolated gripper fits did not.
 Keep validation, development and reserved holdout roles fixed. Both candidate
 022 (17/20, one rejection) and reference 011 (16/20, zero rejections) are frozen.
+Observation-only variant 023 also scores 17/20 development, and improves the
+paired training subset from 33/34 to 34/34. It is preserved separately; it does
+not resolve the three development failures or establish calibration tolerance.
 Do not aggregate original and replacement variants of the same training episode,
 lengthen fitting, or start qualification below the 18/20 nominal development gate.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
@@ -602,6 +606,47 @@ remains unmeasured. The saved persistent translation/rotation-bias protocol is
 still required after nominal qualification, alongside separate jitter/delay
 tests and later validation of the actual two-camera pipeline.
 
+The subsequent `joint-training-screen-001` completes **33/34 autonomous holds**
+on the same previously assigned training cases. It fixes all three targeted
+failures but regresses 44016. This is a separate representation failure: true
+yaw moves from 45.22 to 44.98 degrees, while canonical square-cube folding jumps
+from -44.78 to +44.98 degrees. The resulting near-quarter-turn demand ends in
+a finger-body/cube guard rejection, with no actual prohibited contact. The
+three remaining development failures have no comparable yaw jump.
+
+`yaw-continuity-probe-001` chooses the square-equivalent yaw nearest the last
+delivered observation. With unchanged 022 weights, training case 44016 completes
+a true two-second hold and 74.0 mm lift with no rejection/contact/numerical fault.
+The production option is explicitly saved as `PolicyMeta.cube_yaw_mode`:
+legacy/default `canonical` behavior is preserved, while `continuous` applies
+the same observation-history rule in CPU evaluation and `PolicyRunner` and
+resets each episode. Both retain the upright-square-cube approximation; this
+does not correct calibration bias or add hidden teacher/physics information.
+Unsupported imitation/batch refinement fails before training rather than silently
+discarding the observation convention; continuous-mode demonstration support
+must be explicit before any such fit. No new training occurred in this experiment.
+
+Candidate **023** differs from 022 only in saved observation-mode metadata;
+all actor/normalizer tensors are identical. `cube-yaw-comparison-001` pairs both
+variants under the same guarded controller, seeds, 10 s deadline and true 2 s
+hold criterion. Development remains **17/20 for both**, failing 50007/50009/50015.
+Each has one development guard rejection and zero actual prohibited contacts
+or numerical faults. On the matched training subset, 022 scores **33/34**, while
+023 scores **34/34** with zero rejections, contacts or numerical faults. The full
+paired comparison takes 198.62 s; the previous 022 development and training
+results reproduce exactly. All actor/normalizer tensors are identical, parent
+hashes and runtime sources are unchanged during the comparison, and the frozen
+007/011/022 bundles still verify. Candidate 023 is preserved separately in
+`workspace/validation/baselines/lift-imitation-023/`, SHA256 `7251688c`, with seven
+verified artifact hashes. This is nominal diagnostic evidence, not calibration
+tolerance or held-out qualification. The fix addresses a real input discontinuity
+but does not explain the remaining development closing/clearance/late-grasp failures.
+`cube-yaw-contracts-001.log` passes 48 checkpoint/continuity/runner/imitation
+checks; `cube-yaw-environment-contracts-001.log` passes 48 CPU evaluation,
+guarded-demonstration and NumPy/Torch checks. The source overlay is archived
+under `cube-yaw-source-001/` against commit `90f4391`. No PPO, corrective-data
+collection, held-out evaluation, calibration sweep or physical test was run.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -725,6 +770,7 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Nonlinear gripper residual improves one development case but adds a guard rejection and fails targeted recoveries | `gripper-residual-comparison-001`: 021 16/20, two rejections, zero actual contacts; 0/3 selected training recoveries; 41 focused and 11 runner tests pass | Keep 011; investigate the new 50008 finger-body/cube clearance rejection before more fitting |
 | 2026-09-27 | Grasp-clearance inspection supports earlier coordinated corrections without weakening the guard | `grasp-clearance-inspection-002`: requested 2.83 mm versus 3 mm margin, measured 6.05 mm; `closing-clearance-channels-001`: early arm correction avoids rejection, gripper-only does not; all six assisted probes remain below full hold | Keep guard unchanged; test joint arm/gripper refinement on existing training data, never the inspected development traces |
 | 2026-09-27 | Joint refinement improves nominal development success and all targeted training recoveries | `joint-grasp-refinement-comparison-001`: 022 17/20, one rejection, zero actual contacts; 3/3 training recoveries; 10.83 s fit; frozen bundle SHA256 `a701802f` | Preserve 022 alongside zero-rejection 011; screen existing training cases for remaining failure coverage; held-out, calibration tolerance and physical validation remain pending |
+| 2026-09-27 | Continuous cube-yaw input fixes a boundary failure with identical learned weights | `cube-yaw-comparison-001`: 023 ties 022 at 17/20 development and improves 33/34 to 34/34 assigned training cases; zero actual contacts; legacy results reproduce exactly; 96 tests pass; separate frozen 023 bundle | Screen the next bounded training subset for remaining closing/approach failures; require matching observation conventions before further teaching/fitting; calibration tolerance remains unmeasured |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

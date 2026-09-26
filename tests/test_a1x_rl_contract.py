@@ -90,8 +90,8 @@ def test_evaluation_does_not_count_a_last_frame_lift_as_a_completed_hold(monkeyp
     assert result["required_hold_s"] == 2.0
 
 
-@pytest.mark.parametrize("fold_yaw", [False, True])
-def test_nominal_evaluation_keeps_the_saved_runtime_observation_convention(fold_yaw):
+@pytest.mark.parametrize("fold_yaw,mode", [(False, "canonical"), (True, "canonical"), (True, "continuous")])
+def test_nominal_evaluation_keeps_the_saved_runtime_observation_convention(fold_yaw, mode):
     from types import SimpleNamespace
     from lerobot_mp.twin.rl.evaluate import evaluate
     from lerobot_mp.twin.rl.policy import PolicyMeta
@@ -105,7 +105,8 @@ def test_nominal_evaluation_keeps_the_saved_runtime_observation_convention(fold_
         return np.zeros(7)
 
     policy = SimpleNamespace(task=task, act=act, meta=PolicyMeta(
-        task={}, hidden=[], obs_dim=task.obs_dim, act_dim=7, robot="a1x", randomization={"fold_yaw": fold_yaw}))
+        task={}, hidden=[], obs_dim=task.obs_dim, act_dim=7, robot="a1x",
+        randomization={"fold_yaw": fold_yaw}, cube_yaw_mode=mode))
     result = evaluate(policy, episodes=1, workspace=ws, randomization=rand, seed=19)
     raw = TwinEnv(task, workspace=ws, randomization=rand)
     try:
@@ -117,6 +118,7 @@ def test_nominal_evaluation_keeps_the_saved_runtime_observation_convention(fold_
         expected = runner.observation(raw.scene.joints())
         np.testing.assert_allclose(observed[0], expected, atol=1e-6)
         assert result["fold_yaw"] == fold_yaw
+        assert result["cube_yaw_mode"] == mode
         assert not rand.fold_yaw  # Caller configuration was not mutated.
     finally:
         raw.close()

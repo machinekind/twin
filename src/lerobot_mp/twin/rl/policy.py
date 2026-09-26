@@ -80,6 +80,8 @@ class PolicyMeta:
     feature_geometry_sha256: str | None = None
     #: Optional learned correction to the gripper, independent of the arm actor.
     gripper_residual: str = "none"
+    #: Square-cube orientation convention, applied before constructing observations.
+    cube_yaw_mode: str = "canonical"
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,
@@ -96,6 +98,10 @@ class Policy(nn.Module):
     def __init__(self, meta: PolicyMeta):
         super().__init__()
         self.meta = meta
+        if meta.cube_yaw_mode != "canonical" and (meta.obs_dim != 36 or meta.act_dim != 7):
+            raise ValueError("Continuous cube yaw requires the folded 36-input A1X cube-lift contract")
+        tk.cube_yaw_tracker(meta.cube_yaw_mode, task=meta.task_config(), robot=meta.robot,
+                            fold=bool(meta.randomization.get("fold_yaw", False)))
         self.norm = Normalizer(meta.obs_dim)
         self.actor = mlp([meta.obs_dim, *meta.hidden], meta.act_dim)
         self.feature_encoder = None

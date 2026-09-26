@@ -17,6 +17,14 @@ nominal qualification. Continue nominal development in the meantime.
   Corrupt the full pose before the runner's existing yaw folding. Calibration
   rotation changes both object orientation and apparent position about the base
   origin; rotating only the object orientation is a different test.
+- Record the checkpoint's `cube_yaw_mode` and keep it fixed in each comparison.
+  The optional continuous mode selects the nearest equivalent square-cube yaw
+  using delivered observation history; it does not estimate or remove calibration
+  bias. Both modes retain the existing upright-cube approximation and discard
+  roll/pitch in the actor's orientation input. Inject the full transform first:
+  its effect on perceived position must survive even when tilt is discarded.
+  Include starts near the +/-45-degree yaw boundary. Continuity within an episode
+  does not eliminate a biased first-frame choice of grasp orientation.
 - Keep the bias constant throughout each episode and across the paired trials
   for a given condition. Do not redraw it every frame or average opposite signs
   into a single apparent zero-bias result. Noise and delay are separate factors.

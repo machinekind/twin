@@ -111,6 +111,8 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
     spec = (workspace or Workspace()).spec()
     tsk = task if isinstance(task, tk.TaskConfig) else tk.make_task(task, spec)
     if init is not None:
+        if init.meta.cube_yaw_mode != "canonical":
+            raise ValueError("Batch training does not support continuous cube yaw observations")
         if init.meta.robot != spec.name:
             raise RuntimeError(f"polityka uczona na {init.meta.robot}, stanowisko ma {spec.name}")
         tsk = init.task                                # to samo zadanie, na ktorym sie uczyla

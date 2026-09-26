@@ -105,10 +105,13 @@ class TwinEnv(gym.Env):
 
     def __init__(self, task: str | tk.TaskConfig = "reach", *, workspace: Workspace | None = None,
                  randomization: Randomization | None = None, render_mode: str | None = None,
-                 render_camera: str | None = None):
+                 render_camera: str | None = None, cube_yaw_mode: str = "canonical"):
         self.task = task if isinstance(task, tk.TaskConfig) else \
             tk.make_task(task, spec=(workspace or Workspace()).spec())
         self.render_mode = render_mode
+        self.rand = randomization if randomization is not None else Randomization()
+        self._cube_yaw = tk.cube_yaw_tracker(cube_yaw_mode, task=self.task,
+            robot=(workspace or Workspace()).spec().name, fold=self.rand.fold_yaw)
         self.scene = sc.build(scene_config(self.task, workspace, view=render_mode is not None))
         self.render_camera = render_camera or (self.scene.cfg.cameras[0].name if self.scene.cfg.cameras else None)
         self.kin = self.scene.kin
@@ -117,7 +120,6 @@ class TwinEnv(gym.Env):
         if self.kin.spec.name == "a1x":
             from ..collision import CollisionChecker
             self._forbidden = CollisionChecker(self.scene, grasp_objects=("cube",) if self.task.cube else ()).forbidden_pairs()
-        self.rand = randomization if randomization is not None else Randomization()
         self.fields = ModelFields(self.scene, self.task.cube)
         m = self.scene.model
         m.opt.timestep = self.task.timestep
@@ -191,7 +193,7 @@ class TwinEnv(gym.Env):
         if self.rand.cube_noise > 0:
             pos[:2] += self.np_random.normal(0.0, self.rand.cube_noise, 2)
         if self.rand.fold_yaw:
-            rot = tk.fold_yaw(np, rot)
+            rot = self._cube_yaw(rot) if self._cube_yaw is not None else tk.fold_yaw(np, rot)
         self._cube_seen = (pos, rot)
 
     # ------------------------------------------------------------ gym
@@ -206,6 +208,8 @@ class TwinEnv(gym.Env):
         self._delay = [np.zeros(self.task.act_dim)] * int(s["delay"])
         self._cube_delay, self._cube_period = int(s["cube_delay"]), int(s["cube_period"])
         self._cube_hist = []
+        if self._cube_yaw is not None:
+            self._cube_yaw.reset()
 
         mujoco.mj_resetData(m, d)
         q0 = np.asarray(options["q"], float) if "q" in options else tk.sample_start(self.task, self.limits, rng, 1)[0]

@@ -136,6 +136,8 @@ class PolicyRunner:
         self.twin = twin
         self.policy = policy
         self.task = policy.task
+        self._cube_yaw = tk.cube_yaw_tracker(getattr(policy.meta, "cube_yaw_mode", "canonical"),
+            task=self.task, robot=spec.name, fold=bool(policy.meta.randomization.get("fold_yaw", False)))
         # Wlasna kinematyka (wlasne MjData): ta ze sceny liczy tez panel (IK uchwytu)
         # z innego watku, a `tcp()` pisze do swojego MjData.
         self.kin = RobotKinematics(spec)
@@ -224,7 +226,9 @@ class PolicyRunner:
             if self.policy.meta.randomization.get("fold_yaw", False):
                 # W treningu polityka widziala obrot zlozony do +-45 st. (jak z detektora);
                 # poza "w dloni" i prawda z symulacji tego nie maja - skladamy tak samo.
-                cube_rot = tk.fold_yaw(np, np.asarray(cube_rot, float))
+                rotation = np.asarray(cube_rot, float)
+                cube_rot = (self._cube_yaw(rotation) if self._cube_yaw is not None
+                            else tk.fold_yaw(np, rotation))
         if self.task.target:
             target = self.target[None]
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], tcp[None], self.prev_action[None],
@@ -259,6 +263,8 @@ class PolicyRunner:
         self.prev_action = np.zeros(self.task.act_dim)
         self.status = RunnerStatus(running=True, goal_clamped=self.status.goal_clamped)
         self._cube, self._cube_src = None, None
+        if self._cube_yaw is not None:
+            self._cube_yaw.reset()
         self._grip_prev = None
         self._carried, self._streak_cube = False, None
         self._success_since = None

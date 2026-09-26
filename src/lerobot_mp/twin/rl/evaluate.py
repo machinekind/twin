@@ -36,7 +36,9 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     # Cube symmetry is the saved policy's input convention, not observation
     # noise. Disabling randomization must not change it relative to runtime.
     rand = replace(rand, fold_yaw=bool(policy.meta.randomization.get("fold_yaw", False)))
-    env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None)
+    cube_yaw_mode = getattr(policy.meta, "cube_yaw_mode", "canonical")
+    env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None,
+                  cube_yaw_mode=cube_yaw_mode)
     succ, final, ever, place, final_state = [], [], [], [], []
     collisions = numerical = 0
     try:
@@ -65,6 +67,7 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
            "final_state_success": float(np.mean(final_state)),
            "required_hold_s": task.end_on_success / task.control_hz,
            "fold_yaw": rand.fold_yaw,
+           "cube_yaw_mode": cube_yaw_mode,
            "randomized": rand.randomized, "centre": rand.centre.source}
     key = "final_distance_mm" if task.name == "reach" else "final_height_mm"
     out[key] = float(np.median(final) * 1000)
