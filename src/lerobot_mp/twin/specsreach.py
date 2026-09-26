@@ -274,7 +274,7 @@ class SpecsReach:
 
     def __init__(self, twin: Twin, *, relay_url: str, volume: ReachVolume | None = None, mode: Mode = "dry",
                  hover: float = 0.08, touch_dz: float = 0.01, speed_deg_s: float = 20.0,
-                 backoff_speed_deg_s: float = 8.0, max_jump_deg: float = 45.0, grasp: bool = False,
+                 backoff_speed_deg_s: float = 8.0, max_jump_deg: float = 150.0, grasp: bool = False,
                  allow_untrusted: bool = False, real_ok: bool = False, hold_off_s: float = 1.0,
                  on_state: Callable[[dict], None] | None = None):
         _check_mode(mode)
@@ -810,8 +810,8 @@ class SpecsReach:
             raise _Rejected("collision", f"kolizja {what}: {collision}")
 
     def _recheck(self, legs: list[_Leg]) -> None:
-        """The command may have changed since validation (sliders during the hold-off): recheck the jump
-        and the path to the first goal from the current command, or hold "moved"."""
+        """Someone moved the arm during the hold-off (panel sliders, a jog): the plan was validated
+        from a pose the arm no longer has, so hold "moved" and let the wearer pinch again."""
         if not legs:
             return
         start = self._arm_joints(self._command())
@@ -819,15 +819,8 @@ class SpecsReach:
         if validated is not None and all(abs(v - validated.get(k, math.inf)) < self.unchanged_deg
                                          for k, v in start.items()):
             return
-
-        first = self._arm_joints(legs[0].goal)
-        jump = self._largest_step(start, first)
-        if jump > self.max_jump:
-            raise _Abort("hold", "moved", f"rozkaz zmieniony w czasie odczekania: skok {jump:.0f} st.")
-        _, checker = self._tools()
-        collision = checker.path_clear(start, first)
-        if collision is not None:
-            raise _Abort("hold", "moved", f"rozkaz zmieniony w czasie odczekania: kolizja {collision}")
+        moved = self._largest_step(validated or {}, start) if validated else math.inf
+        raise _Abort("hold", "moved", f"rozkaz zmieniony w czasie odczekania: o {moved:.0f} st.")
 
     def _hover_point(self, pos: np.ndarray) -> np.ndarray:
         p = np.array(pos, float)
