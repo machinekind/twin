@@ -12,8 +12,9 @@ Kroki sa te same w symulacji i na prawdziwym ramieniu - w symulacji z kamerami
 symulowanymi (znaja swoje K, wiec krok 2 odpada; Sim-Real zastepuje blad
 wzgledem prawdy w zakladce Kamery).
 
-Styl akcji: "Zakladka > Sekcja: ..., **Przycisk**" - nazwy przyciskow pogrubione jak
-w notkach "Jak uzywac"; "Teraz" z kroku zaczyna sie od "Krok N/8 (tytul):".
+Styl akcji: "Zakladka: ..., **Przycisk**" - nazwy przyciskow pogrubione jak w panelu;
+"Teraz" z kroku zaczyna sie od "Krok N/8 (tytul):". Zakladka Kalibracja pokazuje akcje
+krokow 1-3 we wlasnej linii "Teraz" (bez przedrostka zakladki).
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ DONE_DETAIL_MAX = 48
 
 #: Jak zatrzymac zadanie, ktore ma ramie (wlasciciel `Twin.owner` / `TwinApp._busy`).
 HOW_TO_STOP = {
-    "fala kalibracyjna": "Kalibracja > Przerwij",
-    "kalibracja": "Kalibracja > Przerwij",
+    "fala kalibracyjna": "Kalibracja > Przerwij fale",
+    "kalibracja": "Kalibracja > Przerwij fale",
     "identyfikacja dynamiki": "~20 s nagrania; przerywa je STOP albo Dom",
     "identyfikacja": "~20 s nagrania; przerywa je STOP albo Dom",
     "polityka": "Polityki > Zatrzymaj",
@@ -205,14 +206,14 @@ def _step_cameras(s: GuideSnapshot) -> Step:
                                           if len(live) < len(cams) else "")
         return Step(1, title, DONE, det)
     if s.simulated:
-        act = "Kamery > Dodaj kamere: **Dodaj symulowana przed ramieniem** (dwa razy - dwie kamery to lepsza mapa)"
+        act = "Kamery: **Dodaj symulowana przed ramieniem** (dwa razy - dwie kamery to lepsza mapa)"
         if not s.cameras:
             # Gotowe stanowisko z pakietu (examples/twin.sim.json): dwie kamery z zaufana kalibracja,
             # "kostka z kamer" od razu - bez przechodzenia fali w symulacji.
             act += ("; albo gotowy przyklad: zamknij panel, w konsoli `lerobot-twin demo` "
                     "(examples/twin.sim.json), uruchom panel ponownie")
     else:
-        act = "Kamery > Dodaj kamere: **Szukaj kamer USB**, wybierz w Znalezione, **Dodaj kamere USB**"
+        act = "Kamery: **Szukaj kamer USB**, potem **Dodaj kamere USB**"
     det = ("kamery sa, ale zadna nie daje kadru" if cams else
            "brak kamer " + ("symulowanych" if s.simulated else "USB"))
     return Step(1, title, TODO, det, act)
@@ -231,10 +232,10 @@ def _step_intrinsics(s: GuideSnapshot) -> Step:
     first = bad[0]
     if s.intr_camera:
         act = (f"pokazuj tablice kamerze {s.intr_camera} w rogach kadru, blizej, dalej i pochylona (12+ kadrow, "
-               f"pokrycie 55%+), potem Kalibracja > 1. Intrynsyki: **Oblicz i zapisz K**")
+               f"pokrycie 55%+), potem Kalibracja: **Oblicz i zapisz K**")
     else:
-        act = (f"Kalibracja > 1. Intrynsyki: **Pobierz arkusz tablicy** (druk 100%), wpisz zmierzony bok "
-               f"kwadratu, Kamera = {first.name}, **Zbieraj kadry**")
+        act = (f"Kalibracja > 1. Intrynsyki: tablica z Arkusz tablicy (druk 100%, zmierzony bok kwadratu), "
+               f"**Zbieraj kadry z {first.name}**")
     det = "; ".join(f"{c.name}: {c.intrinsics_problem or 'brak zaufanego K'}" for c in bad)
     return Step(2, title, TODO, det, act)
 
@@ -248,18 +249,17 @@ def _step_poses(s: GuideSnapshot) -> Step:
     bad = [c for c in cams if not _pose_ok(c)]
     if not bad and not moved:
         return Step(3, title, DONE, f"zaufane pozy: {', '.join(c.name for c in cams)}")
-    confirm = "" if s.simulated else ", zaznacz 'Karta w szczekach...'"
+    confirm = "" if s.simulated else " (karta w szczekach; drugie klikniecie potwierdza)"
     if moved and not bad:
         c = moved[0]
-        act = (f"Kalibracja > 2. Polozenie: Szybka relokalizacja kamery = {c.name}{confirm}, "
-               f"**Relokalizuj wybrana**")
+        act = f"Kalibracja: **Relokalizuj {c.name}**{confirm}"
         return Step(3, title, TODO, f"przestawiona: {', '.join(c.name for c in moved)}", act)
     if s.simulated:
-        act = ("Kalibracja > 2. Polozenie: **Start fali**, potem **Zapisz wynik kalibracji** (skrot bez fali: "
-               "Kamery > **Symulowana: uznaj prawdziwa poze za kalibracje**)")
+        act = ("Kalibracja: **Start fali**, potem **Zapisz kalibracje** (skrot bez fali: "
+               "**Symulacja: przyjmij prawdziwe pozy kamer**)")
     else:
-        act = (f"Kalibracja > 2. Polozenie: karta w szczekach{confirm}, **Start fali**, potem **Zapisz wynik "
-               f"kalibracji** (arkusz i bok taga - notka Jak uzywac)")
+        act = (f"Kalibracja: **Start fali**{confirm}, potem **Zapisz kalibracje** (karta do druku: "
+               f"Arkusz karty)")
 
     def why(c: CameraSnap) -> str:
         if not c.calibrated:
@@ -394,7 +394,7 @@ def blockers(s: GuideSnapshot) -> list[str]:
         if not c.enabled:
             continue
         if c.calibrated and c.moved:
-            out.append(f"kamera {c.name} przestawiona - Kalibracja > **Relokalizuj wybrana**")
+            out.append(f"kamera {c.name} przestawiona - Kalibracja > **Relokalizuj {c.name}**")
         if not c.has_frame:
             out.append(f"kamera {c.name} nie daje kadru" + ("" if c.simulated else
                                                            " (na maszynie wirtualnej/zdalnej, np. Shadow: "
@@ -430,14 +430,14 @@ def _now(s: GuideSnapshot, steps: list[Step]) -> str:
     if s.owner in WAVE_OWNERS:
         prog = f" ({int(10 * s.calib_progress) * 10}%)" if s.calib_progress is not None else ""
         return (f"Fala kalibracyjna jedzie{prog} - nie wchodz w obszar ramienia; potem Kalibracja > **Zapisz "
-                f"wynik kalibracji** (przerwac: **Przerwij**).")
+                f"kalibracje** (przerwac: **Przerwij fale**).")
     if s.owner in SYSID_OWNERS:
         return ("Identyfikacja nagrywa ruch (~20 s) - nie wchodz w obszar ramienia (przerywa ja STOP albo "
                 "Dom).")
     if s.owner and s.owner != PANEL:
         return f"Ramie ma: {s.owner} - poczekaj na koniec albo STOP."
     if s.calib_result_pending:
-        return "Kalibracja > 2. Polozenie: sprawdz werdykt w tabeli i kliknij **Zapisz wynik kalibracji**."
+        return "Kalibracja: sprawdz werdykt w tabeli i kliknij **Zapisz kalibracje**."
     if s.dyn_result_pending and not s.dyn_result_useful:
         return ("Trening > Dynamika serw: wynik identyfikacji nic nie wyjasnia (opis pod paskiem) - powtorz "
                 "**Identyfikuj** z wolnym ramieniem, bez obciazenia i kontaktu; nie zapisuj go.")

@@ -148,11 +148,11 @@ def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
 
     app.calib_job.start(wave)
     time.sleep(0.8)
-    app.calib_confirm.value = True
+    assert not app.calib_ask.ask(("fala", ("kam",)))           # operator kliknal raz: pytanie czeka
     app._connect("sim", None)
     assert app.calib_job.wait(5.0)
     assert app.calib_job.state == jobs.FAILED
-    assert not app.calib_confirm.value                          # nowe ramie - nowe potwierdzenie
+    assert not app.calib_ask.pending()                          # nowe ramie - nowe potwierdzenie
     n = len(moves)
     time.sleep(0.5)
     assert len(moves) == n and app.twin.owner is None and not app.twin.status.engaged
@@ -230,7 +230,6 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.ws.add_camera(CameraRecord(n, "sim"))
     try:
         app._tick_slow()
-        app.intr_cam.value = "kam2"                             # lista w panelu zmieniona w trakcie
         ij = app.intr_job
         ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "kam1"}
         app._tick_calibration()
@@ -376,3 +375,69 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
     assert FakeA1X.calls == 1 and "wyslano FF 1 -> 5 -> 6" in app.a1x_md.content
     assert app.a1x_confirm.value is False                 # nastepne wlaczenie - nowe potwierdzenie
     app.twin._backend = None
+
+
+def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
+    """Bez kamer: podpowiedz i dodawanie; wybrana kamera i jej przyciski schowane."""
+    assert not app.ws.cameras
+    app._refresh_cameras()
+    assert not app.cam_box.visible and "Brak kamer" in app.cams_html.content
+    from lerobot_mp.twin.workspace import CameraRecord
+    app.ws.add_camera(CameraRecord("usb1", "5"))
+    try:
+        app._refresh_cameras(select="usb1")
+        assert app.cam_box.visible and "usb1" in app.cams_html.content
+        assert not app.cam_sim_box.visible                      # prawdziwej nie przestawia sie z panelu
+        _click(app, "Usun kamere")                              # pierwszy klik tylko pyta
+        assert app.ws.camera("usb1") and "Na pewno" in app.cam_remove.label
+        _click(app, "Na pewno usunac usb1? Kliknij ponownie")
+        assert not app.ws.cameras and not app.cam_box.visible
+    finally:
+        if any(c.name == "usb1" for c in app.ws.cameras):
+            app.ws.remove_camera("usb1")
+        app._refresh_cameras()
+
+
+def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    started = []
+    monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam"])
+    monkeypatch.setattr(app, "_start_card_calibration", lambda ev, cams, quick: started.append((cams, quick)))
+    app._render_calibration()
+    assert app.wave_btn.disabled and "polacz ramie" in app.wave_md.content.lower()
+    app.twin.connect("sim", threaded=False)
+    app._render_calibration()
+    assert not app.wave_btn.disabled and app.wave_btn.label == "Start fali: kam"
+    _click(app, "Start fali: kam")
+    assert started == [(["kam"], False)]
+    started.clear()
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    _click(app, "Start fali: kam")
+    assert started == [] and app.wave_btn.color == "orange" and "Kliknij ponownie" in app.wave_btn.label
+    _click(app, app.wave_btn.label)
+    assert started == [(["kam"], False)]
+    app.calib_ask.reset()
+
+
+def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    rec = CameraRecord("kam1", "sim")
+    rec.T_cam2base = np.eye(4).tolist()
+    app.ws.add_camera(rec)
+    started = []
+    monkeypatch.setattr(app, "_start_card_calibration", lambda ev, cams, quick: started.append((cams, quick)))
+    try:
+        app.twin.connect("sim", threaded=False)
+        app._render_calibration()
+        assert not app.reloc_box.visible
+        monkeypatch.setattr(app.watch, "moved", lambda name: name == "kam1")
+        monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam1"])
+        app._render_calibration()
+        assert app.reloc_box.visible and app.reloc_btn.label == "Relokalizuj kam1 (krotka fala)"
+        assert "PRZESTAWIONA" in app.calib_html.content
+        _click(app, "Relokalizuj kam1 (krotka fala)")
+        assert started == [(["kam1"], True)]
+    finally:
+        app.ws.remove_camera("kam1")
