@@ -1,4 +1,4 @@
-"""Bounded A1X demonstration warm start, followed by held-out CPU physics evaluation."""
+"""Bounded A1X imitation, followed by separate CPU development evaluation."""
 
 import argparse
 import hashlib
@@ -11,7 +11,7 @@ import traceback
 import torch
 
 from lerobot_mp.twin.rl.evaluate import evaluate
-from lerobot_mp.twin.rl.imitation import fit, load_demonstrations, load_refinement_policy
+from lerobot_mp.twin.rl.imitation import fit, load_demonstrations, load_refinement_policy, load_sampling_weights
 from lerobot_mp.twin.rl.policy import Policy
 from lerobot_mp.twin.rl.randomize import Randomization
 from lerobot_mp.twin.workspace import Workspace
@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--init", type=Path,
                         help="Refine an imitation checkpoint with its matching report; keep input statistics fixed")
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--sampling-weights", type=Path,
+                        help="NPZ training priorities bound to the exact demonstration sources and split")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--updates", type=int, default=3000)
     parser.add_argument("--seconds", type=int, default=120)
@@ -40,6 +42,7 @@ def main():
         parser.error("Learning rate must be in (0, .01]")
     demos = load_demonstrations(args.demonstrations, seed=args.seed)
     init = load_refinement_policy(args.init, demos) if args.init else None
+    weights = load_sampling_weights(args.sampling_weights, demos) if args.sampling_weights else None
     evaluation_seeds = set(range(args.eval_seed, args.eval_seed + args.eval_episodes))
     recorded_seeds = set(sum([demos.provenance[k] for k in
                              ("train_seeds", "validation_seeds", "excluded_seeds")], []))
@@ -55,6 +58,8 @@ def main():
                   arguments={k: ([str(p) for p in v] if k == "demonstrations" else
                                  str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
                   dataset=demos.provenance, task=demos.task, randomization=demos.randomization,
+                  sampling_file_sha256=hashlib.sha256(args.sampling_weights.read_bytes()).hexdigest()
+                                       if args.sampling_weights else None,
                   initial_policy_sha256=hashlib.sha256(args.init.read_bytes()).hexdigest() if init else None,
                   initial_report_sha256=hashlib.sha256(args.init.with_name("report.json").read_bytes()).hexdigest()
                                         if init else None,
@@ -70,7 +75,7 @@ def main():
     (args.out / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
     try:
         policy, report["training"] = fit(demos, device=args.device, updates=args.updates,
-            seconds=args.seconds, seed=args.seed, lr=args.lr, init=init,
+            seconds=args.seconds, seed=args.seed, lr=args.lr, init=init, train_weights=weights,
             on_progress=lambda p: print(json.dumps(p), flush=True))
         policy.save(args.out / "policy.pt")
         policy = Policy.load(args.out / "policy.pt")

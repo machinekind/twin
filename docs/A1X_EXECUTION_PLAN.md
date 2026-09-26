@@ -1,6 +1,6 @@
 # A1X + G1 hackathon execution plan
 
-Updated: 2026-09-26. Status: **execution active; offline validation first**.
+Updated: 2026-09-27. Status: **execution active; offline validation first**.
 
 This is the working plan for the current Codex task. Update it as work progresses;
 keep completed evidence, unresolved questions, and the next action explicit.
@@ -125,8 +125,12 @@ Exit: demonstrated A1X GPU compatibility, with logs and checkpoint replay.
   simulation evidence only.
 - [ ] Train A1X `lift` for the agreed object/workspace. SO-101 weights are not an
   A1X starting checkpoint. Freeze each experiment's scope, budget, and stop rule.
-- [ ] Include measured actuator behavior and realistic perception delay/noise.
+- [ ] Include measured actuator behavior and realistic perception delay/noise,
+  plus persistent translation and rotation errors in camera-to-arm calibration.
   Keep contact-force protection and other runtime restrictions consistent with training.
+- [ ] Measure success versus perception-error magnitude and report the achieved
+  tolerance using true simulated object/contact state; follow the separate
+  [perception robustness protocol](A1X_PERCEPTION_ROBUSTNESS.md).
 - [ ] Evaluate sustained holds, not momentary height/contact. Log failures and
   report learned-policy results separately from scripted demonstrations.
 
@@ -167,11 +171,14 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **test a small sampling-weight comparison for the sustained
-recovery examples, with the same fixed fit budget and frozen candidate-011 start**.
-The new data cover previously missed corrections, but they remain a small fraction
-of training and their validation error stays high. Do not enlarge collection or
-extend training blindly; judge the sampling change by autonomous guarded results.
+Current next action: **a bounded observation-feature diagnostic for nominal
+fingertip alignment, before further collection or longer fitting**. The completed
+sampling-weight experiment improves correction-label prediction but leaves
+autonomous success at 16/20. Test whether geometric features derived exclusively
+from existing inputs make millimetre-scale corrections easier to learn; this is
+a hypothesis, not established missing information. Preserve the observation-only
+teacher, fixed episode splits and autonomous guarded comparison. Do not enlarge
+collection or extend training blindly.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -264,6 +271,38 @@ frames. Next test their sampling priority without changing the validation split
 or controller criteria. Both matched sources use the same episode seeds: **never
 aggregate `lift-demos-prefix-001` and `lift-demos-prefix-control-001` together**.
 
+The sampling comparison is complete. Candidate 014 uses exactly candidate 012's
+four datasets, initialization from frozen 011, seed 23, learning rate 0.0001,
+3,000-update budget and unchanged validation/checkpoint-selection metric.
+Its 197 rare training corrections receive weight 20, increasing their expected
+sampling share from 0.74% to 12.93%; validation frames are never weighted.
+The priority artifact is hash-bound to exact data sources and split/order.
+Training takes 11.93 s. Focused checks pass (20 existing/contract tests plus one
+new behavior test); explicit uniform weighting reproduces the original fit.
+
+On the same 72 correction-validation frames, arm MSE falls from candidate 012's
+0.02309 to 0.01953; training-subset MSE falls from 0.01377 to 0.00340. Aggregate
+validation loss instead increases from 0.00406 to 0.00436. Autonomous evaluation
+`lift-imitation-runtime-016.json` remains **16/20**, zero guard rejections,
+prohibited contacts or numerical failures, with exactly baseline 011's four
+failed seeds. Candidate 014 (`10978b9a4c3da90b23718b8b0e91ee2afac513c684c945c0fbe2c5bbb1b1d667`)
+does not replace 011. `weighted-correction-comparison-001.json` verifies identical
+data, split roles, initialization, fit budget, task, runtime and frozen normalizer;
+both saved baseline bundles and the fixed evaluation protocol remain unchanged.
+Artifacts here and below are under `workspace/validation/`.
+
+New autonomous traces in `weighted-policy-drift-001/` show seeds 50000/50007/50008
+still stall before bilateral contact, with final lateral errors of 10.0/23.1/22.6
+mm. Seed 50009 now first grips at step 185 (9.25 s), reaching only 27.08 mm lift
+before the unchanged 10 s deadline; it has no qualifying hold. This is late grasp
+execution, not evidence of losing an established two-second lift. Teacher queries
+are read-only and never execute. `correction-clipping-audit-001.json` finds no
+clipped input features at any final stalled state of 011 or 014; some earlier
+observations clip, so an effect on preceding trajectories is not ruled out.
+The raw inputs determine the teacher's geometry, but successful reproduction by
+the present small network remains unproven. Do not report better label fitting
+as task improvement or extend the deadline to turn late grasps into passes.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -272,8 +311,13 @@ development gate. Every success requires the full 2 s hold through the guarded
 controller, without teacher intervention, prohibited contacts or numerical faults.
 If qualification fails, subsequent reuse is regression evidence, not a fresh holdout.
 
-After nominal qualification, perform short, explicit simulated camera-pose noise
-and delay comparisons before robustness training. Keep those synthetic tests
+After nominal qualification, perform short comparisons of persistent calibration
+translation/rotation bias, camera-pose noise and delay before robustness training.
+Corrupt only the policy-supplied pose; use true simulated object/contact state
+for the full two-second success check. Plot success versus error magnitude and
+report achieved tolerance per tested direction and combined condition. Follow
+the [perception robustness protocol](A1X_PERCEPTION_ROBUSTNESS.md); jitter does
+not substitute for persistent calibration errors. Keep those synthetic tests
 separate from measurement/validation of the actual two-camera pipeline. Existing
 randomized CPU scores are exploratory and do not satisfy this stage. The adjacent
 knife task's reported model/table/tool clearance discrepancy also remains a
@@ -368,6 +412,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Consistent relabeling and short refinement improve autonomous guarded lifts | `lift-demos-observable-relabel-001`: 25,087 labels, original split preserved; arm-correction pilot 20/20 assisted; candidate 011: 16/20 autonomous, zero rejections/contacts/numerical failures, 9.84 s fit; frozen bundle and comparison audit saved | Retain 011 and original 007; target four pre-grasp stalls with sustained learner rollout/recovery; no held-out, robustness or physical testing yet |
 | 2026-09-26 | Sustained learner control exposes corrections absent from intermittent data | `learner-prefix-comparison-001`: matched 20/20 assisted holds, 269 versus zero slow-arm/correction frames; 27 schedule/runtime tests pass | Preserve separate matching datasets; train/validation roles remain fixed |
 | 2026-09-26 | Matched short refinements improve corrective action accuracy without increasing task success | `learner-prefix-fit-comparison-001`: prefix 012 16/20, control 013 15/20; no actual contacts; unchanged initial checkpoint, splits, hyperparameters, runtime and normalization | Keep 011 at 16/20; test bounded correction sampling priority before more data or updates; held-out/robustness/physical stages remain deferred |
+| 2026-09-27 | Training-only correction weighting improves action prediction but not nominal grasp success | `weighted-correction-comparison-001`: candidate 014 16/20, zero rejections/contacts/numerical failures; 11.93 s fit; 21 focused tests pass; both baseline bundles unchanged | Retain 011; test derived fingertip features with a bounded comparison before more data or longer fitting |
+| 2026-09-27 | New autonomous failure traces retain grasp execution as the priority | `weighted-policy-drift-001`: three pre-grasp stalls and one first grip at 9.25 s; clipping audit finds no final-state clipping | Keep the 10 s deadline and full 2 s hold; no teacher intervention in evaluation |
+| 2026-09-27 | User explicitly adds persistent camera-to-arm translation/rotation error to the target | [Perception robustness protocol](A1X_PERCEPTION_ROBUSTNESS.md): bias/noise/delay separate, corrupt supplied pose only, score true simulated state, paired magnitude/direction sweeps and tolerance reporting | Nominal development first; no calibration tolerance measured and no real two-camera validation yet |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

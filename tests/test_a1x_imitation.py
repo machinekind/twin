@@ -9,7 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from lerobot_mp.twin.rl.imitation import Demonstrations, fit, load_demonstrations, load_refinement_policy
+from lerobot_mp.twin.rl.imitation import Demonstrations, fit, load_demonstrations, load_refinement_policy, load_sampling_weights
 from lerobot_mp.twin.rl.policy import Policy, PolicyMeta
 from lerobot_mp.twin.rl.randomize import Randomization
 from lerobot_mp.twin.rl.task import make_task
@@ -39,6 +39,60 @@ def test_whole_episode_split_excludes_failures_and_tracks_exact_files(tmp_path):
     assert demos.provenance["excluded_seeds"] == [4]
     assert len(demos.provenance["file_sha256"]) == 6
     assert demos.provenance == load_demonstrations(tmp_path, seed=8).provenance
+
+
+def test_sampling_priorities_are_bound_to_data_and_cannot_weight_validation(tmp_path):
+    dataset(tmp_path)
+    demos = load_demonstrations(tmp_path, seed=8)
+    path = tmp_path / 'priorities.npz'
+    signature = hashlib.sha256(json.dumps(demos.provenance, sort_keys=True).encode()).hexdigest()
+    values = np.ones(len(demos.train_obs), np.float32)
+    values[-1] = 20
+    np.savez(path, weights=values, dataset_sha256=signature)
+    np.testing.assert_array_equal(load_sampling_weights(path, demos), values)
+    changed = load_demonstrations(tmp_path, seed=9)
+    with pytest.raises(ValueError, match='sources and split'):
+        load_sampling_weights(path, changed)
+    for invalid in (np.ones(len(demos.train_obs)+len(demos.valid_obs)),
+                    np.full(len(values), np.nan), np.zeros(len(values)), np.full(len(values), 101)):
+        np.savez(path, weights=invalid, dataset_sha256=signature)
+        with pytest.raises(ValueError, match='per training frame'):
+            load_sampling_weights(path, demos)
+
+
+def test_uniform_priorities_preserve_fit_and_validation(tmp_path):
+    dataset(tmp_path)
+    demos = load_demonstrations(tmp_path)
+    plain, report = fit(demos, updates=3, seconds=10, hidden=(8,), seed=4)
+    weighted, weighted_report = fit(demos, updates=3, seconds=10, hidden=(8,), seed=4,
+                                    train_weights=np.ones(len(demos.train_obs)))
+    for key, value in plain.state_dict().items():
+        torch.testing.assert_close(value, weighted.state_dict()[key], atol=0, rtol=0)
+    assert report['selected_validation'] == weighted_report['selected_validation']
+    assert report['sampling'] == weighted_report['sampling']
+
+
+def test_priorities_make_a_rare_training_target_count_more():
+    task = make_task('lift', A1X)
+    x = np.zeros((100, task.obs_dim), np.float32)
+    y = np.zeros((100, 7), np.float32)
+    y[-1, :6] = 1
+    vx = np.zeros((4, task.obs_dim), np.float32)
+    vy = np.zeros((4, 7), np.float32)
+    vy[:, :6] = .5
+    demos = Demonstrations(asdict(task), asdict(Randomization.none()), x, y, vx, vy, {})
+    plain, _ = fit(demos, updates=200, seconds=10, hidden=(8,), seed=4, lr=.01)
+    weights = np.ones(len(x), np.float32)
+    weights[-1] = 100
+    prioritized, result = fit(demos, updates=200, seconds=10, hidden=(8,), seed=4, lr=.01,
+                              train_weights=weights)
+    assert result['sampling']['mode'] == 'weighted'
+    assert prioritized.act(vx)[:, :6].mean() > plain.act(vx)[:, :6].mean() + .1
+    # Only optimization changes; the validation metric remains the ordinary MSE.
+    error = (prioritized.act(vx)-vy)**2
+    assert result['selected_validation']['loss'] == pytest.approx(error[:, :6].mean()+error[:, 6].mean())
+    for key, value in plain.norm.state_dict().items():
+        torch.testing.assert_close(value, prioritized.norm.state_dict()[key], atol=0, rtol=0)
 
 
 def test_aggregation_preserves_each_sources_validation_split_and_hashes(tmp_path):

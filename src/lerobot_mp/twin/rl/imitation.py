@@ -104,19 +104,41 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
                           np.concatenate([x[1] for x in valid]), np.concatenate([x[2] for x in valid]), provenance)
 
 
+def _sampling_weights(values, count):
+    weights = np.asarray(values, dtype=np.float32)
+    if (weights.shape != (count,) or not np.isfinite(weights).all()
+            or (weights < 1).any() or (weights > 100).any()):
+        raise ValueError("Sampling weights must have one finite value in [1, 100] per training frame")
+    return weights
+
+
+def load_sampling_weights(path: Path, demos: Demonstrations) -> np.ndarray:
+    """Bind per-frame training priorities to exact source hashes and split/order."""
+    expected = hashlib.sha256(json.dumps(demos.provenance, sort_keys=True).encode()).hexdigest()
+    with np.load(path, allow_pickle=False) as data:
+        if str(data["dataset_sha256"].item()) != expected:
+            raise ValueError("Sampling weights do not match the exact demonstration sources and split")
+        return _sampling_weights(data["weights"], len(demos.train_obs)).copy()
+
+
 def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seconds: float = 120,
         seed: int = 0, batch_size: int = 256, hidden: tuple[int, ...] = (256, 256, 128),
         lr: float = 3e-4, report_every: int = 100, on_progress=None,
-        init: Policy | None = None) -> tuple[Policy, dict]:
+        init: Policy | None = None, train_weights: np.ndarray | None = None) -> tuple[Policy, dict]:
     """Bounded supervised fit; an initial policy keeps its observation normalizer fixed.
 
     Return the best whole-episode validation checkpoint, including the initial
     policy if fitting does not improve it. Never mutate the supplied checkpoint.
+    Optional weights change training sampling only; normalization, validation
+    distribution and checkpoint selection remain unchanged.
     """
     if not (0 < updates <= 20000 and 0 < seconds <= 600 and batch_size > 0 and report_every > 0):
         raise ValueError("Invalid imitation budget; maximum 20,000 updates / 600 seconds")
     if not 0 < lr <= .01:
         raise ValueError("Learning rate must be in (0, .01]")
+    weights = (_sampling_weights(train_weights, len(demos.train_obs)) if train_weights is not None
+               else np.ones(len(demos.train_obs), np.float32))
+    weighted = not np.all(weights == weights[0])
     if init is not None:
         # JSON canonicalizes tuple/list differences in saved task configurations.
         if (init.meta.robot != "a1x" or json.dumps(init.meta.task, sort_keys=True) !=
@@ -138,6 +160,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
         policy.load_state_dict(init.state_dict())
         policy.meta.notes = "Imitation refinement with frozen input statistics; not RL or physical validation"
     optimizer = torch.optim.Adam(policy.actor.parameters(), lr=lr)
+    probabilities = torch.as_tensor(weights, device=device) if weighted else None
 
     def losses(pred, target):
         error = (pred - target).square()
@@ -156,7 +179,9 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     for update in range(1, updates + 1):
         if time.monotonic() - started >= seconds:
             break
-        idx = torch.randint(len(x), (min(batch_size, len(x)),), device=device)
+        size = min(batch_size, len(x))
+        idx = (torch.multinomial(probabilities, size, replacement=True) if weighted else
+               torch.randint(len(x), (size,), device=device))
         loss, _, _ = losses(policy(x[idx]), y[idx])
         if not torch.isfinite(loss):
             raise RuntimeError("Nonfinite imitation loss")
@@ -189,6 +214,10 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     result = dict(method="behavior cloning", initialized=init is not None,
                   normalizer="frozen initial policy" if init is not None else "training observations only",
                   learning_rate=lr, optimizer_updates=completed, selected_update=best_at,
+                  sampling=dict(mode="weighted" if weighted else "uniform",
+                      min_weight=float(weights.min()), max_weight=float(weights.max()),
+                      weight_sum=float(weights.sum()),
+                      weights_sha256=hashlib.sha256(weights.tobytes()).hexdigest()),
                   train_samples=len(x), validation_samples=len(vx), initial_validation=initial,
                   selected_validation=assess(), history=history, elapsed_s=time.monotonic() - started)
     policy.meta.evals["imitation"] = {k: v for k, v in result.items() if k != "history"}
