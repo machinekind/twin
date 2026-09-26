@@ -171,14 +171,16 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **a bounded observation-feature diagnostic for nominal
-fingertip alignment, before further collection or longer fitting**. The completed
-sampling-weight experiment improves correction-label prediction but leaves
-autonomous success at 16/20. Test whether geometric features derived exclusively
-from existing inputs make millimetre-scale corrections easier to learn; this is
-a hypothesis, not established missing information. Preserve the observation-only
-teacher, fixed episode splits and autonomous guarded comparison. Do not enlarge
-collection or extend training blindly.
+Current next action: **a small gripper-focused corrective pilot for experimental
+feature candidate 016**, on fresh training seeds, followed by a bounded refinement
+that first preserves its learned arm mapping. The new channel diagnostic gives
+4/4 holds with learned arms plus teacher gripper, versus 1/4 with teacher arms
+plus learned gripper. This is specific to candidate 016 and does not promote it:
+retained baseline 011 remains best at 16/20 autonomous guarded successes.
+Start with at most 20 fresh training episodes using the existing learner-arm /
+teacher-gripper collection mode; do not train on the inspected development cases.
+Verify correction coverage and consistent teacher labels before fitting. Preserve
+the episode split, deadline, full hold and independent guarded evaluation.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -303,6 +305,67 @@ The raw inputs determine the teacher's geometry, but successful reproduction by
 the present small network remains unproven. Do not report better label fitting
 as task improvement or extend the deadline to turn late grasps into passes.
 
+The explicit-geometry experiment is complete. The optional
+`a1x-alignment-v1` encoder derives 24 scaled fingertip/cube alignment, orientation,
+jaw position/lag and observed cube-height features from the existing 36 inputs
+and fixed model geometry. It uses no scene state, teacher decisions, contacts or
+IK outputs. Its model signature is saved and checked on reload. Added first-layer
+weights start at zero, retaining the initial baseline function; input statistics
+stay frozen. The raw policy path remains the default. This adds 6,144 weights,
+so the experiment tests feature augmentation, not a parameter-matched claim.
+
+Matched 3,000-update fits use the same four datasets and frozen 011 checkpoint:
+
+| Candidate | Change | Guarded success | Guard rejections | Actual contacts / numerical faults |
+|---|---|---|---|---|
+| 015 | Raw reproduction control | 16/20 | 0 | 0 / 0 |
+| 016 | Derived geometry features | 16/20 | 1 | 0 / 0 |
+| 017 | Raw inputs; remove previous arm-action history | 14/20 | 0 | 0 / 0 |
+
+`alignment-feature-comparison-001.json` verifies 015 reproduces every saved 012
+tensor exactly. Feature candidate 016 takes 11.38 s fitting plus 3.60 s feature
+preparation. Its validation loss falls from raw control's 0.00406 to 0.00341,
+and correction-subset validation arm MSE from 0.02309 to 0.01953. It fixes baseline
+seeds 50000/50008 but regresses 50014/50015. The guard rejects a table-directed
+move on 50009; this is not an actual contact. Candidate SHA256 starts `f0d0d2aa`.
+No replacement or held-out qualification follows this tie with a new rejection.
+
+`previous-arm-dependence-001.json` checks 12 final failure observations from
+011/014/016: all 156 counterfactual teacher labels are unchanged when only the
+six previous arm-action inputs change. Learner actions can change by 0.47 for
+a single previous-input perturbation of 0.2. These are input probes, not proof
+of equivalent physically reachable states or of the cause of a failed trajectory.
+The subsequent raw-input history ablation 017 removes columns 29:35 from the
+saved network, retaining previous gripper action at index 35. It intentionally
+changes the initial function. After 3,000 updates / 12.88 s, its guarded score is
+14/20 (bare CPU 15/20), so it is rejected. `arm-history-comparison-001.json`
+verifies exact arm-history invariance on all 6,602 validation observations,
+unchanged data/splits/sampling/runtime, and preserved baseline bundles. The first
+audit attempt rejected a floating-point representation of 400 x 5 ms
+(`1.9999999999999793`); the corrected audit uses the evaluator's existing 10 ns
+tolerance. No episode, hold criterion or evaluator changed. Candidate SHA256
+starts `9835a721`. Input dependence alone did not establish an effective remedy.
+
+`alignment-policy-drift-001` shows three close-stage stalls without bilateral
+grip (50007/50014/50015), and the early clearance rejection (50009). The matching
+12-case diagnostic `alignment-channel-ablation-001` changes the correction
+priority for this candidate: **teacher gripper + learned arms 4/4; teacher arms
++ learned gripper 1/4; teacher both 4/4**. All have zero actual contacts, guarded
+rejections and numerical failures; all successes meet the full two-second hold.
+`alignment-channel-audit-001.json` verifies executed channels, learned outputs
+and 144 replayed teacher labels. These runs are assisted diagnostics only and
+must never enter autonomous success counts or the training dataset. The gripper
+also changes later arm inputs, so this does not isolate a mechanically independent
+actuator defect. It supports a fresh training-only gripper-correction pilot.
+
+Validation: `alignment-feature-contracts-001.log` passes 66 controller, imitation
+and geometry checks; `alignment-orientation-contract-001.log` adds a supplied-roll
+check. After the history ablation, `arm-history-contracts-001.log` passes all 30
+focused tests. The original baseline checkpoints and fixed evaluation protocol
+remain unchanged. All experiment/audit paths above are under
+`workspace/validation/`; no long run, PPO, held-out, robustness or physical
+evaluation was started.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -415,6 +478,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Training-only correction weighting improves action prediction but not nominal grasp success | `weighted-correction-comparison-001`: candidate 014 16/20, zero rejections/contacts/numerical failures; 11.93 s fit; 21 focused tests pass; both baseline bundles unchanged | Retain 011; test derived fingertip features with a bounded comparison before more data or longer fitting |
 | 2026-09-27 | New autonomous failure traces retain grasp execution as the priority | `weighted-policy-drift-001`: three pre-grasp stalls and one first grip at 9.25 s; clipping audit finds no final-state clipping | Keep the 10 s deadline and full 2 s hold; no teacher intervention in evaluation |
 | 2026-09-27 | User explicitly adds persistent camera-to-arm translation/rotation error to the target | [Perception robustness protocol](A1X_PERCEPTION_ROBUSTNESS.md): bias/noise/delay separate, corrupt supplied pose only, score true simulated state, paired magnitude/direction sweeps and tolerance reporting | Nominal development first; no calibration tolerance measured and no real two-camera validation yet |
+| 2026-09-27 | Derived geometry improves action prediction but ties autonomous success | `alignment-feature-comparison-001`: raw 015 exactly reproduces 012; feature 016 scores 16/20 with one rejection and zero actual contacts; 66 regression checks pass | Keep 011; diagnose the feature candidate's changed failures before scaling |
+| 2026-09-27 | Removing teacher-irrelevant arm history does not improve grasping in a matched short fit | `previous-arm-dependence-001`: 156 invariant teacher labels; `arm-history-comparison-001`: 017 scores 14/20 guarded, 30 focused tests pass | Reject 017; do not infer an effective intervention from sensitivity alone |
+| 2026-09-27 | Assisted channel comparison identifies gripper correction as the next candidate-specific priority | `alignment-channel-audit-001`: learned arms + teacher grip 4/4, teacher arms + learned grip 1/4, scripted control 4/4; no actual contacts | Collect at most 20 fresh training-only gripper-correction episodes for experimental 016; first preserve its arm mapping in refinement; baseline and held-out set stay untouched |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

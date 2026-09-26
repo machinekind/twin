@@ -75,6 +75,9 @@ class PolicyMeta:
     notes: str = ""
     #: Ramie, na ktorym polityka sie uczyla (`RobotSpec.name`). Polityki sprzed tego pola - SO-101.
     robot: str = "so101"
+    #: Optional deterministic inputs derived from the original observation.
+    features: str = "raw"
+    feature_geometry_sha256: str | None = None
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,
@@ -93,12 +96,47 @@ class Policy(nn.Module):
         self.meta = meta
         self.norm = Normalizer(meta.obs_dim)
         self.actor = mlp([meta.obs_dim, *meta.hidden], meta.act_dim)
+        self.feature_encoder = None
+        if meta.features != "raw":
+            from .features import A1XAlignmentFeatures
+            if (meta.features != A1XAlignmentFeatures.name or meta.robot != "a1x"
+                    or meta.task.get("name") != "lift" or meta.obs_dim != 36 or meta.act_dim != 7
+                    or meta.task.get("cube_half") != .015):
+                raise ValueError("Unsupported policy feature contract")
+            self.feature_encoder = A1XAlignmentFeatures()
+            signature = self.feature_encoder.geometry_sha256
+            if meta.feature_geometry_sha256 not in (None, signature):
+                raise ValueError("Policy alignment geometry does not match the current robot model")
+            meta.feature_geometry_sha256 = signature
+            first = self.actor[0]
+            # Preserve the raw network and RNG stream; extra columns initially do nothing.
+            with torch.random.fork_rng(devices=[]):
+                expanded = nn.Linear(first.in_features + self.feature_encoder.dim, first.out_features)
+            with torch.no_grad():
+                expanded.weight.zero_()
+                expanded.weight[:, :meta.obs_dim].copy_(first.weight)
+                expanded.bias.copy_(first.bias)
+            self.actor[0] = expanded
         #: Wagi krytyka z treningu (tylko do douczania; do jazdy niepotrzebne). Polityki
         #: zapisane przed jego dodaniem go nie maja - douczanie grzeje wtedy krytyka od zera.
         self.critic_state: dict | None = None
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.actor(self.norm(obs))
+    def derived_features(self, obs: torch.Tensor) -> torch.Tensor | None:
+        if self.feature_encoder is None:
+            return None
+        values = self.feature_encoder(obs.detach().cpu().numpy())
+        return torch.as_tensor(values, device=obs.device, dtype=obs.dtype)
+
+    def forward(self, obs: torch.Tensor, *, derived: torch.Tensor | None = None) -> torch.Tensor:
+        inputs = self.norm(obs)
+        if self.feature_encoder is not None:
+            derived = self.derived_features(obs) if derived is None else derived
+            if derived.shape != (*obs.shape[:-1], self.feature_encoder.dim):
+                raise ValueError("Derived feature batch must match the observation batch")
+            inputs = torch.cat((inputs, derived), dim=-1)
+        elif derived is not None:
+            raise ValueError("Raw policies do not accept derived features")
+        return self.actor(inputs)
 
     @torch.no_grad()
     def act(self, obs: np.ndarray) -> np.ndarray:

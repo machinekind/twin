@@ -1,4 +1,4 @@
-"""Behavior cloning from recorded A1X lift episodes, compatible with the PPO actor.
+"""Behavior cloning from recorded A1X lift episodes using the saved runtime actor.
 
 Validation episodes are kept whole and excluded from observation normalization.
 Action prediction scores never count as manipulation success; replay the saved
@@ -124,13 +124,16 @@ def load_sampling_weights(path: Path, demos: Demonstrations) -> np.ndarray:
 def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seconds: float = 120,
         seed: int = 0, batch_size: int = 256, hidden: tuple[int, ...] = (256, 256, 128),
         lr: float = 3e-4, report_every: int = 100, on_progress=None,
-        init: Policy | None = None, train_weights: np.ndarray | None = None) -> tuple[Policy, dict]:
+        init: Policy | None = None, train_weights: np.ndarray | None = None,
+        features: str | None = None, ignore_previous_arm: bool | None = None) -> tuple[Policy, dict]:
     """Bounded supervised fit; an initial policy keeps its observation normalizer fixed.
 
     Return the best whole-episode validation checkpoint, including the initial
     policy if fitting does not improve it. Never mutate the supplied checkpoint.
     Optional weights change training sampling only; normalization, validation
     distribution and checkpoint selection remain unchanged.
+    An optional history ablation zeroes previous arm-action input columns in the
+    saved network, retaining gripper history; later refinement inherits it.
     """
     if not (0 < updates <= 20000 and 0 < seconds <= 600 and batch_size > 0 and report_every > 0):
         raise ValueError("Invalid imitation budget; maximum 20,000 updates / 600 seconds")
@@ -147,9 +150,15 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
                 init.meta.randomization.get("fold_yaw", False) != demos.randomization.get("fold_yaw", False)):
             raise ValueError("Initial policy must match the A1X task and observation contract")
         hidden = tuple(init.meta.hidden)
+    features = features if features is not None else init.meta.features if init is not None else "raw"
+    if ignore_previous_arm is None:
+        ignore_previous_arm = bool(init is not None and
+            init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))
+    if init is not None and init.meta.features not in ("raw", features):
+        raise ValueError("Refinement cannot remove or change an existing feature contract")
     torch.manual_seed(seed)
     meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
-                      robot="a1x", randomization=demos.randomization,
+                      robot="a1x", randomization=demos.randomization, features=features,
                       notes="Behavior cloning of scripted simulation lifts; not RL or physical validation")
     policy = Policy(meta).to(device)
     x, y, vx, vy = [torch.as_tensor(a, device=device) for a in
@@ -157,8 +166,28 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     if init is None:
         policy.norm.update(x)  # Validation observations never enter this estimate.
     else:
-        policy.load_state_dict(init.state_dict())
+        initial_state = dict(init.state_dict())
+        if init.meta.features == "raw" and features != "raw":
+            expanded = policy.actor[0].weight.detach().clone()
+            expanded.zero_()
+            expanded[:, :init.meta.obs_dim] = initial_state['actor.0.weight']
+            initial_state['actor.0.weight'] = expanded
+        policy.load_state_dict(initial_state)
         policy.meta.notes = "Imitation refinement with frozen input statistics; not RL or physical validation"
+    if ignore_previous_arm:
+        if policy.meta.obs_dim != 36 or policy.task.name != 'lift' or policy.task.n_joints != 7:
+            raise ValueError("Arm-history ablation requires the 36-input A1X lift contract")
+        # Zero columns encode the ablation in the saved network itself. During
+        # fitting, neutral normalized inputs keep their gradients exactly zero.
+        # Clone tensors to preserve original demonstrations; retain grip history.
+        with torch.no_grad():
+            policy.actor[0].weight[:, 29:35].zero_()
+        x, vx = x.clone(), vx.clone()
+        x[:, 29:35] = policy.norm.mean[29:35]
+        vx[:, 29:35] = policy.norm.mean[29:35]
+    feature_started = time.monotonic()
+    train_features, valid_features = policy.derived_features(x), policy.derived_features(vx)
+    feature_prepare_s = time.monotonic()-feature_started
     optimizer = torch.optim.Adam(policy.actor.parameters(), lr=lr)
     probabilities = torch.as_tensor(weights, device=device) if weighted else None
 
@@ -169,7 +198,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
 
     @torch.no_grad()
     def assess():
-        values = losses(policy(vx), vy)
+        values = losses(policy(vx, derived=valid_features), vy)
         return dict(loss=values[0].item(), arm_mse=values[1].item(), gripper_mse=values[2].item())
 
     initial, history = assess(), []
@@ -182,7 +211,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
         size = min(batch_size, len(x))
         idx = (torch.multinomial(probabilities, size, replacement=True) if weighted else
                torch.randint(len(x), (size,), device=device))
-        loss, _, _ = losses(policy(x[idx]), y[idx])
+        loss, _, _ = losses(policy(x[idx], derived=train_features[idx] if train_features is not None else None), y[idx])
         if not torch.isfinite(loss):
             raise RuntimeError("Nonfinite imitation loss")
         optimizer.zero_grad(set_to_none=True)
@@ -208,10 +237,16 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
         best, best_at = metrics["loss"], completed
         best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
     policy.load_state_dict(best_state)
+    if ignore_previous_arm and torch.count_nonzero(policy.actor[0].weight[:, 29:35]):
+        raise RuntimeError("Arm-history ablation did not preserve zero input columns")
     policy.eval()
     policy.meta.iterations = best_at
     policy.meta.steps = 0  # No new environment transitions were collected by this learner.
     result = dict(method="behavior cloning", initialized=init is not None,
+                  features=features, feature_prepare_s=feature_prepare_s,
+                  ignore_previous_arm=ignore_previous_arm,
+                  ignored_observation_indices=list(range(29, 35)) if ignore_previous_arm else [],
+                  feature_geometry_sha256=policy.meta.feature_geometry_sha256,
                   normalizer="frozen initial policy" if init is not None else "training observations only",
                   learning_rate=lr, optimizer_updates=completed, selected_update=best_at,
                   sampling=dict(mode="weighted" if weighted else "uniform",

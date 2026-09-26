@@ -25,6 +25,10 @@ def main():
     parser.add_argument("--init", type=Path,
                         help="Refine an imitation checkpoint with its matching report; keep input statistics fixed")
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--features", choices=("raw", "a1x-alignment-v1"), default=None,
+                        help="Optional geometry derived only from existing observations; default preserves the initial policy")
+    parser.add_argument("--ignore-previous-arm", action="store_true", default=None,
+                        help="Remove previous arm actions from the actor, preserving previous gripper action")
     parser.add_argument("--sampling-weights", type=Path,
                         help="NPZ training priorities bound to the exact demonstration sources and split")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
@@ -75,7 +79,8 @@ def main():
     (args.out / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
     try:
         policy, report["training"] = fit(demos, device=args.device, updates=args.updates,
-            seconds=args.seconds, seed=args.seed, lr=args.lr, init=init, train_weights=weights,
+            seconds=args.seconds, seed=args.seed, lr=args.lr, init=init, train_weights=weights, features=args.features,
+            ignore_previous_arm=args.ignore_previous_arm,
             on_progress=lambda p: print(json.dumps(p), flush=True))
         policy.save(args.out / "policy.pt")
         policy = Policy.load(args.out / "policy.pt")
