@@ -108,7 +108,14 @@ i 100 w skali aplikacji; domyślne 1986 / 2670 to przykładowe ramię), `baudrat
 ```bash
 lerobot-twin ui                  # http://localhost:8080; zajęty port: --port 8765
 lerobot-twin ui --host 0.0.0.0   # także z sieci — panel nie ma hasła, tylko w zaufanej sieci
+lerobot-twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJPEG, tylko odczyt)
 ```
+
+**Podgląd kamer** (`--stream-port`): kadry, które panel i tak pobiera, po HTTP na osobnym porcie —
+`/` strona ze wszystkimi kamerami, `/<kamera>.mjpg` strumień, `/<kamera>.jpg` ostatni kadr,
+`/cameras.json` lista. Nic tam nie steruje ramieniem, więc słucha domyślnie w całej sieci
+(`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2, uEye) —
+dlatego podgląd siedzi w procesie panelu.
 
 Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
 nim żółty **Skasuj STOP** (tylko przy aktywnym STOP-ie), plakietka stanu ramienia
@@ -941,6 +948,41 @@ starsza niż 1 s nie jest kadrem — zamrożony albo martwy strumień panel poka
 jako błąd kamery i otwiera go na nowo.
 
 ---
+
+### Kamera PMD z tagami na obudowie
+
+Kamera głębi pmd CamBoard nano (podgląd: `python pmd_view.py`) nie ma w bliźniaku
+własnego obrazu RGB, więc jej miejsca nie da się skalibrować kartą. Zamiast tego
+na obudowie są naklejone **trzy AprilTagi 36h11** (domyślnie 0, 1, 2) i kamery
+stanowiska, które mają pozę, widzą je — stąd poza PMD w układzie podstawy.
+Zakładka **Kamery → Kamera PMD (tagi na obudowie)** (`twin/tagbody.py`):
+
+1. **id tagów** i **bok tagu** (czarny kwadrat, zmierzony linijką). Pierwszy
+   numer to układ kamery PMD: środek w środku tego taga, z wzdłuż jego normalnej.
+2. **Ucz układu tagów: dodaj kadr** — nikt nie mierzy, gdzie na obudowie
+   siedzą pozostałe tagi: każdy kadr, w którym jedna kamera widzi dwa tagi
+   naraz, daje ich wzajemną pozę, a wszystkie rogi ze wszystkich kadrów
+   dopasowują układ i pozę bryły w każdym kadrze naraz (LM w numpy).
+   Wystarczy K kamery (krok 1), poza niepotrzebna. Kilka kadrów z różnych
+   stron, aż tekst pod przyciskami powie *Układ kompletny*. Sam PnP jednego
+   taga ma błąd głębokości rzędu procenta (tag 50 px, róg 0,3 px → 4 mm na
+   0,4 m); z trzech widoków w symulacji układ wychodzi z dokładnością 0,1 mm.
+3. **Znajdź PMD w kamerach** — kadry kamer z pozą → poza PMD (mediana z kamer),
+   w 3D: osie układu, plytki tagów, etykieta i — po wybraniu **Kamera patrzy
+   wzdłuż** (np. *-z taga 0* = tag 0 na tylnej ściance) — piramida pola widzenia
+   90 × 69°. Rozrzut między kamerami jest, jak przy *Tag na biurku*,
+   sprawdzianem ich kalibracji. **Śledź na żywo** odświeża pozę co takt panelu.
+4. **Zapisz do stanowiska** — sekcja `pmd` w `twin.json` (numery, bok, układ,
+   oś, ostatnia poza); po restarcie PMD jest w 3D od razu.
+
+W symulacji (`tests/test_twin_tagbody.py`, kostka 4 cm z tagiem na trzech
+ściankach, trzy kamery): poza bryły 1 mm / 1° od prawdy. **Uwaga na numery:**
+karta kalibracyjna ma tagi 0 i 1 — PMD w kadrze podczas fali myli kalibrację
+(`tags.detect` odrzuca numer widziany dwa razy w kadrze, ale tag z obudowy
+widziany *sam* uchodzi za kartę); bezpieczniej nakleić inne numery, panel
+ostrzega, gdy się pokrywają. Sam obraz głębi PMD nie trafia jeszcze do
+bliźniaka — to następny krok (chmura punktów z `pmdGet3DCoordinates` w pozie
+z tagów).
 
 ## Dokładność symulowanej kamery
 

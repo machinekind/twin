@@ -590,3 +590,82 @@ def test_home_works_straight_after_a_stop(app):
         assert not app._estop_active()
     finally:
         app.twin.disconnect()
+
+
+@pytest.mark.render
+def test_pmd_camera_with_tags_on_its_housing_is_learned_found_drawn_and_saved(app):
+    """Kostka z trzema tagami w scenie blizniaka, dwie kamery symulowane z "zaufana" poza: nauka ukladu
+    z kadrow, poza PMD w 3D (osie, tagi, piramida), zapis do stanowiska i powrot po wczytaniu."""
+    from test_twin_tagbody import TAG, angle_deg, true_layout
+    from lerobot_mp.twin import scene as sc
+    from lerobot_mp.twin.calib import tags
+    from lerobot_mp.twin.kinematics import pose
+    from lerobot_mp.twin.workspace import Workspace
+
+    # Kamery symulowane panelu maja 640x480 i 62 st. pola widzenia (f ok. 400 px): kostka z modulowego
+    # testu (tag 3 cm) z 0,4 m to 30 px na tag i ukosne tagi sie nie dekoduja - tu 1,5x wieksza, z 0,3 m.
+    TAG_UI = 1.5 * TAG
+    layout = {i: T.copy() for i, T in true_layout().items()}
+    for T in layout.values():
+        T[:3, 3] *= 1.5
+    T_body2base = pose(np.eye(3), np.array([0.30, 0.05, 0.08]))
+    plate = TAG_UI / tags.MARKER_FRACTION
+    panels = [sc.Panel(f"pmdtag{i}", tags.render(i, 400), (plate, plate), T_body2base @ T)
+              for i, T in layout.items()]
+    extras = dict(app.twin.extras)
+    centre = T_body2base[:3, 3]
+    try:
+        app.twin.configure(**{**extras, "panels": panels})
+        n0 = len(app.ws.cameras)
+        # Z naroznika (trzy scianki), od +x i od +y - jak w test_twin_tagbody; dwie kamery i jeden kadr
+        # zostawialy tagi 1 i 2 po jednym ukosnym widoku (poza ~6 mm od prawdy).
+        for d in ([0.55, 0.55, 0.65], [0.9, -0.35, 0.45], [-0.3, 0.9, 0.5]):
+            app._add_sim_camera(app.T_b2w @ _look_at_pose(centre + 0.3 * np.array(d), centre))
+        cams = app.ws.cameras[n0:]
+        assert len(cams) == 3
+        for rec in cams:
+            rec.T_cam2base = [list(r) for r in rec.sim_pose]
+            rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.0}
+        app._refresh_cameras()
+        app.pmd_ids.value, app.pmd_mm.value = "0 1 2", TAG_UI * 1000
+        app.pmd_optical.value = "-z taga 0"
+
+        app._pmd_learn()
+        assert "Uklad kompletny" in app.pmd_md.content, app.pmd_md.content
+        assert "tagi 0, 1 sa tez na karcie" in app.pmd_md.content
+        assert set(app.pmd.known()) == {0, 1, 2}
+
+        app._pmd_find(app._tick_slow())
+        assert app._pmd_fix is not None and set(app._pmd_fix.per_camera) == {c.name for c in cams}
+        assert np.linalg.norm(app._pmd_fix.position - centre) < 0.003, app._pmd_fix
+        assert angle_deg(app._pmd_fix.T_body2base[:3, :3], T_body2base[:3, :3]) < 1.0
+        assert set(app._pmd_nodes) == {"os", "etykieta", "tag0", "tag1", "tag2", "kamera"}
+        Tw = app.T_b2w @ app._pmd_fix.T_body2base
+        assert np.allclose(app._pmd_nodes["os"].position, Tw[:3, 3], atol=1e-6)
+        # Piramida patrzy od tylnej scianki (tag 0, os -z): jej z to -z ukladu PMD.
+        assert np.allclose(app._pmd_nodes["kamera"].position, Tw[:3, 3], atol=1e-6)
+        # "Sledz na zywo" odswieza poze w takcie panelu i nie tworzy wezlow od nowa.
+        before = {k: id(v) for k, v in app._pmd_nodes.items()}
+        app.pmd_follow.value = True
+        app._tick_slow()
+        assert {k: id(v) for k, v in app._pmd_nodes.items()} == before
+        app.pmd_follow.value = False
+
+        app._pmd_save(_Event())
+        back = Workspace.load(app.ws_path)
+        assert back.pmd is not None and back.pmd["ids"] == [0, 1, 2] and back.pmd["optical"] == [0, "-z"]
+        assert np.allclose(back.pmd["T_body2base"], app._pmd_fix.T_body2base)
+        assert set(back.pmd["layout"]) == {"0", "1", "2"}
+
+        # Inne numery = inna bryla: uklad i nauka od zera, os optyczna do wyboru na nowo.
+        app.pmd_ids.value = "10 11 12"
+        body = app._pmd_sync()
+        assert body.ids == (10, 11, 12) and body.known() == [10] and app._pmd_obs == []
+        assert app.pmd_optical.value == "nieznana" and "-z taga 12" in app.pmd_optical.options
+    finally:
+        app.pmd_follow.value = False
+        for rec in cams:
+            app.ws.remove_camera(rec.name)
+        app.ws.pmd = None
+        app.twin.configure(**extras)
+        app._refresh_cameras()
