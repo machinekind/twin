@@ -379,7 +379,7 @@ class SpecsReach:
         return {
             "connected": self.connected,
             "mode": self.mode,
-            "session": self._session,
+            "session": self._session_any if self.allow_untrusted else self._session,
             "phase": self._phase,
             "last": self._last_state,
         }

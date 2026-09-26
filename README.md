@@ -68,8 +68,9 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
   kontrolce.
 - **Cele z okularów Spectacles** — pudełko zasięgu w okularach, pinch wysyła
   cel, ramię jedzie i cofa się po uderzeniu (`lerobot-twin specs`, folder
-  *Spectacles* w panelu; niesprawdzone na sprzęcie) —
+  *Spectacles* w panelu; pierwszy ruch prawdziwym A1X 2026-09-26) —
   [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch).
+  Kierowca okularów po angielsku: [docs/SPECS.md](docs/SPECS.md); okulary i ramię krok po kroku: [docs/RIG.md](docs/RIG.md).
 
 ## Co przyspiesza
 
