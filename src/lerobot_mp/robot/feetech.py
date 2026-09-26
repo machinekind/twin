@@ -145,7 +145,7 @@ class FeetechBus:
             ) from exc
         if "://" in self.port:
             # `socket://adres:5555` - most `lerobot-mp-bridge` na maszynie przy ramieniu.
-            # Maszyna zdalna (np. Shadow) nie potrzebuje wtedy sterownika wirtualnego
+            # Maszyna zdalna nie potrzebuje wtedy sterownika wirtualnego
             # portu COM. Limit odpowiedzi rosnie o czas przebiegu przez siec.
             self.timeout = max(self.timeout, 0.25)
             self._link = serial.serial_for_url(self.port, baudrate=self.baudrate, timeout=self.timeout,
@@ -375,7 +375,7 @@ class FeetechArm(RobotBackend):
         rc = cfg.robot
         if not rc.port:
             raise ValueError(
-                "Nie podano portu szeregowego ramienia. Uzyj --port COM11 (Windows) "
+                "Nie podano portu szeregowego ramienia. Uzyj --port COM5 (Windows) "
                 "albo --port /dev/ttyACM0 (Linux)."
             )
         self.bus = bus or FeetechBus(rc.port, rc.baudrate)

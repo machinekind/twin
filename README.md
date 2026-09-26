@@ -69,7 +69,7 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 
 ## Co przyspiesza
 
-Zmierzone na RTX A4500:
+Zmierzone na karcie RTX A4500:
 
 | | czas |
 |---|---|
@@ -88,13 +88,13 @@ zostaje sprawdzenie.
 
 W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 (inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
-8/8. Kod przeszedł trzy rundy przeglądu z niezależną weryfikacją poprawek;
-92 testy integracyjne (odchudzone 2026-09-25 do łańcuchów przez kilka modułów i zachowań groźnych dla sprzętu). Galaxea A1X działa w symulacji (kalibracja kamer 6/6
+8/8. Testy są wyłącznie integracyjne: łańcuchy przez kilka modułów
+i zachowania groźne dla sprzętu. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
 zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
 na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
 ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
 krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
-Decyzje, historia i pułapki: [HANDOFF.md](HANDOFF.md).
+Decyzje i pułapki: [HANDOFF.md](HANDOFF.md).
 
 ---
 
@@ -111,10 +111,10 @@ i dane:
 | `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
 | `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
 | `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
-| `assets/calib/*.txt` | gotowe obiektywy kamer autora (Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
+| `assets/calib/*.txt` | przykładowe obiektywy (Logitech Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
 | `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
-| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — zestawy z fal na stanowisku autora |
+| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — przykładowe zestawy z fal A1X |
 | `workspace/policies/` | polityki, które sam wytrenujesz | nie |
 | `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
 
@@ -242,7 +242,7 @@ Karta z panelem musi być widoczna: viser w karcie w tle nic nie rysuje.
 ### 4. Testy
 
 ```bash
-pytest -q                     # ok. 3-4 min na RTX A4500 (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
+pytest -q                     # ok. 3-4 min z GPU (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
 pytest -q -m "not render"     # komputer bez OpenGL
 ```
 
@@ -272,7 +272,7 @@ Do bliźniaka służy backend `feetech` (sam `pyserial`, bez LeRobota i bez jego
 kalibracji). Port pokaże `lerobot-twin check` albo „Wykryj porty” w panelu
 (Windows `COMx`, Linux `/dev/ttyACM0`). Tiki chwytaka w konfiguracji
 (`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670) to wartości
-ramienia autora — sprawdź swoje i wpisz je w kopię konfiguracji:
+przykładowego ramienia — sprawdź swoje i wpisz je w kopię konfiguracji:
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -421,7 +421,6 @@ Pusta lista oznacza jedną z trzech rzeczy, w tej kolejności prawdopodobieństw
 
 | Środowisko | Gdzie to włączyć |
 |---|---|
-| Shadow / Blade | w kliencie Shadow: menu urządzeń USB → zaznacz przejściówkę ramienia |
 | VirtualBox | Urządzenia → USB → wybierz urządzenie (plus Extension Pack) |
 | VMware | VM → Removable Devices → urządzenie → Connect |
 | Hyper-V | brak przekierowania USB — użyj trybu rozszerzonej sesji albo `usbipd-win` |
@@ -451,7 +450,7 @@ jedna ramka to jeden przebieg zamiast kilku. Na maszynie z ramieniem:
 
 ```bash
 pip install -e ".[bridge]"
-lerobot-mp-bridge --port COM11 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
+lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
 ```
 
 Na maszynie zdalnej wystarczy dowolny sterownik wirtualnego portu szeregowego

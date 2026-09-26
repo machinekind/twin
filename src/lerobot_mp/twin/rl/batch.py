@@ -5,7 +5,7 @@
     obs, rew, done, info = env.step(actions)           # actions (N, act_dim) w [-1, 1]
 
 Ta sama scena, te same wzory (`task`) co `env.TwinEnv` na CPU - roznica to
-tylko, gdzie liczy sie fizyka. Na RTX A4500 w Shadow scena z kostka robi ok.
+tylko, gdzie liczy sie fizyka. Na RTX A4500 scena z kostka robi ok.
 1,1 mln krokow fizyki na sekunde przy 8192 swiatach, a trajektoria jednego
 swiata zgadza sie z MuJoCo na CPU do 0,001 st. po 2 s.
 

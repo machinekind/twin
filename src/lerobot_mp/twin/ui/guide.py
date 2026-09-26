@@ -395,7 +395,7 @@ def blockers(s: GuideSnapshot) -> list[str]:
             out.append(f"kamera {c.name} poruszona - Kalibracja > pomaranczowy przycisk tej kamery")
         if not c.has_frame:
             out.append(f"kamera {c.name} nie daje kadru" + ("" if c.simulated else
-                                                           " (na maszynie wirtualnej/zdalnej, np. Shadow: "
+                                                           " (na maszynie wirtualnej/zdalnej: "
                                                            "przepusc kamere USB w kliencie)"))
     if s.cameras and not _relevant(s) and s.connected:
         kind = "symulowane" if s.simulated else "prawdziwe (USB)"
