@@ -102,10 +102,25 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
 
 def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seconds: float = 120,
         seed: int = 0, batch_size: int = 256, hidden: tuple[int, ...] = (256, 256, 128),
-        lr: float = 3e-4, report_every: int = 100, on_progress=None) -> tuple[Policy, dict]:
-    """Bounded supervised warm start. Return the best whole-episode validation checkpoint."""
+        lr: float = 3e-4, report_every: int = 100, on_progress=None,
+        init: Policy | None = None) -> tuple[Policy, dict]:
+    """Bounded supervised fit; an initial policy keeps its observation normalizer fixed.
+
+    Return the best whole-episode validation checkpoint, including the initial
+    policy if fitting does not improve it. Never mutate the supplied checkpoint.
+    """
     if not (0 < updates <= 20000 and 0 < seconds <= 600 and batch_size > 0 and report_every > 0):
         raise ValueError("Invalid imitation budget; maximum 20,000 updates / 600 seconds")
+    if not 0 < lr <= .01:
+        raise ValueError("Learning rate must be in (0, .01]")
+    if init is not None:
+        # JSON canonicalizes tuple/list differences in saved task configurations.
+        if (init.meta.robot != "a1x" or json.dumps(init.meta.task, sort_keys=True) !=
+                json.dumps(demos.task, sort_keys=True) or
+                init.meta.obs_dim != demos.train_obs.shape[1] or init.meta.act_dim != 7 or
+                init.meta.randomization.get("fold_yaw", False) != demos.randomization.get("fold_yaw", False)):
+            raise ValueError("Initial policy must match the A1X task and observation contract")
+        hidden = tuple(init.meta.hidden)
     torch.manual_seed(seed)
     meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
                       robot="a1x", randomization=demos.randomization,
@@ -113,7 +128,11 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     policy = Policy(meta).to(device)
     x, y, vx, vy = [torch.as_tensor(a, device=device) for a in
                     (demos.train_obs, demos.train_actions, demos.valid_obs, demos.valid_actions)]
-    policy.norm.update(x)  # Validation observations never enter this estimate.
+    if init is None:
+        policy.norm.update(x)  # Validation observations never enter this estimate.
+    else:
+        policy.load_state_dict(init.state_dict())
+        policy.meta.notes = "Imitation refinement with frozen input statistics; not RL or physical validation"
     optimizer = torch.optim.Adam(policy.actor.parameters(), lr=lr)
 
     def losses(pred, target):
@@ -163,8 +182,25 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     policy.eval()
     policy.meta.iterations = best_at
     policy.meta.steps = 0  # No new environment transitions were collected by this learner.
-    result = dict(method="behavior cloning", optimizer_updates=completed, selected_update=best_at,
+    result = dict(method="behavior cloning", initialized=init is not None,
+                  normalizer="frozen initial policy" if init is not None else "training observations only",
+                  learning_rate=lr, optimizer_updates=completed, selected_update=best_at,
                   train_samples=len(x), validation_samples=len(vx), initial_validation=initial,
                   selected_validation=assess(), history=history, elapsed_s=time.monotonic() - started)
     policy.meta.evals["imitation"] = {k: v for k, v in result.items() if k != "history"}
     return policy, result
+
+
+def load_refinement_policy(path: Path, demos: Demonstrations) -> Policy:
+    """Require the runner's hash-bound record and keep prior train/validation roles."""
+    path = Path(path)
+    report = json.loads(path.with_name("report.json").read_text())
+    if report.get("policy_sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+        raise ValueError("Initial policy hash does not match its imitation report")
+    previous = report.get("dataset", {})
+    if not all(key in previous for key in ("train_seeds", "validation_seeds")):
+        raise ValueError("Initial policy report must record its dataset split")
+    if any(not set(previous[key]).issubset(demos.provenance[key])
+           for key in ("train_seeds", "validation_seeds")):
+        raise ValueError("Refinement must retain prior episodes in their training and validation roles")
+    return Policy.load(path)

@@ -688,6 +688,87 @@ completes full holds on all four. These traces motivate collecting corrections
 from candidate 007's own trajectories before another fit; the existing raised
 dataset used candidate 005. No physical or Brev commands were sent in this round.
 
+### Correcting the retained policy and auditing information sufficiency
+
+The next collection uses candidate 007 for 30% of executed actions, with the
+same raised, synchronized, state-triggered teacher and guarded runtime. The
+20-case / 60 s pilot `lift-demos-raised-pilot-002` (45000-45019) completes 20/20
+teacher-assisted holds in 17.36 s, 790/2,702 learner actions. Its bounded expansion
+`lift-demos-raised-002` (45020-45219, at most 200 cases / 240 s) completes 192/200
+in 161.58 s, 7,877/26,610 learner actions. Eight failures are retained: one above,
+six close, one lift. Both runs have zero actual prohibited contacts or numerical
+faults. These results are teacher-assisted, not learned-policy qualification.
+
+Combining the old raised set and both new sources preserves 318 training and
+79 validation episodes, with 17 failures excluded. Candidate 008 is a fresh fit
+on this combination: 10,000 updates / 120 s ceiling, seed 23, selected update
+10,000, 33.76 s, validation loss 0.0025307. Candidate 009 instead starts from
+007, keeps its normalizer fixed, and fits the same data at learning rate 0.0001:
+10,000 updates / 120 s ceiling, 34.85 s, validation loss 0.0039600 -> 0.0025103.
+The lower action-prediction errors do not improve guarded behavior:
+
+| Policy | Nominal CPU /20 | Randomized CPU /20 | Guarded /20 | Guard rejections | Timeouts |
+|---|---:|---:|---:|---:|---:|
+| 007, retained baseline | 15 | 13 | 13 | 2 | 5 |
+| 008, combined fresh fit | 16 | 13 | 10 | 8 | 2 |
+| 009, conservative refinement | 13 | 14 | 12 | 4 | 4 |
+
+Nominal/randomized bare-CPU collision counts are 0/1, 2/6 and 1/5 respectively.
+All guarded runs have zero actual prohibited contacts and numerical failures;
+only complete two-second holds without controller faults count. Reports are
+`lift-imitation-runtime-{009,010,011}.json`, using development seeds 50000-50019.
+The audit verifies identical task, seed order, evaluator hash and all recorded
+runtime source hashes; only training modules differ. No candidate is promoted.
+Candidate 008 SHA256:
+`df36ddaa627346a5e71e586f70a4c946529931f5653569877cd36d7d65c716a2`.
+Candidate 009 SHA256:
+`c3b1d44be023c526832a147411b470c1c285734d3c9cbed24ee8b2e6cccc8b48`.
+
+The new imitation `--init` option preserves the actor/input statistics and never
+mutates the original policy. It requires a matching checkpoint/report hash and
+retains every prior training/validation episode in its original role; changed
+task/observation contracts are rejected. Defaults still fit from scratch.
+`imitation-refinement-contracts-001.log`: 16 tests pass in 11.59 s, including
+actual fitting, unchanged source/statistics, reload and leakage protections.
+
+`runtime-drift-003` completes the missing matched traces for baseline seeds
+50004/50008/50009; the teacher succeeds on all three. Together with drift-002,
+`lift-failure-audit-002/report.json` classifies all seven baseline failures:
+
+- **Grasp execution (4):** 50007/50009/50015 stall without bilateral contact;
+  50008 receives a finger/cube rejection before a bilateral grip.
+- **Maintaining lift (2):** 50003/50010 grasp but finish at 57.39/64.80 mm,
+  with qualifying holds 0/0.690 s.
+- **Approach clearance (1):** 50004 gets a table/finger rejection before contact.
+
+This supports prioritizing grasp decisions while keeping the previously improved
+approach clearance. The policy input contains measured/commanded joints including
+G1 opening, current TCP/cube pose and previous action. The memoryless actor does
+not directly receive the teacher's phase history, initial cube position, chosen
+IK waypoints or MuJoCo touch signals. In a recorded closing state (50008, step 64),
+the teacher selects gripper label -1 with bilateral touch, versus -0.5082 through
+its no-contact branch while holding all actor inputs fixed. This is a synthetic
+branch audit, not evidence of two physically reachable identical observations.
+Position/history proxies may explain part of the hidden decision; the audit
+does not prove missing inputs cause all failures. Exact reproducibility remains
+unestablished, so more data/fitting is not yet justified. Resolve the control
+teacher's dependence on shared observables/history before the next targeted
+corrective set; keep simulation truth for independent success/contact checking.
+
+The baseline has a hash-verified copy under
+`workspace/validation/baselines/lift-imitation-007/`, including policy, metadata,
+training records and controller evaluation. The fixed protocol is
+`configs/a1x_lift_evaluation.json`: development 50000-50019; reserved held-out
+51000-51019, with no prior use found in experiment records. Do not use reserved
+cases for training or tuning. Freeze a nominal candidate before qualification;
+later reuse after a failed qualification must not be called a fresh holdout.
+
+The user's latest scope keeps scripted demonstrations -> imitation -> corrective
+teaching, with short comparisons and no new PPO/long run. Camera-estimation noise
+and delay tests/training follow nominal reliability. Simulated robustness cannot
+validate actual two-camera calibration/perception. Physical work remains deferred;
+the adjacent task's reported table/tool model discrepancy remains unresolved.
+
 ### IK retry must preserve gripper state
 
 Source review found that the home-pose IK restart included the home gripper

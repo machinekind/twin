@@ -167,33 +167,55 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **collect raised-grasp corrective examples using candidate
-007 itself, then compare a new fit through the guarded controller**. Retain the
-existing raised-grasp examples and their episode-level validation split. First
-use a bounded pilot to check that the teacher can recover from this learner's
-deviations; expand only if the pilot supplies successful corrections.
+Current next action: **resolve the teacher/policy information mismatch around
+grasp execution before collecting another batch or fitting another policy**.
+The user explicitly requests scripted demonstrations -> imitation -> corrective
+teaching, short diagnostic comparisons, no return to PPO and no new long run.
+Physical access and tests remain deferred. No training job is running.
 
-Candidate 007 is the best guarded lift checkpoint at **13/20** (15/20 nominal
-CPU, 13/20 randomized CPU). Moving the teacher's gripping point 5 mm higher
-increases the minimum measured finger/table gap during closing from 2.85 to
-7.85 mm on 20 matched cases; both teacher versions succeed on all 20. A raised
-corrective dataset produced 185/194 teacher-assisted holds, with zero actual
-prohibited contacts. Four failed candidate-007 traces show stalled grasping or
-insufficient/oscillating lift height; the raised teacher succeeds on all four.
-The raised dataset used the older candidate 005 for occasional learner actions,
-so it does not yet cover candidate 007's own deviations directly.
+Candidate 007 remains best at **13/20 guarded lifts**. It is copied with its
+metadata, training report and controller evaluation under
+`workspace/validation/baselines/lift-imitation-007/`; SHA256 starts `b3b196c3`.
+A further 20-case pilot and 200-case corrective batch using candidate 007 yield
+20/20 and 192/200 teacher-assisted holds. A combined fresh fit (candidate 008)
+reaches only 10/20 guarded; a short fine-tune from candidate 007 with frozen input
+statistics (009) reaches 12/20. Neither replaces the baseline. Their two fits
+take about 34 s each. All three controller evaluations use identical development
+seeds, task settings, evaluator and runtime source, with zero actual prohibited
+contacts and numerical failures.
 
-A five-minute local PPO refinement with fixed input normalization and small
-updates still degrades behavior: guarded scores at iterations 50/100/150/final
-are 3/1/5/0 out of 20. Preserve the failure and retain candidate 007. The earlier
-H100 refinement also failed; do not scale either recipe merely for more compute.
-No training job is currently running. These are development comparisons, below
-the proposed 18/20 gate; fresh qualification remains outstanding. Each counted
-guarded success requires a full 2 s hold and zero prohibited contacts. Neither
-imitation success nor PPO training reward establishes physical readiness.
-The inspected candidate-005 video remains a selected guarded simulation replay.
-Do not weaken collision or sustained-hold criteria to pass the gate.
-The user's preference for longer unattended H100 runs remains pending.
+All seven baseline failures now have matched teacher traces: **four grasp
+execution, two maintaining lift, one approach clearance**. The 5 mm higher
+teacher grasp already increased measured closing clearance from 2.85 to 7.85 mm
+on matched cases; preserve that improvement. Further clearance work is secondary
+to grasp execution unless new traces change the classification.
+
+The actor sees current joint/command positions, TCP/cube pose and previous action.
+The teacher also uses its waypoint phase/history, initial cube pose, chosen IK
+sequence and bilateral simulated touch signals. A recorded closing-state probe
+changes the teacher's gripper label by 0.492 when only its contact branch changes;
+touch signals are absent from policy input. This is a synthetic branch comparison,
+not proof of two physically reachable states with identical observations, and
+does not establish the cause of every failure. Exact teacher reproducibility is
+unproven. Next test whether closing and phase decisions can use shared observable
+signals/history; do not feed simulation-only contact truth into a physical policy
+or collect more ambiguous labels blindly. Then generate a small corrective set
+around the diagnosed grasp and lift failures, followed by autonomous evaluation.
+
+`configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
+reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
+the held-out seeds. Keep them out of demonstrations, fitting and development
+tuning; run only after freezing a candidate that meets the proposed 18/20 nominal
+development gate. Every success requires the full 2 s hold through the guarded
+controller, without teacher intervention, prohibited contacts or numerical faults.
+If qualification fails, subsequent reuse is regression evidence, not a fresh holdout.
+
+After nominal qualification, perform short, explicit simulated camera-pose noise
+and delay comparisons before robustness training. Keep those synthetic tests
+separate from measurement/validation of the actual two-camera pipeline. Existing
+randomized CPU scores are exploratory and do not satisfy this stage. The adjacent
+knife task's reported model/table/tool clearance discrepancy also remains a
+physical-validation issue; the higher simulated grasp does not resolve it.
 See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
 
@@ -275,6 +297,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Fixed-normalization PPO refinement still degrades the learned lift | `lift-ppo-fixed-001`: 167 iterations, 2,052,096 transitions, 300.06 s; guarded checkpoints 3/1/5/0 out of 20 | Reject refinement; preserve checkpoint history and candidate 007 |
 | 2026-09-26 | New training options and evaluation labels verified | `raised-refinement-contracts-001.log`: 22 passed; `nominal-runner-contract-001`: one GPU iteration and actual nominal/randomized CPU evaluations | Historical nominal run's mislabeled duplicate evaluation is documented; independent evaluations retained |
 | 2026-09-26 | Raised-policy failure traces isolate remaining learning errors | `runtime-drift-002`: four policy timeouts, four matched teacher successes; two held-block height failures and two cases without a final grip | Bounded corrective pilot before another fit; physical access remains deferred |
+| 2026-09-26 | Candidate-007 corrective teaching completes, but both new fits regress | `lift-demos-raised-pilot-002`: 20/20; `lift-demos-raised-002`: 192/200; candidates 008/009: 10/20 and 12/20 guarded versus baseline 13/20 | Preserve baseline; stop scaling data/fitting and audit teacher observability |
+| 2026-09-26 | Conservative imitation refinement and split protection verified | `imitation-refinement-contracts-001.log`: 16 passed; actor restored, normalizer frozen, source untouched, mismatched checkpoints/contracts and reassigned/omitted prior split episodes rejected | Refinement is available but not a demonstrated improvement |
+| 2026-09-26 | Failure/input audit and evaluation separation saved | `lift-failure-audit-002`: identical recorded comparison conditions, four grasp/two lift/one clearance failures, teacher-only state identified, no prior held-out seed use; fixed protocol in `configs/a1x_lift_evaluation.json` | Target grasp decisions and information sufficiency before further training; no PPO/long runs; physical tests deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
