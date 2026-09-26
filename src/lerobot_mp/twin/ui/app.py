@@ -40,6 +40,7 @@ from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
+from .specs_panel import add_specs_folder
 from .watch import CameraWatch, arm_mask, distort_mask
 
 logger = logging.getLogger(__name__)
@@ -2381,6 +2382,7 @@ class TwinApp:
                                          "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
                                          "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
             self.tag_md = g.add_markdown("")
+        self.specs = add_specs_folder(self, g)
         self._tag_fix = None
         self.goal_node = self.server.scene.add_icosphere("/cel", radius=0.012, color=(255, 196, 0), visible=False)
         self.goal_gizmo = self.server.scene.add_transform_controls("/cel_uchwyt", scale=0.08, disable_rotations=True,
@@ -2920,6 +2922,7 @@ class TwinApp:
         self._tick_policies()
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
+        self._guard("spectacles", self.specs.tick)
         return frames
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
