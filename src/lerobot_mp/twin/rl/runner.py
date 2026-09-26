@@ -79,6 +79,8 @@ class RunnerStatus:
     last_action: list[float] = field(default_factory=list)
     #: Ile taktow z rzedu zadanie jest wykonane.
     success_streak: int = 0
+    #: Elapsed time since the first continuously successful observation.
+    success_hold_s: float = 0.0
     #: reach: cel przyciety do obszaru treningu (panel pokazuje, ze kula stoi gdzie indziej).
     #: pickplace: cel odlozenia przesuniety na pierscien celow z treningu.
     goal_clamped: bool = False
@@ -174,6 +176,7 @@ class PolicyRunner:
         self.grip_creep = jaw.creep
         self._grip_prev: float | None = None
         self._streak_grip = 0.0
+        self._success_since: float | None = None
         #: pickplace: kostka byla niesiona (jak `task.carry_latch` w treningu) i gdzie byla na poczatku serii.
         self._carried = False
         self._streak_cube: np.ndarray | None = None
@@ -258,6 +261,7 @@ class PolicyRunner:
         self._cube, self._cube_src = None, None
         self._grip_prev = None
         self._carried, self._streak_cube = False, None
+        self._success_since = None
         self._stop.clear()
         self._t_start, self._ticks = None, 0            # zegar startuje z pierwszym taktem
         # Sprzeglo tylko, jesli ramie wciaz nasze - sprawdzenie i wlaczenie razem w `Twin`.
@@ -393,10 +397,21 @@ class PolicyRunner:
                 if st.success and st.success_streak == 0:
                     self._streak_grip = float(q[self.g])
             st.success_streak = st.success_streak + 1 if st.success else 0
+            if st.success:
+                if self._success_since is None:
+                    self._success_since = now
+                st.success_hold_s = max(0.0, now - self._success_since)
+            else:
+                self._success_since = None
+                st.success_hold_s = 0.0
             self._ticks += 1
             if now - self._t_hz >= 1.0:
                 st.hz, self._ticks, self._t_hz = self._ticks / (now - self._t_hz), 0, now
-            if self.end_on_success > 0 and st.success_streak >= self.end_on_success:
+            # N observations span only N-1 intervals. Count alone previously
+            # finished a 2 s hold at 1.95 s, and faster calls could shorten it
+            # further. Require both consecutive observations and elapsed time.
+            if (self.end_on_success > 0 and st.success_streak >= self.end_on_success
+                    and st.success_hold_s >= self.end_on_success / self.task.control_hz - 1e-9):
                 self._halt("zadanie wykonane")
                 return False
             if self.episode_limit and st.step >= self.task.episode_steps:

@@ -33,6 +33,7 @@ class CollisionChecker:
         if not np.isfinite(clearance_m) or clearance_m < 0:
             raise ValueError("Collision clearance must be finite and nonnegative")
         self.scene = scene
+        self.clearance_m = float(clearance_m)
         # The environmental clearance must not change the dynamics/contact model.
         self.model = copy.copy(scene.model) if clearance_m else scene.model
         if clearance_m:
@@ -107,9 +108,12 @@ class CollisionChecker:
         out = set()
         for c in d.contact[: d.ncon]:
             g1, g2 = int(c.geom1), int(c.geom2)
-            # Mechanical joint housings can be separated by less than the
-            # environmental buffer. Still reject actual self penetration.
-            if c.dist > 0 and self.robot_geom[g1] and self.robot_geom[g2]:
+            # A contact candidate is not necessarily within the requested
+            # clearance (box-box narrow phase can emit farther points). Enforce
+            # the signed geometric distance explicitly. Mechanical housings use
+            # zero clearance; actual self penetration remains prohibited.
+            threshold = 0.0 if self.robot_geom[g1] and self.robot_geom[g2] else self.clearance_m
+            if c.dist > threshold:
                 continue
             if self.robot_geom[g1] or self.robot_geom[g2]:
                 out.add((min(g1, g2), max(g1, g2)))

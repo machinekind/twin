@@ -140,7 +140,8 @@ def main():
             if policy.task.cube:
                 result.update(max_continuous_hold_s=monitor.max_hold_s,
                               final_height_mm=float((monitor.cube()[0][2] - policy.task.cube_half) * 1000),
-                              controller_success_streak=runner.status.success_streak)
+                              controller_success_streak=runner.status.success_streak,
+                              controller_hold_s=runner.status.success_hold_s)
             else:
                 result.update(final_distance_mm=distance * 1000, goal_m=cpu.goal.tolist())
             results.append(result)

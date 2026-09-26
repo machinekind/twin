@@ -167,11 +167,13 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **align learned approaches with the runtime collision guard
-and retain demonstrated grasp behavior during RL refinement**. State-triggered
-demonstrations improved imitation to 16/20 nominal and 5/20 randomized CPU
-holds, but the guarded runtime rejected all 20 attempts near finger-body/cube
-contact. This is imitation learning, not an RL success or physical readiness.
+Current next action: **collect teaching examples through the guarded runtime,
+then train for that command path and retain grasp behavior during RL refinement**.
+State-triggered demonstrations improved imitation to 16/20 nominal and 5/20
+randomized CPU holds. The same checkpoint now completes 3/20 guarded-runtime
+lifts after correcting two independently reproduced guard/timing bugs. Each
+successful runtime lift has a full 2 s hold and zero prohibited contacts.
+This is imitation learning, not an RL success or physical readiness.
 The five-minute H100 PPO refinement of the earlier imitation candidate finished
 and lost the grasp behavior (0/20 nominal and randomized). No training job is
 currently running. Keep the improved imitation checkpoint and failed refinement
@@ -244,6 +246,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | H100 scaling and bounded refinement completed | `brev/h100-lift-4096-001`: smoke passed, 4,266.9 MiB peak; `brev/h100-lift-imitation-ppo-001`: 23,298,048 steps, 237 iterations, 300.5 s training, 0/20 nominal/randomized holds | Diagnose lost behavior; preserve this failed experiment |
 | 2026-09-26 | Timed demonstration ambiguity reproduced and state-triggered collector validated | `demo-phase-boundaries-001.json`: all 196 successful timed episodes contain near-identical observations with conflicting phase-transition commands; `lift-demos-state-002`: matched seeds, 196/200 holds | Train on the state-triggered examples |
 | 2026-09-26 | Improved imitation learns nominal lifts but fails controller qualification | `lift-imitation-002`: 16/20 nominal and 5/20 randomized; `lift-imitation-runtime-002.json`: 0/20, all guarded rejections, zero actual prohibited contacts; `lift-imitation-video-002`: inspected successful CPU replay | Resolve training/runtime approach mismatch and learning stability before fresh qualification |
+| 2026-09-26 | Fixed excess clearance rejection and premature hold completion | Analytic 5/3.1 mm gaps incorrectly rejected before fix; 2.9 mm gaps and penetration remain rejected. Fake-arm tests reproduce 40 samples spanning only 1.95 s. `clearance-runtime-contracts-002.log`: 50 passed | Check full offline suite and established reach/scripted-lift regressions |
+| 2026-09-26 | Unchanged imitation checkpoint completes first guarded lifts | `lift-imitation-runtime-004.json`: 3/20, independent holds 2.010-2.050 s, zero actual prohibited contacts/numerical failures; 16 guarded rejections and one timeout | Train with controller-accepted demonstrations; retain the 3 mm threshold and full-duration hold |
+| 2026-09-26 | Full regressions and established runtime baselines remain valid | `offline-suite-005.log`: 181 passed; `reach-clearance-regression-001.json`: 20/20; `runtime-lift-distance-001.json`: scripted 5/5, 3.815-3.825 s continuous holds | Build guarded-runtime teaching data; no new long H100 job is running |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

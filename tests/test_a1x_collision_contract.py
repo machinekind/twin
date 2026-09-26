@@ -16,6 +16,41 @@ REST = dict(arm_joint1=4.0, arm_joint2=3.5, arm_joint3=-3.5, arm_joint4=0.5,
             arm_joint5=-2.0, arm_joint6=-8.0, gripper=60.0)
 
 
+@pytest.mark.parametrize("gap,blocked", [(.005, False), (.0031, False), (.0029, True), (-.001, True)])
+def test_box_clearance_uses_signed_distance_not_contact_list_membership(toy_spec, gap, blocked):
+    # Two aligned boxes with an analytic surface separation. MuJoCo can emit
+    # box-box contact candidates farther apart than the requested margin.
+    scene = sc.build(sc.SceneConfig(robot=toy_spec, objects=[sc.Box("obstacle", (.001, .001, .001), (.5, .4))]))
+    try:
+        scene.set_joints(toy_spec.home)
+        m, d = scene.model, scene.data
+        hand = m.body("robot/hand").id
+        hand_geom = int(m.body_geomadr[hand])
+        obstacle = m.body("obstacle").id
+        obstacle_geom = int(m.body_geomadr[obstacle])
+        # Isolate this analytic pair from the toy fixture's overlapping housings.
+        m.geom_contype[:] = m.geom_conaffinity[:] = 0
+        m.geom_contype[[hand_geom, obstacle_geom]] = 1
+        m.geom_conaffinity[[hand_geom, obstacle_geom]] = 1
+        adr = int(m.jnt_qposadr[m.body_jntadr[obstacle]])
+        rotation = d.geom_xmat[hand_geom].reshape(3, 3)
+        d.qpos[adr:adr + 3] = d.geom_xpos[hand_geom] + rotation[:, 1] * (.03 + .001 + gap)
+        mujoco.mju_mat2Quat(d.qpos[adr + 3:adr + 7], rotation.ravel())
+        mujoco.mj_forward(m, d)
+        original_margin, original_qpos = m.geom_margin.copy(), d.qpos.copy()
+        checker = CollisionChecker(scene, clearance_m=.003)
+        reason = checker.config_clear(toy_spec.home)
+        measured_gap = mujoco.mj_geomDistance(checker.model, checker.data, hand_geom, obstacle_geom, .1, None)
+        assert measured_gap == pytest.approx(gap, abs=1e-9)
+        assert (reason is not None) is blocked
+        if blocked:
+            assert "obstacle" in reason
+        np.testing.assert_array_equal(m.geom_margin, original_margin)
+        np.testing.assert_array_equal(d.qpos, original_qpos)
+    finally:
+        scene.close()
+
+
 def test_common_target_guard_rejects_wrist_rotation_into_folded_shoulder():
     twin = Twin(Workspace(robot="a1x"))
     try:

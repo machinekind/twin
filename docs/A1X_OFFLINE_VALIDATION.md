@@ -388,6 +388,54 @@ accepted by that guard; bare-environment successes are insufficient.
 successful bare-CPU replay (89 frames, 74.03 mm final lift, completed 2 s hold).
 It is imitation, not PPO performance, and does not pass the guarded runtime.
 
+### Correcting guard distance and hold duration
+
+`grasp-guard-diagnosis-001` records the exact rejected model configurations
+without changing decisions. All three inspected finger-body/cube rejections
+involved contact candidates separated by approximately 5.0-5.95 mm, despite
+the configured 3 mm clearance. The checker had treated membership in MuJoCo's
+contact-candidate array as sufficient. Contact arrays can include separated
+pairs; see the primary [MuJoCo contact documentation](https://mujoco.readthedocs.io/en/latest/computation/#contact).
+The decisive local reproduction uses two analytically positioned boxes and
+independent `mj_geomDistance` measurements: the original checker incorrectly
+rejects both 5 mm and 3.1 mm gaps (`clearance-boundary-before-002.log`).
+The first test attempt included unrelated toy-fixture housing overlap and is
+retained as `clearance-boundary-before-001.log`, not counted as this reproduction.
+
+The correction explicitly compares signed contact distance with the requested
+clearance. The intended environmental threshold remains 3 mm; 2.9 mm gaps and
+penetrations still fail, and self penetration remains forbidden. The scene's
+physics margins and positions are unchanged. No new contact exemptions were
+introduced. `clearance-runtime-contracts-001.log`: 48 passed.
+
+With only the distance correction, three trials reached controller completion,
+but independent holds were only 1.955, 1.990 and 1.970 s
+(`lift-imitation-runtime-003.json`). Forty successful observations at 20 Hz span
+39 intervals, not two seconds. Two fake-arm tests reproduce that premature
+completion, including loss/reacquisition of the grasp (`hold-clock-before-001.log`).
+The runtime now requires both the consecutive observations and the full elapsed
+hold duration, resetting elapsed time on loss and on restart. This strengthens
+the runtime completion rule. CPU/GPU training's existing sample-count rule is
+unchanged; independent every-substep runtime monitoring remains the qualification
+criterion. `clearance-runtime-contracts-002.log`: all 50 focused tests pass.
+
+`lift-imitation-runtime-004.json` reevaluates the unchanged candidate 002 and
+same development seeds: **3/20 guarded lifts**, 16 guarded rejections and one
+timeout. Successful independent holds are 2.015, 2.050 and 2.010 s; the controller
+reports 2.0 s. All 20 have zero actual prohibited contacts and numerical failures.
+This is still below the proposed 18/20 gate. Future data collection must exercise
+the actual controller; bare-physics imitation scores do not qualify deployment.
+
+The complete offline suite passes **181 tests** in 160.17 s
+(`offline-suite-005.log`), including GPU/render and fake transport. The unchanged
+adjacent driver checkout supplied imports through `PYTHONPATH`; its HEAD was
+`d9fa67708a344de5660967c4be998b8d34ec86e1`, with the team's working changes preserved.
+`reach-clearance-regression-001.json` repeats the existing 32000-32019 set:
+20/20 reaching successes, zero prohibited contacts/numerical failures. This is
+a regression set, not a new holdout. `runtime-lift-distance-001.json` repeats
+the established scripted fallback: 5/5, 3.815-3.825 s continuous holds and under
+0.565 mm peak jaw-coupling error. No physical tests were run.
+
 ### Remote environment and isolation
 
 The user supplied Brev organization `wysocki-55ff9e-nih0` and machine

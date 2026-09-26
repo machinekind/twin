@@ -54,6 +54,32 @@ def drive(twin, runner, seconds: float, t0: float = 0.0) -> float:
             runner.step_once(t0 + k * 0.01)
     return t0 + n * 0.01
 
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_success_hold_uses_elapsed_time_and_restarts_after_loss(twin, monkeypatch, interrupt):
+    connect_fake(twin, monkeypatch, FakeArm())
+    task = tk.make_task("lift", end_on_success=40)
+    runner = PolicyRunner(twin, constant_policy(task), episode_limit=False,
+        cube_provider=lambda: (np.array([.2, 0, .12]), np.eye(3), "kamery"))
+    grasp = {"held": True}
+    monkeypatch.setattr(runner, "_jaw_holding", lambda q: grasp["held"])
+    runner.start(threaded=False)
+    beginning = 0.0
+    if interrupt:
+        for tick in range(21):
+            assert runner.step_once(tick * .05)
+        grasp["held"] = False
+        assert runner.step_once(1.05)
+        assert runner.status.success_streak == 0
+        grasp["held"] = True
+        beginning = 1.1
+    # Forty observations span only 39 intervals (1.95 s at 20 Hz).
+    for tick in range(40):
+        assert runner.step_once(beginning + tick * .05)
+    assert runner.status.success_streak == 40
+    assert not runner.step_once(beginning + 2.0)
+    assert runner.status.stopped_because == "zadanie wykonane"
+
 # ------------------------------------------------------------ rozjazd = kolizja
 def test_physical_policy_refuses_command_only_gripper_state(twin, monkeypatch):
     arm = FakeArm()
