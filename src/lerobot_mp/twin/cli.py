@@ -468,6 +468,20 @@ def _specs(a: argparse.Namespace) -> int:
     st = twin.status
     print(f"Ramie: {st.backend} ({'symulacja' if st.simulated else 'prawdziwe'}), tryb {a.mode}, "
           f"przekaznik {a.relay}", flush=True)
+    if st.simulated:
+        # Ramie w symulacji startuje z pozy zerowej, skad kazdy punkt pudelka to skok > 45 st.
+        # (odmowa "jump"). Tylko w symulacji: najpierw nad srodek pudelka zasiegu.
+        from .kinematics import RobotKinematics
+        from .reach import ReachVolume
+
+        sol = RobotKinematics(twin.spec).ik(ReachVolume.from_workspace(ws).center, seed=twin.spec.home, tol=0.003)
+        try:
+            if sol.ok:
+                twin.move({k: v for k, v in sol.joints.items() if k != twin.spec.gripper}, 2.0, owner="specs-start")
+        except RuntimeError as exc:
+            print(f"Symulacja: nie ustawiono pozy startowej: {exc}", file=sys.stderr)
+        finally:
+            twin.release("specs-start")
 
     def show(msg: dict) -> None:
         print(json.dumps(msg), flush=True)
