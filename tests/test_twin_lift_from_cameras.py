@@ -43,16 +43,17 @@ def look(eye, target):
     return pose(np.column_stack([x, np.cross(z, x), z]), eye)
 
 
-@pytest.mark.render
-@pytest.mark.skipif(not POLICY.is_file(), reason="brak bazowej polityki lift-v3 w assets/policies")
-def test_lift_policy_lifts_a_cube_seen_only_by_cameras():
+def run_camera_case(policy_path=POLICY, *, eyes=None, seed=5, focal=560.0):
+    """Reusable end-to-end camera harness; camera poses are perfectly calibrated."""
     ws = Workspace()
-    K = [[560.0, 0, 322.0], [0, 560.0, 236.0], [0, 0, 1]]
-    for name, eye in (("a", [0.55, -0.45, 0.45]), ("b", [0.5, 0.5, 0.5])):
+    K = [[focal, 0, 322.0], [0, focal, 236.0], [0, 0, 1]]
+    eyes = eyes if eyes is not None else [[0.55, -0.45, 0.45], [0.5, 0.5, 0.5]]
+    names = [f"camera-{i}" for i in range(len(eyes))]
+    for name, eye in zip(names, eyes):
         T = look(eye, [0.2, 0, 0]).tolist()
         ws.add_camera(CameraRecord(name, "sim", 640, 480, K=K, sim_pose=T, T_cam2base=T,
                                    calibration={"trusted": True}))
-    pol = Policy.load(POLICY)
+    pol = Policy.load(policy_path)
     task = pol.task
     h = task.cube_half
     twin = Twin(ws)
@@ -63,7 +64,7 @@ def test_lift_policy_lifts_a_cube_seen_only_by_cameras():
         mapper = TableMapper.from_workspace(ws)
         det = CubeDetector()
         kin = RobotKinematics(ws.spec())
-        pos, quat = tk.sample_cubes(task, np.random.default_rng(5), 1)
+        pos, quat = tk.sample_cubes(task, np.random.default_rng(seed), 1)
         with twin.lock:
             s = twin.scene
             m, d = s.model, s.data
@@ -82,8 +83,8 @@ def test_lift_policy_lifts_a_cube_seen_only_by_cameras():
         clock = {"t": 0.0}
 
         def vision():
-            frames = {c: twin.render(c) for c in ("a", "b")}
-            occ = twin.render_with(lambda sc_: {c: arm_mask(sc_, c, dilate=5) for c in ("a", "b")})
+            frames = {c: twin.render(c) for c in names}
+            occ = twin.render_with(lambda sc_: {c: arm_mask(sc_, c, dilate=5) for c in names})
             last["det"] = det.detect_frames(frames, mapper, occ)
 
         runner = None
@@ -115,7 +116,19 @@ def test_lift_policy_lifts_a_cube_seen_only_by_cameras():
         where = (f"takt {runner.status.step}, powod {runner.status.stopped_because!r}, kostka ze zrodla "
                  f"{tracker.source!r}, {height * 100:.1f} cm nad blatem")
         # Koniec po sukcesie (kostka nad blatem przez `end_on_success` taktow) albo limit epizodu.
-        assert runner.status.stopped_because in ("zadanie wykonane", "koniec epizodu"), where
-        assert height > task.lift_height, where
+        return {"seed": seed, "steps": runner.status.step,
+                "reason": runner.status.stopped_because, "source": tracker.source,
+                "height_mm": float(height * 1000), "where": where,
+                "lifted": bool(height > task.lift_height),
+                "finished": runner.status.stopped_because == "zadanie wykonane",
+                "success": bool(height > task.lift_height and
+                                runner.status.stopped_because in ("zadanie wykonane", "koniec epizodu"))}
     finally:
         twin.close()
+
+
+@pytest.mark.render
+@pytest.mark.skipif(not POLICY.is_file(), reason="brak bazowej polityki lift-v3 w assets/policies")
+def test_lift_policy_lifts_a_cube_seen_only_by_cameras():
+    result = run_camera_case()
+    assert result["success"], result["where"]

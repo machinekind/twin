@@ -111,6 +111,15 @@ class Randomization:
     centre: Dynamics = field(default_factory=Dynamics)
     #: Najmniejsze opoznienie akcji [takty]; bez randomizacji = max_delay = zmierzone.
     min_delay: int = 0
+    #: Persistent episode-level calibration errors; unlike frame noise these do
+    #: not average out. Translation in metres, rotation/encoder bias in degrees.
+    calibration_translation: float = 0.0
+    calibration_rotation_deg: float = 0.0
+    calibration_scale: float = 0.0
+    joint_bias_deg: float = 0.0
+    dropout_probability: float = 0.0
+    dropout_steps: int = 0
+    cube_z_noise: float = 0.0
 
     @staticmethod
     def none() -> Randomization:
@@ -187,7 +196,7 @@ class Randomization:
     def sample(self, rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
         """Mnozniki dla `n` swiatow (juz przemnozone przez srodek)."""
         c = self.centre
-        return {
+        out = {
             "kp": c.kp * rng.uniform(*self.kp, n),
             "damping": c.damping * rng.uniform(*self.damping, n),
             "armature": c.armature * rng.uniform(*self.armature, n),
@@ -198,3 +207,24 @@ class Randomization:
             "cube_delay": rng.integers(0, self.cube_delay + 1, n),
             "cube_period": rng.integers(1, max(1, self.cube_period) + 1, n),
         }
+        uniform = lambda width, shape: rng.uniform(-width, width, shape) if width else np.zeros(shape)
+        out["calibration_translation"] = uniform(self.calibration_translation, (n, 3))
+        out["calibration_rpy"] = uniform(np.radians(self.calibration_rotation_deg), (n, 3))
+        out["calibration_scale"] = 1.0 + uniform(self.calibration_scale, n)
+        out["joint_bias"] = uniform(np.radians(self.joint_bias_deg), (n, 6))
+        return out
+
+
+def calibration_rotation(xp, rpy):
+    """Batched Rz Ry Rx, shared by CPU and GPU observation corruption."""
+    x, y, z = rpy[..., 0], rpy[..., 1], rpy[..., 2]
+    cx, sx, cy, sy, cz, sz = xp.cos(x), xp.sin(x), xp.cos(y), xp.sin(y), xp.cos(z), xp.sin(z)
+    return xp.stack((xp.stack((cz*cy, cz*sy*sx-sz*cx, cz*sy*cx+sz*sx), -1),
+                     xp.stack((sz*cy, sz*sy*sx+cz*cx, sz*sy*cx-cz*sx), -1),
+                     xp.stack((-sy, cy*sx, cy*cx), -1)), -2)
+
+
+def corrupt_pose(xp, pos, rot, translation, rpy, scale):
+    R = calibration_rotation(xp, rpy)
+    p = (R @ pos[..., None])[..., 0] * scale[..., None] + translation
+    return p, R @ rot

@@ -80,9 +80,20 @@ class TaskConfig:
     #: nagroda liczy tylko polozenie TCP, a obrot nadgarstka go nie zmienia - reach-v2
     #: krecila nim do limitu +150 st. w kazdym epizodzie (643 z 2000 taktow przy limicie).
     roll_penalty: float = 0.0
+    #: Multi-object policies require object identity and dimensions from perception.
+    object_kind: str = "cube"
+    object_scale: float = 1.0
+    shape_conditioned: bool = False
+    smooth_velocity: float = 0.0
+    smooth_acceleration: float = 0.0
+    smooth_jerk: float = 0.0
+    max_pose_age: float = 0.3
 
     @property
     def obs_dim(self) -> int:
+        if self.shape_conditioned:
+            from .objects import OBJECT_KINDS
+            return OBS_DIMS[self.name] + len(OBJECT_KINDS) + 5
         return OBS_DIMS[self.name]
 
     @property
@@ -172,7 +183,7 @@ def normalize_q(xp, limits: Limits, q):
 
 
 def observe(xp, task: TaskConfig, limits: Limits, q, q_cmd, tcp, prev_action, goal=None,
-            cube_pos=None, cube_rot=None):
+            cube_pos=None, cube_rot=None, observation_age=None):
     """Wektor obserwacji (N, obs_dim). `cube_rot` to macierze obrotu (N, 3, 3)."""
     parts = [normalize_q(xp, limits, q), normalize_q(xp, limits, q_cmd), tcp]
     if task.name == "reach":
@@ -181,7 +192,28 @@ def observe(xp, task: TaskConfig, limits: Limits, q, q_cmd, tcp, prev_action, go
         rot6 = _cat(xp, [cube_rot[..., :, 0], cube_rot[..., :, 1]])
         parts += [cube_pos, cube_pos - tcp, rot6]
     parts.append(prev_action)
+    if task.shape_conditioned:
+        from .objects import descriptor
+        desc = _as(xp, descriptor(task.object_kind, task.object_scale), q)
+        parts.append(desc + xp.zeros_like(q[..., :1]))
+        age = xp.zeros_like(q[..., :1]) if observation_age is None else observation_age[..., None]
+        fresh = (age <= task.max_pose_age)
+        fresh = fresh.astype(q.dtype) if xp is np else fresh.to(q.dtype)
+        parts += [_clip(xp, age, 0., 1.), fresh]
     return _cat(xp, parts)
+
+
+def smooth_cost(xp, task: TaskConfig, delta, previous_delta, older_delta):
+    """Penalty on executed joint targets, after delays/clipping; first 5 joints.
+
+    Normalize physical derivatives by 1 rad/s, 10 rad/s² and 100 rad/s³.
+    Gripper closing is excluded to avoid rewarding dropping an object.
+    """
+    d, p, o = delta[..., :5], previous_delta[..., :5], older_delta[..., :5]
+    hz = task.control_hz
+    return (task.smooth_velocity * ((d * hz) ** 2).sum(-1)
+            + task.smooth_acceleration * (((d-p) * hz**2 / 10.) ** 2).sum(-1)
+            + task.smooth_jerk * (((d-2*p+o) * hz**3 / 100.) ** 2).sum(-1))
 
 
 def fold_yaw(xp, R):
@@ -204,7 +236,7 @@ def limit_cost(xp, task: TaskConfig, limits: Limits, q_cmd):
 
 
 def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=None, jaw_contacts=None,
-           q_cmd=None, limits: Limits | None = None):
+           q_cmd=None, limits: Limits | None = None, object_height=None):
     """(nagroda, sukces, porazka) dla kazdego swiata.
 
     `jaw_contacts` (N, 2): czy kostka dotyka szczeki stalej i ruchomej.
@@ -226,7 +258,7 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
         return r - cost, success, failure
     d = _norm(cube_pos - tcp)
     grasped = (jaw_contacts[..., 0] > 0.5) & (jaw_contacts[..., 1] > 0.5)
-    height = cube_pos[..., 2] - task.cube_half
+    height = cube_pos[..., 2] - task.cube_half if object_height is None else object_height
     lifted = _clip(xp, height / task.lift_height, 0.0, 1.0)
     success = grasped & (height > task.lift_height)
     g = grasped.to(tcp.dtype) if xp is not np else grasped.astype(tcp.dtype)

@@ -65,6 +65,17 @@ class Table:
 
 
 @dataclass
+class ObjectPart:
+    """One convex collision part of a rigid training object (SI units)."""
+    kind: str
+    size: tuple[float, float, float]
+    pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    mass_fraction: float = 1.0
+    vertices: tuple[tuple[float, float, float], ...] = ()
+
+
+@dataclass
 class Box:
     """Prosty obiekt na stole - do zadan RL i do sprawdzania kadrow."""
 
@@ -74,6 +85,7 @@ class Box:
     rgba: tuple[float, float, float, float] = (0.85, 0.25, 0.2, 1.0)
     mass: float = 0.05
     free: bool = True
+    parts: tuple[ObjectPart, ...] = ()
 
 
 @dataclass
@@ -379,14 +391,23 @@ def build(cfg: SceneConfig) -> Scene:
         body.pos = p[:3]
         if obj.free:
             body.add_freejoint()
-        g = body.add_geom()
-        g.name = obj.name
-        g.type = mujoco.mjtGeom.mjGEOM_BOX
-        g.size = list(obj.size)
-        g.rgba = list(obj.rgba)
-        g.mass = obj.mass
-        g.condim = 4
-        g.friction = [1.0, 0.02, 0.002]
+        parts = obj.parts or (ObjectPart("box", obj.size),)
+        total_fraction = sum(part.mass_fraction for part in parts)
+        for index, part in enumerate(parts):
+            g = body.add_geom()
+            g.name = obj.name if index == 0 else f"{obj.name}/part{index}"
+            g.type = getattr(mujoco.mjtGeom, f"mjGEOM_{part.kind.upper()}")
+            g.size = list(part.size)
+            g.pos, g.quat = part.pos, part.quat
+            if part.kind == "mesh":
+                mesh = spec.add_mesh()
+                mesh.name = f"{obj.name}/mesh{index}"
+                mesh.uservert = np.asarray(part.vertices, np.float32).ravel()
+                g.meshname = mesh.name
+            g.rgba = list(obj.rgba)
+            g.mass = obj.mass * part.mass_fraction / total_fraction
+            g.condim = 4
+            g.friction = [1.0, 0.02, 0.002]
 
     for panel in cfg.panels:
         _add_panel(spec, panel, T_base2world)

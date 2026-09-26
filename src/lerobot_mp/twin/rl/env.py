@@ -25,7 +25,7 @@ from .. import scene as sc
 from ..kinematics import inverse, pose
 from ..workspace import Workspace
 from . import task as tk
-from .randomize import Randomization
+from .randomize import Randomization, corrupt_pose
 
 #: Kamera podgladu, gdy stanowisko nie ma zadnej skalibrowanej.
 VIEW = "widok"
@@ -44,9 +44,13 @@ def scene_config(task: tk.TaskConfig, workspace: Workspace | None = None, view: 
     ws = workspace or Workspace()
     cfg = ws.scene_config()
     if task.cube:
-        h = task.cube_half
-        cfg.objects = [*cfg.objects, sc.Box(task.cube, (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0),
-                                            mass=task.cube_mass)]
+        if task.shape_conditioned or task.object_kind != "cube":
+            from .objects import object_spec
+            cfg.objects = [*cfg.objects, object_spec(task.object_kind, task.object_scale).box(task.cube)]
+        else:
+            h = task.cube_half
+            cfg.objects = [*cfg.objects, sc.Box(task.cube, (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0),
+                                              mass=task.cube_mass)]
         cfg.grasp_sensors = [*cfg.grasp_sensors, task.cube]
     if view and not cfg.cameras:
         cfg.cameras = [sc.CameraView.from_fov(VIEW, 480, 360, 50.0, look_at([0.62, -0.42, 0.42], [0.18, 0.0, 0.05]))]
@@ -67,9 +71,10 @@ class ModelFields:
         self.frictionloss = m.dof_frictionloss[self.dof].copy()
         self.cube_body = m.body(cube).id if cube else None
         self.cube_geom = m.geom(cube).id if cube else None
+        self.cube_geoms = np.flatnonzero(m.geom_bodyid == self.cube_body) if cube else np.array([], int)
         self.cube_mass = m.body_mass[self.cube_body] if cube else 0.0
         self.cube_inertia = m.body_inertia[self.cube_body].copy() if cube else None
-        self.cube_friction = m.geom_friction[self.cube_geom].copy() if cube else None
+        self.cube_friction = m.geom_friction[self.cube_geoms].copy() if cube else None
 
     def apply(self, m: mujoco.MjModel, d: mujoco.MjData, s: dict[str, float]) -> None:
         """Mnozniki `s` na pola modelu, liczone zawsze od nominalu (nie kumuluja sie)."""
@@ -82,7 +87,7 @@ class ModelFields:
             # Masa razem z bezwladnoscia - to ten sam obiekt, tylko ciezszy.
             m.body_mass[self.cube_body] = self.cube_mass * s["cube_mass"]
             m.body_inertia[self.cube_body] = self.cube_inertia * s["cube_mass"]
-            m.geom_friction[self.cube_geom] = self.cube_friction * np.array([s["cube_friction"], 1.0, 1.0])
+            m.geom_friction[self.cube_geoms] = self.cube_friction * np.array([s["cube_friction"], 1.0, 1.0])
         # Masa i armatura wchodza w stale liczone przy kompilacji (body_invweight0,
         # dof_invweight0), a od nich zalezy miekkosc kontaktow. Bez przeliczenia
         # kostka o zmienionej masie miala kontakty "od innej kostki" i przy
@@ -125,6 +130,12 @@ class TwinEnv(gym.Env):
         self._cube_delay, self._cube_period = 0, 1
         self._cube_hist: list[tuple[np.ndarray, np.ndarray]] = []
         self._cube_seen = (np.zeros(3), np.eye(3))
+        self._joint_bias = np.zeros(6)
+        self._calibration = (np.zeros(3), np.zeros(3), np.array(1.0))
+        self._dropout_left = 0
+        self._last_seen_tick = 0
+        self.previous_delta = np.zeros(6)
+        self.older_delta = np.zeros(6)
 
     # ------------------------------------------------------------ stan
     def state(self) -> dict[str, np.ndarray]:
@@ -141,10 +152,12 @@ class TwinEnv(gym.Env):
 
     def _obs(self, s: dict[str, np.ndarray]) -> np.ndarray:
         q = s["q"] + np.radians(self.np_random.normal(0.0, self._noise, 6)) if self._noise > 0 else s["q"]
+        q = q + self._joint_bias
         cube_pos, cube_rot = self._cube_seen if self.task.cube else (np.zeros(3), np.eye(3))
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], s["tcp"][None],
                          self.prev_action[None], goal=self.goal[None],
-                         cube_pos=cube_pos[None], cube_rot=cube_rot[None])
+                         cube_pos=cube_pos[None], cube_rot=cube_rot[None],
+                         observation_age=np.array([(self.t-self._last_seen_tick)/self.task.control_hz]))
         return obs[0].astype(np.float32)
 
     def _perceive(self, s: dict[str, np.ndarray], force: bool = False) -> None:
@@ -156,7 +169,13 @@ class TwinEnv(gym.Env):
             return
         self._cube_hist.append((s["cube_pos"].copy(), s["cube_rot"].copy()))
         del self._cube_hist[:-(self._cube_delay + 1)]
+        if not force and self._dropout_left > 0:
+            self._dropout_left -= 1
+            return
         if not force and self.t % self._cube_period:
+            return
+        if not force and self.rand.dropout_probability > 0 and self.np_random.random() < self.rand.dropout_probability:
+            self._dropout_left = int(self.np_random.integers(1, max(1, self.rand.dropout_steps) + 1)) - 1
             return
         pos, rot = self._cube_hist[max(0, len(self._cube_hist) - 1 - self._cube_delay)]
         pos = pos.copy()
@@ -164,7 +183,11 @@ class TwinEnv(gym.Env):
             pos[:2] += self.np_random.normal(0.0, self.rand.cube_noise, 2)
         if self.rand.fold_yaw:
             rot = tk.fold_yaw(np, rot)
+        if self.rand.cube_z_noise:
+            pos[2] += self.np_random.normal(0., self.rand.cube_z_noise)
+        pos, rot = corrupt_pose(np, pos, rot, *self._calibration)
         self._cube_seen = (pos, rot)
+        self._last_seen_tick = self.t
 
     # ------------------------------------------------------------ gym
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
@@ -172,7 +195,14 @@ class TwinEnv(gym.Env):
         options = options or {}
         rng = self.np_random
         m, d = self.scene.model, self.scene.data
-        s = {k: float(v[0]) for k, v in self.rand.sample(rng, 1).items()}
+        samples = self.rand.sample(rng, 1)
+        s = {k: float(v[0]) for k, v in samples.items() if v.ndim == 1}
+        self._joint_bias = samples["joint_bias"][0]
+        self._calibration = (samples["calibration_translation"][0], samples["calibration_rpy"][0],
+                             samples["calibration_scale"][0])
+        self._dropout_left = 0
+        self.previous_delta[:] = 0.
+        self.older_delta[:] = 0.
         self.fields.apply(m, d, s)
         self._noise = self.rand.obs_noise_deg
         self._delay = [np.zeros(6)] * int(s["delay"])
@@ -221,7 +251,12 @@ class TwinEnv(gym.Env):
         if self._delay:
             self._delay.append(action)
             executed = self._delay.pop(0)
+        previous_command = self.q_cmd.copy()
         self.q_cmd = tk.apply_action(np, self.task, self.limits, self.q_cmd[None], executed[None])[0]
+        stale = self.task.shape_conditioned and (self.t-self._last_seen_tick)/self.task.control_hz > self.task.max_pose_age
+        if stale:
+            self.q_cmd = previous_command.copy()  # retain gripper position too
+        delta = self.q_cmd - previous_command
         d = self.scene.data
         d.ctrl[self.scene.act_ids] = self.q_cmd
         mujoco.mj_step(self.scene.model, d, nstep=self.task.substeps)
@@ -233,18 +268,27 @@ class TwinEnv(gym.Env):
         self.t += 1
 
         s = self.state()
+        from .objects import bottom_height
+        height = bottom_height(np, self.task, s["cube_pos"], s["cube_rot"]) if self.task.cube else None
         r, success, failure = tk.reward(np, self.task, s["tcp"][None], action[None], self.prev_action[None],
                                         goal=self.goal[None], cube_pos=s.get("cube_pos", np.zeros(3))[None],
                                         jaw_contacts=s.get("jaws", np.zeros(2))[None],
-                                        q_cmd=self.q_cmd[None], limits=self.limits)
+                                        q_cmd=self.q_cmd[None], limits=self.limits,
+                                        object_height=np.atleast_1d(height) if height is not None else None)
+        smooth = tk.smooth_cost(np, self.task, delta, self.previous_delta, self.older_delta)
+        r = r - smooth
+        self.older_delta, self.previous_delta = self.previous_delta.copy(), delta
         self.prev_action = action
+        if stale:
+            success[:] = False
         streak, finished = tk.success_streak(np, self.task, np.array([self._streak]), success)
         self._streak = int(streak[0])
-        info = {"success": bool(success[0]), "finished": bool(finished[0])}
+        info = {"success": bool(success[0]), "finished": bool(finished[0]), "smooth_cost": float(smooth),
+                "stale_pause": bool(stale)}
         if self.task.name == "reach":
             info["distance"] = float(np.linalg.norm(self.goal - s["tcp"]))
         else:
-            info["height"] = float(s["cube_pos"][2] - self.task.cube_half)
+            info["height"] = float(height)
             info["grasped"] = bool(s["jaws"].min() > 0.5)
         terminated = bool(failure[0])
         # Koniec po serii sukcesow to uciecie jak limit czasu (patrz `task.success_streak`).
