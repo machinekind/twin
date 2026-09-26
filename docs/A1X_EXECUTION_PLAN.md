@@ -120,8 +120,9 @@ Exit: demonstrated A1X GPU compatibility, with logs and checkpoint replay.
 ### 4. Train and evaluate a narrow policy
 
 - [x] Train and improve A1X `reach`; evaluate on held-out seeds using CPU and the
-  runtime path. The improved candidate reaches 19/20 through the guarded controller;
-  the remaining case is safely rejected. This is simulation evidence only.
+  runtime path. Development sets reached 19/20 through the guarded controller;
+  a fresh frozen-policy holdout reached 20/20 with no actual contacts. This is
+  simulation evidence only.
 - [ ] Train A1X `lift` for the agreed object/workspace. SO-101 weights are not an
   A1X starting checkpoint. Freeze each experiment's scope, budget, and stop rule.
 - [ ] Include measured actuator behavior and realistic perception delay/noise.
@@ -166,9 +167,11 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **prepare the user-provided H100, verify GPU compatibility,
-then use a bounded grasp-learning experiment**. Both local lift candidates
-finished without successful lifts; reward shaping alone is insufficient so far.
+Current next action: **use successful scripted grasps to prepare an imitation
+warm start, then test a bounded learning experiment on the verified H100**.
+Both local lift candidates finished without successful lifts; reward shaping
+alone is insufficient so far. The longer H100 training budget is pending the
+user's answer. No long training job is currently running.
 See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
 
@@ -189,8 +192,17 @@ from WSL. The existing active Brev organization belongs to another project:
 do not switch it, run a global refresh, change shared SSH configuration, or
 stop/reset/delete other instances. Shared WSL SSH config hashes were unchanged
 after connecting. Remote project root: `/home/ubuntu/a1x-twin-training`.
-Environment setup and a short compatibility check are underway; a question
-about the longer H100 training budget is pending.
+The isolated Python 3.12 environment is ready. A 1,024-world, three-iteration
+GPU smoke check passed, including checkpoint reload and two CPU evaluations.
+Headless commands require `MUJOCO_GL=disable`; the first EGL attempt failed on
+missing graphics libraries, and remote rendering remains unverified. No system
+graphics packages or drivers were changed. See the offline evidence for commands.
+
+Other Brev work is running concurrently on this computer. A later hash check
+found that the shared Brev-generated config had changed while another project's
+`brev exec` was active; the main SSH config was unchanged. Do not restore an old
+shared config or interfere with that process. This task continues to use only
+its separate `ssh -F` configuration.
 
 A 1,024-world lift smoke check used 2,074.5 MiB total GPU memory without capacity
 overflow. The 8 GB GPU is sufficient for these measured workloads. Learned reach
@@ -221,6 +233,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Nominal CPU evaluation now preserves saved cube-yaw convention | `evaluation-yaw-contract-001.log`: 11 passed, including two actual CPU/runtime observation agreement cases | Reevaluate lift candidates with corrected input convention; previous run reports retain original evaluator hashes |
 | 2026-09-26 | Scripted demonstration collection explored broader task region | `lift-demos-005`: 18/20 completed 2 s holds, two collision failures retained; observations/actions saved separately for every attempted seed | Successful samples can seed imitation, but these are not learned-policy results or hardware instructions |
 | 2026-09-26 | User supplied H100; isolated read-only connection verified | `brev/target.json` and shared-config hashes under validation; remote hostname `brev-cdeczltwl` | Isolated dependencies and simulation-only source transfer; short smoke test before longer training |
+| 2026-09-26 | Corrected-yaw reevaluation confirms lift candidate 002 still fails | `lift-runtime-002.json`: 0/20 nominal, randomized and runtime lifts; no prohibited contacts or numerical failures | Use grasp demonstrations or curriculum instead of interpreting approach reward as success |
+| 2026-09-26 | Isolated H100 setup and GPU smoke check pass | `brev/h100-lift-1024-002`: 73,728 transitions, 1,708.9 MiB peak total GPU usage, zero overflow; `h100-cpu-contracts-001.log`: 28 passed; `h100-gpu-contracts-001.log`: 2 passed | Prepare demonstration warm start and a bounded larger-batch experiment |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

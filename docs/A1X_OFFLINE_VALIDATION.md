@@ -264,6 +264,12 @@ Two new tests compare actual initial CPU and runtime observations; all 11 focuse
 RL tests passed (`evaluation-yaw-contract-001.log`). Both earlier lift reports
 used the old evaluator loaded at process start and are retained as such.
 
+The corrected reevaluation is saved separately as `lift-runtime-002.json`:
+0/20 nominal CPU, 0/20 randomized CPU and 0/20 common-controller lifts. All use
+the saved folded-yaw convention. Runtime monitoring found no prohibited contact
+or numerical failure, but no sustained lift either. Checkpoint SHA256:
+`c2513640ffd2f36fab8edd0eafe07644315f69f9e890af10ce1f6ebc1a2efcb5`.
+
 `collect_a1x_lift_demos.py` provides a bounded scripted-demonstration experiment.
 It samples the full original lift region, cube yaw and noisy starting joints,
 records observations/actions and retains failed cases. Its own first attempt
@@ -297,10 +303,57 @@ or organization switch was required. WSL shared file hashes before/after:
 - `/home/kuba/.ssh/config`: `1d4cd26da5cc01120cc0576762e9dc28e40c614dfeffd67775ab6bbc6898a3c0`
 
 Remote files and dependencies belong only under `/home/ubuntu/a1x-twin-training`.
-Transfer simulation source/assets and explicit experiment artifacts, excluding
-local credentials, calibration, live workspace files and the adjacent driver.
+Transfer repository source/assets and explicit experiment artifacts, excluding
+local credentials, live workspace/calibration files and the adjacent driver.
 Snapshot manifests accompany non-Git source exports. Start with a bounded smoke
 check; the longer training budget is pending the user's answer.
+
+The remote isolated environment is `/home/ubuntu/a1x-twin-training/venv`, Python
+3.12.14, Torch 2.11.0+cu126, MuJoCo / MuJoCo Warp 3.14.0 and Warp 1.17.0. Its
+source export is commit `d7497a34a873f9aaeff7fddf1d8142683b14ae77`; all 161
+exported files are hashed in `SOURCE_SNAPSHOT.json`. The archive SHA256, verified
+after transfer, is
+`6fdcd7c4b284b9dff66c5b3b89d0c51bb766ec6b2638cb6a13bbf7c83de68483`.
+The tracked assets include the repository's two camera-intrinsic text files;
+these are not a verified copy of the current physical calibration and are not
+used for state-vector training. No live camera or hardware access was attempted.
+
+`MUJOCO_GL=egl` failed during import because the host lacks an EGL loader
+(`brev/h100-lift-1024-001.log`). Training works with `MUJOCO_GL=disable`, without
+changing system libraries or drivers. Remote image rendering remains unverified.
+
+The corrected smoke run `brev/h100-lift-1024-002` passed: 1,024 worlds x three
+iterations, 73,728 transitions, checkpoint reload and two CPU episodes. Total
+elapsed 119.49 s includes initial compilation and CPU evaluation. Warm iterations
+measured approximately 38-44k transitions/s; this small workload does not yet
+show a substantial speed advantage over the laptop. Peak total GPU use was
+1,708.9 MiB, with 4,099/65,536 peak contacts, 26/384 constraint rows and zero
+overflow. CPU evaluation had no collisions/numerical failures and 0/2 lifts,
+as expected from a plumbing check. Report and checkpoint were copied locally.
+
+Reproduce from WSL in the local repository, using a new output directory:
+
+```bash
+ssh -F workspace/validation/brev/ssh_config a1x-h100 \
+  'cd /home/ubuntu/a1x-twin-training/source && PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUJOCO_GL=disable timeout 600 ../venv/bin/python scripts/validate_a1x_gpu.py --task lift --envs 1024 --iters 3 --out workspace/validation/NEW_RUN'
+```
+
+`brev/h100-cpu-contracts-001.log`: 28 tests passed in 4.32 s, covering geometry,
+RL action/observation/reward conventions, collision checks and physical-observation
+rejection using simulated inputs. Tests ran with rendering disabled and
+`OMP_NUM_THREADS=2`; they do not test real hardware. The adjacent driver was not
+installed or transferred, and remote renderer/backend checks are not claimed.
+
+`brev/h100-gpu-contracts-001.log`: both GPU tests passed in 13.86 s. These check
+CPU/GPU observation and reward agreement, resets, actual collision termination,
+mixed angular/linear sensor noise and fatal handling of injected capacity overflow.
+
+A subsequent shared-config check observed a different Brev-generated file hash
+(`2514ddf1917e125bc0acabbe35baeee93013e5d06dabd94710752ce2cb1ad391`)
+while another project's `brev exec` process was active. The main `.ssh/config`
+hash remained unchanged. This task did not write either shared file or switch
+organizations. Preserve concurrent changes; never restore the earlier snapshot.
+The task-local SSH configuration is independent of those refreshes.
 
 ## Remaining validation
 
