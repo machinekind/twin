@@ -171,29 +171,33 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **investigate the new grasp-clearance rejection on seed
-50008 before another fit**. Replay control 020 and nonlinear candidate 021,
-inspect the guard's exact geometry pair/distances and command versus measured
-opening, and distinguish allowed fingertip contact from forbidden finger-body
-clearance. Candidate 021 reaches 16/20 but has two rejections, including this
-new one during closing; it also fails all three targeted training recoveries.
-Do not relax the guard or turn these development traces into training data.
-The old seed-50009 rejection remains an approach failure with a closed gripper.
-If the guard is consistent, the next teaching experiment must address approach/
-grasp sequencing and closure together, rather than only increasing closure.
-Keep validation, development and reserved holdout roles fixed. Retained baseline
-011 remains best at 16/20 with no guard rejections; feature candidate 016 and
-residual candidate 021 are experimental. Do not aggregate original and
-replacement variants of the same training episode. No new collection or longer
-uniform fit is justified by the current results.
+Current next action: **screen candidate 022 on the same 34 already inspected
+training cases, then target any remaining slow-closing or approach failures for
+joint arm/gripper teaching**. Preserve the original roles and select actual
+learner failures before collecting more examples. Candidate 022 improves the
+development score to 17/20 and solves all three previously targeted training
+failures. Its remaining development traces show a closing stall (50007), an
+approach rejection with closed jaws (50009), and a late grasp with only 1.59 s
+hold (50015). Those development traces remain diagnostic only. The 50008 guard
+is consistent with its 3 mm clearance; keep it unchanged. Coordinated arm/gripper
+correction improved this case where isolated gripper fits did not.
+Keep validation, development and reserved holdout roles fixed. Both candidate
+022 (17/20, one rejection) and reference 011 (16/20, zero rejections) are frozen.
+Do not aggregate original and replacement variants of the same training episode,
+lengthen fitting, or start qualification below the 18/20 nominal development gate.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
 
-Candidate 011 is the current best at **16/20 autonomous guarded lifts**, with zero
-guard rejections, prohibited contacts or numerical failures. Its frozen bundle is
+Candidate 022 has the highest development success at **17/20 autonomous guarded
+lifts**, with one guard rejection and zero actual prohibited contacts/numerical
+failures. Its frozen bundle is `workspace/validation/baselines/lift-imitation-022/`;
+SHA256 starts `a701802f`. This is a modest development improvement, not held-out
+qualification or evidence of calibration-error tolerance.
+Candidate 011 remains the **16/20 zero-rejection reference**, with zero
+prohibited contacts or numerical failures. Its frozen bundle is
 `workspace/validation/baselines/lift-imitation-011/`; SHA256 starts `e7975d9b`.
-It is still below the 18/20 development gate; qualification remains deferred.
+Both remain below the 18/20 development gate; qualification remains deferred.
 Candidate 007 is the preserved reference at **13/20 guarded lifts**. It is copied with its
 metadata, training report and controller evaluation under
 `workspace/validation/baselines/lift-imitation-007/`; SHA256 starts `b3b196c3`.
@@ -542,6 +546,62 @@ for the new closing rejection before deciding the next correction target; do
 not weaken contact restrictions to raise the score. All artifacts above are
 under `workspace/validation/`; no job or physical test is running.
 
+The geometry investigation is complete in `grasp-clearance-inspection-002`.
+On seed 50008, autonomous 016 succeeds just before the deadline, 020 obtains only
+1.425 s hold, and 021 rejects during step 137. At rejection, enabled finger-body
+collision geometry remains 6.05 mm from the true cube. The guard's reconstructed
+start is 6.54 mm clear, but the requested end is only **2.83 mm clear**, below
+the unchanged 3 mm buffer. Keeping the measured jaw opening in that hypothetical
+end pose gives 5.35 mm clearance. Only one fingertip is touching, so the existing
+bilateral-contact clamp is inactive. This supports a consistent guard decision,
+not a reason to lower clearance. The original `inspection-001` included disabled
+visual meshes in its minimum-distance summary; use `inspection-002`'s explicitly
+collision-enabled pairs for contact interpretation. No prohibited physical
+simulation contact occurs, and inspection operates on copied geometry only.
+
+`closing-clearance-channels-001` checks six teacher-assisted interventions on
+that development trajectory. Switching at the rejection step 137 is too late:
+arm-only, gripper-only and both-channel corrections all reject immediately.
+At step 117, teacher arm or both channels avoid rejection but achieve only
+1.48/1.88 s holds; gripper-only still rejects. All six remain failures under the
+unchanged two-second rule, with zero actual prohibited contacts or numerical
+faults. Pre-intervention observations match the learner trace and all 188 queried
+post-switch teacher labels replay exactly. These inspected development traces
+are never training examples. The result supports earlier coordinated alignment
+and closing, not a gripper-strength-only correction.
+
+The following bounded comparison changes the trainable channels on the same
+fixed four-source targeted dataset: candidate **022** starts from 016 and updates
+the full original actor, keeping the normalizer frozen and adding no residual
+head. Relative to gripper-only control 020, data, split roles, architecture,
+initial checkpoint, seed 23, learning rate 0.0001, uniform sampling and 3,000-update
+budget match. Training takes 10.83 s plus 3.50 s feature preparation; validation
+selects update 2,800. Selected arm/gripper MSE is 0.001943/0.000970, versus
+control 020's 0.002370/0.000998. No guard, task or evaluation condition changes.
+
+`lift-imitation-runtime-024.json` records **17/20 autonomous guarded holds**, one
+guard rejection, zero actual prohibited contacts and zero numerical faults.
+Relative to frozen 011, 022 fixes 50000 and 50008 but regresses 50015. It improves
+both same-data controls (020: 15/20, 021: 16/20), and separately completes all
+**3/3 targeted training recoveries autonomously** with at least 2.035 s hold.
+Bare CPU is 17/20 with two prohibited-contact episodes and does not qualify the
+policy outside the guarded path. The 20 development cases are repeatedly used;
+this is not a claim of general reliability. `joint-grasp-refinement-comparison-001`
+verifies the comparison, original baseline hashes, dataset roles, normalizer,
+geometry findings and unchanged evaluation protocol. Both the higher-success
+022 checkpoint and zero-rejection 011 reference are preserved.
+
+`joint-refined-policy-drift-001` confirms the remaining failures: 50007 never
+gets bilateral grip and stalls in close with a 16.35 mm jaw coordinate; 50009
+retains the approach/table-clearance rejection; 50015 first grasps at step 137
+(6.85 s) and obtains only 1.59 s qualifying hold. Teacher queries never intervene
+in these traces. No production code changed in this cycle, so unit tests were
+not rerun; the bounded simulation comparisons and artifact audits complete
+successfully. Held-out seeds remain unused and calibration-error tolerance
+remains unmeasured. The saved persistent translation/rotation-bias protocol is
+still required after nominal qualification, alongside separate jitter/delay
+tests and later validation of the actual two-camera pipeline.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -663,6 +723,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Training-only screens find three actual learner failures and targeted teaching recovers them | `gripper-training-screen-001/002`: 14/14 and 17/20 autonomous; `gripper-training-recovery-001`: 3/3 assisted, 57 slow-closing frames, 492 labels replayed, original splits and all validation data preserved | Coverage is now relevant; successful assisted recovery remains distinct from learned success |
 | 2026-09-27 | Targeted-data refinement fails autonomous comparison and the linear-head optimum still under-closes | `targeted-gripper-comparison-001`: 020 15/20 versus control 018 16/20, one rejection each, zero actual contacts; `gripper-linear-diagnostic-001`: optimum predicts 0.333 mm versus 1 mm target | Retain 011; test a separate nonlinear gripper residual on fixed data with frozen arm mapping, not longer training of the same uniform linear head |
 | 2026-09-27 | Nonlinear gripper residual improves one development case but adds a guard rejection and fails targeted recoveries | `gripper-residual-comparison-001`: 021 16/20, two rejections, zero actual contacts; 0/3 selected training recoveries; 41 focused and 11 runner tests pass | Keep 011; investigate the new 50008 finger-body/cube clearance rejection before more fitting |
+| 2026-09-27 | Grasp-clearance inspection supports earlier coordinated corrections without weakening the guard | `grasp-clearance-inspection-002`: requested 2.83 mm versus 3 mm margin, measured 6.05 mm; `closing-clearance-channels-001`: early arm correction avoids rejection, gripper-only does not; all six assisted probes remain below full hold | Keep guard unchanged; test joint arm/gripper refinement on existing training data, never the inspected development traces |
+| 2026-09-27 | Joint refinement improves nominal development success and all targeted training recoveries | `joint-grasp-refinement-comparison-001`: 022 17/20, one rejection, zero actual contacts; 3/3 training recoveries; 10.83 s fit; frozen bundle SHA256 `a701802f` | Preserve 022 alongside zero-rejection 011; screen existing training cases for remaining failure coverage; held-out, calibration tolerance and physical validation remain pending |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
