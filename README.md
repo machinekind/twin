@@ -806,3 +806,4 @@ Apache-2.0. Geometria SO-101 pochodzi z
 [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)
 (Apache-2.0) przez repozytorium
 [Articulus](https://github.com/przemeknowak781/articulus).
+| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | nie |

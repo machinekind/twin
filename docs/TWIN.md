@@ -83,6 +83,16 @@ z pustym stanowiskiem (ramię `sim`, bez kamer). `lerobot-twin demo` kopiuje
 prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
 Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`).
 
+**Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
+wynik”) trafia do osobnego pliku `workspace/calib/<data-godzina>.json`
+z pozą i werdyktem wszystkich kamer, które ją mają; poprzednich zapisów nic
+nie nadpisuje. `twin.json` trzyma kopię roboczą wgranego zestawu
+(`calib_preset`); bez wskazania panel wgrywa najnowszy. Starszy zestaw
+wraca z listy „Zapisane położenia kamer” pod krokiem 2 (werdykt „zaufana”
+liczy się na nowo względem obecnego obiektywu). Stanowisko zapisane przed
+tą zmianą dostaje pierwszy zestaw ze swojej dotychczasowej pozy przy
+pierwszym zapisie.
+
 **Konfiguracja ramienia.** Bliźniak czyta plik konfiguracji tylko wtedy, gdy
 się go wskaże: `lerobot-twin --config configs/local.yaml ui` (także `train`,
 `eval`; opcja ustawia zmienną `LEROBOT_MP_CONFIG`, którą dziedziczy proces

@@ -1933,6 +1933,13 @@ class TwinApp:
             with self.calib_apply_box:
                 discard = g.add_button("Odrzuc (nic nie zapisze)", icon=viser.Icon.X, color="gray",
                                        hint="Wynik znika, kamery zostaja, jakie byly.")
+            self.preset_box = g.add_folder(None, visible=False)
+            with self.preset_box:
+                self.preset_pick = g.add_dropdown(
+                    "Zapisane polozenia kamer", ("-",), initial_value="-",
+                    hint="Kazdy zapis kroku 2 to osobny plik w workspace/calib/ - nic nie nadpisuje "
+                         "poprzedniego. Domyslnie wgrany jest najnowszy; wybierz starszy, zeby do niego wrocic.")
+                self.preset_md = g.add_markdown("")
         self.calib_ask = _TwoClick()
         self._calib_pending = False
 
@@ -2036,6 +2043,17 @@ class TwinApp:
         def _(event):
             self._calib_pending = False
             self.calib_md.content = "Wynik odrzucony - kamery bez zmian."
+            self._render_calibration()
+
+        @self.preset_pick.on_update
+        @self._safe
+        def _(event):
+            name = self.preset_pick.value
+            if name == "-" or name == self.ws.calib_preset:
+                return
+            names = self.ws.load_preset(name)
+            self._poses_changed(names)
+            self._notify(event, "Polozenie kamer", f"Wgrano {name}: {', '.join(names) or 'zadna kamera nie pasuje'}.")
             self._render_calibration()
 
     # ---------------------------------------------------- kalibracja: stan
@@ -2189,6 +2207,15 @@ class TwinApp:
             else:
                 look = ("Zapisz wynik", "green", viser.Icon.DEVICE_FLOPPY)
             _Toggle._show(self.calib_apply, *look, disabled=changed)
+            presets = tuple(self.ws.presets())
+            set_if(self.preset_pick, "options", presets or ("-",))
+            current = self.ws.calib_preset
+            if current in presets:
+                # Tylko wgrany zestaw: zapis z kodu wola on_update, a ten wgrany pomija - bez petli.
+                set_if(self.preset_pick, "value", current)
+            set_if(self.preset_md, "content", "" if not presets or current == presets[0]
+                   else f"Wgrany starszy zestaw; najnowszy to {presets[0]}.")
+            set_if(self.preset_box, "visible", idle and bool(presets))
 
     def _calib_now(self) -> str:
         """Jedna nastepna akcja w tej zakladce - z krokow 1-3 przewodnika, zeby nie mowic czego innego niz naglowek."""
@@ -2228,6 +2255,15 @@ class TwinApp:
                                f"- zrob krok 2 jeszcze raz z nowym bokiem")
         self.ws.card["tag_size"] = used
         names = self.ws.apply_fit(fit, tag_size=used, intrinsics=self.calib_job.data.get("intrinsics"))
+        preset = self.ws.save_preset()                  # nowy plik - poprzednie zapisy zostaja
+        self._poses_changed(names)
+        self._calib_pending = False
+        self.calib_md.content = f"Zapisano polozenie: {', '.join(names)} (zestaw {preset.stem})."
+        self._render_calibration()
+        return names
+
+    def _poses_changed(self, names: list[str]) -> None:
+        """Po nowej pozie kamer (zapis kroku 2 albo wgranie zestawu): plik, scena, kadry odniesienia."""
         for n in names:
             self._simreal_px.pop(n, None)               # nowa poza - Sim-Real do sprawdzenia od nowa
         self._save()
