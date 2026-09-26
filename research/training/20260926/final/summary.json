@@ -1,0 +1,338 @@
+{
+  "selected": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-003-moderate\\policy.pt",
+  "validation_score": [
+    0.4,
+    0.8583333333333334,
+    -62.77995935324142
+  ],
+  "heldout_complete": true,
+  "heldout": {
+    "nominal/cube": {
+      "episodes": 50,
+      "finished": 50,
+      "success": 1.0,
+      "mean_steps": 36.32,
+      "command_jerk_rms": 46.304196279373166,
+      "actual_jerk_rms": 216.6383221749459,
+      "limit_ticks_per_episode": 0.0
+    },
+    "nominal/flat": {
+      "episodes": 50,
+      "finished": 40,
+      "success": 0.8,
+      "mean_steps": 108.18,
+      "command_jerk_rms": 69.83283872918578,
+      "actual_jerk_rms": 280.74373191143576,
+      "limit_ticks_per_episode": 1.72
+    },
+    "nominal/triangle": {
+      "episodes": 50,
+      "finished": 50,
+      "success": 1.0,
+      "mean_steps": 40.08,
+      "command_jerk_rms": 49.62806887368162,
+      "actual_jerk_rms": 230.2948553992261,
+      "limit_ticks_per_episode": 0.0
+    },
+    "nominal/cylinder": {
+      "episodes": 50,
+      "finished": 49,
+      "success": 0.98,
+      "mean_steps": 37.02,
+      "command_jerk_rms": 40.0221034524835,
+      "actual_jerk_rms": 212.91089042711184,
+      "limit_ticks_per_episode": 0.0
+    },
+    "nominal/pliers": {
+      "episodes": 50,
+      "finished": 46,
+      "success": 0.92,
+      "mean_steps": 83.26,
+      "command_jerk_rms": 59.31069729278378,
+      "actual_jerk_rms": 261.0201122177772,
+      "limit_ticks_per_episode": 0.26
+    },
+    "nominal/screw": {
+      "episodes": 50,
+      "finished": 37,
+      "success": 0.74,
+      "mean_steps": 97.42,
+      "command_jerk_rms": 57.939094593935096,
+      "actual_jerk_rms": 245.1580753610512,
+      "limit_ticks_per_episode": 3.74
+    },
+    "nominal/nut": {
+      "episodes": 50,
+      "finished": 50,
+      "success": 1.0,
+      "mean_steps": 42.24,
+      "command_jerk_rms": 49.095129994645376,
+      "actual_jerk_rms": 243.52331609127793,
+      "limit_ticks_per_episode": 0.0
+    },
+    "nominal/washer": {
+      "episodes": 50,
+      "finished": 47,
+      "success": 0.94,
+      "mean_steps": 71.5,
+      "command_jerk_rms": 53.862460456177445,
+      "actual_jerk_rms": 258.98620969637375,
+      "limit_ticks_per_episode": 0.34
+    },
+    "nominal/l_bracket": {
+      "episodes": 50,
+      "finished": 40,
+      "success": 0.8,
+      "mean_steps": 92.42,
+      "command_jerk_rms": 56.643948223514826,
+      "actual_jerk_rms": 261.35969050434693,
+      "limit_ticks_per_episode": 3.88
+    },
+    "nominal/t_bracket": {
+      "episodes": 50,
+      "finished": 49,
+      "success": 0.98,
+      "mean_steps": 62.46,
+      "command_jerk_rms": 56.86389662394836,
+      "actual_jerk_rms": 254.7496214415032,
+      "limit_ticks_per_episode": 0.34
+    },
+    "nominal/capsule": {
+      "episodes": 50,
+      "finished": 41,
+      "success": 0.82,
+      "mean_steps": 56.98,
+      "command_jerk_rms": 48.69437322205311,
+      "actual_jerk_rms": 235.97611457120883,
+      "limit_ticks_per_episode": 1.06
+    },
+    "nominal/wedge": {
+      "episodes": 50,
+      "finished": 41,
+      "success": 0.82,
+      "mean_steps": 94.58,
+      "command_jerk_rms": 64.34136978354904,
+      "actual_jerk_rms": 251.05579566951783,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/cube": {
+      "episodes": 50,
+      "finished": 50,
+      "success": 1.0,
+      "mean_steps": 45.7,
+      "command_jerk_rms": 65.91310604117058,
+      "actual_jerk_rms": 224.80855901273873,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/flat": {
+      "episodes": 50,
+      "finished": 45,
+      "success": 0.9,
+      "mean_steps": 98.36,
+      "command_jerk_rms": 80.50532358699431,
+      "actual_jerk_rms": 262.89587833743525,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/triangle": {
+      "episodes": 50,
+      "finished": 49,
+      "success": 0.98,
+      "mean_steps": 50.32,
+      "command_jerk_rms": 65.80294512929551,
+      "actual_jerk_rms": 234.47048362691933,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/cylinder": {
+      "episodes": 50,
+      "finished": 49,
+      "success": 0.98,
+      "mean_steps": 44.04,
+      "command_jerk_rms": 58.26502862967023,
+      "actual_jerk_rms": 216.47574977325084,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/pliers": {
+      "episodes": 50,
+      "finished": 47,
+      "success": 0.94,
+      "mean_steps": 77.68,
+      "command_jerk_rms": 74.37306841445219,
+      "actual_jerk_rms": 254.53773735291236,
+      "limit_ticks_per_episode": 0.18
+    },
+    "moderate/screw": {
+      "episodes": 50,
+      "finished": 42,
+      "success": 0.84,
+      "mean_steps": 97.7,
+      "command_jerk_rms": 76.73430875924849,
+      "actual_jerk_rms": 258.260318657465,
+      "limit_ticks_per_episode": 2.36
+    },
+    "moderate/nut": {
+      "episodes": 50,
+      "finished": 50,
+      "success": 1.0,
+      "mean_steps": 44.64,
+      "command_jerk_rms": 62.43406061154223,
+      "actual_jerk_rms": 241.03644999297478,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/washer": {
+      "episodes": 50,
+      "finished": 43,
+      "success": 0.86,
+      "mean_steps": 91.24,
+      "command_jerk_rms": 71.23490549802067,
+      "actual_jerk_rms": 260.1362635429114,
+      "limit_ticks_per_episode": 0.34
+    },
+    "moderate/l_bracket": {
+      "episodes": 50,
+      "finished": 48,
+      "success": 0.96,
+      "mean_steps": 66.68,
+      "command_jerk_rms": 69.36730356458207,
+      "actual_jerk_rms": 259.98516695063876,
+      "limit_ticks_per_episode": 0.0
+    },
+    "moderate/t_bracket": {
+      "episodes": 50,
+      "finished": 46,
+      "success": 0.92,
+      "mean_steps": 74.94,
+      "command_jerk_rms": 72.99705246554753,
+      "actual_jerk_rms": 258.21485558772423,
+      "limit_ticks_per_episode": 0.26
+    },
+    "moderate/capsule": {
+      "episodes": 50,
+      "finished": 38,
+      "success": 0.76,
+      "mean_steps": 56.56,
+      "command_jerk_rms": 68.80347565395174,
+      "actual_jerk_rms": 233.95727923244058,
+      "limit_ticks_per_episode": 1.78
+    },
+    "moderate/wedge": {
+      "episodes": 50,
+      "finished": 44,
+      "success": 0.88,
+      "mean_steps": 82.02,
+      "command_jerk_rms": 70.3361170945239,
+      "actual_jerk_rms": 241.58623066002758,
+      "limit_ticks_per_episode": 0.0
+    },
+    "stress/cube": {
+      "episodes": 50,
+      "finished": 49,
+      "success": 0.98,
+      "mean_steps": 54.12,
+      "command_jerk_rms": 92.5795107380231,
+      "actual_jerk_rms": 252.76976663491124,
+      "limit_ticks_per_episode": 0.1
+    },
+    "stress/flat": {
+      "episodes": 50,
+      "finished": 32,
+      "success": 0.64,
+      "mean_steps": 131.9,
+      "command_jerk_rms": 102.47760752592414,
+      "actual_jerk_rms": 278.70044844952207,
+      "limit_ticks_per_episode": 0.5
+    },
+    "stress/triangle": {
+      "episodes": 50,
+      "finished": 47,
+      "success": 0.94,
+      "mean_steps": 72.72,
+      "command_jerk_rms": 91.34968593090603,
+      "actual_jerk_rms": 261.64799298077816,
+      "limit_ticks_per_episode": 0.02
+    },
+    "stress/cylinder": {
+      "episodes": 50,
+      "finished": 44,
+      "success": 0.88,
+      "mean_steps": 52.4,
+      "command_jerk_rms": 92.65996792108517,
+      "actual_jerk_rms": 246.0632173857818,
+      "limit_ticks_per_episode": 0.44
+    },
+    "stress/pliers": {
+      "episodes": 50,
+      "finished": 47,
+      "success": 0.94,
+      "mean_steps": 87.44,
+      "command_jerk_rms": 94.38711454935273,
+      "actual_jerk_rms": 268.7311808621349,
+      "limit_ticks_per_episode": 0.26
+    },
+    "stress/screw": {
+      "episodes": 50,
+      "finished": 31,
+      "success": 0.62,
+      "mean_steps": 127.58,
+      "command_jerk_rms": 100.1061271923466,
+      "actual_jerk_rms": 276.7488613506124,
+      "limit_ticks_per_episode": 3.86
+    },
+    "stress/nut": {
+      "episodes": 50,
+      "finished": 47,
+      "success": 0.94,
+      "mean_steps": 64.18,
+      "command_jerk_rms": 93.38010086730516,
+      "actual_jerk_rms": 269.3409265620907,
+      "limit_ticks_per_episode": 1.02
+    },
+    "stress/washer": {
+      "episodes": 50,
+      "finished": 32,
+      "success": 0.64,
+      "mean_steps": 115.72,
+      "command_jerk_rms": 95.70143097323204,
+      "actual_jerk_rms": 278.5802805672307,
+      "limit_ticks_per_episode": 0.4
+    },
+    "stress/l_bracket": {
+      "episodes": 50,
+      "finished": 42,
+      "success": 0.84,
+      "mean_steps": 95.18,
+      "command_jerk_rms": 102.1256575506015,
+      "actual_jerk_rms": 282.8304323483717,
+      "limit_ticks_per_episode": 1.3
+    },
+    "stress/t_bracket": {
+      "episodes": 50,
+      "finished": 45,
+      "success": 0.9,
+      "mean_steps": 91.02,
+      "command_jerk_rms": 97.92327149413572,
+      "actual_jerk_rms": 276.60237507203647,
+      "limit_ticks_per_episode": 0.94
+    },
+    "stress/capsule": {
+      "episodes": 50,
+      "finished": 37,
+      "success": 0.74,
+      "mean_steps": 70.0,
+      "command_jerk_rms": 99.90859915880381,
+      "actual_jerk_rms": 262.643652051987,
+      "limit_ticks_per_episode": 3.68
+    },
+    "stress/wedge": {
+      "episodes": 50,
+      "finished": 43,
+      "success": 0.86,
+      "mean_steps": 99.5,
+      "command_jerk_rms": 99.41798947537272,
+      "actual_jerk_rms": 271.10118364500323,
+      "limit_ticks_per_episode": 0.2
+    }
+  },
+  "videos": "D:\\digital-twin-training\\sukcesy",
+  "finished": "2026-09-26T05:18:17.522017+00:00",
+  "deployment": "Simulation only: generic shape/size/pose perception adapter still required"
+}
