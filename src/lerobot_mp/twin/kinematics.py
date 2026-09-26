@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import mujoco
+from collections.abc import Callable
+
 import numpy as np
 
 from .robots import RobotSpec
@@ -249,6 +251,7 @@ class RobotKinematics:
         damping: float = 0.02,
         restarts: int = 6,
         rng: np.random.Generator | None = None,
+        accept: Callable[[Joints], bool] | None = None,
     ) -> IKSolution:
         """Stawy, przy ktorych TCP trafia w `position`, obrocony jak najblizej `rotation`.
 
@@ -271,12 +274,15 @@ class RobotKinematics:
         for q0 in starts:
             q, e_pos, e_rot = self._solve(q0, target, rotation, rot_gain, iters, damping, tol)
             hit = e_pos < tol
-            # Najpierw "trafil w punkt", potem mniejszy blad tego, co jeszcze do poprawienia.
-            key = (not hit, e_rot if hit else e_pos)
+            # A hit the caller refuses (a collision) counts as a miss, so another start can win.
+            if hit and accept is not None and not accept(self.from_q(q)):
+                hit = False
+            # Hits first; among hits the rotation error (when one was asked for), then the pose
+            # nearest the seed, so a reachable point does not come back on the other elbow branch.
+            far = float(np.max(np.abs(q - q_seed)))
+            key = (not hit, round(e_rot, 2) if (hit and rotation is not None) else 0.0, far if hit else e_pos)
             if best is None or key < best[0]:
                 best = (key, q, e_pos, e_rot)
-            if hit and (rotation is None or e_rot < 0.02):
-                break  # lepiej sie nie da - szkoda liczyc dalsze starty
 
         assert best is not None
         _, q, e_pos, e_rot = best

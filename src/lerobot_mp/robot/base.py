@@ -100,6 +100,21 @@ class RobotBackend(ABC):
         """
         return []
 
+    def efforts(self) -> dict[str, float] | None:
+        """Arm joint efforts (torque) from the latest fresh reading; gripper excluded. Must not raise.
+
+        Units depend on the hardware: A1X uses the raw 0x052 scale (after galaxeo's `EFF_SCALE`, not N*m).
+        None = not measured by this backend, or the reading is stale/frozen.
+        """
+        return None
+
+    def velocities(self) -> dict[str, float] | None:
+        """Arm joint velocities in deg/s from the latest fresh reading; gripper excluded. Must not raise.
+
+        None = not measured by this backend, or the reading is stale/frozen (callers then differentiate positions).
+        """
+        return None
+
     def step(self, dt: float) -> None:  # noqa: B027 - domyslnie nic nie robi
         """Krok symulacji. Prawdziwy robot ignoruje (rzeczywistosc liczy sie sama)."""
 
