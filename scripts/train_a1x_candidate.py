@@ -1,4 +1,4 @@
-"""Bounded local A1X experiment with a frozen manifest and held-out CPU evaluation."""
+"""Bounded A1X experiment with a frozen manifest and held-out CPU evaluation."""
 
 import argparse
 from dataclasses import asdict
@@ -32,10 +32,14 @@ def main():
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--init", type=Path, help="Fine-tune an existing A1X policy for the same task")
     parser.add_argument("--init-std", type=float, default=.6)
+    parser.add_argument("--critic-warmup", type=int, default=0,
+                        help="Freeze actor and observation statistics while fitting a missing critic")
     parser.add_argument("--eval-seed", type=int, default=20000)
     args = parser.parse_args()
-    if not (1 <= args.envs <= 1024 and 1 <= args.iters <= 1000 and 1 <= args.seconds <= 1800):
-        parser.error("Limits: 1024 worlds, 1000 iterations, 1800 seconds")
+    if not (1 <= args.envs <= 8192 and 1 <= args.iters <= 1000 and 1 <= args.seconds <= 1800):
+        parser.error("Limits: 8192 worlds, 1000 iterations, 1800 seconds; measure memory before scaling")
+    if not 0 <= args.critic_warmup < args.iters:
+        parser.error("critic-warmup must be nonnegative and less than iters")
     if not 0 < args.init_std <= 1:
         parser.error("init-std must be in (0, 1]")
     init = Policy.load(args.init) if args.init else None
@@ -43,7 +47,8 @@ def main():
         parser.error("Initial policy must be A1X and match --task")
     args.out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
-    cfg = PPOConfig(num_envs=args.envs, iterations=args.iters, seed=args.seed, init_std=args.init_std)
+    cfg = PPOConfig(num_envs=args.envs, iterations=args.iters, seed=args.seed, init_std=args.init_std,
+                    critic_warmup=args.critic_warmup)
     if init is not None:
         cfg.hidden = tuple(init.meta.hidden)
     task = init.task if init is not None else make_task(args.task, A1X)

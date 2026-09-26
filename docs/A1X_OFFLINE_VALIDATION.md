@@ -287,6 +287,43 @@ with `scripts/render_a1x_candidate.py`; the report includes checkpoint hash.
 
 ## Additional H100 compute
 
+### Demonstration warm start
+
+`lift-demos-006` collected seeds 41000-41199 in 45.60 s: 196/200 scripted lifts
+held above 6 cm for two seconds; four ended on collisions, zero numerical faults.
+All attempts remain recorded. These are development demonstrations, not a learned
+holdout or guarded-runtime result. Only successful collision-free episodes enter
+`rl/imitation.py`; it rejects invalid shapes, nonfinite samples, out-of-range
+actions and repeated episode IDs. The training/validation split is by whole
+episode, and validation observations never enter normalization.
+
+`lift-imitation-001`: 5,000 supervised updates, seed 23, CPU, 120 s ceiling;
+actual training 15.81 s. The checkpoint at update 4,700 had the lowest held-out
+episode action error. This score is not manipulation success. Reloaded physics
+evaluation on seeds 50000-50019 achieved 0/20 nominal and 2/20 randomized holds,
+with 6 and 7 collision-ended episodes respectively, no numerical failures.
+Three nominal traces in `lift-imitation-inspection-001` show bilateral grasp
+and maximum lifts of 51.6-52.8 mm, below the required 60 mm.
+
+`lift-imitation-runtime-001.json`: five same-seed controller trials, zero lifts;
+all stopped on collision-guard rejection, with zero actual prohibited contacts
+at every physics substep. This policy must not be deployed. Checkpoint SHA256:
+`031af15422f82427597af2c1386162198679f47baa1ca5054768fab3f0b3185e`.
+Six data/training tests passed (`imitation-contracts-001.log`).
+The later `imitation-contracts-002.log` passes all seven, including an actual
+GPU PPO iteration proving critic-only warm-up preserves every actor and
+observation-normalizer value exactly.
+
+The next frozen experiment uses this exact checkpoint, 4,096 GPU worlds,
+PPO seed 29, initial action standard deviation 0.15, 20 critic-only warm-up
+iterations, and at most 500 iterations / 300 training seconds. The outer process
+limit is 480 s including setup/evaluation. First run a three-iteration 4,096-world
+compatibility check. Evaluate on the same development seeds 50000-50019 before
+using fresh seeds for any final qualification. Stop on numerical/capacity faults;
+do not lower the height/hold requirement or weaken runtime collision checks.
+
+### Remote environment and isolation
+
 The user supplied Brev organization `wysocki-55ff9e-nih0` and machine
 `empty-peach-tortoise` (ID `cdeczltwl`). Read-only inspection confirms hostname
 `brev-cdeczltwl`, H100 PCIe with 81,559 MiB and driver 570.148.08. Brev CLI v0.6.335

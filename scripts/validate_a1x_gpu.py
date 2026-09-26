@@ -33,8 +33,8 @@ def main() -> None:
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--task", choices=("reach", "lift"), default="reach")
     args = parser.parse_args()
-    if not (1 <= args.envs <= 1024 and 1 <= args.iters <= 3):
-        parser.error("This smoke check is limited to 1024 worlds and 3 iterations")
+    if not (1 <= args.envs <= 8192 and 1 <= args.iters <= 3):
+        parser.error("This smoke check is limited to 8192 worlds and 3 iterations")
     args.out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
     result = {

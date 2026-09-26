@@ -167,11 +167,14 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **use successful scripted grasps to prepare an imitation
-warm start, then test a bounded learning experiment on the verified H100**.
-Both local lift candidates finished without successful lifts; reward shaping
-alone is insufficient so far. The longer H100 training budget is pending the
-user's answer. No long training job is currently running.
+Current next action: **refine the imitation warm start with a five-minute H100
+PPO experiment, then evaluate through physics and the guarded controller**.
+The imitation candidate grasps and lifts, but only completed 2/20 randomized
+CPU holds, 0/20 nominal holds, and 0/5 guarded-runtime trials. It is not ready
+for physical use. Both earlier pure-PPO candidates completed no lifts.
+The supplied H100 is authorized for this training; the first refinement is
+limited to 300 training seconds / 500 iterations, plus bounded setup/evaluation.
+The user's preference for longer unattended runs remains pending.
 See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
 
@@ -235,6 +238,7 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | User supplied H100; isolated read-only connection verified | `brev/target.json` and shared-config hashes under validation; remote hostname `brev-cdeczltwl` | Isolated dependencies and simulation-only source transfer; short smoke test before longer training |
 | 2026-09-26 | Corrected-yaw reevaluation confirms lift candidate 002 still fails | `lift-runtime-002.json`: 0/20 nominal, randomized and runtime lifts; no prohibited contacts or numerical failures | Use grasp demonstrations or curriculum instead of interpreting approach reward as success |
 | 2026-09-26 | Isolated H100 setup and GPU smoke check pass | `brev/h100-lift-1024-002`: 73,728 transitions, 1,708.9 MiB peak total GPU usage, zero overflow; `h100-cpu-contracts-001.log`: 28 passed; `h100-gpu-contracts-001.log`: 2 passed | Prepare demonstration warm start and a bounded larger-batch experiment |
+| 2026-09-26 | Broader scripted collection and first imitation candidate complete | `lift-demos-006`: 196/200 scripted holds, four collision failures excluded; `lift-imitation-001`: 0/20 nominal and 2/20 randomized CPU holds, 6/7 collision-ended trials respectively; `lift-imitation-runtime-001.json`: 0/5 with guarded rejections and zero actual prohibited contacts | Five-minute PPO refinement, retain current success and collision criteria |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
@@ -309,3 +313,13 @@ hold-to-run, single-use, and sends no gripper or enable frames. Six fake-arm
 tests, a fake GUI smoke check, and a real receive-only check pass. No physical
 movement has been performed by this task; this does not advance twin-training
 validation. Reports and instructions are in the knife-grasp README.
+
+Knife-task operator follow-up: four attempted first-step sessions transmitted
+15/17/80/0 frames and none completed; maximum requested J2 change was 0.073 deg.
+The assistant's new controller incorrectly rejected normal active status 0x00
+after idle 0x10. This is corrected without weakening other fault checks. The
+original stop reason and progress are now printed/persisted, and GUI status
+height is fixed to prevent button movement. Ten controller/GUI tests pass.
+Fresh receive-only feedback and offline re-screening preserve the same 2 deg
+limit (3.51 mm sampled nonadjacent clearance). No new motor commands were sent
+during diagnosis; physical step completion remains pending.
