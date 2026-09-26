@@ -10,6 +10,12 @@ Domyslnie `workspace/twin.json` wzgledem korzenia klonu repozytorium (poza
 klonem: wzgledem katalogu uruchomienia, patrz `lerobot_mp.paths`); katalog jest
 w `.gitignore`, bo stanowisko jest per biurko, nie per repozytorium. Przyklad
 w symulacji: `examples/twin.sim.json` (`lerobot-twin demo`).
+
+Polozenie kamer (krok 2) jest za drogie, zeby je nadpisywac: kazdy zapis to
+osobny plik `workspace/calib/<data-godzina>.json` ze wszystkimi kamerami, ktore
+maja poze (`save_preset`), nigdy nie nadpisywany. `twin.json` trzyma kopie
+robocza wgranego zestawu (`calib_preset`); bez wskazania wgrywany jest
+najnowszy (`load`). Starszy zestaw wraca przez `load_preset`.
 """
 
 from __future__ import annotations
@@ -62,7 +68,7 @@ def same_intrinsics(a: tuple[Any, Any], b: tuple[Any, Any]) -> bool:
 @dataclass
 class CameraRecord:
     name: str
-    #: Indeks kamery ("0", "1"), plik wideo, adres strumienia albo "sim".
+    #: Indeks kamery ("0", "1"), plik wideo, adres strumienia, IDS uEye ("ueye", "ueye:<id>") albo "sim".
     source: str = "0"
     width: int = 640
     height: int = 480
@@ -178,6 +184,9 @@ class Workspace:
     #: Reach box for the glasses (`reach.ReachVolume`), base frame [m]: {"lo": [x, y, z], "hi": [x, y, z]}.
     #: None = arm default; None is not written, so older files without the key still load.
     reach: dict[str, Any] | None = None
+    #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
+    #: None = nie wybrano, `load` wgrywa najnowszy.
+    calib_preset: str | None = None
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -277,6 +286,58 @@ class Workspace:
             updated.append(name)
         return updated
 
+    # ------------------------------------------------------- zestawy polozen
+    def presets_dir(self) -> Path:
+        return Path(self.path or default_path()).parent / "calib"
+
+    def presets(self) -> list[str]:
+        """Nazwy zapisanych zestawow polozen kamer, od najnowszego."""
+        d = self.presets_dir()
+        return sorted((p.stem for p in d.glob("*.json")), reverse=True) if d.is_dir() else []
+
+    def save_preset(self) -> Path:
+        """Polozenie wszystkich kamer z poza (T_cam2base + werdykt) do NOWEGO pliku; staje sie wgranym zestawem.
+
+        Nazwa z chwili ostatniej kalibracji (`20260926-145216`); ten sam wynik zapisany drugi raz
+        trafia do tego samego pliku, inny wynik z tej samej sekundy dostaje przyrostek `-2`.
+        Istniejacy plik nigdy nie jest nadpisywany inna trescia.
+        """
+        cams = {c.name: {"T_cam2base": c.T_cam2base, "calibration": c.calibration}
+                for c in self.cameras if c.calibrated}
+        if not cams:
+            raise ValueError("zadna kamera nie ma polozenia - nie ma czego zapisac")
+        times = [c["calibration"].get("time") for c in cams.values()]
+        stamp = max(t for t in times if t) if any(times) else time.strftime("%Y-%m-%dT%H:%M:%S")
+        name = stamp.replace("-", "").replace(":", "").replace("T", "-")
+        body = json.dumps({"time": stamp, "tag_size": self.card.get("tag_size"), "cameras": cams},
+                          indent=2, ensure_ascii=False)
+        d = self.presets_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        path, k = d / f"{name}.json", 2
+        while path.exists() and path.read_text(encoding="utf-8") != body:
+            path, k = d / f"{name}-{k}.json", k + 1
+        path.write_text(body, encoding="utf-8")
+        self.calib_preset = path.stem
+        return path
+
+    def load_preset(self, name: str) -> list[str]:
+        """Wgrywa zapisany zestaw do kamer o tych samych nazwach. Zwraca nazwy kamer, ktore dostaly poze.
+
+        Kamery spoza zestawu zostaja, jak byly. Werdykt "zaufana" liczy sie na nowo wzgledem
+        OBECNEGO K kamery (`CameraRecord.trusted`) - zestaw sprzed zmiany obiektywu wraca jako niezaufany.
+        """
+        data = json.loads((self.presets_dir() / f"{name}.json").read_text(encoding="utf-8"))
+        done = []
+        for cam_name, entry in data["cameras"].items():
+            try:
+                rec = self.camera(cam_name)
+            except KeyError:
+                continue
+            rec.T_cam2base, rec.calibration = entry["T_cam2base"], dict(entry["calibration"])
+            done.append(cam_name)
+        self.calib_preset = name
+        return done
+
     # ------------------------------------------------------------------ dysk
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -288,6 +349,9 @@ class Workspace:
     def save(self, path: str | Path | None = None) -> Path:
         target = Path(path) if path else (self.path or default_path())
         target.parent.mkdir(parents=True, exist_ok=True)
+        self.path = target
+        if self.calib_preset is None and any(c.calibrated for c in self.cameras):
+            self.save_preset()                          # polozenie sprzed zestawow - pierwszy zestaw
         tmp = target.with_suffix(".tmp")
         # Najpierw do pliku obok, potem podmiana - przerwany zapis nie zniszczy
         # kalibracji, na ktora ktos poswiecil pol godziny.
@@ -312,4 +376,8 @@ class Workspace:
             raise ValueError(f"nieznane pola w {target}: {sorted(unknown)}")
         ws = cls(cameras=cams, **data)
         ws.path = target
+        if ws.calib_preset is None:
+            newest = ws.presets()
+            if newest:
+                ws.load_preset(newest[0])
         return ws

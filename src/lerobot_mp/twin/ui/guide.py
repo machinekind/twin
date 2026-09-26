@@ -12,8 +12,9 @@ Kroki sa te same w symulacji i na prawdziwym ramieniu - w symulacji z kamerami
 symulowanymi (znaja swoje K, wiec krok 2 odpada; Sim-Real zastepuje blad
 wzgledem prawdy w zakladce Kamery).
 
-Styl akcji: "Zakladka > Sekcja: ..., **Przycisk**" - nazwy przyciskow pogrubione jak
-w notkach "Jak uzywac"; "Teraz" z kroku zaczyna sie od "Krok N/8 (tytul):".
+Styl akcji: "Zakladka: ..., **Przycisk**" - nazwy przyciskow pogrubione jak w panelu;
+"Teraz" z kroku zaczyna sie od "Krok N/8 (tytul):". Zakladka Kalibracja pokazuje akcje
+krokow 1-3 we wlasnej linii "Teraz" (bez przedrostka zakladki).
 """
 
 from __future__ import annotations
@@ -34,13 +35,13 @@ DONE_DETAIL_MAX = 48
 
 #: Jak zatrzymac zadanie, ktore ma ramie (wlasciciel `Twin.owner` / `TwinApp._busy`).
 HOW_TO_STOP = {
-    "fala kalibracyjna": "Kalibracja > Przerwij",
-    "kalibracja": "Kalibracja > Przerwij",
+    "kalibracja kamer": "Kalibracja > Zatrzymaj",
+    "kalibracja": "Kalibracja > Zatrzymaj",
     "identyfikacja dynamiki": "~20 s nagrania; przerywa je STOP albo Dom",
     "identyfikacja": "~20 s nagrania; przerywa je STOP albo Dom",
     "polityka": "Polityki > Zatrzymaj",
 }
-WAVE_OWNERS = ("fala kalibracyjna", "kalibracja")
+WAVE_OWNERS = ("kalibracja kamer", "kalibracja")
 SYSID_OWNERS = ("identyfikacja dynamiki", "identyfikacja")
 #: Najwieksza niepewnosc dopasowanego parametru (wzglednie; 0,3 = +-30%), przy ktorej wynik
 #: identyfikacji jest przydatny (kontrakt E2, `FitResult.useful`).
@@ -123,7 +124,7 @@ class GuideSnapshot:
     dynamics_useful: bool = True
     #: (nazwa, zadanie, bazowa z repozytorium).
     policies: tuple[tuple[str, str, bool], ...] = ()
-    #: Zadania w tle: "fala kalibracyjna", "intrynsyki", "identyfikacja", "trening", "ewaluacja".
+    #: Zadania w tle: "kalibracja kamer", "pomiar obiektywu", "identyfikacja", "trening", "ewaluacja".
     jobs: tuple[str, ...] = ()
     #: Zadanie jadacej polityki ("reach"/"lift"/"pickplace"), "" = nie jedzie.
     policy_running: str = ""
@@ -205,68 +206,65 @@ def _step_cameras(s: GuideSnapshot) -> Step:
                                           if len(live) < len(cams) else "")
         return Step(1, title, DONE, det)
     if s.simulated:
-        act = "Kamery > Dodaj kamere: **Dodaj symulowana przed ramieniem** (dwa razy - dwie kamery to lepsza mapa)"
+        act = "Kamery: **Dodaj symulowana przed ramieniem** (dwa razy - dwie kamery to lepsza mapa)"
         if not s.cameras:
             # Gotowe stanowisko z pakietu (examples/twin.sim.json): dwie kamery z zaufana kalibracja,
             # "kostka z kamer" od razu - bez przechodzenia fali w symulacji.
             act += ("; albo gotowy przyklad: zamknij panel, w konsoli `lerobot-twin demo` "
                     "(examples/twin.sim.json), uruchom panel ponownie")
     else:
-        act = "Kamery > Dodaj kamere: **Szukaj kamer USB**, wybierz w Znalezione, **Dodaj kamere USB**"
+        act = "Kamery: **Szukaj kamer USB**, potem **Dodaj kamere USB**"
     det = ("kamery sa, ale zadna nie daje kadru" if cams else
            "brak kamer " + ("symulowanych" if s.simulated else "USB"))
     return Step(1, title, TODO, det, act)
 
 
 def _step_intrinsics(s: GuideSnapshot) -> Step:
-    title = "Intrynsyki (tablica ChArUco)"
+    title = "Obiektywy kamer (szachownica)"
     cams = _relevant(s)
     if s.simulated:
-        return Step(2, title, SKIP, "kamery symulowane znaja swoje K")
+        return Step(2, title, SKIP, "kamery symulowane nie potrzebuja")
     if not cams:
         return Step(2, title, TODO, "najpierw kamery")
     bad = [c for c in cams if not c.intrinsics_ok]
     if not bad:
-        return Step(2, title, DONE, f"zaufane K: {', '.join(c.name for c in cams)}")
+        return Step(2, title, DONE, f"zmierzone: {', '.join(c.name for c in cams)}")
     first = bad[0]
     if s.intr_camera:
-        act = (f"pokazuj tablice kamerze {s.intr_camera} w rogach kadru, blizej, dalej i pochylona (12+ kadrow, "
-               f"pokrycie 55%+), potem Kalibracja > 1. Intrynsyki: **Oblicz i zapisz K**")
+        act = (f"pokazuj szachownice kamerze {s.intr_camera} w rogach obrazu, blisko, daleko i pochylona (12 zdjec), "
+               f"potem Kalibracja: **Gotowe - policz obiektyw**")
     else:
-        act = (f"Kalibracja > 1. Intrynsyki: **Pobierz arkusz tablicy** (druk 100%), wpisz zmierzony bok "
-               f"kwadratu, Kamera = {first.name}, **Zbieraj kadry**")
-    det = "; ".join(f"{c.name}: {c.intrinsics_problem or 'brak zaufanego K'}" for c in bad)
+        act = f"Kalibracja, krok 1: wydrukuj szachownice, zmierz kwadrat, **Zacznij** dla {first.name}"
+    det = "; ".join(f"{c.name}: {'do zmierzenia' if 'nominal' in c.intrinsics_problem else 'do powtorzenia'}"
+                    for c in bad)
     return Step(2, title, TODO, det, act)
 
 
 def _step_poses(s: GuideSnapshot) -> Step:
-    title = "Polozenie kamer (fala z karta)"
+    title = "Polozenie kamer (karta w chwytaku)"
     cams = _relevant(s)
     if not cams:
         return Step(3, title, TODO, "najpierw kamery")
     moved = [c for c in cams if c.calibrated and c.moved]
     bad = [c for c in cams if not _pose_ok(c)]
     if not bad and not moved:
-        return Step(3, title, DONE, f"zaufane pozy: {', '.join(c.name for c in cams)}")
-    confirm = "" if s.simulated else ", zaznacz 'Karta w szczekach...'"
+        return Step(3, title, DONE, f"ustalone: {', '.join(c.name for c in cams)}")
+    confirm = "" if s.simulated else " (karta w chwytaku; drugie klikniecie potwierdza)"
     if moved and not bad:
         c = moved[0]
-        act = (f"Kalibracja > 2. Polozenie: Szybka relokalizacja kamery = {c.name}{confirm}, "
-               f"**Relokalizuj wybrana**")
-        return Step(3, title, TODO, f"przestawiona: {', '.join(c.name for c in moved)}", act)
+        act = f"Kalibracja: kamera {c.name} poruszona - pomaranczowy przycisk{confirm}"
+        return Step(3, title, TODO, f"poruszona: {', '.join(c.name for c in moved)}", act)
     if s.simulated:
-        act = ("Kalibracja > 2. Polozenie: **Start fali**, potem **Zapisz wynik kalibracji** (skrot bez fali: "
-               "Kamery > **Symulowana: uznaj prawdziwa poze za kalibracje**)")
+        act = ("Kalibracja, krok 2: **Start**, potem **Zapisz wynik** (szybciej: **Symulacja: pomin**)")
     else:
-        act = (f"Kalibracja > 2. Polozenie: karta w szczekach{confirm}, **Start fali**, potem **Zapisz wynik "
-               f"kalibracji** (arkusz i bok taga - notka Jak uzywac)")
+        act = f"Kalibracja, krok 2: karta w chwytaku, **Start**{confirm}, potem **Zapisz wynik**"
 
     def why(c: CameraSnap) -> str:
         if not c.calibrated:
-            return "nieskalibrowana"
+            return "do ustalenia"
         if c.trusted:                                   # zaufana, ale K nie jest zaufane
-            return "poza z niezaufanego K - po kroku 2 powtorz fale"
-        return c.reason or "niezaufana"
+            return "ustalone przed zmierzeniem obiektywu - zrob krok 2 jeszcze raz"
+        return c.reason or "niepewne"
     det = "; ".join(f"{c.name}: {why(c)}" for c in bad)
     return Step(3, title, TODO, det, act)
 
@@ -277,7 +275,7 @@ def _step_simreal(s: GuideSnapshot) -> Step:
         return Step(4, title, SKIP, "kamery symulowane: blad wzgledem prawdy w zakladce Kamery")
     cams = [c for c in _relevant(s) if _pose_ok(c)]
     if not cams:
-        return Step(4, title, TODO, "najpierw zaufane pozy kamer")
+        return Step(4, title, TODO, "najpierw kalibracja kamer")
 
     def passed(c: CameraSnap) -> bool:
         return c.simreal_px is not None and not math.isnan(c.simreal_px) and c.simreal_px <= SIMREAL_MAX_PX
@@ -291,7 +289,7 @@ def _step_simreal(s: GuideSnapshot) -> Step:
         det = f"{c.name}: nie sprawdzone (render bez krawedzi - czy kamera widzi ramie i stol?)"
     else:
         det = (f"{c.name}: najlepsza mediana {_px(c.simreal_px)} > {SIMREAL_MAX_PX:.0f} px - sprawdz zmierzony "
-               f"bok taga i stol (Ramie > Stanowisko), potem powtorz fale")
+               f"bok kodu na karcie i stol (Ramie > Stanowisko), potem krok 2 kalibracji jeszcze raz")
     act = (f"Sim-Real: Kamera = {c.name}, zaznacz **Krawedzie symulacji** - zolte krawedzie maja lezec na ramieniu "
            f"i stole (mediana <= {SIMREAL_MAX_PX:.0f} px)")
     return Step(4, title, TODO, det, act)
@@ -377,10 +375,10 @@ def blockers(s: GuideSnapshot) -> list[str]:
         # Przy STOP-ie "Teraz" mowi o STOP-ie - kto ma ramie, trzeba powiedziec osobno.
         how = HOW_TO_STOP.get(s.owner, "STOP")
         if s.owner == "polityka":
-            out.append(f"ramie ma: polityka - UZBROJ, fala i identyfikacja sa odrzucane, Uruchom zastapi "
+            out.append(f"ramie ma: polityka - UZBROJ, kalibracja kamer i identyfikacja sa odrzucane, Uruchom zastapi "
                        f"jadaca polityke ({how})")
         else:
-            out.append(f"ramie ma: {s.owner} - UZBROJ, fala, identyfikacja i polityka sa odrzucane, "
+            out.append(f"ramie ma: {s.owner} - UZBROJ, kalibracja kamer, identyfikacja i polityka sa odrzucane, "
                        f"dopoki nie skonczy ({how})")
     elif not s.estop and s.connected and s.arm_error:
         out.append(f"ramie: {s.arm_error}")
@@ -394,10 +392,10 @@ def blockers(s: GuideSnapshot) -> list[str]:
         if not c.enabled:
             continue
         if c.calibrated and c.moved:
-            out.append(f"kamera {c.name} przestawiona - Kalibracja > **Relokalizuj wybrana**")
+            out.append(f"kamera {c.name} poruszona - Kalibracja > pomaranczowy przycisk tej kamery")
         if not c.has_frame:
             out.append(f"kamera {c.name} nie daje kadru" + ("" if c.simulated else
-                                                           " (na maszynie wirtualnej/zdalnej, np. Shadow: "
+                                                           " (na maszynie wirtualnej/zdalnej: "
                                                            "przepusc kamere USB w kliencie)"))
     if s.cameras and not _relevant(s) and s.connected:
         kind = "symulowane" if s.simulated else "prawdziwe (USB)"
@@ -429,15 +427,15 @@ def _now(s: GuideSnapshot, steps: list[Step]) -> str:
                 f"**Zatrzymaj**.")
     if s.owner in WAVE_OWNERS:
         prog = f" ({int(10 * s.calib_progress) * 10}%)" if s.calib_progress is not None else ""
-        return (f"Fala kalibracyjna jedzie{prog} - nie wchodz w obszar ramienia; potem Kalibracja > **Zapisz "
-                f"wynik kalibracji** (przerwac: **Przerwij**).")
+        return (f"Ramie pokazuje karte kamerom{prog} - nie wchodz w jego zasieg; potem Kalibracja > **Zapisz "
+                f"wynik** (przerwac: **Zatrzymaj**).")
     if s.owner in SYSID_OWNERS:
         return ("Identyfikacja nagrywa ruch (~20 s) - nie wchodz w obszar ramienia (przerywa ja STOP albo "
                 "Dom).")
     if s.owner and s.owner != PANEL:
         return f"Ramie ma: {s.owner} - poczekaj na koniec albo STOP."
     if s.calib_result_pending:
-        return "Kalibracja > 2. Polozenie: sprawdz werdykt w tabeli i kliknij **Zapisz wynik kalibracji**."
+        return "Kalibracja: sprawdz wynik i kliknij **Zapisz wynik**."
     if s.dyn_result_pending and not s.dyn_result_useful:
         return ("Trening > Dynamika serw: wynik identyfikacji nic nie wyjasnia (opis pod paskiem) - powtorz "
                 "**Identyfikuj** z wolnym ramieniem, bez obciazenia i kontaktu; nie zapisuj go.")
@@ -446,7 +444,7 @@ def _now(s: GuideSnapshot, steps: list[Step]) -> str:
     if "identyfikacja" in s.jobs:
         return "Dopasowanie dynamiki do nagrania (7-11 s, ramie juz wolne) - poczekaj na wynik w zakladce Trening."
     if cur is None:
-        return ("Procedura przejdziona. Po kazdym przestawieniu kamery: relokalizacja i Sim-Real; po identyfikacji "
+        return ("Procedura przejdziona. Po kazdym poruszeniu kamery: Kalibracja (przycisk tej kamery) i Sim-Real; po identyfikacji "
                 "douczaj polityki (Trening > Start z polityki).")
     return _step_now(cur)
 
@@ -464,7 +462,7 @@ def build(s: GuideSnapshot) -> Guide:
         else:
             steps.append(st)
     # W tle tylko to, czego "Teraz" nie opisuje (fala, identyfikacja i jadaca polityka juz tam sa).
-    bg = [j for j in s.jobs if j not in ("fala kalibracyjna", "identyfikacja")]
+    bg = [j for j in s.jobs if j not in ("kalibracja kamer", "identyfikacja")]
     mode = ("symulacja - te same kroki i przyciski co na stanowisku" if s.simulated
             else f"prawdziwe ramie ({s.backend}) - reka przy STOP")
     return Guide(tuple(steps), _now(s, steps), tuple(blockers(s)), tuple(bg), mode)

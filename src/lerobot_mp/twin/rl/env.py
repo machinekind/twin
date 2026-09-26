@@ -9,7 +9,7 @@ debugowania nagrody, `check_env` i bibliotek w stylu SB3. Do uczenia na
 tysiacach swiatow naraz sluzy `batch.BatchEnv` na MuJoCo Warp; obie licza
 obserwacje i nagrode tymi samymi funkcjami z `task`.
 
-Scena jest budowana RAZ (293 ms na laptopie, 111 ms na Shadow); reset zmienia
+Scena jest budowana RAZ (293 ms na laptopie, 111 ms na RTX A4500); reset zmienia
 tylko stan i pola skompilowanego modelu.
 """
 

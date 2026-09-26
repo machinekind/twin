@@ -25,8 +25,17 @@ class Frame:
     index: int
 
 
+def _is_device_path(source: int | str) -> bool:
+    """Sciezka do urzadzenia wideo w /dev (V4L2), np. /dev/video3 albo /dev/v4l/by-id/usb-...-video-index0."""
+    return isinstance(source, str) and source.startswith("/dev/")
+
+
+def _is_video_file(source: int | str) -> bool:
+    return isinstance(source, str) and not source.isdigit() and not _is_device_path(source)
+
+
 class CameraStream:
-    """Nieblokujace zrodlo klatek (kamera USB albo plik wideo)."""
+    """Nieblokujace zrodlo klatek (kamera USB, sciezka urzadzenia /dev/... albo plik wideo)."""
 
     def __init__(self, cfg: CameraConfig):
         self.cfg = cfg
@@ -36,7 +45,7 @@ class CameraStream:
         self._latest: Frame | None = None
         self._stop = threading.Event()
         self._index = 0
-        self._is_file = isinstance(cfg.source, str) and not str(cfg.source).isdigit()
+        self._is_file = _is_video_file(cfg.source)
         self._error: str | None = None
 
     # ---------------------------------------------------------------- setup
@@ -46,7 +55,12 @@ class CameraStream:
             source = int(source)
             self._is_file = False
 
-        cap = cv2.VideoCapture(source)
+        if _is_device_path(source):
+            # Sciezka urzadzenia (/dev/videoN albo stala /dev/v4l/by-id/...): kamera, nie plik.
+            # Indeks V4L2 przesuwa sie po kazdym wpieciu czegos do USB - by-id nie.
+            cap = cv2.VideoCapture(str(source), cv2.CAP_V4L2)
+        else:
+            cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             raise RuntimeError(
                 f"Nie udalo sie otworzyc zrodla obrazu: {self.cfg.source!r}. "

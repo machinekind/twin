@@ -17,11 +17,11 @@ percepcją, którą widziała w symulacji.
  └──────────▲───────────┘                   │ serwa jak zmierzone      │
             │                               └────────────┬─────────────┘
             │  polityka przez nadzór                     │  4096 światów MuJoCo Warp
-            │  (te same wzory obserwacji)                ▼  PPO na GPU (A4500)
+            │  (te same wzory obserwacji)                ▼  PPO na GPU
             └────────────────────────────────── polityka reach / lift
 ```
 
-## Stan (2026-09-24)
+## Stan
 
 | | |
 |---|---|
@@ -83,26 +83,25 @@ z pustym stanowiskiem (ramię `sim`, bez kamer). `lerobot-twin demo` kopiuje
 prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
 Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`).
 
+**Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
+wynik”) trafia do osobnego pliku `workspace/calib/<data-godzina>.json`
+z pozą i werdyktem wszystkich kamer, które ją mają; poprzednich zapisów nic
+nie nadpisuje. `twin.json` trzyma kopię roboczą wgranego zestawu
+(`calib_preset`); bez wskazania panel wgrywa najnowszy. Starszy zestaw
+wraca z listy „Zapisane położenia kamer” pod krokiem 2 (werdykt „zaufana”
+liczy się na nowo względem obecnego obiektywu). Stanowisko zapisane przed
+tą zmianą dostaje pierwszy zestaw ze swojej dotychczasowej pozy przy
+pierwszym zapisie.
+
 **Konfiguracja ramienia.** Bliźniak czyta plik konfiguracji tylko wtedy, gdy
 się go wskaże: `lerobot-twin --config configs/local.yaml ui` (także `train`,
 `eval`; opcja ustawia zmienną `LEROBOT_MP_CONFIG`, którą dziedziczy proces
 treningu uruchamiany z panelu). Klucze sekcji `robot:` ważne dla bliźniaka
 i backendu `feetech` (opisane w `configs/default.yaml`): `center_ticks` (tik
 zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
-i 100 w skali aplikacji; domyślne 1986 / 2670 to ramię autora), `baudrate`
+i 100 w skali aplikacji; domyślne 1986 / 2670 to przykładowe ramię), `baudrate`
 (1 000 000). Galaxea A1X ma własną sekcję `a1x:` — patrz
 [Galaxea A1X](#galaxea-a1x).
-
-### Na Shadow (maszyna autora)
-
-Shadow to Windows x86-64 z **RTX A4500 (20 GB)**, sterownik 565.90 (CUDA 12.7)
-— `cu126` na nim działa. WSL2 nie ruszy (wirtualka nie udostępnia
-zagnieżdżonej wirtualizacji), ale nie jest potrzebne: MuJoCo Warp i PyTorch
-z CUDA działają natywnie. Na `C:` zostaje niewiele miejsca — duże pakiety
-instaluj z `TMP` i `PIP_CACHE_DIR` na `D:` — w PowerShellu
-`$env:TMP='D:\tmp'; $env:PIP_CACHE_DIR='D:\tmp\pipcache'` (w `cmd.exe`:
-`set TMP=D:\tmp`) — albo z `--no-cache-dir`. Czasy w tym dokumencie bez innego opisu są zmierzone
-na Shadow.
 
 ## Panel
 
@@ -170,8 +169,8 @@ stanu.
 | zakładka | co robi |
 |---|---|
 | **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
-| **Kamery** | kamery USB i **symulowane** — symulowaną stawiasz w dowolnym miejscu widoku 3D i przeciągasz uchwytem; piramidy z obrazem na żywo (zielona = zaufana, pomarańczowa = niezaufana, czerwona = **przestawiona**); podgląd; błąd kalibracji względem prawdy dla symulowanych |
-| **Kalibracja** | arkusze do druku (tablica ChArUco, karta z tagami); **1.** intrynsyki — tablica w ręku, kadry zapisują się same, gdy wnoszą nowe ujęcie; **2.** położenie wszystkich kamer naraz — fala z kartą w chwytaku; **szybka relokalizacja** jednej przestawionej kamery |
+| **Kamery** | lista kamer z jedną plakietką stanu (SKALIBROWANA / DO KALIBRACJI / KALIBRACJA NIEPEWNA / PORUSZONA / BEZ OBRAZU / WYŁĄCZONA — kolory jak piramidy w 3D); wybrana kamera: podgląd, jedna linia „co dalej”, przycisk *Włączona / Wyłączona*, *Usuń kamerę* (drugie kliknięcie potwierdza); symulowana dodatkowo *Przesuwaj w 3D* (uchwyt) i *Postaw tu, skąd patrzysz w 3D*; liczby w zwiniętych *Szczegółach*; na dole *Dodaj symulowaną przed ramieniem* i *Szukaj kamer USB* (wybór i *Dodaj kamerę USB* pojawiają się po znalezieniu) |
+| **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
 | **Trening** | PPO na GPU w osobnym procesie, z wykresem sukcesu; **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako środka randomizacji |
 | **Polityki** | lista z wynikami (GPU, CPU z randomizacją i bez), ewaluacja na CPU, **uruchomienie na bliźniaku** — sim albo prawdziwe ramię; `reach`: cel przeciągany w 3D; `lift`: kostka z symulacji albo **z kamer**; folder **Spectacles** — cele z okularów ([niżej](#spectacles-pudełko-zasięgu-i-pinch)) |
@@ -189,12 +188,12 @@ miejsce dookoła, zasilacz podłączony, ręka przy STOP.
 - *lokalnie* — ramię wpięte do tego komputera: port `COMx` (Windows) albo
   `/dev/ttyACM0` (Linux, użytkownik w grupie `dialout`); pokaże go
   `lerobot-twin check` albo „Wykryj porty” w panelu;
-- *maszyna wirtualna albo zdalna* (np. Shadow) — *przepuszczenie USB w kliencie*
+- *maszyna wirtualna albo zdalna* — *przepuszczenie USB w kliencie*
   (przejściówka pojawia się jako `COMx`), albo
 - *most*: na komputerze przy ramieniu `lerobot-mp-bridge --port COMx --listen 0.0.0.0:5555 --allow <adres maszyny z bliźniakiem>`,
   w panelu port `socket://<adres komputera przy ramieniu>:5555`. Odczyt ramienia
   idzie jednym pakietem SYNC READ — przez sieć jeden przebieg na odczyt zamiast
-  sześciu. Maszyna zdalna (Shadow stoi w centrum danych) musi **widzieć**
+  sześciu. Maszyna zdalna musi **widzieć**
   komputer przy ramieniu: sieć prywatna (Tailscale, ZeroTier) albo przekierowany
   port. Most działa dobrze do ~20 ms RTT; `--stats` pokazuje, ile faktycznie schodzi.
 
@@ -213,24 +212,34 @@ zamiast 1986…2670. Panel pokazuje oba rozjazdy jako ostrzeżenie. Błędy serw
 i limity z EEPROM działają na obu backendach (`lerobot`: rejestr stanu co 3.
 odczyt).
 
-**1. Kamery.** Na maszynie wirtualnej/zdalnej (np. Shadow) najpierw przepuść
-kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj*. Kamera, która się otwiera, ale nie daje klatek, to prawie
+**1. Kamery.** Na maszynie wirtualnej/zdalnej najpierw przepuść
+kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj kamerę USB*. Kamera, która się otwiera, ale nie daje klatek, to prawie
 zawsze brak przepuszczenia (patrz README).
 
-**2. Intrynsyki każdej kamery.** *Pobierz arkusz tablicy*, wydrukuj w skali
-100%, **zmierz bok kwadratu linijką**, wpisz. *Zbieraj kadry* i pokazuj tablicę
-w rogach kadru, bliżej i dalej, pochyloną — 12+ kadrów, pokrycie 55%+.
-*Oblicz i zapisz K*. Residuum ≤ 0,6 px. Tablica trzymana równolegle do
-obiektywu nie wyznacza ogniskowej — sesja bez pochyleń (rozrzut < 35°) albo z
-ogniskową nie do wiary wychodzi jako **niezaufana**, a kamera z takim K nie
-dostanie zaufanej pozy w kroku 3. *Przerwij* niczego nie liczy ani nie zapisuje.
+**2. Obiektyw każdej kamery** (w kodzie: intrynsyki). Kalibracja, krok 1:
+*Pobierz szachownicę do druku*, wydrukuj w skali 100%, **zmierz bok kwadratu
+linijką**, wpisz. *Zacznij: pokazuj szachownicę kamerze …* i pokazuj ją w
+rogach obrazu, bliżej i dalej, pochyloną — 12 zdjęć, pokrycie 55%. *Gotowe —
+policz obiektyw*; panel sam przechodzi do następnej kamery. Szachownica
+trzymana równolegle do obiektywu nie wyznacza ogniskowej — sesja bez pochyleń
+(rozrzut < 35°) albo z ogniskową nie do wiary wychodzi jako **niepewna**, a
+kamera z takim obiektywem nie przejdzie kroku 3. *Anuluj* niczego nie liczy
+ani nie zapisuje.
+Obiektyw zmierzony gdzie indziej (eksport K i dystorsji do pliku tekstowego,
+jak `assets/calib/logitech_brio_4k_calib.txt` i `ueye_calib.txt`) wczytuje
+*Gotowy obiektyw z pliku* → *Wczytaj obiektyw z pliku* — do wybranej kamery,
+tylko z tej samej rozdzielczości; plik trafia do `assets/calib/`.
 
-**3. Położenie kamer.** *Pobierz arkusz karty*, wydrukuj, zmierz bok taga,
-zegnij kartę, włóż wolny koniec w szczęki (ok. 70 mm ma wystawać). Zaznacz
-potwierdzenie, *Start fali*. Ramię zbiera ~20 póz; kamera, której fala się nie
-udała, wraca jako niezaufana z powodem — także kamera bez zaufanego K z kroku 2.
-*Zapisz wynik kalibracji* (zapisuje też użyty bok taga — zmieniony po fali nie
-przejdzie). Wyjmij kartę.
+**3. Położenie kamer** (w kodzie: fala). Kalibracja, krok 2: *Pobierz kartę do
+druku*, wydrukuj, zmierz bok kodu, zegnij kartę, włóż wolny koniec w szczęki
+(ok. 7 cm ma wystawać). *Start: ramię pokaże kartę kamerom (…)*; przycisk
+pyta, czy karta jest w chwytaku, a stół pusty — drugie kliknięcie w ciągu 8 s
+rusza. Przycisk jest zablokowany, dopóki któraś prawdziwa kamera nie ma
+zmierzonego obiektywu. Ramię zbiera ~20 póz: dopóki kamera nie zobaczy karty
+co najmniej dwa razy, fala zamiata stawem podstawy sektorami po obu stronach
+stołu (nie błądzi losowo); potem co druga poza celuje w kamerę, której najbardziej
+brakuje. Kamera, której się nie udało, dostaje „źle” z powodem. *Zapisz wynik* (zapisuje też użyty bok kodu —
+zmieniony po pomiarze blokuje zapis z powodem) albo *Odrzuć*. Wyjmij kartę.
 
 **4. Sprawdzenie Sim-Real.** Zakładka Sim-Real, każda kamera: krawędzie renderu
 mają leżeć na krawędziach ramienia i stołu. Mediana > 3 px = coś jest źle
@@ -282,8 +291,8 @@ albo „w dłoni”), nigdy z ostatnio widzianej.
 
 **Chwytak.** 0..100 w panelu to te same tiki serwa co w backendzie `feetech`
 (`gripper_closed_ticks` … `gripper_open_ticks`, zero w `center_ticks`); w
-bliźniaku 0 = −5,4°, 100 = 54,7° kąta szczęki. Domyślne 1986 … 2670 to ramię
-autora (z EEPROM-u jego serwa chwytaka). Sprawdź na ramieniu, że przy 0
+bliźniaku 0 = −5,4°, 100 = 54,7° kąta szczęki. Domyślne 1986 … 2670 pochodzą
+z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź na ramieniu, że przy 0
 szczęki się stykają — jeśli nie, zero szczęki w MJCF nie leży w `center_ticks`
 i trzeba to poprawić w konfiguracji, zanim zaufa się `lift`: skopiuj
 `configs/default.yaml` do `configs/local.yaml` (jest w `.gitignore`), popraw
@@ -861,9 +870,9 @@ pytest -q -m "not render"                          # maszyna bez OpenGL/GPU (tes
 
 ---
 
-## Liczby zmierzone na Shadow (RTX A4500, EPYC 4 rdzenie)
+## Liczby orientacyjne
 
-| | Shadow | laptop (Intel HD 620) |
+| | RTX A4500 (4 rdzenie CPU) | laptop bez GPU (Intel HD 620) |
 |---|---|---|
 | budowa sceny | 111 ms | 293 ms |
 | 1 s fizyki (CPU) | 2,6 ms | 6,9 ms |
@@ -876,7 +885,7 @@ pytest -q -m "not render"                          # maszyna bez OpenGL/GPU (tes
 | trening `reach` (15 mln kroków) | **2 min** → CPU 100%, 1,5 mm od celu | – |
 | trening `lift` (59 mln kroków) | **28 min** → CPU 100% (96% z randomizacją) | – |
 | douczanie `lift` z modelem percepcji (29 mln kroków) | 16 min → CPU 98% z randomizacją, z kamer 8/8 | – |
-| douczanie `reach` / `lift` po przeglądzie (13 / 29 mln kroków) | 1,5 / 16 min → CPU 100% / 100% | – |
+| douczanie `reach` / `lift` (13 / 29 mln kroków) | 1,5 / 16 min → CPU 100% / 100% | – |
 
 MuJoCo Warp zgadza się z MuJoCo na CPU: stawy po 2 s fizyki różnią się o
 0,001°, obserwacje środowisk GPU i CPU po 30 krokach o 6·10⁻⁵.
@@ -921,8 +930,9 @@ Tukeya): ręka albo tułów w kadrze nie udają ruchu kamery (ręka na 10–20 %
 kadru: ≤ 0,6 px; wcześniej do 59 px). Ruch ramienia daje ≤ 0,1 px (wcześniej
 do ok. 1,3 px), przybliżenie o 1% — 3,9–4,5 px (prawda 4), obrót o 1° —
 6,7–6,9 px (prawda 7). Alarm „przestawiona” wymaga **dwóch kolejnych
-zgodnych** sprawdzeń. Sprawdzenie kosztuje ok. 15 ms na kamerę. Powyżej 3 px piramida robi się czerwona i panel
-proponuje szybką relokalizację (krótka fala tylko dla tej kamery). Klatka
+zgodnych** sprawdzeń. Sprawdzenie kosztuje ok. 15 ms na kamerę. Powyżej 3 px piramida robi się czerwona, a w zakładce
+Kalibracja pojawia się pomarańczowy przycisk *Kamera … została poruszona* (krótki
+pomiar tylko dla tej kamery). Klatka
 starsza niż 1 s nie jest kadrem — zamrożony albo martwy strumień panel pokazuje
 jako błąd kamery i otwiera go na nowo.
 
@@ -995,7 +1005,7 @@ szum 2 mm, obrót złożony do ±45° — a nagroda liczy się z prawdy.
 |---|---|
 | `lift-v1` — uczona na prawdziwej pozycji kostki | 1/8 |
 | `lift-v2` — `lift-v1` douczona z modelem percepcji (300 iteracji, 16 min) | **8/8** |
-| `lift-v3` — `lift-v2` douczona po przeglądzie (300 iteracji); kończy sama, kostka 9,6–11,8 cm | **8/8** |
+| `lift-v3` — `lift-v2` douczona (300 iteracji); kończy sama, kostka 9,6–11,8 cm | **8/8** |
 
 Od zera z modelem percepcji uczenie szło bardzo wolno (0% po 220 iteracjach) —
 douczanie z polityki, która już umie chwytać, doszło do 98% w 300.

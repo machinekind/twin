@@ -30,6 +30,7 @@ ktore ten rozrzut poszerzaja.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -90,6 +91,66 @@ class Result:
     size: tuple[int, int]
     trusted: bool
     reason: str = ""
+
+
+def read_file(path: str | Path) -> Result:
+    """Obiektyw z pliku tekstowego - eksport z innej kalibracji (np. `assets/calib/*.txt`).
+
+    Linie `klucz: wartosc` (fx, fy, cx, cy, num_views, rms_reprojection_error, `image_size (w h): W H`)
+    i bloki po naglowkach `# camera_matrix` (3 wiersze) oraz `# dist_coeffs` (jeden wiersz).
+    Reszta (komentarze, ekstrynsyki ujec) jest pomijana. Bez `image_size` rozmiar to (0, 0).
+    """
+    keys: dict[str, str] = {}
+    rows: list[list[float]] = []
+    dist: list[float] = []
+    block = ""
+    for raw in Path(path).read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            low = line.lower()
+            block = "K" if "camera_matrix" in low else "dist" if "dist_coeffs" in low else ""
+            continue
+        if ":" in line:
+            k, v = line.split(":", 1)
+            keys[k.split("(")[0].strip().lower()] = v.strip()
+            block = ""
+            continue
+        try:
+            nums = [float(x) for x in line.split()]
+        except ValueError:
+            continue
+        if block == "K" and len(nums) == 3 and len(rows) < 3:
+            rows.append(nums)
+        elif block == "dist" and not dist:
+            dist = nums
+    if len(rows) == 3:
+        K = np.array(rows, float)
+    else:
+        try:
+            K = np.array([[float(keys["fx"]), 0.0, float(keys["cx"])],
+                          [0.0, float(keys["fy"]), float(keys["cy"])], [0.0, 0.0, 1.0]])
+        except KeyError:
+            raise ValueError(f"{path}: brak macierzy K (camera_matrix albo fx/fy/cx/cy)") from None
+    if not dist:
+        raise ValueError(f"{path}: brak dystorsji (dist_coeffs)")
+    if K[0, 0] <= 0 or K[1, 1] <= 0:
+        raise ValueError(f"{path}: ogniskowa musi byc dodatnia")
+    size = (0, 0)
+    if "image_size" in keys:
+        w, h = keys["image_size"].split()[:2]
+        size = (int(float(w)), int(float(h)))
+
+    def num(key: str) -> float:
+        try:
+            return float(keys.get(key, ""))
+        except ValueError:
+            return 0.0
+
+    return Result(K=K, dist=np.asarray(dist, float), rms_px=num("rms_reprojection_error"), per_view_px=[],
+                  n_views=int(num("num_views")), coverage=1.0, size=size, trusted=True,
+                  reason=f"z pliku {Path(path).name}")
 
 
 class Collector:

@@ -148,11 +148,11 @@ def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
 
     app.calib_job.start(wave)
     time.sleep(0.8)
-    app.calib_confirm.value = True
+    assert not app.calib_ask.ask(("fala", ("kam",)))           # operator kliknal raz: pytanie czeka
     app._connect("sim", None)
     assert app.calib_job.wait(5.0)
     assert app.calib_job.state == jobs.FAILED
-    assert not app.calib_confirm.value                          # nowe ramie - nowe potwierdzenie
+    assert not app.calib_ask.pending()                          # nowe ramie - nowe potwierdzenie
     n = len(moves)
     time.sleep(0.5)
     assert len(moves) == n and app.twin.owner is None and not app.twin.status.engaged
@@ -230,7 +230,6 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.ws.add_camera(CameraRecord(n, "sim"))
     try:
         app._tick_slow()
-        app.intr_cam.value = "kam2"                             # lista w panelu zmieniona w trakcie
         ij = app.intr_job
         ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "kam1"}
         app._tick_calibration()
@@ -397,3 +396,197 @@ def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_con
         specs.stop()
     assert specs.driver is None
     assert specs.real_ok.value is False                               # consent doesn't carry to the next connection
+
+
+def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
+    """Bez kamer: podpowiedz i dodawanie; wybrana kamera i jej przyciski schowane."""
+    assert not app.ws.cameras
+    app._refresh_cameras()
+    assert not app.cam_box.visible and "Brak kamer" in app.cams_html.content
+    from lerobot_mp.twin.workspace import CameraRecord
+    app.ws.add_camera(CameraRecord("usb1", "5"))
+    try:
+        app._refresh_cameras(select="usb1")
+        assert app.cam_box.visible and "usb1" in app.cams_html.content
+        assert not app.cam_sim_box.visible                      # prawdziwej nie przestawia sie z panelu
+        _click(app, "Usun kamere")                              # pierwszy klik tylko pyta
+        assert app.ws.camera("usb1") and "Na pewno" in app.cam_remove.label
+        _click(app, "Na pewno usunac usb1? Kliknij ponownie")
+        assert not app.ws.cameras and not app.cam_box.visible
+    finally:
+        if any(c.name == "usb1" for c in app.ws.cameras):
+            app.ws.remove_camera("usb1")
+        app._refresh_cameras()
+
+
+def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    started = []
+    monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam"])
+    monkeypatch.setattr(app, "_start_card_calibration", lambda ev, cams, quick: started.append((cams, quick)))
+    app._render_calibration()
+    assert app.wave_btn.disabled and "polacz ramie" in app.wave_md.content.lower()
+    app.twin.connect("sim", threaded=False)
+    app._render_calibration()
+    assert not app.wave_btn.disabled and app.wave_btn.label == "Start: ramie pokaze karte kamerom (kam)"
+    _click(app, "Start: ramie pokaze karte kamerom (kam)")
+    assert started == [(["kam"], False)]
+    started.clear()
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    _click(app, "Start: ramie pokaze karte kamerom (kam)")
+    assert started == [] and app.wave_btn.color == "orange" and "Kliknij jeszcze raz" in app.wave_btn.label
+    _click(app, app.wave_btn.label)
+    assert started == [(["kam"], False)]
+    app.calib_ask.reset()
+
+
+def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    rec = CameraRecord("kam1", "sim")
+    rec.T_cam2base = np.eye(4).tolist()
+    app.ws.add_camera(rec)
+    started = []
+    monkeypatch.setattr(app, "_start_card_calibration", lambda ev, cams, quick: started.append((cams, quick)))
+    try:
+        app.twin.connect("sim", threaded=False)
+        app._render_calibration()
+        assert not app.reloc_box.visible
+        monkeypatch.setattr(app.watch, "moved", lambda name: name == "kam1")
+        monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam1"])
+        app._render_calibration()
+        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)"
+        assert app.reloc_box.visible and app.reloc_btn.label == label
+        assert "PORUSZONA" in app.calib_html.content
+        _click(app, label)
+        assert started == [(["kam1"], True)]
+    finally:
+        app.ws.remove_camera("kam1")
+
+
+def test_after_saving_one_lens_the_calibration_tab_moves_on_to_the_next_camera(app):
+    """Po zapisie obiektywu kamery 1 przycisk mowil dalej "kamera 1", choc zostala kamera 2."""
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    class Res:
+        K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
+        dist = np.zeros(5)
+        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+
+    for n, src in (("u1", "5"), ("u2", "6")):
+        app.ws.add_camera(CameraRecord(n, src))
+    try:
+        app._render_calibration()
+        assert app.intr_box.visible and app.intr_cam.value == "u1"
+        assert app.intr_start.label == "Zacznij: pokazuj szachownice kamerze u1"
+        assert "zostalo: u1, u2" in app.intr_title.content
+        ij = app.intr_job
+        ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "u1"}
+        app._tick_calibration()
+        assert app.intr_cam.value == "u2" and app.intr_start.label.endswith("kamerze u2")
+        assert "u1** zmierzony" in app.intr_md.content and "OBIEKTYW OK" in app.calib_html.content
+        assert app.wave_btn.disabled and "krok 1 dla: u2" in app.wave_md.content
+    finally:
+        for n in ("u1", "u2"):
+            app.ws.remove_camera(n)
+        app.intr_job.state = jobs.IDLE
+
+
+def test_fixed_texts_written_at_creation_reach_the_browser(app):
+    """Staly tekst z `add_markdown` (opis zakladki, notki Jak uzywac) nie docieral do przegladarki."""
+    from viser._gui_handles import GuiMarkdownHandle
+
+    h = app.server.gui.add_markdown("staly tekst")
+    try:
+        assert h._tw_sent == "staly tekst" and h._impl.props._markdown
+        h.content = "staly tekst"                               # ten sam tekst - bez wysylania
+        assert GuiMarkdownHandle.content.fset._dedup
+    finally:
+        h.remove()
+
+
+@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt", "ueye_calib.txt"))
+def test_shipped_lens_files_parse(filename):
+    """Pliki z obiektywami w assets/calib czyta ten sam parser, co przycisk w panelu."""
+    from lerobot_mp.twin.calib import intrinsics as intr
+    from lerobot_mp.twin.ui.app import LENS_DIR
+
+    res = intr.read_file(LENS_DIR / filename)
+    assert res.K.shape == (3, 3) and res.K[0, 0] > 500 and res.dist.shape == (5,)
+    assert res.trusted and res.reason == f"z pliku {filename}"
+
+
+def test_lens_from_file_lands_on_the_chosen_camera_and_refuses_another_resolution(app, monkeypatch, tmp_path):
+    """Krok 1 bez szachownicy: obiektyw z pliku .txt (K, dystorsja) wpisuje sie do wybranej kamery,
+    plik z innej rozdzielczosci jest odrzucany, a poza ustalona ze starym K przestaje byc zaufana."""
+    from lerobot_mp.twin.ui import app as app_mod
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    (tmp_path / "brio.txt").write_text(
+        "# camera_matrix (3x3, row-major)\n937.5 0 628.3\n0 937.7 348.0\n0 0 1\n"
+        "# dist_coeffs (5: k1 k2 p1 p2 k3)\n0.195 -0.519 0.0002 -0.0001 0.361\nnum_views: 81\n")
+    (tmp_path / "ueye.txt").write_text(
+        "image_size (w h): 1280 1024\nfx: 1512.4\nfy: 1509.8\ncx: 665.1\ncy: 545.7\n"
+        "# dist_coeffs (5: k1 k2 p1 p2 k3)\n-0.237 0.177 0.0006 0.0015 0.0\n")
+    monkeypatch.setattr(app_mod, "LENS_DIR", tmp_path)
+    rec = app.ws.add_camera(CameraRecord("u1", "5", 1280, 720))
+    rec.T_cam2base = np.eye(4).tolist()
+    rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.2}
+    try:
+        app._render_calibration()
+        assert app.lens_file_box.visible and app.lens_file.options == ("brio.txt", "ueye.txt")
+        assert "u1" in app._lens_todo()
+        with pytest.raises(RuntimeError, match="1280x1024"):
+            app._import_lens("u1", "ueye.txt")
+        assert rec.K is None
+        assert app._import_lens("u1", "brio.txt") == "u1"
+        assert rec.K[0][0] == 937.5 and rec.dist[4] == 0.361 and rec.intrinsics_from == "szachownica"
+        assert rec.intrinsics_info["trusted"] and rec.intrinsics_info["n_views"] == 81
+        assert not rec.intrinsics_problem() and "u1" not in app._lens_todo()
+        assert not rec.calibration["trusted"] and "krok 2" in rec.calibration["reason"]
+        assert "u1** wczytany z pliku brio.txt" in app.intr_md.content
+        app._render_calibration()
+        assert "OBIEKTYW OK" in app.calib_html.content
+    finally:
+        app.ws.remove_camera("u1")
+
+
+def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):
+    """Brio i uEye przegrywaly wyscig z resetem USB przy starcie panelu i zostawaly BEZ OBRAZU,
+    az ktos wylaczyl i wlaczyl kamere w panelu. Panel probuje sam, co HEAL_S, poki jest blad."""
+    from lerobot_mp.twin.ui import app as app_mod
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    calls = []
+    hub = app.twin.cameras
+    monkeypatch.setattr(hub, "sync", lambda: calls.append(1))
+    errors = {"u9": "nie otworzyla sie"}
+    monkeypatch.setattr(hub, "error", lambda name: errors.get(name))
+    app.ws.add_camera(CameraRecord("u9", "77"))
+    try:
+        app._heal_cameras(now=1000.0)
+        app._heal_cameras(now=1000.0 + app_mod.HEAL_S / 2)
+        assert calls == [1]                                    # nie czesciej niz HEAL_S
+        app._heal_cameras(now=1000.0 + app_mod.HEAL_S)
+        assert calls == [1, 1]
+        errors.clear()
+        app._heal_cameras(now=1000.0 + 2 * app_mod.HEAL_S)
+        assert calls == [1, 1]                                 # bez bledu nic nie robi
+    finally:
+        app.ws.remove_camera("u9")
+
+
+def test_home_works_straight_after_a_stop(app):
+    """Po STOP-ie ramie bez hamulcow moglo stac w gorze, a Dom byl wylaczony do Skasuj STOP.
+    Dom ma byc jednym kliknieciem: sam kasuje STOP i jedzie."""
+    app.twin.connect("sim", threaded=False)
+    try:
+        app.twin.estop("test")
+        assert app._estop_active()
+        app._render_arm(force=True)
+        assert not app.home_btn.disabled
+        app._go_home()
+        assert not app._estop_active()
+    finally:
+        app.twin.disconnect()

@@ -1,8 +1,6 @@
-# Handoff: cyfrowy bliźniak SO-101 na Shadow
+# Handoff: cyfrowy bliźniak SO-101 i Galaxea A1X
 
-Stan na 2026-09-24. Plan przeniesienia na NVIDIA DGX Spark zastąpiony
-maszyną **Shadow** (Windows 11, RTX A4500 20 GB, EPYC 4 rdzenie / 8 wątków,
-28 GB RAM). Instrukcja uruchomienia i procedura testu na sprzęcie:
+Instrukcja uruchomienia i procedura testu na sprzęcie:
 **[docs/TWIN.md](docs/TWIN.md)**.
 
 ## W skrócie
@@ -16,8 +14,8 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
   porównanie sim-real; przećwiczony cały scenariusz w przeglądarce;
 - **kalibracja**: intrynsyki z ChArUco, położenie wielu kamer z karty w
   chwytaku, szybka relokalizacja, wykrywanie przestawionej kamery;
-- **trening na GPU**: MuJoCo Warp (tysiące światów) + PPO; `reach` w 2 min,
-  `lift` w 28 min; polityki przechodzą na CPU (inny silnik) z 96–100% sukcesu;
+- **trening na GPU**: MuJoCo Warp (tysiące światów) + PPO; polityki
+  przechodzą na CPU (inny silnik) z 96–100% sukcesu;
 - **kalibracja treningu sim-to-real**: identyfikacja dynamiki serw z nagrania
   ruchu, randomizacja wokół zmierzonej dynamiki;
 - **percepcja**: kostka z kamer (część wspólna masek na wysokości górnej
@@ -31,13 +29,10 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
 - **drugie ramię — Galaxea A1X**: opis ramienia i model z URDF producenta,
   kalibracja kamer, IK, fala i środowiska RL w symulacji; backend `a1x` po CAN-FD
   (pakiet `galaxeo`) przetestowany na udawanym ramieniu — sprzęt jeszcze nie;
-- **przegląd przed sprzętem**: 53 potwierdzone błędy (z czego 13 poważnych)
-  poprawione, sprawdzone przez niezależnych weryfikatorów, luki i nowe
-  problemy z weryfikacji poprawione w drugiej rundzie — sekcja 2a.
 
 ## Repozytorium na innym komputerze
 
-Klon ma wszystko do uruchomienia bez Shadow — instalacja per platforma:
+Klon ma wszystko do uruchomienia — instalacja per platforma:
 README, „Szybki start na nowym komputerze”.
 
 - **W repozytorium:** modele MediaPipe (`models/*.task`, źródła i sumy
@@ -55,26 +50,10 @@ README, „Szybki start na nowym komputerze”.
   znaczenia; bez klonu — od katalogu bieżącego.
 - `lerobot-twin check` mówi osobno, czy komputer nadaje się do treningu
   (torch z CUDA, warp, mujoco_warp). Bez NVIDIA działa wszystko poza treningiem.
-- Liczby w tym dokumencie i w TWIN.md są zmierzone na Shadow (RTX A4500);
-  porty `COM11`/`COM12` i numery seryjne CH343 to sprzęt autora.
 
 ---
 
-## 1. Co się zmieniło względem planu DGX
-
-| DGX Spark (plan) | Shadow (jest) |
-|---|---|
-| Linux aarch64, `MUJOCO_GL=egl` | Windows, render przez GLFW/WGL na A4500 — 2 ms za kadr 640×480 |
-| MJX / JAX na GPU | **MuJoCo Warp** — natywnie na Windows, 1,1 mln kroków fizyki/s; JAX z CUDA na Windows nie istnieje, WSL2 nie ruszy (brak zagnieżdżonej wirtualizacji) |
-| PyTorch aarch64 do dobrania | koło `cu126` z indeksu PyTorcha; ze sterownikiem 565.90 (CUDA 12.7) działa |
-| ramię przy laptopie | przepuszczenie USB w kliencie Shadow **albo** most `lerobot-mp-bridge` i port `socket://` (nowe) |
-
-Pozycje z listy „do sprawdzenia na Sparku”: testy renderujące — przechodzą;
-czas renderu — zmierzony; PyTorch z CUDA — działa; MJX/Warp — Warp działa.
-
----
-
-## 2. Co jest gotowe
+## 1. Co jest gotowe
 
 | moduł | co robi | dowód |
 |---|---|---|
@@ -95,63 +74,13 @@ czas renderu — zmierzony; PyTorch z CUDA — działa; MJX/Warp — Warp dział
 | `robot/a1x.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
 | `twin/specsreach.py`, `reach.py`, `impact.py`, `ui/specs_panel.py`, `lerobot-twin specs` | **Spectacles**: bliźniak wysyła okularom pudełko zasięgu i kulkę TCP (przez przekaźnik `alien-bazaar/specs-lens`), pinch w pudełku albo na wykrytym obiekcie to cel; bliźniak sprawdza wszystko od nowa (sesja zaufanej rejestracji, pudełko, IK 3 mm, skok ≤ 45°, kolizje, właściciel, STOP) i jedzie własną rampą pod właścicielem `specs`; strażnik uderzeń (opóźnienie 6° / 0,15 s albo wysiłek) cofa ramię do pozy sprzed 0,4 s. Tryby `dry` → `sim` → `real` (`--i-know`). **Nie jechało na okularach ani na ramieniu**; progi wysiłku A1X zgadnięte — [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch) | `tests/test_twin_specsreach.py` (udawany przekaźnik, symulacja A1X: cel dłoni do 5 mm, odmowy, cel obiektu, chwyt, zmiana celu w ruchu, uderzenie w ścianę → `backoff`), `test_twin_reach.py` (siatka 4×4×3 osiągalna bez kolizji), `test_twin_impact.py` |
 
-Testy: `pytest -q` (92 testy, ok. 45 s na CPU) — wszystko przechodzi. Zestaw odchudzony
-2026-09-25 z ok. 680: zostały wyłącznie testy integracyjne (łańcuch przez kilka modułów
-tak, jak jedzie produkcja) zachowań groźnych dla sprzętu i człowieka, psujących
-stanowisko albo przeniesienie sim-real; testy jednostkowe, CLI/konfiguracji, brzmienia
-komunikatów i warianty parametryzacji usunięte (historia: commit `b2ba4bb`).
+Testy: `pytest -q`. Zestaw to wyłącznie testy integracyjne (łańcuch przez kilka
+modułów tak, jak jedzie produkcja) zachowań groźnych dla sprzętu i człowieka,
+psujących stanowisko albo przeniesienie sim-real.
 
 ---
 
-## 2a. Przegląd przed testem na sprzęcie
-
-Przegląd całego kodu bliźniaka (wyszukiwanie → trzech sceptyków na każde
-znalezisko → krytyk) potwierdził 53 błędy; poprawione na czterech gałęziach
-rozłącznych plikowo (`fix-feetech`, `fix-runtime`, `fix-perception-rl`,
-`fix-ui`) wobec spisanych kontraktów, potem sprawdzone ponownie przez
-niezależnych weryfikatorów. Najważniejsze:
-
-| było | teraz |
-|---|---|
-| uchwyt końcówki w 3D potrafił przerzucić IK na drugą gałąź — obrót o ~180° | IK tylko od bieżącej pozy, rozwiązanie z ruchem stawu > 15° odrzucone |
-| *Połącz* i *Dom* nie zatrzymywały fali / identyfikacji / polityki; po rampie do domu ramię wracało skokiem do starego celu | jeden właściciel ramienia (`Twin.claim`), STOP/Dom/Połącz/Rozłącz go odbierają, ramię trzyma zmierzoną pozę |
-| stop przy kolizji trzymał zablokowany cel — serwo dalej dociskało | stop trzyma **zmierzoną** pozę |
-| odpowiedzi serw bez sprawdzenia sumy kontrolnej, bity błędów gubione | uszkodzona ramka odrzucona, błąd serwa → STOP awaryjny z powodem |
-| po zerwaniu łącza zaległe cele szły seriami (skok 95°) | przy utracie łącza nic nie jest wysyłane, po powrocie nadzór startuje od świeżego odczytu |
-| chwytak 0..100 w bliźniaku 1,8× szerzej niż na serwie | te same tiki co backend `feetech` |
-| jedna kamera „kładła” na blacie kostkę uniesioną w dłoni | wykrycie z jednej kamery przy dłoni pomijane |
-| intrynsyki z tablicy trzymanej płasko do obiektywu uznawane za zaufane | wymagany rozrzut pochyleń ≥ 35° i wiarygodna ogniskowa |
-| identyfikacja „wyznaczała” kp, którego ruch nie rozróżnia | dopasowuje tylko to, co wyznaczalne, i mówi to wprost |
-| TCP i kostka w obserwacji o krok fizyki za kątami stawów | kinematyka liczona po fizyce (CPU i GPU) |
-| render trzymał blokadę pętli ramienia | render na kopii stanu |
-
-Druga runda (po weryfikacji: 46 z 53 potwierdzone, 7 częściowo, kilkanaście
-nowych problemów z samych poprawek) domknęła m.in.: krótkie przerwy łącza bez
-skoku po powrocie, strażnika rozjazdu, chwyt przy STOP i przeciążeniu
-chwytaka, sukces `lift` tylko ze świeżej pozy kostki, identyfikację, która nie
-bierze ramienia z powrotem, błędy serw i limity na backendzie `lerobot`,
-jednego świadka kostki przy dłoni, skalę w strażniku kamer (10–20 ms na
-kamerę zamiast do 300 ms), pozę kamery oceniania względem K użytego w fali,
-znacznik `render` dla maszyn bez GPU.
-
-Trzecia runda (po drugiej weryfikacji): pętla po przerwie łącza czeka na dwa
-zgodne odczyty (spóźniona odpowiedź sprzed przestoju nie cofa ramienia),
-strażnik rozjazdu nie myli wolniejszego serwa z kolizją, STOP po błędzie
-chwytaka da się skasować i nie ściska dalej, STOP nie domyka zamykającego się
-chwytaka, backend `lerobot` łączy się z plikiem kalibracji (wcześniej nigdy),
-STOP / Dom w chwili startu polityki wygrywają z nią, identyfikacja nagrywa
-z taktów pętli i nie pozwala zapisać dopasowania, które nic nie wyjaśnia,
-strażnik kamer nie myli ręki w kadrze z ruchem kamery.
-
-Polityki uczone przed poprawkami (inny chwytak, inne obserwacje, epizod `lift`
-bez końca) zastąpione douczonymi `reach-v3` (CPU 100% / 100%, 1,2 mm, nadgarstek bez obrotów do limitu) i
-`lift-v3` (CPU 100% / 100%, z kamer 8/8, kostka ~11 cm zamiast 17). Przy tym
-wyszedł błąd douczania — krytyk od zera psuł dobrą politykę; pliki polityk
-niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
-
----
-
-## 3. Decyzje i dlaczego
+## 2. Decyzje i dlaczego
 
 - **Jedna definicja zadania dla CPU, GPU i ramienia** (`rl/task.py` z `xp` =
   numpy albo torch). Dwie kopie „prawie tej samej” obserwacji to ciche źródło
@@ -195,7 +124,7 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
 
 ---
 
-## 4. Następne kroki
+## 3. Następne kroki
 
 1. **Test na sprzęcie** według [docs/TWIN.md](docs/TWIN.md) — kroki 0–8.
    Najpierw połączenie i suwaki, potem intrynsyki, położenie, sim-real,
@@ -239,54 +168,27 @@ niosą teraz krytyka, a stare dostają rozgrzewkę (TWIN.md, *Polityki bazowe*).
 
 ---
 
-## 5. Pytania do rozstrzygnięcia
+## 4. Pytania do rozstrzygnięcia
 
 1. **Licencja galaxeo-manipulators** — `calib/tags.py`, `calib/handeye.py`
    i idea `calib/topdown.py` przeniesione z atrybucją; zakładamy zgodę machinekind.
 2. Które zadania po `reach` i `lift`: pick-and-place, nalewanie, sortowanie?
-3. Jakie kamery trafią na stanowisko i czy przepuszczanie USB kamer przez
-   Shadow wystarcza przepustowością (kilka strumieni MJPEG) — jeśli nie,
-   kamery trzeba będzie puścić siecią tak jak ramię.
-4. Czy Shadow widzi komputer przy ramieniu (Tailscale?) — od tego zależy
-   wybór: przepuszczenie USB czy most.
-5. **Licencja URDF i siatek A1X** (`assets/robots/a1x/`) — od producenta przez
+3. **Licencja URDF i siatek A1X** (`assets/robots/a1x/`) — od producenta przez
    galaxeo-manipulators, `package.xml`: „Proprietary”, warunki nieznane. W repozytorium
    Apache-2.0 są wydzielone i opisane w `NOTICE`; do decyzji: zgoda Galaxea, albo
    zamiast kopii ścieżka do zewnętrznego klonu i `scripts/import_a1x_model.py --urdf`.
-6. **`galaxeo.xcan_usb` i GPL-2.0** — układy komend i rekordów sterownika XCAN są
+4. **`galaxeo.xcan_usb` i GPL-2.0** — układy komend i rekordów sterownika XCAN są
    przepisane z jądra Linuksa (`peak_usb`, GPL-2.0). Moduł nie jest w tym repozytorium:
    przychodzi z pakietem `galaxeo` (extra `a1x`) i jest potrzebny tylko na macOS. Do
    decyzji: licencja galaxeo-manipulators (brak pliku licencji) i czy moduł GPL zostaje
    w pakiecie importowanym z projektu Apache-2.0.
-7. **Scalenie gałęzi `pkg` w galaxeo-manipulators** — extra `a1x` wskazuje
+5. **Scalenie gałęzi `pkg` w galaxeo-manipulators** — extra `a1x` wskazuje
    `galaxeo-manipulators@main`, a pakiet `galaxeo` jest na razie tylko na `pkg`. Do
    scalenia instalacja z lokalnego klonu (`pip install -e ../galaxeo-manipulators`).
 
 ---
 
-## 6. Sprzęt
-
-| | ramię nr 1 (sierpień) | ramię nr 2 (wrzesień, bieżące) |
-|---|---|---|
-| przejściówka | CH343 `5AAF219949` | CH343 `5AAF220303` |
-| port | COM11 | COM12 |
-| limity serw (EEPROM) | były zawężone (bark −2…+84°); **rozszerzone do 0…4095** 2026-08-31, oryginał w [`docs/hardware/servo_limits_arm1.json`](docs/hardware/servo_limits_arm1.json) | wyglądają na prawdziwą kalibrację LeRobota (±100–125°) |
-| uwagi | chwytak 1986…2670 tików (z jego EEPROM-u) | stał złożony (`shoulder_lift −101°`, poza limitem −95° z konfiguracji — ramię zostaje, gdzie stoi, i wraca w zakres 15°/s dopiero po włączeniu sprzęgła); `wrist_flex` w serwie max +88° przy +95° w konfiguracji — limity bliźniaka zawężane do EEPROM (`joint_limits()`) |
-
-**Galaxea A1X** (6 stawów + chwytak, CAN-FD, sprzęt z galaxeo-manipulators): zasilacz
-24 V, terminacja R1/R2 w górze, przejściówka XCAN / PEAK USB-CAN FD (`0c72:0012`),
-Linux `can0`, macOS `xcan`, Windows `PCAN_USBBUS1`. **Bez hamulców.** J3 czyta w spoczynku
-ok. +1,49° (przesunięcie zera, `a1x.joint_offsets_deg`). Z bliźniakiem jeszcze
-niepodłączony — procedura w [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
-
-Przywrócenie oryginalnych limitów ramienia nr 1: dla każdego serwa zapis
-`Lock`(55)=0 → `Min_Angle_Limit`(9) / `Max_Angle_Limit`(11) → `Lock`=1; przed
-zmianą ustawić cel = bieżącą pozycję, inaczej zmiana limitu odblokuje stary cel
-i ramię ruszy.
-
----
-
-## 7. Pułapki, które cicho psują sim-2-real
+## 5. Pułapki, które cicho psują sim-2-real
 
 Każda jest pilnowana testem albo poprawiona w kodzie:
 

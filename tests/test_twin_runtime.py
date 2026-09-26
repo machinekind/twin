@@ -65,6 +65,9 @@ class FakeArm(RobotBackend):
         self._last_read = dict(self.pos)
         self.glitch: list[dict[str, float]] = []
         self.grip_ticks: tuple[float, float, float] | None = None
+        #: Jak A1X bez `gripper_fb_*`: `joints()` oddaje rozkaz, a przed nim domyslne "otwarty".
+        self.grip_measured = True
+        self._grip_cmd: float | None = None     # jak A1X: rozkaz rowny zglaszanemu nic nie ustala
         self._on = False
 
     def connect(self):
@@ -104,6 +107,8 @@ class FakeArm(RobotBackend):
                 lo, hi = max(lo, self.cfg.joint(k).min), min(hi, self.cfg.joint(k).max)
             out[k] = min(max(v, lo), hi)
         self.sent.append(out)
+        if "gripper" in out and (self._grip_cmd is not None or abs(out["gripper"] - self.pos["gripper"]) > 0.5):
+            self._grip_cmd = out["gripper"]
         for k, v in out.items():
             self.goal[k] = v
             if self.vmax is None:
@@ -155,6 +160,12 @@ class FakeArm(RobotBackend):
 
     def gripper_ticks(self):
         return self.grip_ticks
+
+    def gripper_measured(self):
+        return self.grip_measured
+
+    def gripper_known(self):
+        return self.grip_measured or self._grip_cmd is not None
 
 
 @pytest.fixture
@@ -637,3 +648,76 @@ def test_reconnect_keeps_a_squeezing_gripper_closed_when_the_backend_knows_the_g
     twin.set_target({"shoulder_pan": 5.0}, owner="panel")
     run(twin, 1.0)
     assert arm.sent[n:] and max(s["gripper"] for s in arm.sent[n:]) == pytest.approx(5.0)
+
+
+def test_unmeasured_gripper_takes_its_first_command_straight_not_ramped_from_the_guess(twin, monkeypatch):
+    """A1X bez pomiaru chwytaka zglasza po polaczeniu domyslne 100 (otwarty), choc szczeki
+    trzymaly karte. Rampa i ogranicznik predkosci szly od tej zgadywanki do 0 - szczeki
+    OTWIERALY sie i karta wypadala z chwytaka na starcie fali. Pierwszy rozkaz chwytaka idzie
+    wprost do celu; nastepne jak zwykle."""
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    arm.grip_measured = False
+    connect_fake(twin, monkeypatch, arm)
+    assert twin._ramp_start({"gripper": 0.0})["gripper"] == 0.0        # rampa `move`/`home` od celu
+    n = len(arm.sent)
+    twin.claim("kalibracja")
+    twin.set_engaged(True)
+    twin.set_target({"gripper": 0.0}, owner="kalibracja")
+    run(twin, 0.3)
+    grips = [s["gripper"] for s in arm.sent[n:] if "gripper" in s]
+    assert grips and max(grips) == pytest.approx(0.0)                   # nigdy 100 -> 0
+    # Od tej chwili pozycja jest znana: kolejny cel jedzie rampa (ogranicznik 300/s), nie skokiem.
+    twin.set_target({"gripper": 60.0}, owner="kalibracja")
+    twin.step(DT)
+    assert 0.0 < arm.sent[-1]["gripper"] < 60.0
+    assert twin._ramp_start({"gripper": 0.0})["gripper"] == pytest.approx(arm.sent[-1]["gripper"], abs=1.0)
+
+
+def test_measured_gripper_keeps_its_ramp(twin, monkeypatch):
+    """Chwytak z pomiarem (Feetech, sim) jedzie od pomiaru jak dotad."""
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    connect_fake(twin, monkeypatch, arm)
+    assert twin._ramp_start({"gripper": 0.0})["gripper"] == pytest.approx(100.0)
+    n = len(arm.sent)
+    twin.claim("kalibracja")
+    twin.set_engaged(True)
+    twin.set_target({"gripper": 0.0}, owner="kalibracja")
+    twin.step(DT)
+    assert 0.0 < arm.sent[-1]["gripper"] < 100.0
+
+
+def test_a_target_equal_to_the_gripper_guess_does_not_make_the_position_known(twin, monkeypatch):
+    """Druga fala 2026-09-26: przed pierwszym przejazdem poszedl cel z chwytakiem rownym zgadywance
+    (100 - trzymanie zmierzonej pozy); lokalna flaga uznala pozycje za znana, choc backend niczego
+    nie wyslal, i przejazd fali jechal rampa 100 -> 0 - szczeki znow sie otworzyly."""
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    arm.grip_measured = False
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("kalibracja")
+    twin.set_engaged(True)
+    twin.set_target({"gripper": 100.0}, owner="kalibracja")     # = zgadywanka: nic nie ustala
+    run(twin, 0.2)
+    assert not twin._gripper_known()
+    assert twin._ramp_start({"gripper": 0.0})["gripper"] == 0.0
+    n = len(arm.sent)
+    twin.set_target({"gripper": 0.0}, owner="kalibracja")
+    run(twin, 0.3)
+    grips = [s["gripper"] for s in arm.sent[n:] if "gripper" in s]
+    assert grips and max(grips) == pytest.approx(0.0)
+    assert twin._gripper_known()
+
+
+def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():
+    """Suwak Predkosc 20 st./s ogranicza rozkaz nadzoru; obrot nadgarstka o 60 st. potrzebuje 3 s,
+    a staly termin 0,5 + 0,4 + 1,5 s konczyl przejazd bledem "rozkaz jeszcze jedzie" - fala
+    z 21 i 11 obserwacjami przepadla na jednym takim przejezdzie."""
+    tw = Twin(Workspace())
+    try:
+        tw.connect("sim")
+        tw.set_speed(20.0)
+        roll = tw.joints()["wrist_roll"]
+        tw.move({"wrist_roll": roll + 60.0}, duration=0.5, settle=0.2)
+        assert abs(tw.status.command["wrist_roll"] - (roll + 60.0)) < 1.0
+        tw.home()
+    finally:
+        tw.close()
