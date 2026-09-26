@@ -99,6 +99,9 @@ class PolicyRunner:
         self.twin = twin
         self.policy = policy
         self.task = policy.task
+        if self.task.shape_conditioned:
+            raise ValueError("Polityka wielu ksztaltow wymaga dostawcy typu, rozmiarow i pozy obiektu. "
+                             "Obecny runner/detektor kostki jej nie obsluguje; uzyj ewaluacji RL.")
         # Wlasna kinematyka (wlasne MjData): ta ze sceny liczy tez panel (IK uchwytu)
         # z innego watku, a `tcp()` pisze do swojego MjData.
         self.kin = RobotKinematics(twin.workspace.spec())

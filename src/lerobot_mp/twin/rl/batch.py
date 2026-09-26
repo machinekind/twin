@@ -31,7 +31,7 @@ from .. import scene as sc
 from ..workspace import Workspace
 from . import task as tk
 from .env import scene_config
-from .randomize import Randomization
+from .randomize import Randomization, corrupt_pose
 
 
 def _warp():
@@ -74,8 +74,9 @@ class BatchEnv:
             # nie blad - na CPU nikt o tym nie krzyczy. Tu drukowaloby sie co krok.
             self.m.opt.warn_overflow = 0
         cube = self.task.cube is not None
-        self.d = mjw.put_data(mjm, scene.data, nworld=N, nconmax=32 if cube else 16,
-                              njmax=192 if cube else 64)
+        compound = self.task.shape_conditioned and self.task.object_kind in ("pliers", "nut", "washer", "l_bracket", "t_bracket", "screw")
+        self.d = mjw.put_data(mjm, scene.data, nworld=N, nconmax=96 if compound else (32 if cube else 16),
+                              njmax=512 if compound else (192 if cube else 64))
 
         t = lambda a: wp.to_torch(a)                                            # noqa: E731
         self.qpos, self.qvel, self.ctrl = t(self.d.qpos), t(self.d.qvel), t(self.d.ctrl)
@@ -101,6 +102,7 @@ class BatchEnv:
         if cube:
             b = mjm.body(self.task.cube).id
             self.cube_body, self.cube_geom = b, mjm.geom(self.task.cube).id
+            self.cube_geoms = torch.as_tensor(np.flatnonzero(mjm.geom_bodyid == b), device=dev)
             self.cube_qadr = int(mjm.jnt_qposadr[mjm.body_jntadr[b]])
             self.cube_dadr = int(mjm.jnt_dofadr[mjm.body_jntadr[b]])
             self.jaw_adr = torch.as_tensor([mjm.sensor(f"{self.task.cube}_jaw{k}").adr[0] for k in range(2)],
@@ -115,6 +117,14 @@ class BatchEnv:
         self.goal = torch.zeros(N, 3, **f32)
         self.q_cmd = self.home.repeat(N, 1)
         self.prev_action = torch.zeros(N, 6, **f32)
+        self.previous_delta = torch.zeros_like(self.prev_action)
+        self.older_delta = torch.zeros_like(self.prev_action)
+        self.joint_bias = torch.zeros_like(self.prev_action)
+        self.calibration_translation = torch.zeros(N, 3, **f32)
+        self.calibration_rpy = torch.zeros(N, 3, **f32)
+        self.calibration_scale = torch.ones(N, **f32)
+        self.dropout_left = torch.zeros(N, dtype=torch.long, device=dev)
+        self.last_seen_tick = torch.zeros(N, dtype=torch.long, device=dev)
         # Opoznienie akcji: ostatnie akcje w buforze pierscieniowym, dla kazdego swiata
         # wlasne {min_delay .. max_delay} taktow - jak kolejka w TwinEnv. Wczesniej byl tu
         # jeden slot i opoznienie sciete do 0/1 taktu: po identyfikacji (1,4 taktu,
@@ -164,10 +174,12 @@ class BatchEnv:
         q = s["q"]
         if self.noise > 0:
             q = q + self.noise * torch.randn(q.shape, generator=self.gen, device=self.device)
+        q = q + self.joint_bias
         cube = self.task.cube is not None
         return tk.observe(torch, self.task, self.limits, q, self.q_cmd, s["tcp"], self.prev_action,
                           goal=self.goal, cube_pos=self.seen_pos if cube else None,
-                          cube_rot=self.seen_rot if cube else None)
+                          cube_rot=self.seen_rot if cube else None,
+                          observation_age=(self.t-self.last_seen_tick).float()/self.task.control_hz)
 
     def _perceive(self, s: dict[str, torch.Tensor]) -> None:
         """Nowy wpis historii kostki i odswiezenie tego, co widzi polityka (co `cube_p` taktow)."""
@@ -175,6 +187,14 @@ class BatchEnv:
         self.hist_pos[self.hist_i] = s["cube_pos"]
         self.hist_rot[self.hist_i] = s["cube_rot"]
         upd = (self.t % self.cube_p) == 0
+        if self.rand.dropout_probability > 0:
+            old_drop = self.dropout_left > 0
+            self.dropout_left = (self.dropout_left - 1).clamp_min(0)
+            new_drop = upd & ~old_drop & (self._u(self.num_envs) < self.rand.dropout_probability)
+            duration = torch.randint(1, max(1, self.rand.dropout_steps)+1, (self.num_envs,),
+                                     generator=self.gen, device=self.device)
+            self.dropout_left = torch.where(new_drop, duration-1, self.dropout_left)
+            upd = upd & ~old_drop & ~new_drop
         if not upd.any():
             return
         idx = (self.hist_i - self.cube_d) % self.H
@@ -186,8 +206,13 @@ class BatchEnv:
                                                              device=self.device)
         if self.rand.fold_yaw:
             rot = tk.fold_yaw(torch, rot)
+        if self.rand.cube_z_noise:
+            pos[:, 2] += self.rand.cube_z_noise * torch.randn(self.num_envs, generator=self.gen, device=self.device)
+        pos, rot = corrupt_pose(torch, pos, rot, self.calibration_translation,
+                                self.calibration_rpy, self.calibration_scale)
         self.seen_pos = torch.where(upd[:, None], pos, self.seen_pos)
         self.seen_rot = torch.where(upd[:, None, None], rot, self.seen_rot)
+        self.last_seen_tick = torch.where(upd, self.t, self.last_seen_tick)
 
     def _randomize(self, ids: torch.Tensor) -> None:
         """Nowa dynamika dla swiatow `ids` - mnozniki od nominalu, potem `set_const`."""
@@ -200,10 +225,14 @@ class BatchEnv:
         f["dof_armature"][ids[:, None], dof] = nom["dof_armature"][dof] * s["armature"][:, None]
         f["dof_frictionloss"][ids[:, None], dof] = nom["dof_frictionloss"][dof] * s["frictionloss"][:, None]
         if self.task.cube:
-            b, g = self.cube_body, self.cube_geom
+            b, g = self.cube_body, self.cube_geoms
             f["body_mass"][ids, b] = nom["body_mass"][b] * s["cube_mass"]
             f["body_inertia"][ids, b] = nom["body_inertia"][b] * s["cube_mass"][:, None]
-            f["geom_friction"][ids, g, 0] = nom["geom_friction"][g, 0] * s["cube_friction"]
+            f["geom_friction"][ids[:, None], g, 0] = nom["geom_friction"][g, 0] * s["cube_friction"][:, None]
+        self.joint_bias[ids] = s["joint_bias"]
+        self.calibration_translation[ids] = s["calibration_translation"]
+        self.calibration_rpy[ids] = s["calibration_rpy"]
+        self.calibration_scale[ids] = s["calibration_scale"]
         self.delay_n[ids] = s["delay"].long().clamp(0, self.Hd - 1)
         self.cube_d[ids] = s["cube_delay"].long()
         self.cube_p[ids] = s["cube_period"].long()
@@ -249,6 +278,10 @@ class BatchEnv:
             self.hist_rot[:, ids] = R
             self.seen_pos[ids] = p
             self.seen_rot[ids] = tk.fold_yaw(torch, R) if self.rand.fold_yaw else R
+            pp, rr = corrupt_pose(torch, self.seen_pos[ids], self.seen_rot[ids],
+                                  self.calibration_translation[ids], self.calibration_rpy[ids],
+                                  self.calibration_scale[ids])
+            self.seen_pos[ids], self.seen_rot[ids] = pp, rr
         else:
             k = torch.randint(0, len(self.goal_pool), (n,), generator=self.gen, device=self.device)
             self.goal[ids] = self.goal_pool[k]
@@ -258,6 +291,10 @@ class BatchEnv:
         self.ctrl[ids[:, None], self.act] = q0
         self.q_cmd[ids] = q0
         self.prev_action[ids] = 0.0
+        self.previous_delta[ids] = 0.0
+        self.older_delta[ids] = 0.0
+        self.dropout_left[ids] = 0
+        self.last_seen_tick[ids] = 0
         self.t[ids] = 0
         self.streak[ids] = 0
 
@@ -276,7 +313,12 @@ class BatchEnv:
         self.act_hist[self.t % self.Hd, self.ar] = action
         executed = self.act_hist[(self.t - self.delay_n) % self.Hd, self.ar]
         executed = torch.where((self.t >= self.delay_n)[:, None], executed, torch.zeros_like(executed))
+        previous_command = self.q_cmd
         self.q_cmd = tk.apply_action(torch, self.task, self.limits, self.q_cmd, executed)
+        stale = (self.t-self.last_seen_tick).float()/self.task.control_hz > self.task.max_pose_age
+        if self.task.shape_conditioned:
+            self.q_cmd = torch.where(stale[:,None], previous_command, self.q_cmd)
+        delta = self.q_cmd - previous_command
         self.ctrl[:, self.act] = self.q_cmd
         torch.cuda.synchronize(self.device)
         self.wp.capture_launch(self.graph)
@@ -284,9 +326,16 @@ class BatchEnv:
         self.t += 1
 
         s = self._state()
+        from .objects import bottom_height
+        height = bottom_height(torch, self.task, s["cube_pos"], s["cube_rot"]) if self.task.cube else None
         rew, success, failure = tk.reward(torch, self.task, s["tcp"], action, self.prev_action, goal=self.goal,
                                           cube_pos=s.get("cube_pos"), jaw_contacts=s.get("jaws"),
-                                          q_cmd=self.q_cmd, limits=self.limits)
+                                          q_cmd=self.q_cmd, limits=self.limits, object_height=height)
+        smooth = tk.smooth_cost(torch, self.task, delta, self.previous_delta, self.older_delta)
+        rew = rew - smooth
+        self.older_delta, self.previous_delta = self.previous_delta, delta
+        if self.task.shape_conditioned:
+            success = success & ~stale
         self.streak, finished = tk.success_streak(torch, self.task, self.streak, success)
         if self.task.cube:
             self._perceive(s)
@@ -301,11 +350,12 @@ class BatchEnv:
         terminated = failure | broken
         done = terminated | time_out
         info = {"success": success, "time_outs": time_out & ~terminated, "broken": broken,
-                "finished": finished & ~terminated}
+                "finished": finished & ~terminated, "smooth_cost": smooth,
+                "stale_pause": stale if self.task.shape_conditioned else torch.zeros_like(stale)}
         if self.task.name == "reach":
             info["distance"] = ((self.goal - s["tcp"]) ** 2).sum(1).sqrt()
         else:
-            info["height"] = s["cube_pos"][:, 2] - self.task.cube_half
+            info["height"] = height
 
         ids = done.nonzero().flatten()
         if len(ids):

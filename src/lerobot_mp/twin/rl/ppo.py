@@ -93,7 +93,8 @@ class Progress:
 def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace: Workspace | None = None,
           randomization: Randomization | None = None, out_dir: str | Path | None = None,
           on_progress: Callable[[Progress], None] | None = None,
-          stop: threading.Event | None = None, device: str = "cuda:0", init: Policy | None = None) -> Policy:
+          stop: threading.Event | None = None, device: str = "cuda:0", init: Policy | None = None,
+          env_factory=None) -> Policy:
     """`init` - start z istniejacej polityki (aktor, normalizacja i krytyk, jesli zapisany).
 
     Do douczania: po identyfikacji dynamiki na ramieniu, po zmianie randomizacji
@@ -105,7 +106,8 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
     if init is not None:
         tsk = init.task                                # to samo zadanie, na ktorym sie uczyla
     rand = randomization if randomization is not None else Randomization()
-    env = BatchEnv(tsk, cfg.num_envs, workspace=workspace, randomization=rand, device=device, seed=cfg.seed)
+    factory = env_factory or BatchEnv
+    env = factory(tsk, cfg.num_envs, workspace=workspace, randomization=rand, device=device, seed=cfg.seed)
     meta = PolicyMeta(task=asdict(tsk), hidden=list(cfg.hidden), obs_dim=tsk.obs_dim, act_dim=tsk.act_dim,
                       randomization=_rand_dict(rand))
     if init is not None:
