@@ -626,6 +626,7 @@ w repozytorium `alien-bazaar` (`specs-lens`, README, sekcja „Reach box”);
 tutaj jest strona bliźniaka. **Nic z tego nie jechało jeszcze na okularach ani
 na prawdziwym ramieniu** — sprawdzone tylko w symulacji, z udawanym
 przekaźnikiem i udawanymi okularami.
+Po angielsku: kierowca okularów [SPECS.md](SPECS.md), uruchomienie na dwóch maszynach (okulary + stanowisko) [RIG.md](RIG.md).
 
 ```
 okulary (Lens) --ws /specs--> przekaźnik (server.js) --ws /twin--> lerobot-twin specs --> Twin --> sim / A1X
@@ -773,7 +774,7 @@ nowa**, na własnym wątku, w tej kolejności — pierwsza porażka to
 | `stale` | cel obiektu z wykrycia sprzed ponad 0,5 s (`age`; `detail` podaje wiek) |
 | `ik` | brak rozwiązania IK galaxeo do 3 mm (albo oś podejścia ponad 15° od pionu) |
 | `jump` | któryś staw miałby przejechać ponad `--max-jump-deg` (150°) na jednym odcinku |
-| `collision` | droga w przestrzeni stawów od bieżącego rozkazu do celu koliduje (galaxeo: ramię ze sobą albo ze stołem; przedmiotów ze sceny bliźniaka nie widzi) |
+| `collision` | droga w przestrzeni stawów od bieżącego rozkazu do celu koliduje (galaxeo: ramię ze sobą, ze stołem albo z przedmiotami sceny bliźniaka i przeszkodami stanowiska, podawanymi jako `scene_obstacles`) |
 
 **Ruch to `galaxeo.arm.Motion.move`** — ten sam ruch strzeżony, którego używa
 pakiet: start od zmierzonej pozy, rampa smoothstep (20°/s na największym
@@ -823,11 +824,11 @@ backendu, nie zamiast nich.
 
 - **Progi wysiłku A1X (20 / 12) to zgadywanie** — nikt ich nie mierzył na tym
   łączu. Do czasu pomiaru główną ochroną jest reguła opóźnienia. Zmierz effort
-  każdego stawu przy spokojnej jeździe w pudełku (w `dry` log co 1 s, na starcie
-  każdego odcinka też) i przy lekkim oporze ręką, potem zmień progi w galaxeo
+  każdego stawu przy spokojnej jeździe w pudełku (w `dry` log co 1 s, gdy nie
+  trwa żaden cel) i przy lekkim oporze ręką, potem zmień progi w galaxeo
   (`EFFORT_MOVE` / `EFFORT_DESCEND` w `galaxeo/arm/transport.py`).
 - **Bez `--start-center` pierwszy cel po połączeniu to długa jazda.** Z domu A1X
-  każdy punkt pudełka wymaga 47–70° na którymś stawie: pod limitem `--max-jump-deg`,
+  każdy punkt pudełka wymaga 47–91° na którymś stawie: pod limitem `--max-jump-deg`,
   więc ramię jedzie tam od razu, w kawałkach po 40°, prostą w przestrzeni stawów. Uruchom
   `lerobot-twin specs --mode real --i-know --start-center` i potwierdź Enterem
   przejazd nad środek pudełka (etapami, 10°/s). Inaczej: podjedź z panelu

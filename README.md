@@ -70,6 +70,7 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
   cel, ramię jedzie i cofa się po uderzeniu (`lerobot-twin specs`, folder
   *Spectacles* w panelu; niesprawdzone na sprzęcie) —
   [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch).
+  Po angielsku: kierowca okularów [docs/SPECS.md](docs/SPECS.md), uruchomienie na dwóch maszynach [docs/RIG.md](docs/RIG.md).
 
 ## Co przyspiesza
 

@@ -75,8 +75,9 @@ class SpecsFolder:
         if robot != ROBOT:
             self.md.content = f"Okulary: tylko A1X (galaxeo.arm) - to stanowisko ma ramie {robot}"
             return
+        # Like the CLI without --trusted-only: any registration the glasses use is enough.
         self.driver = SpecsReach(self.app.twin, relay_url=str(self.url.value).strip() or DEFAULT_RELAY,
-                                 mode=self.mode.value, real_ok=bool(self.real_ok.value))
+                                 mode=self.mode.value, real_ok=bool(self.real_ok.value), allow_untrusted=True)
         self.driver.start()
         self.tick()
 
