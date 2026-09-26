@@ -31,6 +31,8 @@ def main():
     parser.add_argument("--seed", type=int, default=23)
     parser.add_argument("--eval-seed", type=int, default=50000)
     parser.add_argument("--eval-episodes", type=int, default=20)
+    parser.add_argument("--nominal-only", action="store_true",
+                        help="Defer randomized physics evaluation until nominal behavior is reliable")
     args = parser.parse_args()
     if not (1 <= args.eval_episodes <= 100 and 1 <= args.updates <= 20000 and 1 <= args.seconds <= 600):
         parser.error("Limits: 100 evaluation episodes, 20,000 updates, 600 training seconds")
@@ -73,7 +75,10 @@ def main():
         policy.save(args.out / "policy.pt")
         policy = Policy.load(args.out / "policy.pt")
         report["policy_sha256"] = hashlib.sha256((args.out / "policy.pt").read_bytes()).hexdigest()
-        for name, rand in (("cpu_nominal", Randomization.none()), ("cpu_randomized", Randomization())):
+        evaluations = [("cpu_nominal", Randomization.none())]
+        if not args.nominal_only:
+            evaluations.append(("cpu_randomized", Randomization()))
+        for name, rand in evaluations:
             report[name] = evaluate(policy, episodes=args.eval_episodes, workspace=Workspace(robot="a1x"),
                                     randomization=rand, seed=args.eval_seed)
             print(json.dumps({name: report[name]}), flush=True)

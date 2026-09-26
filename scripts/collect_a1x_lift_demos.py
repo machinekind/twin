@@ -140,6 +140,10 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--teacher", choices=("waypoints", "observable"), default="waypoints",
                         help="Observable teacher uses only actor inputs; corrective moves target close/lift")
+    parser.add_argument("--learner-phases", nargs="+", choices=("approach", "close", "lift"),
+                        default=["close", "lift"], help="Observable teacher only: stages permitting learner actions")
+    parser.add_argument("--learner-channels", choices=("all", "arm"), default="all",
+                        help="Observable teacher only: override all actions or only the six arm channels")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=40000)
     parser.add_argument("--seconds", type=int, default=300)
@@ -169,6 +173,10 @@ def main():
     if args.teacher == "observable" and (not args.runtime or args.state_triggered or args.synchronized
             or args.measured_close or args.lift_rate != 1 or args.grasp_offset_mm != 0):
         parser.error("Observable teacher requires --runtime and uses its own recorded controller parameters")
+    if (len(set(args.learner_phases)) != len(args.learner_phases) or
+            ((args.learner_phases != ["close", "lift"] or args.learner_channels != "all")
+             and (args.teacher != "observable" or not args.learner))):
+        parser.error("Custom learner phases/channels require an observable teacher and learner, without duplicate phases")
     if not (0 < args.lift_rate <= 1) or (args.lift_rate != 1 and not args.synchronized):
         parser.error("Lift rate must be in (0, 1] and requires --synchronized")
     task = make_task("lift", A1X)
@@ -195,7 +203,8 @@ def main():
                     controller="observation-only feedback" if teacher else
                                "state-triggered waypoints" if args.state_triggered else "timed waypoints",
                     teacher_contract=teacher.contract if teacher else "legacy-waypoints",
-                    learner_phases=["close", "lift"] if teacher else "all phases",
+                    learner_phases=args.learner_phases if teacher else "all phases",
+                    learner_channels=args.learner_channels if teacher else "all",
                     execution_path="guarded runtime simulation" if args.runtime else "bare CPU physics",
                     synchronized=True if teacher else args.synchronized,
                     measured_close=True if teacher else args.measured_close,
@@ -233,7 +242,8 @@ def main():
             executed = []
             if teacher:
                 report, obs, act = observable_trial(env, seed, teacher=teacher, learner=learner,
-                    learner_probability=args.learner_probability, executed_actions=executed)
+                    learner_probability=args.learner_probability, executed_actions=executed,
+                    learner_phases=args.learner_phases, learner_channels=args.learner_channels)
             else:
                 report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
                                         synchronized=args.synchronized, measured_close=args.measured_close,

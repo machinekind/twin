@@ -92,23 +92,29 @@ class ObservableLiftTeacher:
 
 
 def observable_trial(env, seed, *, teacher=None, learner=None, learner_probability=.2,
-                     executed_actions=None):
+                     executed_actions=None, learner_phases=('close', 'lift'), learner_channels='all'):
     """Correct grasp/lift deviations; evaluate via independent guarded physics.
 
-    The learner only intervenes during close/lift, the dominant diagnosed failures.
+    Default interventions target close/lift; an explicit phase selection also
+    permits approach corrections when diagnostic traces justify them.
     Labels always come from the observation-only teacher. This is not autonomous
     learned evaluation, even when many executed actions belong to the learner.
     """
     teacher = teacher or ObservableLiftTeacher()
     if env.task != teacher.task:
         raise ValueError('Observable teacher must match the nominal A1X lift task')
+    if (not learner_phases or len(set(learner_phases)) != len(learner_phases)
+            or not set(learner_phases) <= {'approach', 'close', 'lift'}
+            or learner_channels not in ('all', 'arm')):
+        raise ValueError('Invalid learner phases or channels')
     obs, _ = env.reset(seed=seed)
     rng = np.random.default_rng(np.random.SeedSequence([seed, 9127]))
     observations, labels = [], []
     report = dict(seed=seed, scripted=learner is None, success=False, collision=False,
                   numerical=False, steps=0, learner_steps=0, phase_counts={},
                   corrective_teacher_labels=learner is not None, teacher_contract=teacher.contract,
-                  learner_phases=['close', 'lift'], max_coupling_mm=0.0)
+                  learner_phases=list(learner_phases), learner_channels=learner_channels,
+                  max_coupling_mm=0.0)
     try:
         for _ in range(env.task.episode_steps):
             label, decision = teacher.decide(obs)
@@ -117,6 +123,8 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
             applied = label
             if learner is not None and phase in report['learner_phases'] and rng.random() < learner_probability:
                 applied = learner.act(obs)
+                if learner_channels == 'arm':
+                    applied = np.r_[applied[:6], label[-1]].astype(np.float32)
                 report['learner_steps'] += 1
             observations.append(obs.copy())
             labels.append(label.copy())

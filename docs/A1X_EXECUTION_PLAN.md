@@ -167,13 +167,19 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **inspect the first autonomous grasp/approach divergence of
-the small observation-only imitation candidate before more data or fitting**.
+Current next action: **collect a bounded recovery pilot after sustained candidate-011
+control, targeting its four pre-grasp stalls before any further fit**. Isolated
+one-step disturbances may not expose these stable wrong states; test that hypothesis
+with a short comparison rather than scaling collection or training.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
 
-Candidate 007 remains best at **13/20 guarded lifts**. It is copied with its
+Candidate 011 is the current best at **16/20 autonomous guarded lifts**, with zero
+guard rejections, prohibited contacts or numerical failures. Its frozen bundle is
+`workspace/validation/baselines/lift-imitation-011/`; SHA256 starts `e7975d9b`.
+It is still below the 18/20 development gate; qualification remains deferred.
+Candidate 007 is the preserved reference at **13/20 guarded lifts**. It is copied with its
 metadata, training report and controller evaluation under
 `workspace/validation/baselines/lift-imitation-007/`; SHA256 starts `b3b196c3`.
 A further 20-case pilot and 200-case corrective batch using candidate 007 yield
@@ -220,6 +226,25 @@ do not establish learnability, adequate coverage or successful autonomous contro
 Do not scale from the assisted success rate. Inspect the candidate's first wrong
 commands; if refining 007 later, relabel compatible trajectories while preserving
 their original training/validation roles rather than mixing teacher contracts.
+
+The subsequent channel diagnosis shows arm alignment is a major contributor:
+teacher-controlled arms with the learned gripper complete 4/5 baseline cases,
+versus 1/5 with teacher-controlled gripper and learned arms. These are assisted
+diagnostics. A fresh 20-case pilot injects baseline arm actions across approach,
+close and lift; all 20 finish with the teacher's corrections. The baseline's
+25,087 saved observations also accept observation-only labels without errors,
+preserving every original episode's training/validation role. This relabeling
+does not rerun or establish success of a new controller.
+
+Candidate 011 refines 007 on the relabeled data and two small correction pilots:
+180 training / 45 validation episodes, frozen normalizer, 3,000 updates in 9.84 s.
+It fixes seeds 50003/50004/50010/50015 but regresses 50000, yielding 16/20 under
+identical nominal guarded evaluation. Remaining failures 50000/50007/50008/50009
+all stall before any bilateral grip; there are no remaining hold failures on
+this development set. Read-only teacher queries still demand arm corrections
+while the actor produces nearly zero movement. Next expose sustained learner
+deviations during a bounded corrective pilot instead of relying only on occasional
+single-step substitutions. Keep all successes autonomous during final evaluation.
 
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
@@ -321,6 +346,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Failure/input audit and evaluation separation saved | `lift-failure-audit-002`: identical recorded comparison conditions, four grasp/two lift/one clearance failures, teacher-only state identified, no prior held-out seed use; fixed protocol in `configs/a1x_lift_evaluation.json` | Target grasp decisions and information sufficiency before further training; no PPO/long runs; physical tests deferred |
 | 2026-09-26 | Observation-only teacher and targeted corrective pilot pass | `observable-teacher-pilot-005`: 7/7 diagnosed cases; `lift-demos-observable-001` and matched scripted control: 20/20 each; `lift-observable-label-audit-001.json`: all 2,655 labels exactly reproducible from actor inputs; 34 focused tests pass | Keep the teacher a separate data contract; grasp proxies remain model-specific |
 | 2026-09-26 | Small observable-teacher imitation fit fails autonomous comparison | Candidate 010: 3,000 updates / 8.63 s, 0/20 guarded, six rejections and fourteen timeouts; identical evaluation conditions verified in `lift-observable-candidate-comparison-001.json` | Retain 007 at 13/20; trace first policy divergence before another fit or larger collection; held-out and physical tests remain deferred |
+| 2026-09-26 | Channel diagnosis supports correcting arm alignment as well as closure | `observable-policy-drift-001` and `observable-channel-ablation-001`: teacher arm 4/5 versus teacher gripper 1/5 on baseline cases; correction controls verified by 21 tests | Collect approach/close/lift arm deviations with unchanged teacher information contract |
+| 2026-09-26 | Consistent relabeling and short refinement improve autonomous guarded lifts | `lift-demos-observable-relabel-001`: 25,087 labels, original split preserved; arm-correction pilot 20/20 assisted; candidate 011: 16/20 autonomous, zero rejections/contacts/numerical failures, 9.84 s fit; frozen bundle and comparison audit saved | Retain 011 and original 007; target four pre-grasp stalls with sustained learner rollout/recovery; no held-out, robustness or physical testing yet |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

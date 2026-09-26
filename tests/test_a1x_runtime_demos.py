@@ -153,3 +153,31 @@ def test_collector_rejects_reserved_holdout_before_creating_output(runtime_env, 
         collect_a1x_lift_demos.main()
     assert exc.value.code == 2 and 'held-out seeds' in capsys.readouterr().err
     assert not target.exists() and not runtime_env.twin.connected
+
+
+def test_approach_arm_corrections_preserve_teacher_gripper(runtime_env):
+    from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
+    teacher = ObservableLiftTeacher()
+    command = np.r_[np.zeros(6), -1].astype(np.float32)
+    learner = SimpleNamespace(act=lambda obs: command.copy())
+    executed = []
+    report, observations, labels = observable_trial(runtime_env, 47000, learner=learner,
+        learner_probability=1, learner_phases=('approach',), learner_channels='arm',
+        executed_actions=executed)
+    assert not report['success'] and report['learner_steps'] == len(labels)
+    assert report['learner_channels'] == 'arm'
+    for obs, label, applied in zip(observations, labels, executed):
+        replayed, decision = teacher.decide(obs)
+        assert decision['stage'] == 'approach'
+        np.testing.assert_array_equal(label, replayed)
+        np.testing.assert_array_equal(applied[:6], command[:6])
+        assert applied[-1] == label[-1] and applied[-1] != command[-1]
+
+
+@pytest.mark.parametrize('phases,channels', [((), 'all'), (('close', 'close'), 'all'),
+                                           (('hold',), 'all'), (('close',), 'invalid')])
+def test_invalid_correction_selection_cannot_connect(runtime_env, phases, channels):
+    from a1x_observable_teacher import observable_trial
+    with pytest.raises(ValueError, match='phases or channels'):
+        observable_trial(runtime_env, 47000, learner_phases=phases, learner_channels=channels)
+    assert not runtime_env.twin.connected

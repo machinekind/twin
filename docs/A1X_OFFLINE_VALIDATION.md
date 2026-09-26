@@ -861,6 +861,84 @@ consistent relabeling if changing teacher; do not mix incompatible label sources
 The frozen baseline and reserved qualification cases remain untouched. No long
 run, H100 operation, camera-noise campaign or physical test was started.
 
+### Arm-channel diagnosis and consistent-label refinement
+
+`observable-policy-drift-001` records teacher and candidate-010 trajectories on
+one training, one validation and three development cases, plus baseline-007
+controls on the development cases. All five teacher runs succeed; all five 010
+runs fail, including the training case. The traces show premature closure while
+misaligned, open-jaw stalls, and near-zero arm actions while pose errors persist.
+This is not solely failure to generalize to unseen positions. Normalizer clipping
+is not present on every failed trajectory. The probe takes 16.18 s.
+
+A channel intervention separates some causes (`observable-channel-ablation-001`,
+25.78 s). Each intervention replaces either the six arm actions or the gripper
+action with the observation-only teacher, through the unchanged guarded runtime:
+
+| Policy / cases | Teacher arm, learned gripper | Learned arm, teacher gripper |
+|---|---:|---:|
+| 007: 50000/50003/50004/50007/50008 | 4/5 | 1/5 |
+| 010: 46000/50000/50001 | 2/3 | 0/3 |
+
+These are assisted diagnostics, not qualification. They support targeting arm
+alignment during approach and grasp; gripper-only correction does not suffice.
+Baseline seed 50007 still fails with either single-channel intervention.
+
+The observable collector now accepts explicit learner phases and `all` or `arm`
+channels. Defaults remain close/lift with all channels. `lift-demos-observable-arm-001`
+uses fresh training seeds 47000-47019, baseline 007, probability 0.3,
+`--learner-phases approach close lift --learner-channels arm`. All 20 assisted
+episodes finish with full holds, zero prohibited contacts, rejections or numerical
+failures: 812 learner arm substitutions across 2,699 actions, 18.80 s, minimum
+hold 2.000 s, maximum coupling 1.195 mm. The teacher still sees only actor inputs.
+
+`lift-demos-observable-relabel-001` generates 25,087 observation-only labels on the
+185 successful trajectories originally used by 007, with no label-query failures
+(50.13 s). It preserves source hashes, original teacher labels and actually
+executed controls. These are counterfactual labels on existing executions, not
+185 new teacher successes. All original training/validation/excluded seed roles
+are verified unchanged; refinement's checkpoint/split checks pass. The nine
+original failed episodes remain excluded. No evaluation cases enter fitting.
+
+Candidate 011 combines the relabeled source with the two 20-case observable
+pilots: 180 training / 45 validation episodes. It starts from 007, freezes its
+normalizer, and uses learning rate 0.0001 for 3,000 updates with a 60 s ceiling.
+Fit time is 9.84 s; selected update 2,900; whole-episode validation loss changes
+from 0.0135689 to 0.0033146. `--nominal-only` defers automatic randomized CPU
+evaluation until the nominal gate; its actual run records only nominal results.
+
+| Policy | Nominal CPU /20 | Autonomous guarded /20 | Guard rejections | Timeouts |
+|---|---:|---:|---:|---:|
+| 007, preserved reference | 15 | 13 | 2 | 5 |
+| 011, consistent-label refinement | 15 | 16 | 0 | 4 |
+
+`lift-imitation-runtime-013.json`: zero prohibited contacts and numerical failures;
+minimum successful hold 2.010 s. It fixes 50003/50004/50010/50015 and regresses
+50000. `observable-refinement-comparison-001.json` verifies identical task,
+dependency versions, seed order, evaluator and recorded runtime sources, unchanged
+normalization tensors, preserved original split roles and no development/held-out
+training overlap. Teacher/source changes are intentional; the gain is not assigned
+to one factor independently. Both baseline bundles are hash verified.
+
+Candidate 011 is preserved under `workspace/validation/baselines/lift-imitation-011/`,
+SHA256 `e7975d9b3ca6cec62b8f9a857059eefb85e5b031cbe9a1367394cc822fac3539`.
+Original 007 is untouched. The new result remains below the 18/20 development
+gate, so reserved qualification and camera robustness tests are not run.
+
+`observable-refined-drift-001` traces the four remaining failures without any
+teacher intervention: 50000/50007/50008/50009 all fail before bilateral contact.
+Final finger-midpoint lateral errors are 7.34/11.74/7.34/8.85 mm; measured jaw
+coordinates remain 18.51/20.67/18.66/20.58 mm. Teacher queries still call for
+alignment/closure while the learned arm commands approach zero. A next bounded
+pilot should permit sustained candidate-011 control followed by teacher recovery,
+testing whether it covers these stalls better than isolated substitutions. Do
+not infer that more updates alone solve the closed-loop behavior.
+
+`observable-channel-contracts-001.log`: 21 runtime-demonstration tests pass in
+15.66 s, including arm-only disturbances that preserve teacher gripper commands,
+invalid-selection rejection before connection, and the existing full-hold/input
+contracts. No physical arm or H100 operation occurred in this experiment.
+
 ### IK retry must preserve gripper state
 
 Source review found that the home-pose IK restart included the home gripper
