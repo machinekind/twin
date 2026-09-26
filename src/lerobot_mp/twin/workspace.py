@@ -175,6 +175,10 @@ class Workspace:
     #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
     #: pusta = model Menagerie. Srodek randomizacji w treningu.
     dynamics: dict[str, Any] = field(default_factory=dict)
+    #: Pudelko zasiegu okularow (`reach.ReachVolume`) w ukladzie podstawy [m]:
+    #: {"lo": [x, y, z], "hi": [x, y, z]}; None = domyslne z opisu ramienia.
+    #: Opcjonalne - plik bez tego klucza wczytuje sie jak dawniej, a None nie trafia do pliku.
+    reach: dict[str, Any] | None = None
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -278,6 +282,8 @@ class Workspace:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("path", None)
+        if data.get("reach") is None:
+            data.pop("reach", None)
         return data
 
     def save(self, path: str | Path | None = None) -> Path:

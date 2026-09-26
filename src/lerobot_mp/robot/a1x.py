@@ -403,6 +403,28 @@ class A1XArm(RobotBackend):
             self._goal.update(sent)
             return sent
 
+    def _fresh_fb(self) -> Any:
+        """Ostatnia ramka 0x052, gdy swieza i zywa; None przy braku, starej albo zamrozonej telemetrii."""
+        if not self._connected or self._fb is None or self._stale_now(self._clock()) or self._frozen():
+            return None
+        return self._fb
+
+    def efforts(self) -> dict[str, float] | None:
+        """Wysilek 6 stawow ramienia z ostatniej ramki 0x052 - surowa skala A1X (bez chwytaka)."""
+        with self._lock:
+            fb = self._fresh_fb()
+            if fb is None:
+                return None
+            return {name: float(fb.eff[i]) for i, name in enumerate(self.arm)}
+
+    def velocities(self) -> dict[str, float] | None:
+        """Predkosci 6 stawow ramienia z ostatniej ramki 0x052 [st./s] (bez chwytaka)."""
+        with self._lock:
+            fb = self._fresh_fb()
+            if fb is None:
+                return None
+            return {name: math.degrees(fb.vel[i]) for i, name in enumerate(self.arm)}
+
     def goal_positions(self) -> dict[str, float]:
         """Ostatnie cele [jednostki aplikacji]; `{}` przed pierwszym rozkazem (p_des nie da sie odczytac)."""
         with self._lock:

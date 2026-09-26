@@ -100,6 +100,23 @@ class RobotBackend(ABC):
         """
         return []
 
+    def efforts(self) -> dict[str, float] | None:
+        """Wysilek (moment) stawow ramienia z ostatniego swiezego pomiaru: {staw: wartosc}.
+
+        Jednostka zalezy od sprzetu: A1X - surowa skala ramki 0x052 (po `EFF_SCALE`
+        galaxeo, bez przeliczenia na N*m). Bez chwytaka. None = backend nie mierzy
+        wysilku albo pomiar jest stary/zamrozony. Nigdy nie rzuca.
+        """
+        return None
+
+    def velocities(self) -> dict[str, float] | None:
+        """Predkosci stawow ramienia z ostatniego swiezego pomiaru [st./s]: {staw: wartosc}.
+
+        Bez chwytaka. None = backend nie mierzy predkosci albo pomiar jest stary/zamrozony
+        (wolajacy liczy ja wtedy sam z kolejnych swiezych odczytow). Nigdy nie rzuca.
+        """
+        return None
+
     def step(self, dt: float) -> None:  # noqa: B027 - domyslnie nic nie robi
         """Krok symulacji. Prawdziwy robot ignoruje (rzeczywistosc liczy sie sama)."""
 
