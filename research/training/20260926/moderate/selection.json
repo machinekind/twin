@@ -1,0 +1,43 @@
+{
+  "selected": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-003-moderate\\policy.pt",
+  "score": [
+    0.4,
+    0.8583333333333334,
+    -62.77995935324142
+  ],
+  "candidates": [
+    {
+      "policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\initial\\policy.pt",
+      "score": [
+        0.0,
+        0.7083333333333334,
+        -74.50844852124193
+      ]
+    },
+    {
+      "policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-001-warm\\policy.pt",
+      "score": [
+        0.0,
+        0.8250000000000001,
+        -69.08552386258182
+      ]
+    },
+    {
+      "policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-002-warm\\policy.pt",
+      "score": [
+        0.2,
+        0.8250000000000001,
+        -68.0641662406338
+      ]
+    },
+    {
+      "policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-003-moderate\\policy.pt",
+      "score": [
+        0.4,
+        0.8583333333333334,
+        -62.77995935324142
+      ]
+    }
+  ],
+  "criterion": "worst nominal object success, macro success, negative command jerk; validation only"
+}
