@@ -1,0 +1,119 @@
+{
+  "ppo": {
+    "num_envs": 1536,
+    "horizon": 24,
+    "iterations": 250,
+    "epochs": 5,
+    "minibatches": 4,
+    "gamma": 0.99,
+    "lam": 0.95,
+    "clip": 0.2,
+    "lr": 0.0003,
+    "desired_kl": 0.005,
+    "entropy": 0.001,
+    "value_coef": 1.0,
+    "max_grad_norm": 1.0,
+    "init_std": 0.12,
+    "critic_warmup": 0,
+    "hidden": [
+      256,
+      256,
+      128
+    ],
+    "seed": 260930,
+    "save_every": 25
+  },
+  "task": {
+    "name": "lift",
+    "control_hz": 20.0,
+    "timestep": 0.005,
+    "episode_steps": 200,
+    "arm_step": 0.05,
+    "grip_step": 0.15,
+    "success_dist": 0.02,
+    "goal_radius": [
+      0.13,
+      0.32
+    ],
+    "goal_height": [
+      0.03,
+      0.22
+    ],
+    "cube_half": 0.015,
+    "cube_mass": 0.03,
+    "cube_radius": [
+      0.15,
+      0.25
+    ],
+    "cube_bearing": [
+      -0.8,
+      0.8
+    ],
+    "lift_height": 0.06,
+    "start_noise_deg": 8.0,
+    "action_rate": 0.03,
+    "end_on_success": 10,
+    "limit_penalty": 1.0,
+    "limit_margin": 0.15,
+    "hold_still": 2.0,
+    "roll_penalty": 0.0,
+    "object_kind": "cube",
+    "object_scale": 1.0,
+    "shape_conditioned": true,
+    "smooth_velocity": 0.01,
+    "smooth_acceleration": 0.03,
+    "smooth_jerk": 0.01,
+    "max_pose_age": 0.3
+  },
+  "randomization": {
+    "kp": [
+      0.7749999999999999,
+      1.2249999999999999
+    ],
+    "damping": [
+      0.625,
+      1.4500000000000002
+    ],
+    "armature": [
+      0.625,
+      1.4500000000000002
+    ],
+    "frictionloss": [
+      0.3999999999999999,
+      1.75
+    ],
+    "cube_mass": [
+      0.3999999999999999,
+      1.9000000000000001
+    ],
+    "cube_friction": [
+      0.5499999999999999,
+      1.4500000000000002
+    ],
+    "obs_noise_deg": 0.3,
+    "max_delay": 2,
+    "cube_delay": 4,
+    "cube_period": 4,
+    "cube_noise": 0.003,
+    "fold_yaw": true,
+    "centre": {
+      "kp": 1.0,
+      "damping": 1.0,
+      "armature": 1.0,
+      "frictionloss": 1.0,
+      "delay": 0.0,
+      "source": "menagerie",
+      "fit_deg": null,
+      "fitted": [],
+      "band": {}
+    },
+    "min_delay": 0,
+    "calibration_translation": 0.006,
+    "calibration_rotation_deg": 1.5,
+    "calibration_scale": 0.02,
+    "joint_bias_deg": 0.3,
+    "dropout_probability": 0.1,
+    "dropout_steps": 4,
+    "cube_z_noise": 0.002
+  }
+}

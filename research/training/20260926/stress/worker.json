@@ -1,0 +1,22 @@
+{
+  "stage": "stress",
+  "kinds": [
+    "cube",
+    "flat",
+    "triangle",
+    "cylinder",
+    "pliers",
+    "screw",
+    "nut",
+    "washer",
+    "l_bracket",
+    "t_bracket",
+    "capsule",
+    "wedge"
+  ],
+  "object_scale": 1.0,
+  "initial_policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-003-moderate\\policy.pt",
+  "until_unix": 1790399646.0,
+  "seed": 260930,
+  "note": "Each kind has its own compiled collider; fold_yaw is enabled only for cube"
+}
