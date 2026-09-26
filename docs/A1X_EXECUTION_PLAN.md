@@ -171,20 +171,21 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **test a small independent nonlinear gripper residual using
-the existing observation/geometry inputs, while preserving candidate 016's arm
-mapping**. Initialize the added residual to zero, verify exact baseline outputs
-and reload, then compare one bounded fit on the fixed targeted-recovery dataset
-with the existing linear-head control. This is a hypothesis about the frozen
-representation and fitting objective, not proof that additional capacity solves
-the task. No new collection or longer uniform final-row fit is justified yet.
-Three actual training failures now have successful teacher-gripper recoveries,
-but candidate 020 still scores 15/20 autonomously. Even the least-squares optimum
-for its frozen linear head requests only 0.333 mm average closure on the targeted
-states versus the teacher's 1 mm. Keep validation, development and reserved
-holdout roles fixed. Retained baseline 011 remains best at 16/20 with no guard
-rejections; feature candidate 016 is experimental. Do not aggregate original and
-replacement variants of the same training episode.
+Current next action: **investigate the new grasp-clearance rejection on seed
+50008 before another fit**. Replay control 020 and nonlinear candidate 021,
+inspect the guard's exact geometry pair/distances and command versus measured
+opening, and distinguish allowed fingertip contact from forbidden finger-body
+clearance. Candidate 021 reaches 16/20 but has two rejections, including this
+new one during closing; it also fails all three targeted training recoveries.
+Do not relax the guard or turn these development traces into training data.
+The old seed-50009 rejection remains an approach failure with a closed gripper.
+If the guard is consistent, the next teaching experiment must address approach/
+grasp sequencing and closure together, rather than only increasing closure.
+Keep validation, development and reserved holdout roles fixed. Retained baseline
+011 remains best at 16/20 with no guard rejections; feature candidate 016 and
+residual candidate 021 are experimental. Do not aggregate original and
+replacement variants of the same training episode. No new collection or longer
+uniform fit is justified by the current results.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -494,6 +495,53 @@ The next comparison changes the gripper's representation without changing arm
 outputs or collecting additional examples. All diagnostic checks pass; no
 production code changed in this cycle, so earlier unit tests were not rerun.
 
+That nonlinear comparison is now complete. The optional `mlp64-v1` gripper
+residual adds an independent 60-64-64-1 ELU network (8,129 parameters) to the
+gripper output. It consumes the same normalized observations and existing derived
+geometry, has no teacher at runtime, and starts with a zero final layer. The
+original actor and observation normalizer are frozen under
+`--train-channels gripper-residual --gripper-residual mlp64-v1`. Legacy checkpoints
+default to no residual; saved residual policies retain their inference path.
+
+`gripper-residual-experiment-001.json` fixes one 3,000-update fit from 016 on
+exactly candidate 020's data, splits, seed 23, learning rate 0.0001 and uniform
+sampling. Candidate **021** takes 7.43 s plus 3.94 s feature preparation, selecting
+update 3,000. Raw validation gripper MSE is 0.0009965 versus control 020's
+0.0009983. On the 57 targeted slow-closing inputs, mean closure rises from
+0.291 mm (020) to 0.323 mm (021), still far below the 1 mm teacher target.
+
+Guarded autonomous development is **16/20**, versus 020's 15/20, but with **two
+guard rejections**, zero actual prohibited contacts and zero numerical faults.
+Failures are 50007/50008/50009/50015. This is not better than retained 011's
+16/20 with zero rejections. Bare CPU is 17/20 with one prohibited contact.
+Separate autonomous training-case replays fail all three selected cases:
+44006 holds only 1.18 s, 44013 never grasps, and 44022 holds only 1.70 s.
+Do not promote 021 or infer reliable recovery from lower prediction error.
+Its checkpoint SHA256 begins `05166d4a`.
+
+`gripper-residual-comparison-001.json` verifies identical dataset/split/validation
+content, initial predictions, and every original actor/normalizer tensor. Arm
+outputs on identical inputs remain exactly unchanged, although changed gripper
+feedback changes later arm trajectories. Both frozen baseline bundles and the
+fixed evaluation protocol remain unchanged. Exact experiment sources are saved
+under `gripper-residual-source-001/`. `gripper-residual-contracts-002.log` passes
+41 focused tests, including controlled nonlinear response, raw/geometry inputs,
+save/reload, inherited residual fitting and legacy checkpoint compatibility;
+`gripper-residual-runner-001.log` passes all 11 policy-runner tests.
+
+`gripper-residual-rejections-001` traces the two guard stops without teacher
+intervention. The new 50008 rejection is **finger-link-2 versus cube at the
+commanded end pose**, during closing with 1.27 mm lateral error, 13.89 mm measured
+jaw position and 12.01 mm command, before bilateral contact. The teacher's
+observable blockage proxy is true and requests closure; this is not evidence of
+premature approach closing. Seed 50009 retains the earlier **finger/table start
+clearance rejection**: about 121 mm lateral error, nearly closed jaws and 17 deg
+orientation error while the teacher requests approach with open jaws. Neither
+trace contains actual prohibited contact. Inspect the geometry and guard inputs
+for the new closing rejection before deciding the next correction target; do
+not weaken contact restrictions to raise the score. All artifacts above are
+under `workspace/validation/`; no job or physical test is running.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -614,6 +662,7 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Matched closing-burst probe still misses the diagnosed slow-closing range | `gripper-burst-comparison-001`: 4/5 assisted for each schedule, 1,653 labels verified, no slow-closing proxy frames; 36 collection tests and two final counter checks pass | Screen existing training cases for actual learner failures, then collect recovery examples; no fit on this probe and no blind expansion |
 | 2026-09-27 | Training-only screens find three actual learner failures and targeted teaching recovers them | `gripper-training-screen-001/002`: 14/14 and 17/20 autonomous; `gripper-training-recovery-001`: 3/3 assisted, 57 slow-closing frames, 492 labels replayed, original splits and all validation data preserved | Coverage is now relevant; successful assisted recovery remains distinct from learned success |
 | 2026-09-27 | Targeted-data refinement fails autonomous comparison and the linear-head optimum still under-closes | `targeted-gripper-comparison-001`: 020 15/20 versus control 018 16/20, one rejection each, zero actual contacts; `gripper-linear-diagnostic-001`: optimum predicts 0.333 mm versus 1 mm target | Retain 011; test a separate nonlinear gripper residual on fixed data with frozen arm mapping, not longer training of the same uniform linear head |
+| 2026-09-27 | Nonlinear gripper residual improves one development case but adds a guard rejection and fails targeted recoveries | `gripper-residual-comparison-001`: 021 16/20, two rejections, zero actual contacts; 0/3 selected training recoveries; 41 focused and 11 runner tests pass | Keep 011; investigate the new 50008 finger-body/cube clearance rejection before more fitting |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

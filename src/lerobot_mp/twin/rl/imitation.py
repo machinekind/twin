@@ -126,7 +126,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
         lr: float = 3e-4, report_every: int = 100, on_progress=None,
         init: Policy | None = None, train_weights: np.ndarray | None = None,
         features: str | None = None, ignore_previous_arm: bool | None = None,
-        train_channels: str = "all") -> tuple[Policy, dict]:
+        train_channels: str = "all", gripper_residual: str | None = None) -> tuple[Policy, dict]:
     """Bounded supervised fit; an initial policy keeps its observation normalizer fixed.
 
     Return the best whole-episode validation checkpoint, including the initial
@@ -137,13 +137,15 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     saved network, retaining gripper history; later refinement inherits it.
     Gripper-only refinement changes just the final gripper output row/bias,
     preserving every arm output for an identical observation.
+    Gripper-residual refinement freezes the entire original actor and trains a
+    separate nonlinear correction from the same normalized/derived inputs.
     """
     if not (0 < updates <= 20000 and 0 < seconds <= 600 and batch_size > 0 and report_every > 0):
         raise ValueError("Invalid imitation budget; maximum 20,000 updates / 600 seconds")
     if not 0 < lr <= .01:
         raise ValueError("Learning rate must be in (0, .01]")
-    if train_channels not in ("all", "gripper") or (train_channels == "gripper" and init is None):
-        raise ValueError("Training channels must be all or gripper; gripper refinement requires an initial policy")
+    if train_channels not in ("all", "gripper", "gripper-residual") or (train_channels != "all" and init is None):
+        raise ValueError("Training channels must be all, gripper or gripper-residual; gripper refinement requires an initial policy")
     weights = (_sampling_weights(train_weights, len(demos.train_obs)) if train_weights is not None
                else np.ones(len(demos.train_obs), np.float32))
     weighted = not np.all(weights == weights[0])
@@ -159,14 +161,25 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     if ignore_previous_arm is None:
         ignore_previous_arm = bool(init is not None and
             init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))
+    previous_residual = init.meta.gripper_residual if init is not None else "none"
+    gripper_residual = gripper_residual if gripper_residual is not None else previous_residual
+    if gripper_residual not in ("none", "mlp64-v1") or (previous_residual != "none" and gripper_residual != previous_residual):
+        raise ValueError("Cannot remove or change an existing gripper residual contract")
+    if previous_residual != "none" and features != init.meta.features:
+        raise ValueError("Residual refinement must preserve the initial observation mapping")
+    if ((gripper_residual != previous_residual and train_channels != "gripper-residual")
+            or (train_channels == "gripper-residual" and gripper_residual == "none")
+            or (ignore_previous_arm and gripper_residual != "none")):
+        raise ValueError("Adding a gripper residual requires gripper-residual training with intact observation history")
     if init is not None and init.meta.features not in ("raw", features):
         raise ValueError("Refinement cannot remove or change an existing feature contract")
-    if train_channels == "gripper" and (features != init.meta.features or ignore_previous_arm !=
+    if train_channels != "all" and (features != init.meta.features or ignore_previous_arm !=
             bool(init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))):
         raise ValueError("Gripper-only refinement must preserve the initial observation mapping")
     torch.manual_seed(seed)
     meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
                       robot="a1x", randomization=demos.randomization, features=features,
+                      gripper_residual=gripper_residual,
                       notes="Behavior cloning of scripted simulation lifts; not RL or physical validation")
     policy = Policy(meta).to(device)
     x, y, vx, vy = [torch.as_tensor(a, device=device) for a in
@@ -180,6 +193,8 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
             expanded.zero_()
             expanded[:, :init.meta.obs_dim] = initial_state['actor.0.weight']
             initial_state['actor.0.weight'] = expanded
+        if previous_residual == "none" and gripper_residual != "none":
+            initial_state.update({k: v for k, v in policy.state_dict().items() if k.startswith('gripper_residual.')})
         policy.load_state_dict(initial_state)
         policy.meta.notes = "Imitation refinement with frozen input statistics; not RL or physical validation"
     if ignore_previous_arm:
@@ -197,15 +212,19 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     train_features, valid_features = policy.derived_features(x), policy.derived_features(vx)
     feature_prepare_s = time.monotonic()-feature_started
     gradient_hooks = []
-    if train_channels == "gripper":
-        for parameter in policy.actor.parameters():
+    if train_channels != "all":
+        for parameter in policy.parameters():
             parameter.requires_grad_(False)
+    if train_channels == "gripper":
         output = policy.actor[-1]
         for parameter in (output.weight, output.bias):
             parameter.requires_grad_(True)
             gradient_hooks.append(parameter.register_hook(
                 lambda grad: torch.cat((torch.zeros_like(grad[:-1]), grad[-1:]), dim=0)))
-    optimizer = torch.optim.Adam(policy.actor.parameters(), lr=lr)
+    elif train_channels == "gripper-residual":
+        for parameter in policy.gripper_residual.parameters():
+            parameter.requires_grad_(True)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
     probabilities = torch.as_tensor(weights, device=device) if weighted else None
 
     def losses(pred, target):
@@ -233,7 +252,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
             raise RuntimeError("Nonfinite imitation loss")
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.actor.parameters(), 1.0, error_if_nonfinite=True)
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
         completed = update
         if update % report_every == 0 or update == updates:
@@ -261,9 +280,13 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
             unchanged = torch.equal(value[:-1], old[:-1]) if name.startswith(last) else torch.equal(value, old)
             if not unchanged:
                 raise RuntimeError("Gripper-only refinement changed the frozen arm mapping")
+    elif train_channels == "gripper-residual":
+        for name, value in init.state_dict().items():
+            if not name.startswith('gripper_residual.') and not torch.equal(value.to(device), policy.state_dict()[name]):
+                raise RuntimeError("Gripper residual refinement changed the original actor or normalizer")
     for handle in gradient_hooks:
         handle.remove()
-    for parameter in policy.actor.parameters():
+    for parameter in policy.parameters():
         parameter.requires_grad_(True)
     if ignore_previous_arm and torch.count_nonzero(policy.actor[0].weight[:, 29:35]):
         raise RuntimeError("Arm-history ablation did not preserve zero input columns")
@@ -272,6 +295,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     policy.meta.steps = 0  # No new environment transitions were collected by this learner.
     result = dict(method="behavior cloning", initialized=init is not None,
                   train_channels=train_channels,
+                  gripper_residual=gripper_residual,
                   features=features, feature_prepare_s=feature_prepare_s,
                   ignore_previous_arm=ignore_previous_arm,
                   ignored_observation_indices=list(range(29, 35)) if ignore_previous_arm else [],

@@ -29,8 +29,10 @@ def main():
                         help="Optional geometry derived only from existing observations; default preserves the initial policy")
     parser.add_argument("--ignore-previous-arm", action="store_true", default=None,
                         help="Remove previous arm actions from the actor, preserving previous gripper action")
-    parser.add_argument("--train-channels", choices=("all", "gripper"), default="all",
-                        help="Gripper updates only its final output row; requires --init and preserves arm mapping")
+    parser.add_argument("--train-channels", choices=("all", "gripper", "gripper-residual"), default="all",
+                        help="Gripper changes the final row; gripper-residual changes only its separate head; both require --init")
+    parser.add_argument("--gripper-residual", choices=("none", "mlp64-v1"), default=None,
+                        help="Add a zero-initialized nonlinear gripper correction; default preserves the initial policy")
     parser.add_argument("--sampling-weights", type=Path,
                         help="NPZ training priorities bound to the exact demonstration sources and split")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
@@ -84,6 +86,7 @@ def main():
             seconds=args.seconds, seed=args.seed, lr=args.lr, init=init, train_weights=weights, features=args.features,
             ignore_previous_arm=args.ignore_previous_arm,
             train_channels=args.train_channels,
+            gripper_residual=args.gripper_residual,
             on_progress=lambda p: print(json.dumps(p), flush=True))
         policy.save(args.out / "policy.pt")
         policy = Policy.load(args.out / "policy.pt")

@@ -78,6 +78,8 @@ class PolicyMeta:
     #: Optional deterministic inputs derived from the original observation.
     features: str = "raw"
     feature_geometry_sha256: str | None = None
+    #: Optional learned correction to the gripper, independent of the arm actor.
+    gripper_residual: str = "none"
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,
@@ -117,6 +119,18 @@ class Policy(nn.Module):
                 expanded.weight[:, :meta.obs_dim].copy_(first.weight)
                 expanded.bias.copy_(first.bias)
             self.actor[0] = expanded
+        self.gripper_residual = None
+        if meta.gripper_residual != "none":
+            if (meta.gripper_residual != "mlp64-v1" or meta.robot != "a1x"
+                    or meta.task.get("name") != "lift" or meta.obs_dim != 36 or meta.act_dim != 7
+                    or meta.evals.get("imitation", {}).get("ignore_previous_arm", False)):
+                raise ValueError("Unsupported gripper residual contract")
+            # Initial predictions and the caller's RNG stream remain unchanged.
+            with torch.random.fork_rng(devices=[]):
+                self.gripper_residual = mlp([self.actor[0].in_features, 64, 64], 1)
+            with torch.no_grad():
+                self.gripper_residual[-1].weight.zero_()
+                self.gripper_residual[-1].bias.zero_()
         #: Wagi krytyka z treningu (tylko do douczania; do jazdy niepotrzebne). Polityki
         #: zapisane przed jego dodaniem go nie maja - douczanie grzeje wtedy krytyka od zera.
         self.critic_state: dict | None = None
@@ -136,7 +150,10 @@ class Policy(nn.Module):
             inputs = torch.cat((inputs, derived), dim=-1)
         elif derived is not None:
             raise ValueError("Raw policies do not accept derived features")
-        return self.actor(inputs)
+        action = self.actor(inputs)
+        if self.gripper_residual is not None:
+            action = torch.cat((action[..., :6], action[..., 6:] + self.gripper_residual(inputs)), dim=-1)
+        return action
 
     @torch.no_grad()
     def act(self, obs: np.ndarray) -> np.ndarray:
