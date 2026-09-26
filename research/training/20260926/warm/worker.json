@@ -1,0 +1,16 @@
+{
+  "stage": "warm",
+  "kinds": [
+    "cube",
+    "flat",
+    "triangle",
+    "cylinder",
+    "pliers",
+    "screw"
+  ],
+  "object_scale": 1.0,
+  "initial_policy": "C:\\Users\\Shadow\\Documents\\ChatGPT\\train\\digital_twin_training\\workspace\\campaigns\\20260926_3h\\checkpoints\\block-001-warm\\policy.pt",
+  "until_unix": 1790394246.0,
+  "seed": 260928,
+  "note": "Each kind has its own compiled collider; fold_yaw is enabled only for cube"
+}
