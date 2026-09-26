@@ -339,8 +339,11 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
 
         hits: list = []
 
+        trip_q: list[dict] = []
+
         def spy(t):
             trip_tcp.append(tcp(kin, twin))
+            trip_q.append(dict(twin.status.measured))
             hits.append(d._impact)
             return real_backoff(t)
         d._backoff = spy
@@ -349,10 +352,13 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
         assert st["state"] == "backoff", (st, relay.states_for(ts))
         assert st["reason"] == f"impact {rule} arm_joint1", st
         assert trip_tcp
-        # Wycofanie o >= 3 st. na J1 przy ~0,4 m to ~2 cm - 1 cm to juz nie odbicie od sciany.
-        assert _dist_to_box(tcp(kin, twin), lo, hi) > _dist_to_box(trip_tcp[0], lo, hi) + 0.01
-        pose = hits[0].backoff_pose
+        # Wycofanie w czasie: poza sprzed >= 0,4 s, oddalona o >= 3 st. na najbardziej ruchliwym
+        # stawie (regula straznika) - niekoniecznie na J1, ktory uderzyl. TCP oddala sie od sciany
+        # o wiecej niz odbicie (~2 mm); przy uderzeniu przedramieniem TCP przesuwa sie niewiele.
         measured = twin.status.measured
+        assert max(abs(measured[j] - trip_q[0][j]) for j in d.arm) >= 2.5, (measured, trip_q[0])
+        assert _dist_to_box(tcp(kin, twin), lo, hi) > _dist_to_box(trip_tcp[0], lo, hi) + 0.005
+        pose = hits[0].backoff_pose
         assert max(abs(measured[j] - pose[j]) for j in d.arm) < 2.0, (measured, pose)
         assert twin.safety_state.value != "estop"
         assert twin.owner is None
