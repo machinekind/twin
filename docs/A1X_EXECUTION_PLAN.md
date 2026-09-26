@@ -171,16 +171,17 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **a small gripper-focused corrective pilot for experimental
-feature candidate 016**, on fresh training seeds, followed by a bounded refinement
-that first preserves its learned arm mapping. The new channel diagnostic gives
-4/4 holds with learned arms plus teacher gripper, versus 1/4 with teacher arms
-plus learned gripper. This is specific to candidate 016 and does not promote it:
-retained baseline 011 remains best at 16/20 autonomous guarded successes.
-Start with at most 20 fresh training episodes using the existing learner-arm /
-teacher-gripper collection mode; do not train on the inspected development cases.
-Verify correction coverage and consistent teacher labels before fitting. Preserve
-the episode split, deadline, full hold and independent guarded evaluation.
+Current next action: **screen candidate 016 autonomously on the 14 already
+assigned training seeds in `gripper-pilot-audit-001.json`, then target actual
+failed learner trajectories for teacher recovery**. Continuous teacher-gripper
+collection and a five-case closing-burst probe did not cover the slowest closing
+states from the diagnosed failures. Two short gripper-only refinements failed
+to improve autonomous results. Do not enlarge random collection or lengthen fits
+before obtaining relevant correction coverage. Keep the three validation seeds,
+development set and reserved holdout out of targeted training-case selection.
+Retained baseline 011 remains best at 16/20; feature candidate 016 is experimental.
+Preserve episode roles if collecting another variant of an existing training
+case; never concatenate duplicate seed variants as independent episodes.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -366,6 +367,70 @@ remain unchanged. All experiment/audit paths above are under
 `workspace/validation/`; no long run, PPO, held-out, robustness or physical
 evaluation was started.
 
+The first gripper-focused pilot is complete: `lift-demos-gripper-001` uses
+candidate 016's arms continuously and the observation-only teacher's gripper
+on fresh seeds 49000-49019. It finishes **17/20 assisted holds** in 27.83 s,
+with zero guarded rejections, actual contacts or numerical failures. The three
+failures remain in approach throughout (49003/49005/49015). All 3,032 labels and
+submitted action-channel combinations are verified in `gripper-pilot-audit-001`.
+Successful episodes split into 14 training / 3 validation, with 3 excluded.
+
+The pilot contains 668 close-phase frames, but its coverage is limited:
+`gripper-coverage-description-001.json` finds a minimum predicted closure lead
+of 0.371 mm in training and 0.527 mm in validation, versus approximately
+0.127/0.390/0.226 mm at the three diagnosed candidate-016 closing stalls.
+These are single-jaw joint-coordinate differences, not total aperture changes.
+Continuous teaching avoids the most sluggish closing states rather than
+demonstrating recovery from them. This is evidence of a collection mismatch,
+not proof of the only reason the policy fails.
+
+Gripper-only fitting is now available through `--train-channels gripper`. It
+updates only the final gripper row and bias (129 weights), leaving all hidden
+weights, arm output rows, input statistics and observation mapping fixed. An
+internal check and saved-checkpoint audits enforce that restriction. Identical
+observations produce identical arm actions; changed gripper feedback can still
+change later arm trajectories. The collection CLI permits learner probability 1
+only with the observable teacher continuously controlling the gripper, or with
+the explicitly bounded gripper-burst schedule below.
+
+Two matched 3,000-update refinements from 016 take 6.96/7.16 s, plus 4.05/4.66 s
+feature preparation. Control **018** uses the original four data sources; **019**
+adds the successful new pilot episodes, retaining the original roles. Guarded
+results are **16/20 and 15/20**, respectively, each with one table-directed
+rejection and zero actual contacts/numerical faults. Neither replaces 011.
+Bare CPU scores were 17/20 and 16/20 with one prohibited-contact episode each;
+those results do not qualify either policy for guarded operation.
+`gripper-refinement-comparison-001.json` verifies frozen arm mapping, source
+checkpoint, fit settings, prior split roles and unchanged controller/evaluator.
+On the same 115 new validation close frames, command-clipped gripper MSE changes
+only from 0.003758 (016) to 0.003720 (018) / 0.003676 (019). Small supervised gains
+did not improve task success. Checkpoint SHA256 prefixes: 018 `e185a1ef`,
+019 `05491261`. Both original baseline bundles remain intact.
+
+A subsequent **five-case collection probe, with no further fit**, runs seeds
+49100-49104 with learned arms throughout. When closing first starts, it executes
+50 steps (2.5 s) of learned gripper control, then returns gripper control to the
+teacher. The matched control uses teacher gripper throughout. Both finish 4/5
+assisted holds; 49100 stalls in approach in both. All have zero actual contacts,
+guarded rejections or numerical failures, and the original 10 s deadline holds.
+`gripper-burst-comparison-001.json` verifies identical starts/pre-burst trajectories,
+all 1,653 labels, submitted control channels and previous-action observations.
+Neither variant contains close-phase frames with predicted closure lead 0-0.4 mm
+while the teacher requests at least 0.8 mm. The burst variant's minimum is
+0.522 mm, versus 0.483 mm for its control. This proxy comes from earlier stalls;
+it is not a fixed-point proof. Do not train or scale this probe as though it solved
+failure-state coverage. Never aggregate `lift-demos-gripper-burst-001` with
+`lift-demos-gripper-burst-control-001`: their seeds overlap.
+
+Tests: `gripper-refinement-contracts-001.log` passes 61 focused cases;
+`gripper-burst-contracts-001.log` passes 36 runtime/collection cases. A final
+report-counter correction for pre-existing full-action/prefix modes passes both
+selected cases in `gripper-action-counts-001.log`; it changes no controls or
+labels. Exact pre-correction collection helper sources are archived under
+`gripper-burst-source-001/`, hash-matching both probe manifests. All artifacts
+above are under `workspace/validation/`. No job is running; no qualification,
+robustness campaign, PPO or physical test has been started.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -481,6 +546,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Derived geometry improves action prediction but ties autonomous success | `alignment-feature-comparison-001`: raw 015 exactly reproduces 012; feature 016 scores 16/20 with one rejection and zero actual contacts; 66 regression checks pass | Keep 011; diagnose the feature candidate's changed failures before scaling |
 | 2026-09-27 | Removing teacher-irrelevant arm history does not improve grasping in a matched short fit | `previous-arm-dependence-001`: 156 invariant teacher labels; `arm-history-comparison-001`: 017 scores 14/20 guarded, 30 focused tests pass | Reject 017; do not infer an effective intervention from sensitivity alone |
 | 2026-09-27 | Assisted channel comparison identifies gripper correction as the next candidate-specific priority | `alignment-channel-audit-001`: learned arms + teacher grip 4/4, teacher arms + learned grip 1/4, scripted control 4/4; no actual contacts | Collect at most 20 fresh training-only gripper-correction episodes for experimental 016; first preserve its arm mapping in refinement; baseline and held-out set stay untouched |
+| 2026-09-27 | Continuous learner-arm / teacher-gripper pilot succeeds but misses the slowest closing states | `gripper-pilot-audit-001`: 17/20 assisted, all 3,032 labels verified; 668 closing frames; zero actual contacts/rejections; 14 training / 3 validation / 3 excluded | Keep all outcomes; diagnose coverage rather than scale from assisted success |
+| 2026-09-27 | Gripper-only refinements preserve arm mapping but fail the autonomous comparison | `gripper-refinement-comparison-001`: existing-data control 018 16/20, added-data 019 15/20; one rejection each, no actual contacts; 61 tests pass | Reject both replacements; retained 011 remains 16/20 with zero rejections |
+| 2026-09-27 | Matched closing-burst probe still misses the diagnosed slow-closing range | `gripper-burst-comparison-001`: 4/5 assisted for each schedule, 1,653 labels verified, no slow-closing proxy frames; 36 collection tests and two final counter checks pass | Screen existing training cases for actual learner failures, then collect recovery examples; no fit on this probe and no blind expansion |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

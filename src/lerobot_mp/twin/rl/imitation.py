@@ -125,7 +125,8 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
         seed: int = 0, batch_size: int = 256, hidden: tuple[int, ...] = (256, 256, 128),
         lr: float = 3e-4, report_every: int = 100, on_progress=None,
         init: Policy | None = None, train_weights: np.ndarray | None = None,
-        features: str | None = None, ignore_previous_arm: bool | None = None) -> tuple[Policy, dict]:
+        features: str | None = None, ignore_previous_arm: bool | None = None,
+        train_channels: str = "all") -> tuple[Policy, dict]:
     """Bounded supervised fit; an initial policy keeps its observation normalizer fixed.
 
     Return the best whole-episode validation checkpoint, including the initial
@@ -134,11 +135,15 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     distribution and checkpoint selection remain unchanged.
     An optional history ablation zeroes previous arm-action input columns in the
     saved network, retaining gripper history; later refinement inherits it.
+    Gripper-only refinement changes just the final gripper output row/bias,
+    preserving every arm output for an identical observation.
     """
     if not (0 < updates <= 20000 and 0 < seconds <= 600 and batch_size > 0 and report_every > 0):
         raise ValueError("Invalid imitation budget; maximum 20,000 updates / 600 seconds")
     if not 0 < lr <= .01:
         raise ValueError("Learning rate must be in (0, .01]")
+    if train_channels not in ("all", "gripper") or (train_channels == "gripper" and init is None):
+        raise ValueError("Training channels must be all or gripper; gripper refinement requires an initial policy")
     weights = (_sampling_weights(train_weights, len(demos.train_obs)) if train_weights is not None
                else np.ones(len(demos.train_obs), np.float32))
     weighted = not np.all(weights == weights[0])
@@ -156,6 +161,9 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
             init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))
     if init is not None and init.meta.features not in ("raw", features):
         raise ValueError("Refinement cannot remove or change an existing feature contract")
+    if train_channels == "gripper" and (features != init.meta.features or ignore_previous_arm !=
+            bool(init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))):
+        raise ValueError("Gripper-only refinement must preserve the initial observation mapping")
     torch.manual_seed(seed)
     meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
                       robot="a1x", randomization=demos.randomization, features=features,
@@ -188,6 +196,15 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     feature_started = time.monotonic()
     train_features, valid_features = policy.derived_features(x), policy.derived_features(vx)
     feature_prepare_s = time.monotonic()-feature_started
+    gradient_hooks = []
+    if train_channels == "gripper":
+        for parameter in policy.actor.parameters():
+            parameter.requires_grad_(False)
+        output = policy.actor[-1]
+        for parameter in (output.weight, output.bias):
+            parameter.requires_grad_(True)
+            gradient_hooks.append(parameter.register_hook(
+                lambda grad: torch.cat((torch.zeros_like(grad[:-1]), grad[-1:]), dim=0)))
     optimizer = torch.optim.Adam(policy.actor.parameters(), lr=lr)
     probabilities = torch.as_tensor(weights, device=device) if weighted else None
 
@@ -237,12 +254,24 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
         best, best_at = metrics["loss"], completed
         best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
     policy.load_state_dict(best_state)
+    if train_channels == "gripper":
+        last = f"actor.{len(policy.actor)-1}."
+        for name, value in policy.state_dict().items():
+            old = init.state_dict()[name].to(value.device)
+            unchanged = torch.equal(value[:-1], old[:-1]) if name.startswith(last) else torch.equal(value, old)
+            if not unchanged:
+                raise RuntimeError("Gripper-only refinement changed the frozen arm mapping")
+    for handle in gradient_hooks:
+        handle.remove()
+    for parameter in policy.actor.parameters():
+        parameter.requires_grad_(True)
     if ignore_previous_arm and torch.count_nonzero(policy.actor[0].weight[:, 29:35]):
         raise RuntimeError("Arm-history ablation did not preserve zero input columns")
     policy.eval()
     policy.meta.iterations = best_at
     policy.meta.steps = 0  # No new environment transitions were collected by this learner.
     result = dict(method="behavior cloning", initialized=init is not None,
+                  train_channels=train_channels,
                   features=features, feature_prepare_s=feature_prepare_s,
                   ignore_previous_arm=ignore_previous_arm,
                   ignored_observation_indices=list(range(29, 35)) if ignore_previous_arm else [],

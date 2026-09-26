@@ -159,3 +159,30 @@ def test_feature_contract_fails_closed(problem):
         meta.feature_geometry_sha256 = 'different-model'
     with pytest.raises(ValueError, match='feature contract|geometry'):
         Policy(meta)
+
+
+@pytest.mark.parametrize('features', ['raw', A1XAlignmentFeatures.name])
+def test_gripper_refinement_preserves_all_arm_outputs_and_checkpoint_source(tmp_path, features):
+    torch.set_num_threads(2)
+    torch.manual_seed(8)
+    initial = Policy(metadata(features))
+    obs = observations(100)
+    initial.norm.update(torch.as_tensor(obs[:80]))
+    before = {k: v.clone() for k, v in initial.state_dict().items()}
+    targets = initial.act(obs) + .1  # Arm labels disagree too; they must not be learned here.
+    demos = Demonstrations(initial.meta.task, initial.meta.randomization,
+                            obs[:80], targets[:80], obs[80:], targets[80:], {})
+    refined, result = fit(demos, init=initial, train_channels='gripper',
+                          updates=200, seconds=15, lr=.001, report_every=50)
+    assert result['train_channels'] == 'gripper'
+    assert result['selected_validation']['gripper_mse'] < result['initial_validation']['gripper_mse']*.01
+    assert result['selected_validation']['arm_mse'] == result['initial_validation']['arm_mse']
+    np.testing.assert_array_equal(refined.act(obs)[:, :6], initial.act(obs)[:, :6])
+    for key, value in before.items():
+        torch.testing.assert_close(initial.state_dict()[key], value, atol=0, rtol=0)
+    refined.save(tmp_path/'policy.pt')
+    np.testing.assert_array_equal(Policy.load(tmp_path/'policy.pt').act(obs), refined.act(obs))
+    with pytest.raises(ValueError, match='initial observation mapping'):
+        fit(demos, init=initial, train_channels='gripper', ignore_previous_arm=True, updates=1, seconds=1)
+    with pytest.raises(ValueError, match='requires an initial'):
+        fit(demos, train_channels='gripper', updates=1, seconds=1)

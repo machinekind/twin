@@ -93,7 +93,7 @@ class ObservableLiftTeacher:
 
 def observable_trial(env, seed, *, teacher=None, learner=None, learner_probability=.2,
                      executed_actions=None, learner_phases=('close', 'lift'), learner_channels='all',
-                     learner_prefix_steps=0):
+                     learner_prefix_steps=0, learner_gripper_burst_steps=0):
     """Correct grasp/lift deviations; evaluate via independent guarded physics.
 
     Default interventions target close/lift; an explicit phase selection also
@@ -101,6 +101,9 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
     A nonzero prefix executes only the learner for that many steps, then only
     the teacher. It requires all phases/channels and leaves at least half the
     episode for recovery; ordinary guarded termination still applies throughout.
+    An optional closing burst keeps learned arms throughout, temporarily executes
+    learned gripper actions after closing starts, then restores teacher gripper.
+    This collects learner-generated closing errors instead of preventing them.
     Labels always come from the observation-only teacher. This is not autonomous
     learned evaluation, even when many executed actions belong to the learner.
     """
@@ -115,29 +118,45 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
             or (learner_prefix_steps and (learner is None or learner_channels != 'all'
                 or set(learner_phases) != {'approach', 'close', 'lift'}))):
         raise ValueError('Learner prefix requires all phases/channels, a learner, and at least half an episode for recovery')
+    if (type(learner_gripper_burst_steps) is not int or
+            not 0 <= learner_gripper_burst_steps <= env.task.episode_steps // 4 or
+            (learner_gripper_burst_steps and (learner is None or learner_prefix_steps
+             or learner_channels != 'arm' or learner_probability != 1
+             or set(learner_phases) != {'approach', 'close', 'lift'}))):
+        raise ValueError('Gripper burst requires continuous learned arms, all phases, no prefix, and at most a quarter episode')
     obs, _ = env.reset(seed=seed)
     rng = np.random.default_rng(np.random.SeedSequence([seed, 9127]))
     observations, labels = [], []
+    gripper_burst_start = None
     report = dict(seed=seed, scripted=learner is None, success=False, collision=False,
                   numerical=False, steps=0, learner_steps=0, phase_counts={},
                   corrective_teacher_labels=learner is not None, teacher_contract=teacher.contract,
                   learner_phases=list(learner_phases), learner_channels=learner_channels,
                   learner_prefix_steps=learner_prefix_steps,
-                  execution_schedule='learner prefix then teacher' if learner_prefix_steps else 'interleaved',
+                  learner_gripper_burst_steps=learner_gripper_burst_steps, learner_gripper_steps=0,
+                  gripper_burst_start_step=None,
+                  execution_schedule=('learner prefix then teacher' if learner_prefix_steps else
+                      'learned arms; closing gripper burst then teacher gripper' if learner_gripper_burst_steps else 'interleaved'),
                   max_coupling_mm=0.0)
     try:
         for _ in range(env.task.episode_steps):
             label, decision = teacher.decide(obs)
             phase = decision['stage']
+            if learner_gripper_burst_steps and gripper_burst_start is None and phase == 'close':
+                gripper_burst_start = len(labels)
+                report['gripper_burst_start_step'] = gripper_burst_start
+            gripper_burst = (gripper_burst_start is not None and
+                             len(labels)-gripper_burst_start < learner_gripper_burst_steps)
             report['phase_counts'][phase] = report['phase_counts'].get(phase, 0) + 1
             applied = label
             use_learner = (len(labels) < learner_prefix_steps if learner_prefix_steps else
                            phase in report['learner_phases'] and rng.random() < learner_probability)
             if learner is not None and use_learner:
                 applied = learner.act(obs)
-                if learner_channels == 'arm':
+                if learner_channels == 'arm' and not gripper_burst:
                     applied = np.r_[applied[:6], label[-1]].astype(np.float32)
                 report['learner_steps'] += 1
+                report['learner_gripper_steps'] += int(learner_channels == 'all' or gripper_burst)
             observations.append(obs.copy())
             labels.append(label.copy())
             if executed_actions is not None:

@@ -138,6 +138,7 @@ def test_observable_corrections_reproduce_labels_and_target_close_or_lift(runtim
         learner_probability=1, executed_actions=executed)
     assert not report['success'] and report['corrective_teacher_labels']
     assert 0 < report['learner_steps'] < len(labels)
+    assert report['learner_gripper_steps'] == report['learner_steps']
     for obs, label, applied in zip(observations, labels, executed):
         replayed, decision = teacher.decide(obs)
         np.testing.assert_array_equal(replayed, label)
@@ -193,6 +194,7 @@ def test_uninterrupted_learner_prefix_then_teacher_recovery(runtime_env):
         learner_phases=('approach', 'close', 'lift'), executed_actions=executed)
     assert report['success'] and report['max_continuous_hold_s'] >= 2 - 1e-8
     assert report['learner_steps'] == report['learner_prefix_steps'] == 20
+    assert report['learner_gripper_steps'] == 20
     assert report['execution_schedule'] == 'learner prefix then teacher'
     assert not report['scripted'] and report['corrective_teacher_labels']
     assert not report['collision'] and not report['guard_rejection']
@@ -209,4 +211,60 @@ def test_invalid_learner_prefix_cannot_connect(runtime_env, prefix, channels, ph
     with pytest.raises(ValueError, match='Learner prefix'):
         observable_trial(runtime_env, 48000, learner=SimpleNamespace(act=lambda obs: np.zeros(7)),
                          learner_prefix_steps=prefix, learner_channels=channels, learner_phases=phases)
+    assert not runtime_env.twin.connected
+
+
+@pytest.mark.parametrize('channels,allowed', [('arm', True), ('all', False)])
+def test_continuous_learner_cli_requires_teacher_gripper(runtime_env, monkeypatch, tmp_path, capsys, channels, allowed):
+    import collect_a1x_lift_demos
+    from lerobot_mp.twin.rl.policy import Policy
+    import sys
+    target = tmp_path/'no-output'
+    monkeypatch.setattr(sys, 'argv', ['collect', '--out', str(target), '--runtime', '--teacher', 'observable',
+        '--learner', str(tmp_path/'policy.pt'), '--learner-channels', channels,
+        '--learner-phases', 'approach', 'close', 'lift', '--learner-probability', '1'])
+    def reached_checkpoint(*args, **kwargs):
+        raise RuntimeError('accepted probability; stop before loading or connecting')
+    monkeypatch.setattr(Policy, 'load', reached_checkpoint)
+    if allowed:
+        with pytest.raises(RuntimeError, match='accepted probability'):
+            collect_a1x_lift_demos.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            collect_a1x_lift_demos.main()
+        assert exc.value.code == 2 and 'arm-only control permits' in capsys.readouterr().err
+    assert not target.exists() and not runtime_env.twin.connected
+
+
+def test_closing_gripper_burst_records_true_learner_history_then_teacher_recovery(runtime_env):
+    from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
+    teacher = ObservableLiftTeacher()
+    # Keep accurate arms but deliberately hold the gripper open during its burst.
+    learner = SimpleNamespace(act=lambda obs: np.r_[teacher.act(obs)[:6], .2].astype(np.float32))
+    executed = []
+    report, obs, labels = observable_trial(runtime_env, 49100, learner=learner,
+        learner_probability=1, learner_channels='arm', learner_phases=('approach', 'close', 'lift'),
+        learner_gripper_burst_steps=20, executed_actions=executed)
+    assert report['success'] and report['max_continuous_hold_s'] >= 2-1e-8
+    assert report['learner_gripper_steps'] == 20
+    assert report['learner_steps'] == len(obs)
+    start = report['gripper_burst_start_step']
+    assert start is not None and teacher.decide(obs[start])[1]['stage'] == 'close'
+    for i, (x, target, action) in enumerate(zip(obs, labels, executed)):
+        np.testing.assert_array_equal(teacher.act(x), target)
+        np.testing.assert_array_equal(action[:6], learner.act(x)[:6])
+        assert action[-1] == (learner.act(x)[-1] if start <= i < start+20 else target[-1])
+        if i:
+            np.testing.assert_array_equal(x[-7:], executed[i-1])
+    assert not report['collision'] and not report['guard_rejection'] and not report['numerical']
+
+
+@pytest.mark.parametrize('burst,probability,channels,prefix', [(-1,1,'arm',0), (51,1,'arm',0),
+    (1.5,1,'arm',0), (20,.3,'arm',0), (20,1,'all',0), (20,1,'arm',20)])
+def test_invalid_gripper_burst_cannot_connect(runtime_env,burst,probability,channels,prefix):
+    from a1x_observable_teacher import observable_trial
+    with pytest.raises(ValueError,match='Gripper burst|Learner prefix'):
+        observable_trial(runtime_env,49100,learner=SimpleNamespace(act=lambda obs:np.zeros(7)),
+            learner_probability=probability,learner_channels=channels,learner_prefix_steps=prefix,
+            learner_phases=('approach','close','lift'),learner_gripper_burst_steps=burst)
     assert not runtime_env.twin.connected

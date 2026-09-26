@@ -146,6 +146,8 @@ def main():
                         help="Observable teacher only: override all actions or only the six arm channels")
     parser.add_argument("--learner-prefix-steps", type=int, default=0,
                         help="Observable teacher only: uninterrupted learner prefix, then teacher recovery; maximum 100")
+    parser.add_argument("--learner-gripper-burst-steps", type=int, default=0,
+                        help="Continuous learned arms: execute learned gripper after closing starts, then teacher recovery; maximum 50")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=40000)
     parser.add_argument("--seconds", type=int, default=300)
@@ -186,16 +188,24 @@ def main():
             (args.learner_prefix_steps and (args.teacher != "observable" or not args.learner
              or args.learner_channels != "all" or set(args.learner_phases) != {"approach", "close", "lift"}))):
         parser.error("Learner prefix requires an observable teacher, a learner, all phases/channels, and at most 100 steps")
+    if (not 0 <= args.learner_gripper_burst_steps <= task.episode_steps // 4 or
+            (args.learner_gripper_burst_steps and (args.teacher != 'observable' or not args.learner
+             or args.learner_prefix_steps or args.learner_channels != 'arm' or args.learner_probability != 1
+             or set(args.learner_phases) != {'approach', 'close', 'lift'}))):
+        parser.error("Gripper burst requires continuous learned arms, all phases, no prefix, and at most 50 steps")
     if not 0 <= args.grasp_offset_mm < task.cube_half * 1000:
         parser.error("Grasp offset must be nonnegative and below the cube half-height")
     rand = replace(Randomization.none(), fold_yaw=True)
     learner = None
     if args.learner:
         from lerobot_mp.twin.rl.policy import Policy
+        # Continuous learned-arm execution is useful for teaching the gripper.
+        # The teacher still supplies every gripper command in this mode.
+        probability_limit = 1.0 if args.teacher == "observable" and args.learner_channels == "arm" else .5
         if not (args.runtime and (args.state_triggered or args.teacher == "observable")
-                and 0 < args.learner_probability <= .5):
+                and 0 < args.learner_probability <= probability_limit):
             parser.error("Corrective collection requires --runtime, a state-triggered or observable teacher, "
-                         "and learner probability in (0, .5]")
+                         "and learner probability in (0, .5]; observable arm-only control permits up to 1")
         learner = Policy.load(args.learner)
         if (learner.meta.robot != "a1x" or asdict(learner.task) != asdict(task)
                 or not learner.meta.randomization.get("fold_yaw", False)):
@@ -212,7 +222,9 @@ def main():
                     learner_phases=args.learner_phases if teacher else "all phases",
                     learner_channels=args.learner_channels if teacher else "all",
                     learner_prefix_steps=args.learner_prefix_steps,
-                    execution_schedule="learner prefix then teacher" if args.learner_prefix_steps else "interleaved",
+                    learner_gripper_burst_steps=args.learner_gripper_burst_steps,
+                    execution_schedule=("learner prefix then teacher" if args.learner_prefix_steps else
+                        "learned arms; closing gripper burst then teacher gripper" if args.learner_gripper_burst_steps else "interleaved"),
                     execution_path="guarded runtime simulation" if args.runtime else "bare CPU physics",
                     synchronized=True if teacher else args.synchronized,
                     measured_close=True if teacher else args.measured_close,
@@ -252,7 +264,8 @@ def main():
                 report, obs, act = observable_trial(env, seed, teacher=teacher, learner=learner,
                     learner_probability=args.learner_probability, executed_actions=executed,
                     learner_phases=args.learner_phases, learner_channels=args.learner_channels,
-                    learner_prefix_steps=args.learner_prefix_steps)
+                    learner_prefix_steps=args.learner_prefix_steps,
+                    learner_gripper_burst_steps=args.learner_gripper_burst_steps)
             else:
                 report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
                                         synchronized=args.synchronized, measured_close=args.measured_close,
