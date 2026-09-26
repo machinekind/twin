@@ -92,11 +92,15 @@ class ObservableLiftTeacher:
 
 
 def observable_trial(env, seed, *, teacher=None, learner=None, learner_probability=.2,
-                     executed_actions=None, learner_phases=('close', 'lift'), learner_channels='all'):
+                     executed_actions=None, learner_phases=('close', 'lift'), learner_channels='all',
+                     learner_prefix_steps=0):
     """Correct grasp/lift deviations; evaluate via independent guarded physics.
 
     Default interventions target close/lift; an explicit phase selection also
     permits approach corrections when diagnostic traces justify them.
+    A nonzero prefix executes only the learner for that many steps, then only
+    the teacher. It requires all phases/channels and leaves at least half the
+    episode for recovery; ordinary guarded termination still applies throughout.
     Labels always come from the observation-only teacher. This is not autonomous
     learned evaluation, even when many executed actions belong to the learner.
     """
@@ -107,6 +111,10 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
             or not set(learner_phases) <= {'approach', 'close', 'lift'}
             or learner_channels not in ('all', 'arm')):
         raise ValueError('Invalid learner phases or channels')
+    if (type(learner_prefix_steps) is not int or not 0 <= learner_prefix_steps <= env.task.episode_steps // 2
+            or (learner_prefix_steps and (learner is None or learner_channels != 'all'
+                or set(learner_phases) != {'approach', 'close', 'lift'}))):
+        raise ValueError('Learner prefix requires all phases/channels, a learner, and at least half an episode for recovery')
     obs, _ = env.reset(seed=seed)
     rng = np.random.default_rng(np.random.SeedSequence([seed, 9127]))
     observations, labels = [], []
@@ -114,6 +122,8 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
                   numerical=False, steps=0, learner_steps=0, phase_counts={},
                   corrective_teacher_labels=learner is not None, teacher_contract=teacher.contract,
                   learner_phases=list(learner_phases), learner_channels=learner_channels,
+                  learner_prefix_steps=learner_prefix_steps,
+                  execution_schedule='learner prefix then teacher' if learner_prefix_steps else 'interleaved',
                   max_coupling_mm=0.0)
     try:
         for _ in range(env.task.episode_steps):
@@ -121,7 +131,9 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
             phase = decision['stage']
             report['phase_counts'][phase] = report['phase_counts'].get(phase, 0) + 1
             applied = label
-            if learner is not None and phase in report['learner_phases'] and rng.random() < learner_probability:
+            use_learner = (len(labels) < learner_prefix_steps if learner_prefix_steps else
+                           phase in report['learner_phases'] and rng.random() < learner_probability)
+            if learner is not None and use_learner:
                 applied = learner.act(obs)
                 if learner_channels == 'arm':
                     applied = np.r_[applied[:6], label[-1]].astype(np.float32)

@@ -144,6 +144,8 @@ def main():
                         default=["close", "lift"], help="Observable teacher only: stages permitting learner actions")
     parser.add_argument("--learner-channels", choices=("all", "arm"), default="all",
                         help="Observable teacher only: override all actions or only the six arm channels")
+    parser.add_argument("--learner-prefix-steps", type=int, default=0,
+                        help="Observable teacher only: uninterrupted learner prefix, then teacher recovery; maximum 100")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=40000)
     parser.add_argument("--seconds", type=int, default=300)
@@ -180,6 +182,10 @@ def main():
     if not (0 < args.lift_rate <= 1) or (args.lift_rate != 1 and not args.synchronized):
         parser.error("Lift rate must be in (0, 1] and requires --synchronized")
     task = make_task("lift", A1X)
+    if (not 0 <= args.learner_prefix_steps <= task.episode_steps // 2 or
+            (args.learner_prefix_steps and (args.teacher != "observable" or not args.learner
+             or args.learner_channels != "all" or set(args.learner_phases) != {"approach", "close", "lift"}))):
+        parser.error("Learner prefix requires an observable teacher, a learner, all phases/channels, and at most 100 steps")
     if not 0 <= args.grasp_offset_mm < task.cube_half * 1000:
         parser.error("Grasp offset must be nonnegative and below the cube half-height")
     rand = replace(Randomization.none(), fold_yaw=True)
@@ -205,6 +211,8 @@ def main():
                     teacher_contract=teacher.contract if teacher else "legacy-waypoints",
                     learner_phases=args.learner_phases if teacher else "all phases",
                     learner_channels=args.learner_channels if teacher else "all",
+                    learner_prefix_steps=args.learner_prefix_steps,
+                    execution_schedule="learner prefix then teacher" if args.learner_prefix_steps else "interleaved",
                     execution_path="guarded runtime simulation" if args.runtime else "bare CPU physics",
                     synchronized=True if teacher else args.synchronized,
                     measured_close=True if teacher else args.measured_close,
@@ -212,7 +220,7 @@ def main():
                     grasp_offset_m=.005 if teacher else args.grasp_offset_mm / 1000,
                     learner=str(args.learner) if learner else None,
                     learner_sha256=hashlib.sha256(args.learner.read_bytes()).hexdigest() if learner else None,
-                    learner_probability=args.learner_probability if learner else 0.0,
+                    learner_probability=None if args.learner_prefix_steps else args.learner_probability if learner else 0.0,
                     action_labels="teacher actions; executed_actions stores the actual mixed controls",
                     task=asdict(task), randomization=asdict(rand), seed=args.seed, max_episodes=args.episodes,
                     max_seconds=args.seconds, git_head=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -243,7 +251,8 @@ def main():
             if teacher:
                 report, obs, act = observable_trial(env, seed, teacher=teacher, learner=learner,
                     learner_probability=args.learner_probability, executed_actions=executed,
-                    learner_phases=args.learner_phases, learner_channels=args.learner_channels)
+                    learner_phases=args.learner_phases, learner_channels=args.learner_channels,
+                    learner_prefix_steps=args.learner_prefix_steps)
             else:
                 report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
                                         synchronized=args.synchronized, measured_close=args.measured_close,

@@ -167,10 +167,11 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **collect a bounded recovery pilot after sustained candidate-011
-control, targeting its four pre-grasp stalls before any further fit**. Isolated
-one-step disturbances may not expose these stable wrong states; test that hypothesis
-with a short comparison rather than scaling collection or training.
+Current next action: **test a small sampling-weight comparison for the sustained
+recovery examples, with the same fixed fit budget and frozen candidate-011 start**.
+The new data cover previously missed corrections, but they remain a small fraction
+of training and their validation error stays high. Do not enlarge collection or
+extend training blindly; judge the sampling change by autonomous guarded results.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -245,6 +246,23 @@ this development set. Read-only teacher queries still demand arm corrections
 while the actor produces nearly zero movement. Next expose sustained learner
 deviations during a bounded corrective pilot instead of relying only on occasional
 single-step substitutions. Keep all successes autonomous during final evaluation.
+
+The sustained-control pilot is now complete: 80 uninterrupted learner steps
+(4 s), then teacher recovery, on fresh training seeds 48000-48019. Both it and
+the matched intermittent-control dataset complete 20/20 assisted full holds.
+The prefix dataset contains 269 frames with near-zero learned arm actions while
+the teacher requests substantial correction, versus zero in the control. This
+is a diagnostic action-disagreement signature, not proof of stable fixed points.
+
+Two matched 3,000-update refinements from frozen 011 take 13.11/13.78 s:
+prefix candidate 012 ties at 16/20 guarded (fixes 50000, regresses 50015), while
+intermittent-data control 013 reaches 15/20 with one guarded rejection. All have
+zero prohibited contacts/numerical failures. Neither replaces 011. Prefix data
+reduce correction-subset validation arm MSE from 0.0624 to 0.0231, still far above
+the aggregate arm MSE of 0.0030. Those states occupy only 197/26,724 training
+frames. Next test their sampling priority without changing the validation split
+or controller criteria. Both matched sources use the same episode seeds: **never
+aggregate `lift-demos-prefix-001` and `lift-demos-prefix-control-001` together**.
 
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
@@ -348,6 +366,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Small observable-teacher imitation fit fails autonomous comparison | Candidate 010: 3,000 updates / 8.63 s, 0/20 guarded, six rejections and fourteen timeouts; identical evaluation conditions verified in `lift-observable-candidate-comparison-001.json` | Retain 007 at 13/20; trace first policy divergence before another fit or larger collection; held-out and physical tests remain deferred |
 | 2026-09-26 | Channel diagnosis supports correcting arm alignment as well as closure | `observable-policy-drift-001` and `observable-channel-ablation-001`: teacher arm 4/5 versus teacher gripper 1/5 on baseline cases; correction controls verified by 21 tests | Collect approach/close/lift arm deviations with unchanged teacher information contract |
 | 2026-09-26 | Consistent relabeling and short refinement improve autonomous guarded lifts | `lift-demos-observable-relabel-001`: 25,087 labels, original split preserved; arm-correction pilot 20/20 assisted; candidate 011: 16/20 autonomous, zero rejections/contacts/numerical failures, 9.84 s fit; frozen bundle and comparison audit saved | Retain 011 and original 007; target four pre-grasp stalls with sustained learner rollout/recovery; no held-out, robustness or physical testing yet |
+| 2026-09-26 | Sustained learner control exposes corrections absent from intermittent data | `learner-prefix-comparison-001`: matched 20/20 assisted holds, 269 versus zero slow-arm/correction frames; 27 schedule/runtime tests pass | Preserve separate matching datasets; train/validation roles remain fixed |
+| 2026-09-26 | Matched short refinements improve corrective action accuracy without increasing task success | `learner-prefix-fit-comparison-001`: prefix 012 16/20, control 013 15/20; no actual contacts; unchanged initial checkpoint, splits, hyperparameters, runtime and normalization | Keep 011 at 16/20; test bounded correction sampling priority before more data or updates; held-out/robustness/physical stages remain deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

@@ -181,3 +181,32 @@ def test_invalid_correction_selection_cannot_connect(runtime_env, phases, channe
     with pytest.raises(ValueError, match='phases or channels'):
         observable_trial(runtime_env, 47000, learner_phases=phases, learner_channels=channels)
     assert not runtime_env.twin.connected
+
+
+def test_uninterrupted_learner_prefix_then_teacher_recovery(runtime_env):
+    from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
+    teacher = ObservableLiftTeacher()
+    command = np.r_[np.zeros(6), .2].astype(np.float32)
+    executed = []
+    report, observations, labels = observable_trial(runtime_env, 48000,
+        learner=SimpleNamespace(act=lambda obs: command.copy()), learner_prefix_steps=20,
+        learner_phases=('approach', 'close', 'lift'), executed_actions=executed)
+    assert report['success'] and report['max_continuous_hold_s'] >= 2 - 1e-8
+    assert report['learner_steps'] == report['learner_prefix_steps'] == 20
+    assert report['execution_schedule'] == 'learner prefix then teacher'
+    assert not report['scripted'] and report['corrective_teacher_labels']
+    assert not report['collision'] and not report['guard_rejection']
+    for index, (obs, label, applied) in enumerate(zip(observations, labels, executed)):
+        np.testing.assert_array_equal(teacher.act(obs), label)
+        np.testing.assert_array_equal(applied, command if index < 20 else label)
+
+
+@pytest.mark.parametrize('prefix,channels,phases', [(-1, 'all', ('approach', 'close', 'lift')),
+    (101, 'all', ('approach', 'close', 'lift')), (1.5, 'all', ('approach', 'close', 'lift')),
+    (20, 'arm', ('approach', 'close', 'lift')), (20, 'all', ('close', 'lift'))])
+def test_invalid_learner_prefix_cannot_connect(runtime_env, prefix, channels, phases):
+    from a1x_observable_teacher import observable_trial
+    with pytest.raises(ValueError, match='Learner prefix'):
+        observable_trial(runtime_env, 48000, learner=SimpleNamespace(act=lambda obs: np.zeros(7)),
+                         learner_prefix_steps=prefix, learner_channels=channels, learner_phases=phases)
+    assert not runtime_env.twin.connected

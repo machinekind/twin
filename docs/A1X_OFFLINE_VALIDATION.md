@@ -939,6 +939,82 @@ not infer that more updates alone solve the closed-loop behavior.
 invalid-selection rejection before connection, and the existing full-hold/input
 contracts. No physical arm or H100 operation occurred in this experiment.
 
+### Sustained learner control and matched recovery comparison
+
+The observable collector now supports `--learner-prefix-steps`: uninterrupted
+learner control followed by teacher-only recovery, with teacher labels recorded
+throughout. It requires an explicit learner, all phases/channels, and at least
+half the unchanged episode budget for recovery. It never bypasses guard faults
+or extends success deadlines. Default intermittent collection remains available.
+`learner-prefix-contracts-001.log`: 27 tests pass in 21.26 s, including exact
+executed-action scheduling, label reproducibility, full guarded recovery holds,
+and invalid prefix configurations rejected before connection.
+
+Two matched 20-case pilots use fresh training seeds 48000-48019 and candidate
+011. The prefix runs use 80 steps (4 s) of learner control. The control runs use
+learner probability 0.3 across approach/close/lift. Both have a 60 s collection
+ceiling; neither supplies autonomous qualification:
+
+| Dataset | Assisted full holds | Learner steps / total | Elapsed |
+|---|---:|---:|---:|
+| `lift-demos-prefix-001` | 20/20 | 1,600 / 2,885 | 23.34 s |
+| `lift-demos-prefix-control-001` | 20/20 | 786 / 2,604 | 19.41 s |
+
+All have zero prohibited contacts, guard rejections and numerical failures;
+minimum successful hold is 2.000 s within floating-point rounding. The audit
+`learner-prefix-comparison-001.json` verifies the learner-only prefix and
+teacher-only recovery from recorded actions, original checkpoint hashes, and no
+development/held-out seed overlap.
+
+Define a diagnostic correction frame as maximum absolute learned arm action
+below 0.02, maximum teacher arm action above 0.2, and no teacher holding proxy.
+The prefix data contain **269 such frames in 19 episodes**, versus **zero** in
+the matched control. This is action disagreement, not proof that each state is
+a stable dynamical fixed point. It demonstrates that uninterrupted learner
+control reaches a class of corrections absent from the intermittent pilot.
+
+Two short refinements use the same frozen 011 start and its three existing data
+sources, adding either the prefix or control source. Never aggregate both matched
+sources because their episode seeds overlap. Each fit retains the original roles:
+196 training / 49 validation episodes, nine original failures excluded. Both use
+seed 23, learning rate 0.0001, fixed normalization, 3,000 updates / 60 s maximum,
+and nominal-only CPU development evaluation.
+
+| Candidate | Added data | Fit time | Selected update | Nominal CPU /20 | Guarded /20 | Rejections / timeouts |
+|---|---|---:|---:|---:|---:|---:|
+| 011, preserved | None | Prior result | Prior result | 15 | 16 | 0 / 4 |
+| 012 | Sustained prefix | 13.11 s | 3,000 | 16 | 16 | 0 / 4 |
+| 013 | Intermittent control | 13.78 s | 2,800 | 15 | 15 | 1 / 4 |
+
+Runtime reports are `lift-imitation-runtime-{014,015}.json`; all actual prohibited
+contact and numerical counts are zero. Candidate 012 fixes 50000 but regresses
+50015; 013 loses 50015 without fixing a prior failure. The original 011 is retained.
+Candidate 012 SHA256:
+`a31eb6c908df2a17312c62a6eb9fd4bfd4234a62e2c8984cc637aabcd4619181`.
+Candidate 013 SHA256:
+`1be8ad034672b0815b83f33fd4d60b35538fa613c27eea51e44815cc7e974735`.
+
+`learner-prefix-fit-comparison-001.json` verifies identical initial checkpoint and
+report, hyperparameters, episode split roles, dependency versions, runtime source,
+evaluator, evaluation seeds and frozen normalization. Source trajectories and
+their frame counts intentionally differ. No checkpoint is promoted from a tie.
+
+The learning audit evaluates all three saved policies on the same prefix data:
+
+| Prefix subset | Frames | 011 arm MSE | 012 arm MSE | 013 arm MSE |
+|---|---:|---:|---:|---:|
+| Training correction frames | 197 | 0.11665 | 0.01377 | 0.11231 |
+| Validation correction frames | 72 | 0.06242 | 0.02309 | 0.06260 |
+
+Thus the new examples improve the intended local predictions, but do not yet
+improve autonomous success. These 197 training frames are only 0.74% of 26,724
+samples. Candidate 012's aggregate validation arm MSE is 0.002978, considerably
+below the corrective subset's error. This supports a small sampling-priority
+comparison as the next hypothesis, not more data or longer training by default.
+Keep the validation distribution and success/contact rules fixed so a loss change
+cannot be confused with task improvement. The 011 bundle is verified unchanged;
+reserved evaluation, camera robustness, H100 and physical-arm work remain deferred.
+
 ### IK retry must preserve gripper state
 
 Source review found that the home-pose IK restart included the home gripper
