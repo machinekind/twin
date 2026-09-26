@@ -22,7 +22,9 @@ from lerobot_mp.twin.workspace import Workspace
 
 
 def trial(env, seed, *, state_triggered=False, synchronized=False, measured_close=False, lift_rate=1.0,
-          learner=None, learner_probability=.2, executed_actions=None):
+          learner=None, learner_probability=.2, executed_actions=None, grasp_offset_m=0.0):
+    if not np.isfinite(grasp_offset_m) or not 0 <= grasp_offset_m < env.task.cube_half:
+        raise ValueError("Grasp offset must be finite, nonnegative and below the cube half-height")
     obs, _ = env.reset(seed=seed)
     state = env.state()
     cube = state["cube_pos"].copy()
@@ -36,7 +38,8 @@ def trial(env, seed, *, state_triggered=False, synchronized=False, measured_clos
               "collision": False, "numerical": False, "max_coupling_mm": 0.0,
               "state_triggered": state_triggered, "synchronized": synchronized,
               "measured_close": measured_close, "lift_rate": lift_rate, "phase_ends": {},
-              "corrective_teacher_labels": learner is not None, "learner_steps": 0}
+              "corrective_teacher_labels": learner is not None, "learner_steps": 0,
+              "grasp_offset_m": grasp_offset_m}
     rng = np.random.default_rng(np.random.SeedSequence([seed, 9127]))
     observations, actions = [], []
     # A square block permits four equivalent jaw orientations. Keep the same
@@ -52,7 +55,9 @@ def trial(env, seed, *, state_triggered=False, synchronized=False, measured_clos
                                           ("close", 0, 0, 64 if measured_close else 32),
                                           ("lift", .07, 0, 40), ("hold", .07, 0, 58)):
             current["gripper"] = opening
-            solution = kin.ik(cube + [0, 0, z] - rotation @ offset, rotation, seed=current)
+            # Choose a gripping point above the block centre if requested. All
+            # waypoints move by the same amount, so the object lift stays 7 cm.
+            solution = kin.ik(cube + [0, 0, z + grasp_offset_m] - rotation @ offset, rotation, seed=current)
             q = kin.to_q(solution.joints)
             if (not solution.ok or solution.rot_err > np.radians(5)
                     or (q < env.limits.lo - 1e-6).any() or (q > env.limits.hi + 1e-6).any()):
@@ -146,6 +151,8 @@ def main():
                         help="Approach bilateral contact with a 1 mm measured-opening lead")
     parser.add_argument("--lift-rate", type=float, default=1.0,
                         help="Maximum synchronized lift increment as a fraction of the normal arm step")
+    parser.add_argument("--grasp-offset-mm", type=float, default=0.0,
+                        help="Gripping point above the cube centre; changes teacher waypoints, not task criteria")
     parser.add_argument("--learner", type=Path,
                         help="Optional A1X checkpoint whose occasional actions elicit teacher corrections")
     parser.add_argument("--learner-probability", type=float, default=.2,
@@ -156,6 +163,8 @@ def main():
     if not (0 < args.lift_rate <= 1) or (args.lift_rate != 1 and not args.synchronized):
         parser.error("Lift rate must be in (0, 1] and requires --synchronized")
     task = make_task("lift", A1X)
+    if not 0 <= args.grasp_offset_mm < task.cube_half * 1000:
+        parser.error("Grasp offset must be nonnegative and below the cube half-height")
     rand = replace(Randomization.none(), fold_yaw=True)
     learner = None
     if args.learner:
@@ -174,6 +183,7 @@ def main():
                     synchronized=args.synchronized,
                     measured_close=args.measured_close,
                     lift_rate=args.lift_rate,
+                    grasp_offset_m=args.grasp_offset_mm / 1000,
                     learner=str(args.learner) if learner else None,
                     learner_sha256=hashlib.sha256(args.learner.read_bytes()).hexdigest() if learner else None,
                     learner_probability=args.learner_probability if learner else 0.0,
@@ -204,7 +214,8 @@ def main():
             report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
                                     synchronized=args.synchronized, measured_close=args.measured_close,
                                     lift_rate=args.lift_rate, learner=learner,
-                                    learner_probability=args.learner_probability, executed_actions=executed)
+                                    learner_probability=args.learner_probability, executed_actions=executed,
+                                    grasp_offset_m=args.grasp_offset_mm / 1000)
             results.append(report)
             np.savez_compressed(args.out / f"seed-{seed}.npz", obs=np.asarray(obs, np.float32),
                                 actions=np.asarray(act, np.float32), executed_actions=np.asarray(executed, np.float32))

@@ -167,23 +167,32 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **measure grasp-approach clearance and test a higher grasp
-point if it preserves bilateral contact and leaves more tracking margin**.
-Corrective teaching improved learned guarded lifts from 3/20 to **12/20** with
-candidate 005 (17/20 nominal CPU, 11/20 randomized CPU). Traces showed held-block
-height oscillation without loss of finger contact; occasional learner moves
-during teacher practice supplied recovery examples. A second corrective round
-and aggregated fit reached only 10/20 guarded holds, so retain candidate 005.
-Remaining rejections predominantly occur near the table or cube during approach.
-All comparisons reuse development cases and remain below the proposed 18/20 gate.
-The scripted baseline achieved 197/200 guarded holds. Each counted
-runtime success has a full 2 s hold and zero prohibited contacts. The inspected
-candidate-005 replay uses the actual guarded controller. These are imitation
-learning results, not an RL success or physical readiness.
-The five-minute H100 PPO refinement of the earlier imitation candidate finished
-and lost the grasp behavior (0/20 nominal and randomized). No training job is
-currently running. Keep the best imitation checkpoint and failed refinement
-separate; do not weaken collision or sustained-hold criteria to pass the gate.
+Current next action: **collect raised-grasp corrective examples using candidate
+007 itself, then compare a new fit through the guarded controller**. Retain the
+existing raised-grasp examples and their episode-level validation split. First
+use a bounded pilot to check that the teacher can recover from this learner's
+deviations; expand only if the pilot supplies successful corrections.
+
+Candidate 007 is the best guarded lift checkpoint at **13/20** (15/20 nominal
+CPU, 13/20 randomized CPU). Moving the teacher's gripping point 5 mm higher
+increases the minimum measured finger/table gap during closing from 2.85 to
+7.85 mm on 20 matched cases; both teacher versions succeed on all 20. A raised
+corrective dataset produced 185/194 teacher-assisted holds, with zero actual
+prohibited contacts. Four failed candidate-007 traces show stalled grasping or
+insufficient/oscillating lift height; the raised teacher succeeds on all four.
+The raised dataset used the older candidate 005 for occasional learner actions,
+so it does not yet cover candidate 007's own deviations directly.
+
+A five-minute local PPO refinement with fixed input normalization and small
+updates still degrades behavior: guarded scores at iterations 50/100/150/final
+are 3/1/5/0 out of 20. Preserve the failure and retain candidate 007. The earlier
+H100 refinement also failed; do not scale either recipe merely for more compute.
+No training job is currently running. These are development comparisons, below
+the proposed 18/20 gate; fresh qualification remains outstanding. Each counted
+guarded success requires a full 2 s hold and zero prohibited contacts. Neither
+imitation success nor PPO training reward establishes physical readiness.
+The inspected candidate-005 video remains a selected guarded simulation replay.
+Do not weaken collision or sustained-hold criteria to pass the gate.
 The user's preference for longer unattended H100 runs remains pending.
 See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
@@ -261,6 +270,11 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Corrective teaching substantially improves autonomous guarded lifts | `runtime-drift-001` identifies height oscillation despite retained grip; `lift-demos-corrective-002`: 188/200 teacher-assisted holds; candidate 005: 17/20 nominal CPU, 11/20 randomized CPU, 12/20 guarded | Keep candidate 005; investigate approach clearance before fresh qualification |
 | 2026-09-26 | Second corrective round and aggregation verified, but not promoted | `lift-demos-corrective-003`: 160/200 teacher-assisted holds; candidate 006: 10/20 guarded. Per-source validation splits preserved; 15 focused tests passed | Retain both experiments; do not equate more data with improvement |
 | 2026-09-26 | Guarded learned lift replay inspected | `lift-imitation-runtime-video-001/seed-50001.mp4`: 72.03 mm final lift, 2.010 s hold; metrics exactly match unrendered evaluation | Simulation-only demonstration; physical tests remain deferred |
+| 2026-09-26 | Higher teacher grasp adds measured table clearance | `grasp-height-comparison-001`: original and +5 mm teacher both 20/20; minimum close-phase gap 2.85 versus 7.85 mm | Keep physics, collision thresholds and task criteria unchanged |
+| 2026-09-26 | Raised corrective teaching gives the best guarded candidate so far | `lift-demos-raised-001`: 185/194 teacher-assisted holds; `lift-imitation-007`: 15/20 nominal CPU, 13/20 randomized CPU; `lift-imitation-runtime-009.json`: 13/20 guarded, two rejections, five timeouts, zero actual contacts/numerical failures | Retain candidate 007; collect corrections for its own deviations |
+| 2026-09-26 | Fixed-normalization PPO refinement still degrades the learned lift | `lift-ppo-fixed-001`: 167 iterations, 2,052,096 transitions, 300.06 s; guarded checkpoints 3/1/5/0 out of 20 | Reject refinement; preserve checkpoint history and candidate 007 |
+| 2026-09-26 | New training options and evaluation labels verified | `raised-refinement-contracts-001.log`: 22 passed; `nominal-runner-contract-001`: one GPU iteration and actual nominal/randomized CPU evaluations | Historical nominal run's mislabeled duplicate evaluation is documented; independent evaluations retained |
+| 2026-09-26 | Raised-policy failure traces isolate remaining learning errors | `runtime-drift-002`: four policy timeouts, four matched teacher successes; two held-block height failures and two cases without a final grip | Bounded corrective pilot before another fit; physical access remains deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

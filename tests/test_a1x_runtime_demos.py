@@ -59,11 +59,19 @@ def test_invalid_actions_cannot_advance_controller_or_physics(runtime_env):
         assert env.runner.status.step == 0 and env.t == 0
 
 
-@pytest.mark.parametrize("seed", [41000, 41001])
-def test_scripted_runtime_success_includes_full_physics_hold(runtime_env, seed):
+@pytest.mark.parametrize("offset", [-.001, .015, np.nan, np.inf])
+def test_invalid_grasp_offsets_are_rejected_before_connecting(runtime_env, offset):
+    from collect_a1x_lift_demos import trial
+    with pytest.raises(ValueError, match="Grasp offset"):
+        trial(runtime_env, 41001, grasp_offset_m=offset)
+    assert not runtime_env.twin.connected
+
+
+@pytest.mark.parametrize("seed,offset", [(41000, 0.0), (41001, 0.0), (41001, .005)])
+def test_scripted_runtime_success_includes_full_physics_hold(runtime_env, seed, offset):
     from collect_a1x_lift_demos import trial
     report, obs, actions = trial(runtime_env, seed, state_triggered=True, synchronized=True,
-                                 measured_close=True, lift_rate=.25)
+                                 measured_close=True, lift_rate=.25, grasp_offset_m=offset)
     assert report["success"] and report["max_continuous_hold_s"] >= 2.0 - 1e-8
     assert not report["guard_rejection"] and not report["collision"] and not report["numerical"]
     assert len(obs) == len(actions) == report["steps"]

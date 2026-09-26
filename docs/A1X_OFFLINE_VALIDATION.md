@@ -603,6 +603,91 @@ qualification or hardware evidence.
 the guarded-render option: all pass. No physical or Brev commands were sent
 during these corrective experiments.
 
+### Higher grasp and fixed-normalization refinement
+
+`grasp-height-comparison-001` measures actual MuJoCo finger/table geometry at
+every physics substep on seeds 41000-41019, comparing the original teacher with
+all grasp waypoints raised by 5 mm. Both succeed **20/20** with the same full
+hold requirement and zero prohibited contacts/numerical failures. Minimum gaps:
+
+| Gripping-point offset | Descent | Closing | Lift |
+|---|---:|---:|---:|
+| 0 mm | 4.01 mm | 2.85 mm | 3.01 mm |
+| +5 mm | 8.48 mm | 7.85 mm | 7.98 mm |
+
+The 3 mm command-path guard is unchanged. Actual substep clearance can be smaller
+because of tracking/coupling; these measurements do not establish a guaranteed
+physical margin. The raised waypoints preserve the commanded 7 cm object lift,
+model, workspace, gripper behavior and task criteria. Invalid offsets are
+rejected before connecting/resetting the simulation.
+
+`lift-demos-raised-001` collects through the guarded runtime with state-triggered,
+synchronized waypoints, measured closing, lift-rate 0.25 and grasp-offset 5 mm.
+Candidate 005 supplies 20% of actions; labels always come from the teacher.
+The 200-episode / 240 s ceiling stops after **194 attempts**, 185 successes,
+241.50 s (time checked between episodes), seeds 44000-44193. There are 5,105
+learner actions; nine failed attempts (three close, six lift) remain excluded.
+No actual prohibited contacts or numerical failures occur. These are
+teacher-assisted demonstrations, not autonomous learned successes.
+
+`lift-imitation-007` uses this dataset, seed 23, 5,000-update / 120 s ceiling;
+validation selects update 4,800 after 19.50 s, loss 0.0031073. Policy SHA256:
+`b3b196c3fb66b79606214d10450d3ce4def92f0d4201041fbc051580e066e000`.
+On development seeds 50000-50019 it achieves **15/20 nominal CPU** (no collisions),
+**13/20 randomized CPU** (one collision), and **13/20 guarded holds**
+(`lift-imitation-runtime-009.json`). The guarded path has two rejections, five
+timeouts, zero actual prohibited contacts and zero numerical failures. Successful
+holds last 2.010-2.055 s. Retain this checkpoint as the best guarded candidate;
+it does not meet the proposed 18/20 gate or constitute fresh qualification.
+
+The PPO trainer now optionally freezes the pretrained observation normalizer
+throughout refinement and preserves intermediate checkpoints. Defaults remain
+unchanged. The bounded runner exposes nominal training, fixed learning-rate/KL
+settings and these two options. `raised-refinement-contracts-001.log` passes
+**22 tests** in 18.21 s, including unchanged warm-up actor/statistics, actual
+actor updates afterward, exact frozen statistics, reloaded checkpoint history,
+full-duration guarded teacher holds and invalid-offset rejection.
+
+`lift-ppo-fixed-001` refines candidate 007 locally: 512 worlds, seed 31, nominal
+physics/perception, frozen normalizer, initial standard deviation 0.05, 20 critic
+warm-up iterations, fixed learning rate 0.0001 (`desired_kl=0`), at most 500
+iterations / 300 s. It finishes 167 iterations / 2,052,096 transitions in
+300.06 s, peak total GPU usage 1,626.5 MiB. There are 1,046 collision-ended
+training episodes, zero numerical failures/overflow, peak contacts 3,606/32,768
+and constraint rows 82/384. Training success ends at 50.8%; independent replay
+shows this is not a useful replacement for the imitation policy:
+
+| Saved iteration | Nominal CPU /20 | Randomized CPU /20 | Guarded /20 | Guard rejections | Timeouts |
+|---|---:|---:|---:|---:|---:|
+| 50 | 7 | 6 | 3 | 6 | 11 |
+| 100 | 7 | 6 | 1 | 7 | 12 |
+| 150 | 8 | 8 | 5 | 6 | 9 |
+| 167, final | 7 | 9 | 0 | 10 | 10 |
+
+All guarded evaluations have zero actual prohibited contacts/numerical failures.
+Reports are `lift-ppo-fixed-001-runtime-{50,100,150,final}.json`, with `--cpu`
+and development seeds 50000-50019. No checkpoint is promoted. The final SHA256
+is `15d10b0a0c5b014358d4ba26ceb0690deb95bdf459c19c3f0bb259fdb4ca3ad2`.
+
+Reporting correction: this experiment's original runner reused nominal training
+randomization in the field named `cpu_randomized`, producing a duplicate nominal
+result (its nested `randomized` flag correctly says false). Preserve that original
+report and source hashes; the independent reports above contain the actual
+randomized evaluations. The runner now always evaluates default randomization
+separately and records both evaluation configurations. A one-iteration, 32-world
+smoke (`nominal-runner-contract-001`, 20.39 s including CPU evaluation) verifies
+the `randomized` flag is false for nominal evaluation and true for randomized
+evaluation, while preserving folded-yaw observations in both. This smoke is not
+a promoted candidate.
+
+`runtime-drift-002` compares candidate 007 with the raised teacher on four failed
+development cases. Seeds 50003/50010 finish with bilateral grip but only 57.39 /
+64.80 mm lift and maximum continuous qualifying holds 0 / 0.690 s. Seeds
+50007/50015 finish without a grip and with the block on the table. The teacher
+completes full holds on all four. These traces motivate collecting corrections
+from candidate 007's own trajectories before another fit; the existing raised
+dataset used candidate 005. No physical or Brev commands were sent in this round.
+
 ### IK retry must preserve gripper state
 
 Source review found that the home-pose IK restart included the home gripper

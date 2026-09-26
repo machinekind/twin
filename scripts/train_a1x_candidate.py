@@ -1,7 +1,7 @@
 """Bounded A1X experiment with a frozen manifest and held-out CPU evaluation."""
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import importlib.metadata
 import json
@@ -34,6 +34,15 @@ def main():
     parser.add_argument("--init-std", type=float, default=.6)
     parser.add_argument("--critic-warmup", type=int, default=0,
                         help="Freeze actor and observation statistics while fitting a missing critic")
+    parser.add_argument("--freeze-normalizer", action="store_true",
+                        help="Keep pretrained observation statistics fixed after critic warm-up too")
+    parser.add_argument("--nominal", action="store_true",
+                        help="Train nominal dynamics/perception first, preserving folded-yaw observations")
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--desired-kl", type=float, default=.01,
+                        help="KL target for adaptive learning rate; zero keeps --lr fixed")
+    parser.add_argument("--checkpoint-history", action="store_true",
+                        help="Preserve separately reloadable policies every 50 iterations")
     parser.add_argument("--eval-seed", type=int, default=20000)
     args = parser.parse_args()
     if not (1 <= args.envs <= 8192 and 1 <= args.iters <= 1000 and 1 <= args.seconds <= 1800):
@@ -42,17 +51,20 @@ def main():
         parser.error("critic-warmup must be nonnegative and less than iters")
     if not 0 < args.init_std <= 1:
         parser.error("init-std must be in (0, 1]")
+    if not (0 < args.lr <= .01 and 0 <= args.desired_kl <= .1):
+        parser.error("Limits: learning rate in (0, .01], desired KL in [0, .1]")
     init = Policy.load(args.init) if args.init else None
     if init is not None and (init.meta.robot != "a1x" or init.task.name != args.task):
         parser.error("Initial policy must be A1X and match --task")
     args.out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
     cfg = PPOConfig(num_envs=args.envs, iterations=args.iters, seed=args.seed, init_std=args.init_std,
-                    critic_warmup=args.critic_warmup)
+                    critic_warmup=args.critic_warmup, freeze_normalizer=args.freeze_normalizer,
+                    lr=args.lr, desired_kl=args.desired_kl, checkpoint_history=args.checkpoint_history)
     if init is not None:
         cfg.hidden = tuple(init.meta.hidden)
     task = init.task if init is not None else make_task(args.task, A1X)
-    rand = Randomization()
+    rand = replace(Randomization.none(), fold_yaw=True) if args.nominal else Randomization()
     report = {
         "purpose": "simulation candidate, requires independent runtime validation",
         "hypothesis": (f"PPO can improve the existing A1X {args.task} candidate" if init else
@@ -75,6 +87,8 @@ def main():
         "versions": {p: importlib.metadata.version(p) for p in
                      ("torch", "mujoco", "mujoco-warp", "warp-lang", "numpy")},
         "ppo": asdict(cfg), "task": asdict(task), "randomization": asdict(rand),
+        "evaluation_randomization": {"cpu_nominal": asdict(Randomization.none()),
+                                     "cpu_randomized": asdict(Randomization())},
         "training_limit_s": args.seconds, "evaluation_seeds": [args.eval_seed, args.eval_seed + 19],
         "stop_rules": "Iteration/time limit, numerical failure, or GPU capacity overflow; no automatic retry",
         "status": "running", "device": torch.cuda.get_device_name(),
@@ -113,7 +127,7 @@ def main():
         report["cpu_nominal"] = evaluate(policy, episodes=20, workspace=ws,
                                           randomization=Randomization.none(), seed=args.eval_seed)
         report["cpu_randomized"] = evaluate(policy, episodes=20, workspace=ws,
-                                             randomization=rand, seed=args.eval_seed)
+                                             randomization=Randomization(), seed=args.eval_seed)
         report["status"] = "evaluated"  # Evaluation completed; this is not a success gate.
     except BaseException:
         report["status"], report["error"] = "failed", traceback.format_exc()

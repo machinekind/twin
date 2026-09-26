@@ -128,3 +128,38 @@ def test_ppo_critic_warmup_preserves_imitation_actor_and_normalizer():
     assert warmed.critic_state is not None
     for name, value in before.items():
         torch.testing.assert_close(warmed.state_dict()[name].cpu(), value, atol=0, rtol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("frozen", [False, True])
+def test_normalizer_freeze_survives_warmup_while_actor_can_learn(frozen, tmp_path):
+    pytest.importorskip("mujoco_warp")
+    from lerobot_mp.twin.rl.policy import PolicyMeta
+    from lerobot_mp.twin.rl.ppo import PPOConfig, train
+    from lerobot_mp.twin.workspace import Workspace
+
+    torch.manual_seed(42)
+    task = make_task("lift", A1X)
+    initial = Policy(PolicyMeta(task=asdict(task), hidden=[32], obs_dim=task.obs_dim, act_dim=7,
+                               robot="a1x", randomization=asdict(Randomization.none())))
+    initial.norm.update(torch.randn(128, task.obs_dim) * .5)
+    before = {k: v.clone() for k, v in initial.state_dict().items()}
+    learned = train(task, PPOConfig(num_envs=32, horizon=8, iterations=2, epochs=1,
+        minibatches=2, hidden=(32,), critic_warmup=1, init_std=.1, freeze_normalizer=frozen,
+        save_every=1, checkpoint_history=True), init=initial, out_dir=tmp_path,
+        workspace=Workspace(robot="a1x"), randomization=Randomization.none())
+    assert any(not torch.equal(value.cpu(), before[name]) for name, value in learned.state_dict().items()
+               if name.startswith("actor."))
+    if frozen:
+        for name, value in before.items():
+            if name.startswith("norm."):
+                torch.testing.assert_close(learned.state_dict()[name].cpu(), value, atol=0, rtol=0)
+    else:
+        assert learned.norm.count.item() > before["norm.count"].item()
+    first = Policy.load(tmp_path / "checkpoints/iteration-000001/policy.pt")
+    second = Policy.load(tmp_path / "checkpoints/iteration-000002/policy.pt")
+    assert first.meta.iterations == 1 and second.meta.iterations == 2
+    for name, value in before.items():
+        torch.testing.assert_close(first.state_dict()[name].cpu(), value, atol=0, rtol=0)
+    for name, value in learned.state_dict().items():
+        torch.testing.assert_close(second.state_dict()[name].cpu(), value.cpu(), atol=0, rtol=0)

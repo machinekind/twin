@@ -54,10 +54,14 @@ class PPOConfig:
     init_std: float = 0.6
     #: Pierwsze iteracje douczania ucza tylko krytyka (aktor stoi) - patrz `train`.
     critic_warmup: int = 0
+    #: Preserve pretrained observation coordinates throughout refinement, not only warm-up.
+    freeze_normalizer: bool = False
     hidden: tuple[int, ...] = (256, 256, 128)
     seed: int = 0
     #: Co ile iteracji zapisywac punkt kontrolny (0 = tylko na koncu).
     save_every: int = 50
+    #: Keep separately reloadable intermediate policies for bounded development comparisons.
+    checkpoint_history: bool = False
 
 
 class ActorCritic(nn.Module):
@@ -162,7 +166,7 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
         # ---------------------------------------------------------- zbieranie
         with torch.no_grad():
             for t in range(T):
-                if not warming:
+                if not warming and not cfg.freeze_normalizer:
                     ac.policy.norm.update(obs)
                 obs_n = ac.policy.norm(obs)
                 dist = ac.dist(obs_n)
@@ -261,6 +265,8 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
             (out / "progress.json").write_text(json.dumps(asdict(prog)), encoding="utf-8")
             if cfg.save_every and it % cfg.save_every == 0:
                 _finish(ac, prog, out / "policy.pt")
+                if cfg.checkpoint_history:
+                    _finish(ac, prog, out / "checkpoints" / f"iteration-{it:06d}" / "policy.pt")
         if stopping:
             break
 
