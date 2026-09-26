@@ -234,7 +234,7 @@ W panelu: zakładka **Ramię** → `sim` → **Połącz**; zakładka **Polityki*
 `lift (sim): poloz kostke losowo`. Bez `demo` bliźniak startuje z pustym
 stanowiskiem (ramię `sim`, bez kamer) — kamery dodaje się w zakładce Kamery
 (`Dodaj symulowana przed ramieniem`, potem kalibracja albo
-`Symulowana: uznaj prawdziwa poze za kalibracje`).
+w zakładce Kalibracja `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
 Karta z panelem musi być widoczna: viser w karcie w tle nic nie rysuje.
 
 ### 4. Testy

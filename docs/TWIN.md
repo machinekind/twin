@@ -170,8 +170,8 @@ stanu.
 | zakładka | co robi |
 |---|---|
 | **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
-| **Kamery** | kamery USB i **symulowane** — symulowaną stawiasz w dowolnym miejscu widoku 3D i przeciągasz uchwytem; piramidy z obrazem na żywo (zielona = zaufana, pomarańczowa = niezaufana, czerwona = **przestawiona**); podgląd; błąd kalibracji względem prawdy dla symulowanych |
-| **Kalibracja** | arkusze do druku (tablica ChArUco, karta z tagami); **1.** intrynsyki — tablica w ręku, kadry zapisują się same, gdy wnoszą nowe ujęcie; **2.** położenie wszystkich kamer naraz — fala z kartą w chwytaku; **szybka relokalizacja** jednej przestawionej kamery |
+| **Kamery** | lista kamer z jedną plakietką stanu (SKALIBROWANA / DO KALIBRACJI / KALIBRACJA NIEPEWNA / PORUSZONA / BEZ OBRAZU / WYŁĄCZONA — kolory jak piramidy w 3D); wybrana kamera: podgląd, jedna linia „co dalej”, przycisk *Włączona / Wyłączona*, *Usuń kamerę* (drugie kliknięcie potwierdza); symulowana dodatkowo *Przesuwaj w 3D* (uchwyt) i *Postaw tu, skąd patrzysz w 3D*; liczby w zwiniętych *Szczegółach*; na dole *Dodaj symulowaną przed ramieniem* i *Szukaj kamer USB* (wybór i *Dodaj kamerę USB* pojawiają się po znalezieniu) |
+| **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
 | **Trening** | PPO na GPU w osobnym procesie, z wykresem sukcesu; **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako środka randomizacji |
 | **Polityki** | lista z wynikami (GPU, CPU z randomizacją i bez), ewaluacja na CPU, **uruchomienie na bliźniaku** — sim albo prawdziwe ramię; `reach`: cel przeciągany w 3D; `lift`: kostka z symulacji albo **z kamer** |
@@ -214,23 +214,27 @@ i limity z EEPROM działają na obu backendach (`lerobot`: rejestr stanu co 3.
 odczyt).
 
 **1. Kamery.** Na maszynie wirtualnej/zdalnej (np. Shadow) najpierw przepuść
-kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj*. Kamera, która się otwiera, ale nie daje klatek, to prawie
+kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj kamerę USB*. Kamera, która się otwiera, ale nie daje klatek, to prawie
 zawsze brak przepuszczenia (patrz README).
 
-**2. Intrynsyki każdej kamery.** *Pobierz arkusz tablicy*, wydrukuj w skali
-100%, **zmierz bok kwadratu linijką**, wpisz. *Zbieraj kadry* i pokazuj tablicę
-w rogach kadru, bliżej i dalej, pochyloną — 12+ kadrów, pokrycie 55%+.
-*Oblicz i zapisz K*. Residuum ≤ 0,6 px. Tablica trzymana równolegle do
-obiektywu nie wyznacza ogniskowej — sesja bez pochyleń (rozrzut < 35°) albo z
-ogniskową nie do wiary wychodzi jako **niezaufana**, a kamera z takim K nie
-dostanie zaufanej pozy w kroku 3. *Przerwij* niczego nie liczy ani nie zapisuje.
+**2. Obiektyw każdej kamery** (w kodzie: intrynsyki). Kalibracja, krok 1:
+*Pobierz szachownicę do druku*, wydrukuj w skali 100%, **zmierz bok kwadratu
+linijką**, wpisz. *Zacznij: pokazuj szachownicę kamerze …* i pokazuj ją w
+rogach obrazu, bliżej i dalej, pochyloną — 12 zdjęć, pokrycie 55%. *Gotowe —
+policz obiektyw*; panel sam przechodzi do następnej kamery. Szachownica
+trzymana równolegle do obiektywu nie wyznacza ogniskowej — sesja bez pochyleń
+(rozrzut < 35°) albo z ogniskową nie do wiary wychodzi jako **niepewna**, a
+kamera z takim obiektywem nie przejdzie kroku 3. *Anuluj* niczego nie liczy
+ani nie zapisuje.
 
-**3. Położenie kamer.** *Pobierz arkusz karty*, wydrukuj, zmierz bok taga,
-zegnij kartę, włóż wolny koniec w szczęki (ok. 70 mm ma wystawać). Zaznacz
-potwierdzenie, *Start fali*. Ramię zbiera ~20 póz; kamera, której fala się nie
-udała, wraca jako niezaufana z powodem — także kamera bez zaufanego K z kroku 2.
-*Zapisz wynik kalibracji* (zapisuje też użyty bok taga — zmieniony po fali nie
-przejdzie). Wyjmij kartę.
+**3. Położenie kamer** (w kodzie: fala). Kalibracja, krok 2: *Pobierz kartę do
+druku*, wydrukuj, zmierz bok kodu, zegnij kartę, włóż wolny koniec w szczęki
+(ok. 7 cm ma wystawać). *Start: ramię pokaże kartę kamerom (…)*; przycisk
+pyta, czy karta jest w chwytaku, a stół pusty — drugie kliknięcie w ciągu 8 s
+rusza. Przycisk jest zablokowany, dopóki któraś prawdziwa kamera nie ma
+zmierzonego obiektywu. Ramię zbiera ~20 póz; kamera, której się nie udało,
+dostaje „źle” z powodem. *Zapisz wynik* (zapisuje też użyty bok kodu —
+zmieniony po pomiarze blokuje zapis z powodem) albo *Odrzuć*. Wyjmij kartę.
 
 **4. Sprawdzenie Sim-Real.** Zakładka Sim-Real, każda kamera: krawędzie renderu
 mają leżeć na krawędziach ramienia i stołu. Mediana > 3 px = coś jest źle
@@ -701,8 +705,9 @@ Tukeya): ręka albo tułów w kadrze nie udają ruchu kamery (ręka na 10–20 %
 kadru: ≤ 0,6 px; wcześniej do 59 px). Ruch ramienia daje ≤ 0,1 px (wcześniej
 do ok. 1,3 px), przybliżenie o 1% — 3,9–4,5 px (prawda 4), obrót o 1° —
 6,7–6,9 px (prawda 7). Alarm „przestawiona” wymaga **dwóch kolejnych
-zgodnych** sprawdzeń. Sprawdzenie kosztuje ok. 15 ms na kamerę. Powyżej 3 px piramida robi się czerwona i panel
-proponuje szybką relokalizację (krótka fala tylko dla tej kamery). Klatka
+zgodnych** sprawdzeń. Sprawdzenie kosztuje ok. 15 ms na kamerę. Powyżej 3 px piramida robi się czerwona, a w zakładce
+Kalibracja pojawia się pomarańczowy przycisk *Kamera … została poruszona* (krótki
+pomiar tylko dla tej kamery). Klatka
 starsza niż 1 s nie jest kadrem — zamrożony albo martwy strumień panel pokazuje
 jako błąd kamery i otwiera go na nowo.
 
