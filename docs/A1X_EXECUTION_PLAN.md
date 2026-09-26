@@ -167,14 +167,16 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **refine the imitation warm start with a five-minute H100
-PPO experiment, then evaluate through physics and the guarded controller**.
-The imitation candidate grasps and lifts, but only completed 2/20 randomized
-CPU holds, 0/20 nominal holds, and 0/5 guarded-runtime trials. It is not ready
-for physical use. Both earlier pure-PPO candidates completed no lifts.
-The supplied H100 is authorized for this training; the first refinement is
-limited to 300 training seconds / 500 iterations, plus bounded setup/evaluation.
-The user's preference for longer unattended runs remains pending.
+Current next action: **align learned approaches with the runtime collision guard
+and retain demonstrated grasp behavior during RL refinement**. State-triggered
+demonstrations improved imitation to 16/20 nominal and 5/20 randomized CPU
+holds, but the guarded runtime rejected all 20 attempts near finger-body/cube
+contact. This is imitation learning, not an RL success or physical readiness.
+The five-minute H100 PPO refinement of the earlier imitation candidate finished
+and lost the grasp behavior (0/20 nominal and randomized). No training job is
+currently running. Keep the improved imitation checkpoint and failed refinement
+separate; do not weaken collision or sustained-hold criteria to pass the gate.
+The user's preference for longer unattended H100 runs remains pending.
 See [offline evidence](A1X_OFFLINE_VALIDATION.md)
 for commands, versions, results and remaining gaps.
 
@@ -239,6 +241,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-26 | Corrected-yaw reevaluation confirms lift candidate 002 still fails | `lift-runtime-002.json`: 0/20 nominal, randomized and runtime lifts; no prohibited contacts or numerical failures | Use grasp demonstrations or curriculum instead of interpreting approach reward as success |
 | 2026-09-26 | Isolated H100 setup and GPU smoke check pass | `brev/h100-lift-1024-002`: 73,728 transitions, 1,708.9 MiB peak total GPU usage, zero overflow; `h100-cpu-contracts-001.log`: 28 passed; `h100-gpu-contracts-001.log`: 2 passed | Prepare demonstration warm start and a bounded larger-batch experiment |
 | 2026-09-26 | Broader scripted collection and first imitation candidate complete | `lift-demos-006`: 196/200 scripted holds, four collision failures excluded; `lift-imitation-001`: 0/20 nominal and 2/20 randomized CPU holds, 6/7 collision-ended trials respectively; `lift-imitation-runtime-001.json`: 0/5 with guarded rejections and zero actual prohibited contacts | Five-minute PPO refinement, retain current success and collision criteria |
+| 2026-09-26 | H100 scaling and bounded refinement completed | `brev/h100-lift-4096-001`: smoke passed, 4,266.9 MiB peak; `brev/h100-lift-imitation-ppo-001`: 23,298,048 steps, 237 iterations, 300.5 s training, 0/20 nominal/randomized holds | Diagnose lost behavior; preserve this failed experiment |
+| 2026-09-26 | Timed demonstration ambiguity reproduced and state-triggered collector validated | `demo-phase-boundaries-001.json`: all 196 successful timed episodes contain near-identical observations with conflicting phase-transition commands; `lift-demos-state-002`: matched seeds, 196/200 holds | Train on the state-triggered examples |
+| 2026-09-26 | Improved imitation learns nominal lifts but fails controller qualification | `lift-imitation-002`: 16/20 nominal and 5/20 randomized; `lift-imitation-runtime-002.json`: 0/20, all guarded rejections, zero actual prohibited contacts; `lift-imitation-video-002`: inspected successful CPU replay | Resolve training/runtime approach mismatch and learning stability before fresh qualification |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

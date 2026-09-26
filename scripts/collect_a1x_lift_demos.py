@@ -21,7 +21,7 @@ from lerobot_mp.twin.robots import A1X
 from lerobot_mp.twin.workspace import Workspace
 
 
-def trial(env, seed):
+def trial(env, seed, *, state_triggered=False):
     obs, _ = env.reset(seed=seed)
     state = env.state()
     cube = state["cube_pos"].copy()
@@ -32,7 +32,8 @@ def trial(env, seed):
     midpoint = np.mean([kin.data.geom_xpos[m.geom(kin.prefix + name).id] for name in A1X.fingertips], axis=0)
     offset = kin.data.site_xmat[kin.site_id].reshape(3, 3).T @ (midpoint - kin.data.site_xpos[kin.site_id])
     report = {"seed": seed, "scripted": True, "success": False, "cube_m": cube.tolist(),
-              "collision": False, "numerical": False, "max_coupling_mm": 0.0}
+              "collision": False, "numerical": False, "max_coupling_mm": 0.0,
+              "state_triggered": state_triggered, "phase_ends": {}}
     observations, actions = [], []
     # A square block permits four equivalent jaw orientations. Keep the same
     # physical limits and try another orientation if a wrist limit rejects one.
@@ -65,6 +66,7 @@ def trial(env, seed):
         report.update(failure="No full waypoint sequence within IK and configured limits", attempts=attempts)
         return report, observations, actions
     for label, q, count in phases:
+        phase_ready = False
         for _ in range(count):
             action = np.clip((q - env.q_cmd) / env.task.arm_step, -1, 1)
             action[-1] = 2 * (q[-1] - env.limits.lo[-1]) / (env.limits.hi[-1] - env.limits.lo[-1]) - 1
@@ -80,6 +82,19 @@ def trial(env, seed):
                 if not report["success"]:
                     report["failure"] = "collision, numerical failure or incomplete hold by time limit"
                 return report, observations, actions
+            if state_triggered:
+                command_arrived = np.max(np.abs(env.q_cmd[:6] - q[:6])) < 1e-5
+                measured_arrived = np.max(np.abs(env.state()["q"][:6] - q[:6])) < .02
+                if label in ("above", "descend", "lift"):
+                    phase_ready = command_arrived and measured_arrived
+                elif label == "close":
+                    phase_ready = command_arrived and measured_arrived and info["grasped"] and env.q_cmd[-1] <= 1e-5
+                if phase_ready:
+                    break
+        report["phase_ends"][label] = len(actions)
+        if state_triggered and label != "hold" and not phase_ready:
+            report["failure"] = f"State-triggered {label} did not settle or establish contact before its limit"
+            return report, observations, actions
     report["failure"] = "expert sequence ended without a completed hold"
     return report, observations, actions
 
@@ -90,6 +105,8 @@ def main():
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=40000)
     parser.add_argument("--seconds", type=int, default=300)
+    parser.add_argument("--state-triggered", action="store_true",
+                        help="Advance on measured waypoint/grasp state instead of fixed waiting periods")
     args = parser.parse_args()
     if not (1 <= args.episodes <= 200 and 1 <= args.seconds <= 600):
         parser.error("Limits: 200 episodes, 600 seconds")
@@ -98,6 +115,7 @@ def main():
     rand = replace(Randomization.none(), fold_yaw=True)
     root = Path(__file__).resolve().parents[1]
     manifest = dict(purpose="scripted simulation demonstrations; not learned or physical results",
+                    controller="state-triggered waypoints" if args.state_triggered else "timed waypoints",
                     task=asdict(task), randomization=asdict(rand), seed=args.seed, max_episodes=args.episodes,
                     max_seconds=args.seconds, git_head=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                     script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -113,7 +131,7 @@ def main():
         for seed in range(args.seed, args.seed + args.episodes):
             if time.monotonic() - started >= args.seconds:
                 break
-            report, obs, act = trial(env, seed)
+            report, obs, act = trial(env, seed, state_triggered=args.state_triggered)
             results.append(report)
             np.savez_compressed(args.out / f"seed-{seed}.npz", obs=np.asarray(obs, np.float32),
                                 actions=np.asarray(act, np.float32))

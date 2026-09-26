@@ -314,13 +314,79 @@ The later `imitation-contracts-002.log` passes all seven, including an actual
 GPU PPO iteration proving critic-only warm-up preserves every actor and
 observation-normalizer value exactly.
 
-The next frozen experiment uses this exact checkpoint, 4,096 GPU worlds,
+The frozen refinement experiment used this exact checkpoint, 4,096 GPU worlds,
 PPO seed 29, initial action standard deviation 0.15, 20 critic-only warm-up
 iterations, and at most 500 iterations / 300 training seconds. The outer process
-limit is 480 s including setup/evaluation. First run a three-iteration 4,096-world
-compatibility check. Evaluate on the same development seeds 50000-50019 before
-using fresh seeds for any final qualification. Stop on numerical/capacity faults;
-do not lower the height/hold requirement or weaken runtime collision checks.
+limit was 480 s including setup/evaluation. A three-iteration 4,096-world
+compatibility check ran first. Evaluation used the same development seeds
+50000-50019; final qualification still needs fresh seeds. Numerical/capacity
+faults were stop conditions; height/hold requirements and runtime guards remained
+unchanged.
+
+`brev/h100-lift-4096-001` passed at 294,912 transitions, 4,266.9 MiB peak total
+GPU memory, zero overflow and 35/384 peak constraint rows. Warm iterations ran
+at 111-156k transitions/s; the total including CPU evaluation was 11.13 s.
+The untrained smoke checkpoint had 0/2 CPU lifts and one collision-ended episode.
+
+`brev/h100-lift-imitation-ppo-001` completed 237 iterations / 23,298,048
+transitions in 300.51 training seconds, 321.85 s including evaluation; peak total
+GPU memory 4,268.9 MiB. Source snapshot: `0538669987de325f8c10e1afe5fef033332b0658`,
+archive SHA256 `07d3d78f50fb7ada4d7e7aa2d962aa78ff518af11d4520597d3f0181c0a6acc6`.
+Training had 24,710 collision-ended episodes, zero numerical failures and zero
+overflow. Final CPU results were 0/20 nominal and randomized, without evaluation
+collisions. The grasp behavior was lost despite early training successes.
+The historical manifest's generic continuation string says the critic was
+restored; the imitation checkpoint had no critic. The actual configured 20
+critic-only iterations initialized it; future runner descriptions are corrected.
+
+`imitation-refinement-ablation-001.json` exchanges only the observation
+normalizers between the frozen pre/post-refinement policies. On five development
+seeds, the original actor with the new normalizer collides in 5/5, and the new
+actor with the old normalizer also collides in 5/5. Both full checkpoints fail
+the lift. Normalization changed enough to break the old actor, but this does
+not establish it as the sole cause of the failed refinement. Future work should
+test fixed normalization and an imitation constraint during PPO, not just run
+the same configuration longer.
+
+### State-triggered examples and remaining controller gap
+
+The timed expert had a hidden-clock problem: in all 196 successful episodes,
+the observations just before/at each descend, close and lift transition differed
+by less than 0.001 in every coordinate while an action channel jumped by more
+than 0.5. Median observation changes were 2.33e-10, 1.53e-13 and 2.79e-5
+respectively (`demo-phase-boundaries-001.json`; mixed observation units).
+Thus the deterministic observation-only policy was given conflicting labels
+for effectively the same state. This was a problem in the newly generated
+demonstrations, not evidence of an upstream hardware issue.
+
+The collector's optional `--state-triggered` mode advances when the commanded
+arm waypoint is reached and measured arm error is below 0.02 rad. Closure also
+requires bilateral contact and a completed closing setpoint. Phase time limits
+remain enforced; failure to reach a phase condition is retained as failure.
+This changes example generation, not the policy observation schema, physical
+limits, 6 cm lift requirement or 2 s hold. `lift-demos-state-001` passed its
+first 20/20 scripted trials. `lift-demos-state-002` repeats the same 200 seeds
+as the timed dataset: 196/200 holds, four collision failures, zero numerical
+faults, 32.54 s. The successful episodes still need separate runtime validation.
+
+`lift-imitation-002` uses the same learner, seed 23, 5,000-update / 120 s ceiling
+and development evaluation seeds as candidate 001, with the state-triggered
+dataset. Training took 15.62 s; update 5,000 had the best action validation loss
+(0.009824 versus 0.020098 for candidate 001). Reloaded CPU results: **16/20
+nominal holds**, three collision-ended episodes; **5/20 randomized holds**,
+12 collision-ended episodes; no numerical failures. These are development
+results, not a final untouched holdout. Checkpoint SHA256:
+`eb06853be2011ca11ddfa17551ca0276a2c4e044d2b256ea6b860906563af887`.
+
+The same candidate through `PolicyRunner -> Twin -> SafetySupervisor` achieved
+**0/20** (`lift-imitation-runtime-002.json`): every trial stopped on finger-body
+versus cube guard rejection. Every-substep monitoring found zero actual
+prohibited contacts and zero numerical failures. Training must produce paths
+accepted by that guard; bare-environment successes are insufficient.
+
+`lift-imitation-video-002/seed-50001.mp4` is a visually inspected, labeled
+successful bare-CPU replay (89 frames, 74.03 mm final lift, completed 2 s hold).
+It is imitation, not PPO performance, and does not pass the guarded runtime.
 
 ### Remote environment and isolation
 

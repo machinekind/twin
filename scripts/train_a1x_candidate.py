@@ -60,7 +60,9 @@ def main():
         "initial_policy": str(args.init) if init else None,
         "initial_policy_sha256": hashlib.sha256(args.init.read_bytes()).hexdigest() if init else None,
         "prior_steps": init.meta.steps if init else 0,
-        "continuation": "Actor, normalizer and critic restored; optimizer and action variance restart" if init else None,
+        "continuation": ("Actor and normalizer restored; " +
+                         ("critic restored" if init.critic_state is not None else "critic initialized for warm-up") +
+                         "; optimizer and action variance restart") if init else None,
         "git_head": (subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
                      if (root / ".git").exists() else None),
         "source_snapshot": json.loads((root / "SOURCE_SNAPSHOT.json").read_text())
@@ -123,7 +125,8 @@ def main():
         report["elapsed_s"] = time.monotonic() - started
         report["peak_total_gpu_used_mib"] = max(used, default=0) / 2**20
         (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-        print(json.dumps({k: v for k, v in report.items() if k not in ("source_sha256", "versions", "randomization", "ppo", "task")}), flush=True)
+        print(json.dumps({k: v for k, v in report.items() if k not in
+                          ("source_sha256", "source_snapshot", "versions", "randomization", "ppo", "task")}), flush=True)
 
 
 if __name__ == "__main__":

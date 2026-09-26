@@ -97,7 +97,7 @@ def main() -> None:
         result["peak_total_gpu_used_mib"] = max(used, default=0) / 2**20
         result["torch_peak_allocated_mib"] = torch.cuda.max_memory_allocated() / 2**20
         report.write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps({k: v for k, v in result.items() if k != "source_sha256"}), flush=True)
+        print(json.dumps({k: v for k, v in result.items() if k not in ("source_sha256", "source_snapshot")}), flush=True)
 
 
 if __name__ == "__main__":
