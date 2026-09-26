@@ -160,12 +160,19 @@ def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
         assert vol_obj["alpha"] == pytest.approx(0.35)
         p = vol.center + np.array([0.05, 0.08, -0.05])
         ts = relay.target(p)
+        relay.wait_state(ts, {"moving", "rejected"}, 5.0)
+        # W trakcie jazdy nadzor ogranicza predkosc do ~1,5 x rampy (+5): 20 st./s -> 35.
+        assert twin._supervisor.speed_cap == pytest.approx(35.0)
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 10.0)
         assert st["state"] == "reached", st
         assert relay.states_for(ts)[:2] == ["accepted", "moving"]
         assert st["mode"] == "sim" and list(st)[0] == "type"
         assert np.linalg.norm(tcp(kin, twin) - p) < 0.005
         assert twin.owner is None                          # zwolnione, sprzeglo trzyma cel
+        deadline = time.monotonic() + 2.0
+        while twin._speed_cap is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert twin._speed_cap is None and twin._supervisor.speed_cap is None   # granica przywrocona
         # kulka TCP odswiezana i kulka celu w nakladce
         ids = [o["id"] for m in relay.overlays for o in m["objects"]]
         assert ids.count("tcp") >= 3 and "target" in ids
@@ -223,7 +230,8 @@ def test_object_grasp_descends_closes_and_lifts(twin, kin, vol, relay):
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 25.0)
         assert st["state"] == "reached", (st, relay.states_for(ts))
         assert relay.states_for(ts).count("moving") == 3            # nad, w dol, w gore
-        assert np.linalg.norm(tcp(kin, twin) - (p + [0.0, 0.0, 0.08])) < 0.005
+        # Odcinki w dol / w gore bez docinania: ugiecie pod ciezarem zostaje (symulacja do ~8 mm).
+        assert np.linalg.norm(tcp(kin, twin) - (p + [0.0, 0.0, 0.08])) < 0.008
         assert twin.status.command["gripper"] < 5.0
     finally:
         d.stop()
@@ -259,9 +267,36 @@ def test_new_target_mid_move_retargets(twin, kin, vol, relay):
         st = relay.wait_state(ts2, {"reached", "rejected", "hold", "backoff"}, 15.0)
         assert st["state"] == "reached", st
         assert "reached" not in relay.states_for(ts1)
+        old = [x for x in relay.states if x["ts"] == ts1 and x["state"] == "hold"]
+        assert old and old[-1]["reason"] == "retargeted"      # zastapiony cel dostaje stan koncowy
         assert np.linalg.norm(tcp(kin, twin) - p2) < 0.005
     finally:
         d.stop()
+
+
+def test_untrusted_registration_of_the_same_session_revokes_trust(twin, kin, vol, relay):
+    d = driver(twin, relay)
+    try:
+        assert d.status()["session"] == "s1"
+        d._on_message(json.dumps({"type": "registration", "session": "s1", "trusted": False}))
+        assert d.status()["session"] is None
+        ts = relay.target(vol.center)
+        st = relay.wait_state(ts, {"rejected", "reached"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("rejected", "untrusted")
+    finally:
+        d.stop()
+
+
+def test_start_center_goes_above_the_volume_centre_in_stages(twin, kin, vol, relay):
+    if twin.safety_state is not None and twin.safety_state.value == "estop":
+        twin.clear_estop()
+    twin.configure(objects=None)
+    twin.move({k: v for k, v in twin.spec.home.items() if k != twin.spec.gripper}, 2.0, owner="test")
+    twin.release("test")
+    d = SpecsReach(twin, relay_url=relay.url, mode="sim")
+    assert d.start_center(30.0) is None
+    assert np.linalg.norm(tcp(kin, twin) - vol.center) < 0.01
+    assert twin.owner is None and twin._speed_cap is None
 
 
 def _dist_to_box(p, lo, hi) -> float:

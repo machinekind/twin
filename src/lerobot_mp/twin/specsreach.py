@@ -29,7 +29,10 @@ zwalniane, sprzeglo zostaje, cel trzymany.
 Tryby: `dry` - wszystkie sprawdzenia i nakladka planowanego celu, bez ruchu
 (stan accepted, potem hold); `sim` - rusza tylko ramieniem w symulacji;
 `real` - rusza prawdziwym ramieniem, tylko z `real_ok` i po `hold_off_s`
-od celu dloni.
+od celu dloni. Na czas ruchu granica predkosci nadzoru (`Twin.set_speed`) spada do
+~1,5 x predkosci rampy (+5 st./s), na czas wycofania do 15 st./s; potem wraca.
+W `real` zerwane polaczenie z przekaznikiem zatrzymuje jazde (hold). Okulary NIE
+maja STOP-u: zatrzymuje Enter/Ctrl-C w konsoli albo STOP w panelu.
 """
 
 from __future__ import annotations
@@ -131,7 +134,11 @@ class SpecsReach:
     #: TCP 8 mm za nisko). Rozkaz przesuwany o uchyb, najwyzej `trim_max_deg` od celu IK.
     trim_steps = 4
     trim_deg = 0.2
-    trim_max_deg = 5.0
+    trim_max_deg = 2.5
+    #: Po koncu rampy straznik ciasniejszy: staw zablokowany przy celu wycofuje sie, zanim
+    #: backend A1X zglosi "gluchy" staw (3 st. przez 1 s) i STOP.
+    arrive_lag_deg = 2.5
+    arrive_lag_s = 0.3
     #: Co ile sekund kulka TCP w nakladce; po ilu sekundach znika kulka celu.
     tcp_period_s = 0.2
     target_linger_s = 2.0
@@ -151,6 +158,12 @@ class SpecsReach:
     #: Wycofanie: straznik slucha dopiero po tylu sekundach - staw oparty o przeszkode ma jeszcze
     #: przez chwile wysilek ponad prog (symulacja: 27 N m na J1 zaraz po uderzeniu).
     backoff_grace_s = 0.3
+    #: Granica predkosci nadzoru na czas wycofania [st./s].
+    backoff_cap_deg_s = 15.0
+    #: Wysilek stawu w spoczynku ponad taka czesc progu = regula wysilku wylaczona dla stawu w tym ruchu.
+    effort_rest_frac = 0.5
+    #: Tryb dry: co ile sekund wysilek stawow do logu (liczby do progow na pierwszej sesji).
+    dry_effort_period_s = 1.0
 
     def __init__(self, twin: Twin, *, relay_url: str, volume: ReachVolume | None = None, mode: str = "dry",
                  hover: float = 0.08, touch_dz: float = 0.01, speed_deg_s: float = 20.0,
@@ -203,6 +216,12 @@ class SpecsReach:
         self._kin: RobotKinematics | None = None
         self._effort_ids: np.ndarray | None = None
         self._effort_limit: np.ndarray | None = None
+        #: Granica predkosci nadzoru sprzed pierwszego ruchu (przywracana po nim); `_capped` - zmieniona.
+        self._prev_cap: float | None = None
+        self._capped = False
+        self._current: Target | None = None
+        self._detail = ""
+        self._validated_from: dict[str, float] | None = None
 
     # ------------------------------------------------------------ zycie
     def start(self) -> None:
@@ -246,14 +265,17 @@ class SpecsReach:
     def _net_loop(self) -> None:
         from websockets.sync.client import connect
 
+        failures = 0
         while not self._stop.is_set():
             try:
                 ws = connect(self.relay_url, proxy=None, open_timeout=3.0, close_timeout=1.0)
             except Exception as exc:
-                logger.info("Przekaznik %s niedostepny (%s) - ponowie za %.0f s",
-                            self.relay_url, exc, self.reconnect_s)
+                (logger.warning if failures == 0 else logger.info)(
+                    "Przekaznik %s niedostepny (%s) - ponowie za %.0f s", self.relay_url, exc, self.reconnect_s)
+                failures += 1
                 self._stop.wait(self.reconnect_s)
                 continue
+            failures = 0
             logger.info("Polaczono z przekaznikiem %s", self.relay_url)
             self._ws = ws
             try:
@@ -272,9 +294,12 @@ class SpecsReach:
                         self._send_tcp(now)
             except Exception as exc:
                 if not self._stop.is_set():
-                    logger.info("Przekaznik rozlaczony (%s) - ponowie za %.0f s", exc, self.reconnect_s)
+                    logger.warning("Przekaznik rozlaczony (%s) - ponowie za %.0f s", exc, self.reconnect_s)
             finally:
                 self._ws = None
+                # Prawdziwe ramie bez przekaznika nie jedzie dalej: okulary nie widza juz stanu.
+                if self.mode == "real" and self._phase == "moving" and not self._stop.is_set():
+                    self._interrupt("relay")
                 try:
                     ws.close()
                 except Exception:                       # pragma: no cover
@@ -323,8 +348,8 @@ class SpecsReach:
                 return
             with self._lock:
                 self._session_any = str(session)
-                if msg.get("trusted") is True:
-                    self._session = str(session)
+                # Kazda rejestracja bez `trusted: true` (tez pozniejsza tej samej sesji) odbiera zaufanie.
+                self._session = str(session) if msg.get("trusted") is True else None
         elif kind == "target":
             t = parse_target(msg, time.monotonic())
             if t is None:
@@ -342,10 +367,13 @@ class SpecsReach:
                 self._cancel.set()
 
     # ------------------------------------------------------------ targetState
-    def _report(self, t: Target, state: str, reason: str | None = None, *, tcp: bool = True) -> None:
+    def _report(self, t: Target, state: str, reason: str | None = None, *, tcp: bool = True,
+                detail: str = "") -> None:
         msg: dict[str, Any] = {"type": "targetState", "state": state}
         if reason:
             msg["reason"] = reason
+        if detail:
+            msg["detail"] = detail
         msg["pos"] = [round(float(v), 4) for v in t.pos]
         if tcp:
             try:
@@ -356,7 +384,8 @@ class SpecsReach:
         msg["mode"] = self.mode
         self._last_state = msg
         log = logger.warning if state in ("rejected", "backoff") else logger.info
-        log("Cel %s %s: %s%s", t.source, np.round(t.pos, 3).tolist(), state, f" ({reason})" if reason else "")
+        log("Cel %s %s: %s%s%s", t.source, np.round(t.pos, 3).tolist(), state, f" ({reason})" if reason else "",
+            f" - {detail}" if detail else "")
         self._send(msg)
         if self.on_state is not None:
             try:
@@ -377,21 +406,67 @@ class SpecsReach:
 
     # ------------------------------------------------------------ wykonawca
     def _work_loop(self) -> None:
+        next_effort = 0.0
         while not self._stop.is_set():
             try:
                 t = self._queue.get(timeout=0.2)
             except queue.Empty:
+                if self.mode == "dry" and time.monotonic() >= next_effort:
+                    next_effort = time.monotonic() + self.dry_effort_period_s
+                    self._log_efforts("dry")
                 continue
             t = self._latest(t)
             try:
                 while t is not None and not self._stop.is_set():
                     t = self._execute(t)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Kierowca okularow: blad wykonania celu")
+                cur = self._current
+                if self.twin.owner == OWNER:
+                    try:
+                        self.twin.hold_measured()       # nie dociskac do ostatniego celu rampy
+                    except Exception:                   # pragma: no cover
+                        logger.exception("hold_measured po bledzie")
+                if cur is not None:
+                    self._report(cur, "hold", "error", detail=f"{type(exc).__name__}: {exc}"[:200])
             finally:
+                self._current = None
                 self._phase = "idle"
                 self._release()
+                self._restore_speed()
         self._release()
+        self._restore_speed()
+
+    def _log_efforts(self, what: str) -> dict[str, float] | None:
+        """Wysilek stawow ramienia do logu (progi straznika na A1X sa zgadywane - to daje liczby)."""
+        b = self.twin.backend
+        if b is None:
+            return None
+        if b.info.simulated and self._effort_ids is None:
+            self._effort_limits(False)                  # ustawia aktuatory ramienia
+        eff = self._efforts()
+        if eff:
+            logger.info("Wysilek stawow (%s): %s", what, {k: round(float(v), 2) for k, v in eff.items()})
+        return eff
+
+    # ------------------------------------------------------------ granica predkosci
+    def _cap_speed(self, deg_s: float) -> None:
+        """Granica predkosci nadzoru na czas ruchu kierowcy (nie wyzej niz ustawiona w panelu)."""
+        tw = self.twin
+        if not self._capped:
+            self._prev_cap = getattr(tw, "_speed_cap", None)
+            self._capped = True
+        prev = self._prev_cap
+        tw.set_speed(min(prev if prev is not None else 1e9, float(deg_s)))
+
+    def _restore_speed(self) -> None:
+        if not self._capped:
+            return
+        self._capped = False
+        try:
+            self.twin.set_speed(self._prev_cap)
+        except Exception:                               # pragma: no cover
+            logger.exception("Przywracanie granicy predkosci")
 
     def _latest(self, t: Target) -> Target:
         """Z kolejki bierze najnowszy cel; starsze, nieobsluzone, dostaja "busy"."""
@@ -431,9 +506,18 @@ class SpecsReach:
         tw = self.twin
         return {k: float(v) for k, v in (tw.status.command or tw.joints()).items()}
 
+    def _hover_point(self, pos: np.ndarray) -> np.ndarray:
+        """Punkt nad obiektem: `hover` wyzej, ale najwyzej 3 cm pod sufitem pudelka
+        (wyzej IK z TCP w dol czesto nie ma rozwiazania)."""
+        p = np.array(pos, float)
+        p[2] = min(float(pos[2]) + self.hover, float(self.volume.hi[2]) - 0.03)
+        return p
+
     def _validate(self, t: Target) -> tuple[str | None, list[_Leg]]:
-        """(powod odmowy albo None, odcinki ruchu). Kolejnosc sprawdzen jak w module."""
+        """(powod odmowy albo None, odcinki ruchu). Kolejnosc sprawdzen jak w module.
+        Szczegol odmowy (IK, kolizja) w `self._detail`."""
         tw = self.twin
+        self._detail = ""
         if not tw.connected:
             return "not connected", []
         if self._estopped():
@@ -459,34 +543,43 @@ class SpecsReach:
 
         kin, checker = self._tools()
         cmd = self._command()
+        self._validated_from = {k: cmd[k] for k in self.arm if k in cmd}
         legs: list[_Leg] = []
+        # Ramie z mniej niz 6 stawami (SO-101) nie ustawi dowolnego obrotu: IK tylko na pozycje,
+        # a os podejscia w dol sprawdzana tylko przed zejsciem (--grasp); samo "nad obiekt" bez niej.
+        full_rot = len(self.arm) >= 6
         if t.source == "hand":
-            points = [(t.pos, None, 1.0, "normal", "dlon")]
+            points = [(t.pos, None, False, 1.0, "normal", "dlon")]
         else:
-            R = down_rotation(self.spec, t.pos)
-            above = t.pos + np.array([0.0, 0.0, self.hover])
-            points = [(above, R, 1.0, "normal", "nad obiekt")]
+            R = down_rotation(self.spec, t.pos) if full_rot else None
+            check_down = full_rot or self.grasp
+            points = [(self._hover_point(t.pos), R, check_down, 1.0, "normal", "nad obiekt")]
             if self.grasp:
-                points.append((t.pos + np.array([0.0, 0.0, self.touch_dz]), R, 0.5, "descend", "w dol"))
+                points.append((t.pos + np.array([0.0, 0.0, self.touch_dz]), R, True, 0.5, "descend", "w dol"))
         prev = {k: cmd[k] for k in self.arm if k in cmd}
-        for p, R, factor, profile, what in points:
+        for p, R, check_down, factor, profile, what in points:
             sol = kin.ik(p, rotation=R, seed={**cmd, **prev}, tol=self.ik_tol)
             if not sol.ok:
-                logger.info("IK %s: blad %.1f mm", what, sol.pos_err * 1000)
+                self._detail = f"IK {what}: blad {sol.pos_err * 1000:.1f} mm"
+                logger.info(self._detail)
                 return "ik", []
-            if R is not None:
+            if check_down:
                 approach = kin.tool_axes(sol.joints)[0]
-                if float(np.arccos(np.clip(-approach[2], -1.0, 1.0))) > self.approach_tol:
-                    logger.info("IK %s: os podejscia %s nie w dol", what, np.round(approach, 2).tolist())
+                off = float(np.arccos(np.clip(-approach[2], -1.0, 1.0)))
+                if off > self.approach_tol:
+                    self._detail = f"IK {what}: os podejscia {math.degrees(off):.0f} st. od pionu"
+                    logger.info(self._detail)
                     return "ik", []
             goal = {k: float(v) for k, v in sol.joints.items() if k in self.arm}
             jump = max(abs(goal[k] - prev.get(k, goal[k])) for k in goal)
             if jump > self.max_jump:
-                logger.info("Skok %s %.0f st. > %.0f", what, jump, self.max_jump)
+                self._detail = f"skok {what} {jump:.0f} st. > {self.max_jump:.0f}"
+                logger.info(self._detail)
                 return "jump", []
             why = checker.path_clear(prev, goal)
             if why is not None:
-                logger.info("Kolizja %s: %s", what, why)
+                self._detail = f"kolizja {what}: {why}"
+                logger.info(self._detail)
                 return "collision", []
             legs.append(_Leg(goal, self.speed * factor, profile, what))
             prev = goal
@@ -500,39 +593,50 @@ class SpecsReach:
 
     def _execute(self, t: Target) -> Target | None:
         """Obsluga jednego celu; zwraca nastepny cel, gdy ten przerwano nowym."""
+        self._current = t
         with self._lock:
             if not self._stop.is_set():                     # `stop()` z tej chwili nie moze przepasc
                 self._cancel.clear()
                 self._cause = ""
+        # "moving" juz od sprawdzenia (IK + kolizje trwaja): nowy cel w tym czasie zastepuje ten,
+        # zamiast czekac w kolejce i ruszyc ramieniem po nim.
+        self._phase = "moving"
+        if not self._queue.empty():
+            self._interrupt("retarget")
         reason, legs = self._validate(t)
         if reason is not None:
-            self._report(t, "rejected", reason)
+            self._report(t, "rejected", reason, detail=self._detail)
             self._release()
             return None
         self._report(t, "accepted")
-        self._show_target(t.pos if t.source == "hand" else t.pos + np.array([0.0, 0.0, self.hover]))
+        self._show_target(t.pos if t.source == "hand" else self._hover_point(t.pos))
         if self.mode == "dry":
             self._report(t, "hold")
             return None
+        if self._cancel.is_set():
+            return self._after_cancel(t)
         if self.mode == "real" and t.source == "hand" and self.hold_off_s > 0:
-            self._phase = "moving"                          # nowy cel w trakcie odczekania go zastepuje
-            if self._cancel.wait(self.hold_off_s):
+            if self._cancel.wait(self.hold_off_s):          # nowy cel w trakcie odczekania go zastepuje
                 return self._after_cancel(t)
         try:
             gen = self._take()
+            self._recheck(legs)
         except _Abort as exc:
-            self._report(t, exc.state, exc.reason)
+            self._report(t, exc.state, exc.reason, detail=self._detail)
+            self._release()
             return None
+        self._cap_speed(1.5 * self.speed + 5.0)            # smoothstep: szczyt 1,5 x sredniej
         self._guard = ImpactGuard(self.arm)
         self._report(t, "moving")
+        self._detail = ""
         for k, leg in enumerate(legs):
             try:
                 if leg.what == "w gore" and self.spec.gripper:
                     self._close_gripper(gen)
                 self._tune_guard(self._guard, leg.profile)
-                done = self._ramp(leg.goal, leg.speed, gen)
+                done = self._ramp(leg.goal, leg.speed, gen, profile=leg.profile)
             except _Abort as exc:
-                self._report(t, exc.state, exc.reason)
+                self._report(t, exc.state, exc.reason, detail=self._detail)
                 self._hide_target_later()
                 self._release()
                 return None
@@ -550,13 +654,18 @@ class SpecsReach:
             cause = self._cause
         if cause == "retarget":
             try:
-                return self._latest(self._queue.get_nowait())
+                nxt = self._latest(self._queue.get_nowait())
             except queue.Empty:
-                return None
+                nxt = None
+            self._report(t, "hold", "retargeted")
+            return nxt
         if cause == "impact":
             self._backoff(t)
             return None
-        reason = "stop" if (cause == "stop" and self._stop.is_set()) or self._estopped() else "preempted"
+        if cause == "relay":
+            reason = "relay"
+        else:
+            reason = "stop" if (cause == "stop" and self._stop.is_set()) or self._estopped() else "preempted"
         self._report(t, "hold", reason)
         self._hide_target_later()
         self._release()
@@ -579,6 +688,116 @@ class SpecsReach:
             raise _Abort("rejected", "stop" if self._estopped() else "busy")
         return gen
 
+    def _recheck(self, legs: list[_Leg]) -> None:
+        """Po wzieciu ramienia: rozkaz mogl sie zmienic od sprawdzenia (suwaki w czasie odczekania).
+        Skok i droga do pierwszego celu jeszcze raz, od biezacego rozkazu; inaczej hold "moved"."""
+        if not legs:
+            return
+        cmd = self._command()
+        first = legs[0].goal
+        start = {k: cmd[k] for k in self.arm if k in cmd}
+        validated = self._validated_from
+        if validated is not None and all(abs(start[k] - validated.get(k, math.inf)) < 0.5 for k in start):
+            return
+        jump = max((abs(first[k] - start.get(k, first[k])) for k in first if k in self.arm), default=0.0)
+        if jump > self.max_jump:
+            self._detail = f"rozkaz zmieniony w czasie odczekania: skok {jump:.0f} st."
+            raise _Abort("hold", "moved")
+        _, checker = self._tools()
+        why = checker.path_clear(start, {k: first[k] for k in first if k in self.arm})
+        if why is not None:
+            self._detail = f"rozkaz zmieniony w czasie odczekania: kolizja {why}"
+            raise _Abort("hold", "moved")
+
+    def center_pose(self) -> dict[str, float] | None:
+        """Stawy ramienia z TCP nad srodkiem pudelka zasiegu (IK od pozy domowej); None - brak IK."""
+        kin, _ = self._tools()
+        sol = kin.ik(self.volume.center, seed=self.spec.home, tol=self.ik_tol)
+        if not sol.ok:
+            return None
+        return {k: float(v) for k, v in sol.joints.items() if k in self.arm}
+
+    def start_center(self, speed_deg_s: float = 10.0) -> str | None:
+        """Przed startem kierowcy: etapami (`spec.home_stages`) nad srodek pudelka, pod tym samym
+        straznikiem uderzen. Z pozy domowej kazdy punkt pudelka to skok > 45 st. (odmowa "jump").
+
+        Wywolywac PRZED `start()` (z watku, ktory potem uruchomi kierowce). Uderzenie = trzymanie
+        zmierzonej pozy, bez wycofania. None - dojechal, inaczej powod.
+        """
+        tw = self.twin
+        if not tw.connected:
+            return "not connected"
+        if self._estopped():
+            return "stop"
+        if not (tw.status.simulated or (self.mode == "real" and self.real_ok)):
+            return "not armed"
+        goal = self.center_pose()
+        if goal is None:
+            return "ik"
+        _, checker = self._tools()
+        start = {k: v for k, v in self._command().items() if k in self.arm}
+        steps = self._stage_plan(start, goal, checker)
+        if isinstance(steps, str):
+            logger.warning("Start nad srodek pudelka: %s", steps)
+            return "collision"
+        with self._lock:
+            self._cancel.clear()
+            self._cause = ""
+        try:
+            gen = self._take()
+        except _Abort as exc:
+            return exc.reason
+        self._cap_speed(1.5 * speed_deg_s + 5.0)
+        self._guard = ImpactGuard(self.arm)
+        try:
+            for step in steps:
+                self._tune_guard(self._guard, "normal")
+                if not self._ramp(step, speed_deg_s, gen):
+                    with self._lock:
+                        cause = self._cause
+                    tw.hold_measured()
+                    hit = self._impact
+                    self._impact = None
+                    if cause == "impact" and hit is not None:
+                        logger.warning("Start nad srodek pudelka: uderzenie %s %s - trzymanie", hit.kind, hit.joint)
+                        return f"impact {hit.kind} {hit.joint}"
+                    return cause or "preempted"
+            return None
+        except _Abort as exc:
+            return exc.reason
+        finally:
+            self._guard = None
+            self._phase = "idle"
+            self._release()
+            self._restore_speed()
+
+    def _stage_plan(self, start: dict[str, float], goal: dict[str, float],
+                    checker: CollisionChecker) -> list[dict[str, float]] | str:
+        """Pozy posrednie jak w domu etapami: grupy stawow po kolei (tez odwrotnie), a na koniec
+        caly cel; pierwszy plan z czystymi drogami wygrywa, bez etapow - prosto. Albo opis kolizji."""
+        stages = [tuple(j for j in st if j in self.arm) for st in self.spec.home_stages]
+        stages = [st for st in stages if st]
+        orders = [stages, stages[::-1]] if stages else []
+        why = ""
+        for order in [*orders, []]:
+            cur, out = dict(start), []
+            bad = None
+            for stage in [*order, tuple(self.arm)]:
+                nxt = dict(cur)
+                for j in stage:
+                    nxt[j] = goal[j]
+                if max((abs(nxt[j] - cur[j]) for j in nxt), default=0.0) < 1e-3:
+                    continue
+                bad = checker.path_clear(cur, nxt)
+                if bad is not None:
+                    break
+                out.append(nxt)
+                cur = nxt
+            if bad is None:
+                return out
+            why = why or bad
+        return why
+
     def _close_gripper(self, gen: int) -> None:
         g = self.spec.gripper
         self.twin.set_target({g: self.grip_closed}, owner=OWNER)
@@ -588,9 +807,10 @@ class SpecsReach:
             raise _Abort("hold", "stop" if self._estopped() else "preempted")
 
     # ------------------------------------------------------------ rampa
-    def _ramp(self, goal: Mapping[str, float], speed: float, gen: int, *, guarded: bool = True) -> bool:
+    def _ramp(self, goal: Mapping[str, float], speed: float, gen: int, *, guarded: bool = True,
+              profile: str = "normal") -> bool:
         """Rampa smoothstep do `goal` i czekanie na dojechanie. True = dojechal, False = przerwana
-        (`self._cause`); `_Abort` - ramie odebrane albo nie dojechalo."""
+        (`self._cause`); `_Abort` - ramie odebrane albo nie dojechalo (wtedy trzyma zmierzona poze)."""
         tw = self.twin
         start_all = self._command()
         start = {k: start_all.get(k, float(v)) for k, v in goal.items()}
@@ -621,6 +841,10 @@ class SpecsReach:
                     break
                 if self._cancel.wait(self.tick_s):
                     return False
+            guard = self._guard
+            if guard is not None:
+                # Staw zablokowany tuz przy celu: wycofanie, zanim backend uzna go za "gluchy".
+                guard.lag_deg, guard.lag_s = self.arrive_lag_deg, self.arrive_lag_s
             # Dojechanie: kazdy staw ramienia najwyzej `arrive_deg` od celu i stoi.
             deadline = time.monotonic() + self.arrive_timeout_s
             prev: tuple[float, dict[str, float]] | None = None
@@ -639,18 +863,30 @@ class SpecsReach:
                 if prev is None or st.measured_t > prev[0]:
                     prev = (st.measured_t, meas)
                 if not far and still:
+                    if profile == "descend":
+                        return True                     # przy zejsciu bez docinania: docisk do obiektu
                     return self._trim(goal, gen)
                 if time.monotonic() > deadline:
+                    # Staw zablokowany nie naciska dalej na przeszkode celem, ktorego nie osiagnal.
+                    tw.hold_measured()
+                    self._detail = ", ".join(f"{k} {meas.get(k, math.nan) - goal[k]:+.1f} st." for k in far)
                     raise _Abort("hold", "not arrived")
         finally:
             if handle is not None:
                 tw.remove_tick_listener(handle)
-            self._phase = "idle"
 
     def _trim(self, goal: Mapping[str, float], gen: int) -> bool:
         """Rozkaz = cel + uchyb (pomiar ma trafic w cel IK), kilka krokow. False = przerwane."""
         tw = self.twin
         cmd = {k: float(v) for k, v in goal.items()}
+        guard = self._guard
+        if guard is not None and guard.effort_abs:
+            eff = self._efforts() or {}
+            loaded = [j for j, lim in guard.effort_abs.items()
+                      if j in eff and abs(eff[j]) > self.effort_rest_frac * lim]
+            if loaded:
+                logger.info("Bez docinania: wysilek %s ponad polowe progu", loaded)
+                return True
         for _ in range(self.trim_steps):
             meas = dict(tw.status.measured)
             off = {k: goal[k] - meas[k] for k in goal if k in self.arm and k in meas}
@@ -682,7 +918,17 @@ class SpecsReach:
         Jeden straznik na caly cel - bufor dobrych probek (poza wycofania) przechodzi przez odcinki."""
         descend = profile == "descend"
         guard.lag_deg = 3.0 if descend else 6.0
-        guard.effort_abs = self._effort_limits(descend) or {}
+        guard.lag_s = 0.15
+        limits = self._effort_limits(descend) or {}
+        # Staw, ktory juz w spoczynku ma wysilek ponad polowe progu (ciezar, sprezyna), wyzwalalby
+        # przy kazdym ruchu: dla niego w tym odcinku tylko regula opoznienia.
+        rest = self._log_efforts("start odcinka") if limits else None
+        if rest:
+            for j in [j for j, lim in limits.items() if j in rest and abs(rest[j]) > self.effort_rest_frac * lim]:
+                logger.warning("Wysilek %s w spoczynku %.1f > %.0f%% progu %.1f - regula wysilku wylaczona "
+                               "dla tego stawu w tym ruchu", j, rest[j], 100 * self.effort_rest_frac, limits[j])
+                limits.pop(j)
+        guard.effort_abs = limits
 
     def _effort_limits(self, descend: bool) -> dict[str, float] | None:
         b = self.twin.backend
@@ -764,6 +1010,8 @@ class SpecsReach:
             if not self._stop.is_set():
                 self._cancel.clear()
                 self._cause = ""
+        self._cap_speed(self.backoff_cap_deg_s)
+        self._detail = ""
         self._guard = ImpactGuard(self.arm, effort_abs=self._effort_limits(False))
         self._guard_from = time.monotonic() + self.backoff_grace_s
         handle = tw.add_tick_listener(self._on_tick)
@@ -772,7 +1020,7 @@ class SpecsReach:
                 raise _Abort("hold", self._cause or "preempted")
             done = self._ramp(pose, self.backoff_speed, gen, guarded=False)
         except _Abort as exc:
-            self._report(t, "hold", f"{why}; {exc.reason}")
+            self._report(t, "hold", f"{why}; {exc.reason}", detail=self._detail)
             self._hide_target_later()
             self._release()
             return

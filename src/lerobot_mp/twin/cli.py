@@ -18,6 +18,7 @@
     lerobot-twin specs                       # okulary Spectacles przez przekaznik: tylko sprawdzenia (dry)
     lerobot-twin specs --mode sim            # ... ramie w symulacji jedzie do wskazanego punktu
     lerobot-twin specs --mode real --i-know  # ... PRAWDZIWE ramie (backend ze stanowiska)
+    lerobot-twin specs --mode real --i-know --start-center  # ... najpierw (po Enter) nad srodek pudelka
 
 `--config` ustawia zmienna LEROBOT_MP_CONFIG, wiec plik widzi tez proces treningu
 uruchamiany z panelu.
@@ -443,6 +444,7 @@ UWAGA: okulary rusza PRAWDZIWYM ramieniem.
 
 def _specs(a: argparse.Namespace) -> int:
     import json
+    import logging
     import threading
     import time
 
@@ -453,6 +455,8 @@ def _specs(a: argparse.Namespace) -> int:
     if a.mode == "real" and not a.i_know:
         print("lerobot-twin specs --mode real rusza prawdziwym ramieniem - dodaj --i-know.", file=sys.stderr)
         return 2
+    # Odmowy, uderzenia, brak przekaznika i wysilek stawow (dry) ida przez logging.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ws = Workspace.load(a.workspace)
     # dry i sim domyslnie na ramieniu w symulacji: bez --backend nic nie laczy sie ze sprzetem.
     backend = a.backend or ("sim" if a.mode in ("dry", "sim") else None)
@@ -468,26 +472,43 @@ def _specs(a: argparse.Namespace) -> int:
     st = twin.status
     print(f"Ramie: {st.backend} ({'symulacja' if st.simulated else 'prawdziwe'}), tryb {a.mode}, "
           f"przekaznik {a.relay}", flush=True)
-    if st.simulated:
-        # Ramie w symulacji startuje z pozy zerowej, skad kazdy punkt pudelka to skok > 45 st.
-        # (odmowa "jump"). Tylko w symulacji: najpierw nad srodek pudelka zasiegu.
-        from .kinematics import RobotKinematics
-        from .reach import ReachVolume
-
-        sol = RobotKinematics(twin.spec).ik(ReachVolume.from_workspace(ws).center, seed=twin.spec.home, tol=0.003)
-        try:
-            if sol.ok:
-                twin.move({k: v for k, v in sol.joints.items() if k != twin.spec.gripper}, 2.0, owner="specs-start")
-        except RuntimeError as exc:
-            print(f"Symulacja: nie ustawiono pozy startowej: {exc}", file=sys.stderr)
-        finally:
-            twin.release("specs-start")
 
     def show(msg: dict) -> None:
         print(json.dumps(msg), flush=True)
 
     drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=a.allow_untrusted,
                      real_ok=a.mode == "real" and a.i_know, on_state=show)
+    # Z pozy domowej / zerowej kazdy punkt pudelka to skok > 45 st. (odmowa "jump"): najpierw nad srodek.
+    if a.start_center:
+        if not st.simulated:
+            if a.mode != "real":
+                print("--start-center na prawdziwym ramieniu tylko w --mode real.", file=sys.stderr)
+                twin.close()
+                return 2
+            try:
+                input("Enter = ramie jedzie etapami (10 st./s) nad srodek pudelka zasiegu; Ctrl-C = koniec. ")
+            except (EOFError, KeyboardInterrupt):
+                print("\nBez startu nad srodek - koniec.", flush=True)
+                twin.hold_measured()
+                twin.close()
+                return 1
+        why = drv.start_center(10.0)
+        if why is not None:
+            print(f"Start nad srodek pudelka nieudany: {why} - ramie trzyma poze.", file=sys.stderr)
+            if not st.simulated:
+                twin.hold_measured()
+                twin.close()
+                return 1
+    elif st.simulated:
+        # Tylko w symulacji, bez pytania: szybki przejazd nad srodek pudelka zasiegu.
+        goal = drv.center_pose()
+        try:
+            if goal is not None:
+                twin.move(goal, 2.0, owner="specs-start")
+        except RuntimeError as exc:
+            print(f"Symulacja: nie ustawiono pozy startowej: {exc}", file=sys.stderr)
+        finally:
+            twin.release("specs-start")
     stop = threading.Event()
     if sys.stdin is not None and sys.stdin.isatty():
         def keyboard() -> None:
@@ -644,6 +665,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--grasp", action="store_true", help="cel obiektu: zejscie, chwyt i powrot (inaczej tylko nad obiekt)")
     p.add_argument("--allow-untrusted", action="store_true", help="przyjmuj cele z niezaufanej rejestracji okularow")
     p.add_argument("--i-know", action="store_true", help="wymagane w --mode real: rozumiem, ze ramie sie ruszy")
+    p.add_argument("--start-center", action="store_true",
+                   help="przed startem etapami (10 st./s, straznik uderzen) nad srodek pudelka; w real po Enter")
     p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")
     p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_specs)

@@ -30,7 +30,7 @@ bridge = ["pyserial>=3.5"]
 # Cyfrowy blizniak: symulacja, srodowisko RL, panel webowy i polityki (torch - takze bez GPU).
 # UWAGA: torch zainstaluj NAJPIERW z indeksu PyTorcha (cu126 albo cpu), patrz README.
 # websockets: klient przekaznika okularow Spectacles (`lerobot-twin specs`).
-twin = ["mujoco>=3.14,<3.15", "gymnasium>=1.0", "viser>=1.1", "pyserial>=3.5", "torch>=2.7,<2.12", "websockets>=13"]
+twin = ["mujoco>=3.14,<3.15", "gymnasium>=1.0", "viser>=1.1", "pyserial>=3.5", "torch>=2.7,<2.12", "websockets>=15"]
 # Trening na GPU: tysiace swiatow MuJoCo Warp + PPO w torchu. mujoco i mujoco-warp musza
 # miec te sama wersje. Na Windows PyPI daje torch BEZ CUDA - kolo z CUDA z indeksu PyTorcha.
 train = ["mujoco>=3.14,<3.15", "mujoco-warp>=3.14,<3.15", "torch>=2.7,<2.12"]

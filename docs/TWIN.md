@@ -669,7 +669,10 @@ przekaźnika, tryb, *Okulary moga ruszac prawdziwym ramieniem*, *Polacz z
 okularami* / *Rozlacz okulary*, stan: sesja i ostatni cel). Zmiana trybu albo
 pola wyboru działa od razu na połączonym kierowcy. Z `lerobot-twin specs`
 **Enter** albo **Ctrl-C** to STOP: ramię trzyma zmierzoną pozę, bliźniak się
-rozłącza. Każdy `targetState` idzie na wyjście jako jedna linia JSON.
+rozłącza. Każdy `targetState` idzie na wyjście jako jedna linia JSON, a odmowy,
+uderzenia, brak przekaźnika i (w `dry`) wysiłek stawów co 1 s — do logu.
+**Okulary nie mają STOP-u:** ramię zatrzymuje tylko Enter / Ctrl-C w konsoli
+albo STOP w panelu — trzymaj rękę na klawiaturze.
 
 | opcja | znaczenie |
 |---|---|
@@ -679,6 +682,7 @@ rozłącza. Każdy `targetState` idzie na wyjście jako jedna linia JSON.
 | `--grasp` | cel obiektu: zejście, chwyt i powrót nad obiekt (inaczej tylko nad obiekt) |
 | `--allow-untrusted` | przyjmuj cele z niezaufanej rejestracji (tylko do prób w symulacji) |
 | `--i-know` | wymagane w `real`; bez niego polecenie kończy się kodem 2 |
+| `--start-center` | przed startem ramię jedzie etapami (jak Dom, 10°/s, pod strażnikiem uderzeń) nad środek pudełka; w `real` dopiero po Enter. Bez niej w symulacji jest szybki przejazd bez pytania, w `real` żaden |
 | `--workspace`, `--seconds` | plik stanowiska; koniec po N sekundach (testy) |
 
 **Tryby, zawsze w tej kolejności:**
@@ -691,7 +695,10 @@ rozłącza. Każdy `targetState` idzie na wyjście jako jedna linia JSON.
    każdy cel dostaje odmowę `not armed`.
 3. **`real`** — prawdziwe ramię, tylko z `--i-know` (w panelu: z zaznaczonym
    polem wyboru). Cel dłoni rusza dopiero po 1 s od przyjęcia (`hold_off_s`);
-   nowy cel albo STOP w tym czasie go anuluje.
+   nowy cel albo STOP w tym czasie go anuluje. Jeśli rozkaz zmienił się w tej
+   sekundzie (suwaki w panelu), skok i droga są sprawdzane jeszcze raz od nowego
+   rozkazu — inaczej `hold` z powodem `moved`. Zerwane połączenie z przekaźnikiem
+   w czasie jazdy zatrzymuje ją (`hold`, powód `relay`).
 
 ### Wiadomości
 
@@ -704,7 +711,7 @@ okulary → bliźniak:
 
 bliźniak → okulary i podgląd:
 {"type":"targetState","state":"accepted"|"rejected"|"moving"|"reached"|"backoff"|"hold",
- "reason"?:"...","pos":[x,y,z],"tcp":[x,y,z],"ts":<ts celu>,"mode":"dry"|"sim"|"real"}
+ "reason"?:"...","detail"?:"...","pos":[x,y,z],"tcp":[x,y,z],"ts":<ts celu>,"mode":"dry"|"sim"|"real"}
 
 bliźniak → okulary (nakładka):
 {"type":"overlay","objects":[{"id":"reach","kind":"volume","pos":[cx,cy,cz],"size":[sx,sy,sz],
@@ -715,13 +722,20 @@ bliźniak → okulary (nakładka):
 TCP, potem samą kulkę TCP co 0,2 s. Przyjęty cel to kulka `target` (punkt
 dłoni albo punkt nad obiektem), zdejmowana 2 s po `reached`, `backoff` albo
 `hold`. Kolejność stanów: `accepted`, `moving` (raz na odcinek), potem
-`reached`, `backoff` albo `hold`; w `dry` tylko `accepted`, `hold`.
+`reached`, `backoff` albo `hold`; w `dry` tylko `accepted`, `hold`. `detail`
+opisuje odmowę `ik` / `jump` / `collision` (błąd IK w mm, skok, para w kolizji).
+Cel zastąpiony nowym dostaje `hold` z powodem `retargeted`; `hold` z `not arrived`
+(staw nie dojechał w 3 s — ramię trzyma zmierzoną pozę), `error` (wyjątek w
+kierowcy, też zmierzona poza) albo `moved` / `relay` (wyżej).
 
 **Cel dłoni.** Pinch zaznacza punkt, a okulary wysyłają go dopiero, gdy dłoń
 wyjdzie z pudełka — ramię nie rusza w stronę ręki, która jeszcze w nim jest.
 TCP jedzie do punktu, orientacja dowolna. **Cel obiektu** (pinch na znaczniku
-wykrytym z kamer okularów): TCP staje 8 cm nad środkiem obiektu, oś podejścia
-w dół (do 15° odchyłki). Tylko z `--grasp`: zejście do 1 cm nad środek z połową
+wykrytym z kamer okularów): TCP staje 8 cm nad środkiem obiektu (najwyżej 3 cm
+pod sufitem pudełka), oś podejścia w dół (do 15° odchyłki). SO-101 (5 stawów)
+nie ustawi dowolnego obrotu: samo „nad obiekt” to IK tylko na pozycję, a oś
+podejścia jest sprawdzana dopiero przy `--grasp` (w pudełku SO-101 w dół się
+nie da — odmowa `ik`). Tylko z `--grasp`: zejście do 1 cm nad środek z połową
 prędkości i ostrzejszym strażnikiem, zamknięcie chwytaka, powrót w górę.
 Obiekt bez zmierzonej głębi (`depthMeasured` różne od `true`) dostaje odmowę
 `no depth` — okulary umieszczają go wtedy na zgadywanych 150 cm.
@@ -747,23 +761,30 @@ nowa**, na własnym wątku, w tej kolejności — pierwsza porażka to
 | `collision` | droga od bieżącego rozkazu do celu koliduje ze sceną |
 
 Ruch to własna rampa (smoothstep, 50 Hz, 20°/s na największym stawie) pod
-właścicielem `specs`, z tą samą obsługą własności co `Twin.move`: STOP, Dom,
-Połącz, Rozłącz i każdy inny właściciel odbierają ramię w dowolnym takcie, a gdy
+właścicielem `specs`. Na czas jazdy granica prędkości nadzoru (`Twin.set_speed`,
+jak suwak prędkości w panelu) spada do 35°/s (1,5 × średniej, czyli szczyt
+smoothstepu, plus 5), na czas cofania do 15°/s, potem wraca do poprzedniej —
+nawet ponowne zasianie rozkazu po przestoju łącza nie pojedzie szybciej.
+Własność jak w `Twin.move`: STOP, Dom, Połącz, Rozłącz i każdy inny właściciel odbierają ramię w dowolnym takcie, a gdy
 pętla stoi, stoi też zegar rampy. Nowy cel w czasie jazdy przerywa ją i jedzie
 od bieżącego rozkazu. Po dojechaniu (każdy staw do 2° od celu i stoi) ramię jest
 zwalniane, cel zostaje trzymany. Ugięcie pod ciężarem (w symulacji 8 mm na TCP)
-kierowca poprawia do 4 krokami, najwyżej 5° od rozwiązania IK.
+kierowca poprawia do 4 krokami, najwyżej 2,5° od rozwiązania IK — nie przy
+odcinkach `--grasp` w dół i w górę i nie, gdy któryś staw ma wysiłek ponad połowę
+progu (to już docisk do przeszkody).
 
 **Strażnik uderzeń** (`twin/impact.py`) słucha każdego taktu pętli:
 
 - **opóźnienie** — staw ponad 6° za rozkazem przez 0,15 s, a przy tym prawie
   stoi (< 15°/s): rozkaz jedzie, staw nie idzie, więc coś go trzyma (przy
-  zejściu `--grasp`: 3°). Wyzwala na długo przed własnym progiem „głuchy albo
-  zablokowany” backendu A1X (3° przez 1 s → STOP);
+  zejściu `--grasp`: 3°). Po końcu rampy, w czasie dojeżdżania: 2,5° przez 0,3 s.
+  Wyzwala przed własnym progiem „głuchy albo zablokowany” backendu A1X (3° przez
+  1 s → STOP);
 - **wysiłek** — |effort| stawu ponad próg przez 3 kolejne odczyty. A1X: 20
   jednostek surowych (skala `/600` galaxeo), przy zejściu 12; symulacja:
   0,8 × `forcerange` napędu (przy zejściu 0,5). Bez odczytów wysiłku działa
-  tylko reguła opóźnienia.
+  tylko reguła opóźnienia. Staw, który już na starcie odcinka ma wysiłek ponad
+  połowę progu, na ten odcinek traci regułę wysiłku (WARNING w logu).
 
 Po wyzwoleniu ramię najpierw trzyma **zmierzoną** pozę (nie dociska dalej),
 potem cofa się z 8°/s do pozy sprzed ok. 0,4 s — najnowszej dobrej próbki
@@ -772,19 +793,21 @@ najstarszej z 3 s bufora). Stan `backoff`, powód `impact lag arm_joint1` albo
 `impact effort arm_joint1`. To nie jest STOP: następny pinch działa. Drugie
 uderzenie w czasie cofania = samo trzymanie i stan `hold`, bez kolejnego
 cofania. Wszystko to jest **pod** nadzorem bliźniaka i własnymi progami backendu,
-nie zamiast nich.
+nie zamiast nich. Przez pierwsze 0,3 s cofania strażnik nie słucha (staw oparty
+o przeszkodę ma jeszcze wysiłek ponad próg) — przy 8°/s to ok. 2,4° drogi.
 
 ### Pierwsza sesja na sprzęcie — czego się spodziewać
 
 - **Progi wysiłku A1X (20 / 12) to zgadywanie** — nikt ich nie mierzył na tym
   łączu. Do czasu pomiaru główną ochroną jest reguła opóźnienia. Zmierz effort
-  każdego stawu przy spokojnej jeździe w pudełku (log, `A1XArm.efforts()`)
-  i przy lekkim oporze ręką, potem ustaw `SpecsReach.real_effort_abs` /
+  każdego stawu przy spokojnej jeździe w pudełku (w `dry` log co 1 s, na starcie
+  każdego odcinka też) i przy lekkim oporze ręką, potem ustaw `SpecsReach.real_effort_abs` /
   `real_effort_abs_descend`.
-- **Pierwszy cel po połączeniu dostaje `jump`.** Z domu A1X każdy punkt pudełka
-  wymaga 47–70° na którymś stawie (limit 45°). Najpierw podjedź ramieniem
-  z panelu (uchwyt 3D) nad środek pudełka, potem zdejmij UZBROJONE (inaczej
-  `busy`) i dopiero wtedy pinch.
+- **Bez `--start-center` pierwszy cel po połączeniu dostaje `jump`.** Z domu A1X
+  każdy punkt pudełka wymaga 47–70° na którymś stawie (limit 45°). Uruchom
+  `lerobot-twin specs --mode real --i-know --start-center` i potwierdź Enterem
+  przejazd nad środek pudełka (etapami, 10°/s). Inaczej: podjedź z panelu
+  (uchwyt 3D), zdejmij UZBROJONE (inaczej `busy`) i dopiero wtedy pinch.
 - **Rejestracja ma 1–2 cm błędu** (oczekiwane, niezmierzone). W `dry`
   porównaj kulkę TCP z chwytakiem, zanim cokolwiek ruszy.
 - Kolejność: `dry` (rejestracja i pudełko), potem `real` z ręką na STOP-ie,
