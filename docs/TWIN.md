@@ -17,11 +17,11 @@ percepcją, którą widziała w symulacji.
  └──────────▲───────────┘                   │ serwa jak zmierzone      │
             │                               └────────────┬─────────────┘
             │  polityka przez nadzór                     │  4096 światów MuJoCo Warp
-            │  (te same wzory obserwacji)                ▼  PPO na GPU (A4500)
+            │  (te same wzory obserwacji)                ▼  PPO na GPU
             └────────────────────────────────── polityka reach / lift
 ```
 
-## Stan (2026-09-24)
+## Stan
 
 | | |
 |---|---|
@@ -99,20 +99,9 @@ się go wskaże: `lerobot-twin --config configs/local.yaml ui` (także `train`,
 treningu uruchamiany z panelu). Klucze sekcji `robot:` ważne dla bliźniaka
 i backendu `feetech` (opisane w `configs/default.yaml`): `center_ticks` (tik
 zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
-i 100 w skali aplikacji; domyślne 1986 / 2670 to ramię autora), `baudrate`
+i 100 w skali aplikacji; domyślne 1986 / 2670 to przykładowe ramię), `baudrate`
 (1 000 000). Galaxea A1X ma własną sekcję `a1x:` — patrz
 [Galaxea A1X](#galaxea-a1x).
-
-### Na Shadow (maszyna autora)
-
-Shadow to Windows x86-64 z **RTX A4500 (20 GB)**, sterownik 565.90 (CUDA 12.7)
-— `cu126` na nim działa. WSL2 nie ruszy (wirtualka nie udostępnia
-zagnieżdżonej wirtualizacji), ale nie jest potrzebne: MuJoCo Warp i PyTorch
-z CUDA działają natywnie. Na `C:` zostaje niewiele miejsca — duże pakiety
-instaluj z `TMP` i `PIP_CACHE_DIR` na `D:` — w PowerShellu
-`$env:TMP='D:\tmp'; $env:PIP_CACHE_DIR='D:\tmp\pipcache'` (w `cmd.exe`:
-`set TMP=D:\tmp`) — albo z `--no-cache-dir`. Czasy w tym dokumencie bez innego opisu są zmierzone
-na Shadow.
 
 ## Panel
 
@@ -199,12 +188,12 @@ miejsce dookoła, zasilacz podłączony, ręka przy STOP.
 - *lokalnie* — ramię wpięte do tego komputera: port `COMx` (Windows) albo
   `/dev/ttyACM0` (Linux, użytkownik w grupie `dialout`); pokaże go
   `lerobot-twin check` albo „Wykryj porty” w panelu;
-- *maszyna wirtualna albo zdalna* (np. Shadow) — *przepuszczenie USB w kliencie*
+- *maszyna wirtualna albo zdalna* — *przepuszczenie USB w kliencie*
   (przejściówka pojawia się jako `COMx`), albo
 - *most*: na komputerze przy ramieniu `lerobot-mp-bridge --port COMx --listen 0.0.0.0:5555 --allow <adres maszyny z bliźniakiem>`,
   w panelu port `socket://<adres komputera przy ramieniu>:5555`. Odczyt ramienia
   idzie jednym pakietem SYNC READ — przez sieć jeden przebieg na odczyt zamiast
-  sześciu. Maszyna zdalna (Shadow stoi w centrum danych) musi **widzieć**
+  sześciu. Maszyna zdalna musi **widzieć**
   komputer przy ramieniu: sieć prywatna (Tailscale, ZeroTier) albo przekierowany
   port. Most działa dobrze do ~20 ms RTT; `--stats` pokazuje, ile faktycznie schodzi.
 
@@ -223,7 +212,7 @@ zamiast 1986…2670. Panel pokazuje oba rozjazdy jako ostrzeżenie. Błędy serw
 i limity z EEPROM działają na obu backendach (`lerobot`: rejestr stanu co 3.
 odczyt).
 
-**1. Kamery.** Na maszynie wirtualnej/zdalnej (np. Shadow) najpierw przepuść
+**1. Kamery.** Na maszynie wirtualnej/zdalnej najpierw przepuść
 kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj kamerę USB*. Kamera, która się otwiera, ale nie daje klatek, to prawie
 zawsze brak przepuszczenia (patrz README).
 
@@ -302,8 +291,8 @@ albo „w dłoni”), nigdy z ostatnio widzianej.
 
 **Chwytak.** 0..100 w panelu to te same tiki serwa co w backendzie `feetech`
 (`gripper_closed_ticks` … `gripper_open_ticks`, zero w `center_ticks`); w
-bliźniaku 0 = −5,4°, 100 = 54,7° kąta szczęki. Domyślne 1986 … 2670 to ramię
-autora (z EEPROM-u jego serwa chwytaka). Sprawdź na ramieniu, że przy 0
+bliźniaku 0 = −5,4°, 100 = 54,7° kąta szczęki. Domyślne 1986 … 2670 pochodzą
+z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź na ramieniu, że przy 0
 szczęki się stykają — jeśli nie, zero szczęki w MJCF nie leży w `center_ticks`
 i trzeba to poprawić w konfiguracji, zanim zaufa się `lift`: skopiuj
 `configs/default.yaml` do `configs/local.yaml` (jest w `.gitignore`), popraw
@@ -661,9 +650,9 @@ pytest -q -m "not render"                          # maszyna bez OpenGL/GPU (tes
 
 ---
 
-## Liczby zmierzone na Shadow (RTX A4500, EPYC 4 rdzenie)
+## Liczby orientacyjne
 
-| | Shadow | laptop (Intel HD 620) |
+| | RTX A4500 (4 rdzenie CPU) | laptop bez GPU (Intel HD 620) |
 |---|---|---|
 | budowa sceny | 111 ms | 293 ms |
 | 1 s fizyki (CPU) | 2,6 ms | 6,9 ms |
@@ -676,7 +665,7 @@ pytest -q -m "not render"                          # maszyna bez OpenGL/GPU (tes
 | trening `reach` (15 mln kroków) | **2 min** → CPU 100%, 1,5 mm od celu | – |
 | trening `lift` (59 mln kroków) | **28 min** → CPU 100% (96% z randomizacją) | – |
 | douczanie `lift` z modelem percepcji (29 mln kroków) | 16 min → CPU 98% z randomizacją, z kamer 8/8 | – |
-| douczanie `reach` / `lift` po przeglądzie (13 / 29 mln kroków) | 1,5 / 16 min → CPU 100% / 100% | – |
+| douczanie `reach` / `lift` (13 / 29 mln kroków) | 1,5 / 16 min → CPU 100% / 100% | – |
 
 MuJoCo Warp zgadza się z MuJoCo na CPU: stawy po 2 s fizyki różnią się o
 0,001°, obserwacje środowisk GPU i CPU po 30 krokach o 6·10⁻⁵.
@@ -796,7 +785,7 @@ szum 2 mm, obrót złożony do ±45° — a nagroda liczy się z prawdy.
 |---|---|
 | `lift-v1` — uczona na prawdziwej pozycji kostki | 1/8 |
 | `lift-v2` — `lift-v1` douczona z modelem percepcji (300 iteracji, 16 min) | **8/8** |
-| `lift-v3` — `lift-v2` douczona po przeglądzie (300 iteracji); kończy sama, kostka 9,6–11,8 cm | **8/8** |
+| `lift-v3` — `lift-v2` douczona (300 iteracji); kończy sama, kostka 9,6–11,8 cm | **8/8** |
 
 Od zera z modelem percepcji uczenie szło bardzo wolno (0% po 220 iteracjach) —
 douczanie z polityki, która już umie chwytać, doszło do 98% w 300.

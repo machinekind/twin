@@ -63,8 +63,8 @@ GIZMO_MAX_STEP_DEG = 15.0
 GIZMO_IDLE_S = 0.5
 #: Kadr starszy niz tyle [s] nie jest kadrem "na zywo" (zamrozony strumien).
 FRAME_MAX_AGE = 1.0
-#: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje USB
-#: na Shadow ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
+#: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje
+#: przekazania USB ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
 GUIDE_FRAME_LOST = 3.0
 #: Detekcja kostki starsza niz tyle [s] nie trafia do polityki jako nowa.
 CUBE_MAX_AGE = 0.5
@@ -1388,7 +1388,7 @@ class TwinApp:
                                       "kolejne staja z innych stron. Przestawiasz ja potem uchwytem w 3D.")
         probe = g.add_button("Szukaj kamer USB", icon=viser.Icon.SEARCH,
                              hint="Szuka kamer USB (i IDS uEye, gdy jest pyueye), ktorych nie ma jeszcze w "
-                                  "stanowisku. Na maszynie wirtualnej/zdalnej (np. Shadow) kamera musi byc "
+                                  "stanowisku. Na maszynie wirtualnej/zdalnej kamera musi byc "
                                   "przepuszczona w kliencie USB.")
         self.usb_box = g.add_folder(None, visible=False)
         with self.usb_box:
@@ -1478,7 +1478,7 @@ class TwinApp:
             self.usb_pick.value = opts[0]
             self.usb_box.visible = bool(self._found_usb)
             if not self._found_usb:
-                self._notify(event, "Brak nowych kamer", "Sprawdz kabel; na maszynie wirtualnej/zdalnej (np. Shadow) "
+                self._notify(event, "Brak nowych kamer", "Sprawdz kabel; na maszynie wirtualnej/zdalnej "
                                                          "kamere trzeba przepuscic w kliencie USB.")
 
         @add_usb.on_click
@@ -3357,7 +3357,7 @@ class TwinApp:
         """Kadry wlaczonych kamer z chwilami ich wykonania (`frame_times`).
 
         Kadr starszy niz `FRAME_MAX_AGE` jest pomijany: strumien, ktory stanal
-        (przekazanie USB na Shadow), oddawal te sama klatke w nieskonczonosc,
+        (zerwane przekazanie USB), oddawal te sama klatke w nieskonczonosc,
         a mapa co takt "widziala" w niej kostke od nowa.
         """
         frames, times = {}, {}

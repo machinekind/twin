@@ -97,8 +97,8 @@ class _Live:
     def rgb_t(self) -> tuple[np.ndarray | None, float, str | None]:
         """(kadr RGB, chwila jego wykonania, blad strumienia).
 
-        Watek `CameraStream` konczy sie po cichu, gdy `cap.read()` zawiedzie (na
-        Shadow: zerwane przekazanie USB), a `read()` dalej oddaje ostatnia klatke -
+        Watek `CameraStream` konczy sie po cichu, gdy `cap.read()` zawiedzie (np.
+        zerwane przekazanie USB), a `read()` dalej oddaje ostatnia klatke -
         bez sprawdzenia bledu i wieku panel mial "kadr" zamrozony na zawsze.
         """
         err = self.stream.error
