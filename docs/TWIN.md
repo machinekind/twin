@@ -635,25 +635,18 @@ okulary (Lens) --ws /specs--> przekaźnik (server.js) --ws /twin--> lerobot-twin
    v targetState: accepted / rejected / moving / reached / backoff / hold  (od bliźniaka)
 ```
 
-**Pudełko zasięgu** zna tylko bliźniak (`twin/reach.py`) i wysyła je okularom
-jako obiekt nakładki `kind: "volume"`. Każdy punkt siatki 4 × 4 × 3 (z
-narożnikami) ma rozwiązanie IK do 3 mm i pozę bez kolizji na pustym stole:
+**Tylko A1X.** Wszystko, co dotyczy ramienia, pochodzi z pakietu `galaxeo.arm`
+(model A1X, jedyne ramię, jakie zna): pudełko zasięgu, IK i FK narzędzia,
+sprawdzanie kolizji (ze sobą i ze stołem z = 0), rampa, strażnik uderzeń
+i cofanie. Bliźniak dostarcza tylko cele. `lerobot-twin specs` i folder panelu
+odmawiają stanowiska z innym ramieniem (SO-101).
 
-| ramię | x [m] | y [m] | z [m] | skąd |
-|---|---|---|---|---|
-| A1X | 0,20 … 0,50 | −0,30 … 0,30 | 0,05 … 0,30 | tabela `DEFAULTS`; przy x 0,18 palce dotykały stołu w dolnych przednich narożnikach |
-| SO-101 | 0,17 … 0,289 | −0,138 … 0,138 | 0,05 … 0,22 | z pierścienia celów `Desk`; bliżej niż 0,16 stała szczęka dotykała barku |
-
-Dół pudełka nigdy nie schodzi poniżej 5 cm (`MIN_Z`): wysokość blatu też jest
-tylko skalibrowana. Własne pudełko w pliku stanowiska (`workspace/twin.json`,
-układ podstawy, metry; bez klucza obowiązuje domyślne):
-
-```json
-{"robot": "a1x", "reach": {"lo": [0.22, -0.20, 0.08], "hi": [0.45, 0.20, 0.25]}}
-```
-
-Bliźniak nie sprawdza, czy własne pudełko jest osiągalne — punkt poza zasięgiem
-kończy się odmową `ik`, nie ruchem. Zmniejszaj je, nie powiększaj.
+**Pudełko zasięgu** to `galaxeo.arm.ReachBox`: pakiet liczy je sam z modelu
+A1X i narzędzia (siatka 4 × 4 × 3 z narożnikami, IK do 3 mm, poza bez kolizji,
+dół nie niżej niż 5 cm nad blatem) i trzyma w pamięci podręcznej obok modelu.
+Dla chwytaka A1X: x 0,20 … 0,50 m, y −0,30 … 0,30 m, z 0,05 … 0,30 m (w układzie
+podstawy). Bliźniak wysyła je okularom jako obiekt nakładki `kind: "volume"`.
+Własnego pudełka w `workspace/twin.json` już nie ma — zasięg to własność ramienia.
 
 ### Uruchomienie
 
@@ -681,9 +674,10 @@ albo STOP w panelu — trzymaj rękę na klawiaturze.
 | `--mode dry\|sim\|real` | domyślnie `dry` |
 | `--backend`, `--port` | w `dry` i `sim` domyślnie `sim` (sprzętu nie otworzy przypadkiem); w `real` backend i port ze stanowiska |
 | `--grasp` | cel obiektu: zejście, chwyt i powrót nad obiekt (inaczej tylko nad obiekt) |
-| `--allow-untrusted` | przyjmuj cele z niezaufanej rejestracji (tylko do prób w symulacji) |
+| `--trusted-only` | przyjmuj cele tylko przy zaufanej rejestracji okularów (domyślnie wystarczy każda) |
+| `--max-jump-deg` | odmowa `jump`, gdy któryś staw miałby przejechać więcej na jednym odcinku (domyślnie 150°) |
 | `--i-know` | wymagane w `real`; bez niego polecenie kończy się kodem 2 |
-| `--start-center` | przed startem ramię jedzie etapami (jak Dom, 10°/s, pod strażnikiem uderzeń) nad środek pudełka; w `real` dopiero po Enter. Bez niej w symulacji jest szybki przejazd bez pytania, w `real` żaden |
+| `--start-center` | przed startem ramię jedzie etapami (jak Dom, 10°/s, pod strażnikiem uderzeń galaxeo) nad środek pudełka; w `real` dopiero po Enter. Bez niej w symulacji jest szybki przejazd bez pytania, w `real` żaden |
 | `--workspace`, `--seconds` | plik stanowiska; koniec po N sekundach (testy) |
 
 **Tryby, zawsze w tej kolejności:**
@@ -733,11 +727,10 @@ kierowcy, też zmierzona poza) albo `moved` / `relay` / `mode` (wyżej).
 wyjdzie z pudełka — ramię nie rusza w stronę ręki, która jeszcze w nim jest.
 TCP jedzie do punktu, orientacja dowolna. **Cel obiektu** (pinch na znaczniku
 wykrytym z kamer okularów): TCP staje 8 cm nad środkiem obiektu (najwyżej 3 cm
-pod sufitem pudełka), oś podejścia w dół (do 15° odchyłki). SO-101 (5 stawów)
-nie ustawi dowolnego obrotu: samo „nad obiekt” to IK tylko na pozycję, a oś
-podejścia jest sprawdzana dopiero przy `--grasp` (w pudełku SO-101 w dół się
-nie da — odmowa `ik`). Tylko z `--grasp`: zejście do 1 cm nad środek z połową
-prędkości i ostrzejszym strażnikiem, zamknięcie chwytaka, powrót w górę.
+pod sufitem pudełka), oś podejścia w dół (`galaxeo.arm.down_rotation`, do 15°
+odchyłki). Tylko z `--grasp`: zejście do 1 cm nad środek z połową prędkości
+i ostrzejszym strażnikiem (profil `descend` galaxeo), zamknięcie chwytaka,
+powrót w górę.
 Obiekt bez zmierzonej głębi (`depthMeasured` różne od `true`) dostaje odmowę
 `no depth` — okulary umieszczają go wtedy na zgadywanych 150 cm. `age` to
 sekundy od chwili, gdy okulary naprawdę widziały wykrycie; cel obiektu z
@@ -756,65 +749,69 @@ nowa**, na własnym wątku, w tej kolejności — pierwsza porażka to
 | `stop` | aktywny STOP |
 | `busy` | ramię ma inny właściciel (UZBROJONY panel, polityka, fala) albo kierowca akurat cofa ramię lub zamyka chwytak |
 | `not armed` | `real` bez zgody (`--i-know` / pole wyboru w panelu), albo `sim` na backendzie sprzętowym |
-| `untrusted` | cel z niezaufanej rejestracji (bez `--allow-untrusted`) |
+| `untrusted` | cel z niezaufanej rejestracji (z `--trusted-only`), albo jeszcze żadnej rejestracji |
 | `session` | sesja celu różna od sesji **ostatniej zaufanej** rejestracji, którą bliźniak dostał od przekaźnika — sama flaga `trusted` z okularów nie wystarcza |
 | `outside volume` | punkt poza pudełkiem zasięgu |
 | `no depth` | cel obiektu bez zmierzonej głębi |
 | `stale` | cel obiektu z wykrycia sprzed ponad 0,5 s (`age`; `detail` podaje wiek) |
-| `ik` | brak rozwiązania IK do 3 mm (albo oś podejścia ponad 15° od pionu) |
-| `jump` | któryś staw miałby przejechać ponad 45° na jednym odcinku |
-| `collision` | droga od bieżącego rozkazu do celu koliduje ze sceną |
+| `ik` | brak rozwiązania IK galaxeo do 3 mm (albo oś podejścia ponad 15° od pionu) |
+| `jump` | któryś staw miałby przejechać ponad `--max-jump-deg` (150°) na jednym odcinku |
+| `collision` | droga w przestrzeni stawów od bieżącego rozkazu do celu koliduje (galaxeo: ramię ze sobą albo ze stołem; przedmiotów ze sceny bliźniaka nie widzi) |
 
-Ruch to własna rampa (smoothstep, 50 Hz, 20°/s na największym stawie) pod
-właścicielem `specs`. Na czas jazdy granica prędkości nadzoru (`Twin.set_speed`,
-jak suwak prędkości w panelu) spada do 35°/s (1,5 × średniej, czyli szczyt
-smoothstepu, plus 5), na czas cofania do 15°/s, potem wraca do poprzedniej —
-nawet ponowne zasianie rozkazu po przestoju łącza nie pojedzie szybciej.
-Własność jak w `Twin.move`: STOP, Dom, Połącz, Rozłącz i każdy inny właściciel odbierają ramię w dowolnym takcie, a gdy
-pętla stoi, stoi też zegar rampy. Nowy cel w czasie jazdy przerywa ją i jedzie
-od bieżącego rozkazu. Po dojechaniu (każdy staw do 2° od celu i stoi) ramię jest
-zwalniane, cel zostaje trzymany. Ugięcie pod ciężarem (w symulacji 8 mm na TCP)
-kierowca poprawia do 4 krokami, najwyżej 2,5° od rozwiązania IK — nie przy
-odcinkach `--grasp` w dół i w górę i nie, gdy któryś staw ma wysiłek ponad połowę
-progu (to już docisk do przeszkody).
+**Ruch to `galaxeo.arm.Motion.move`** — ten sam ruch strzeżony, którego używa
+pakiet: start od zmierzonej pozy, rampa smoothstep (20°/s na największym
+stawie, szczyt 1,5 ×, ograniczenie narastania 1,5 × prędkość + 5°/s), strażnik
+uderzeń w każdym takcie (opóźnienie stawu i wysiłek), dojeżdżanie (każdy staw
+do 2° i stoi), dociąganie ugięcia pod ciężarem, a po uderzeniu trzymanie
+zmierzonej pozy i cofnięcie z 8°/s. Progi i reguły są opisane w
+`galaxeo/arm/motion.py` i `guard.py`; bliźniak ich nie kopiuje. Ruch idzie przez
+`twin/armlink.py` (`TwinTransport`): każdy rozkaz galaxeo to `Twin.set_target`
+jako właściciel `specs`, odczyt to ostatni pomiar pętli bliźniaka. Na magistrali
+CAN pisze więc nadal tylko backend `a1x` bliźniaka; STOP, Dom, panel, nadzór
+i własność ramienia działają jak dla każdego właściciela. Zegar ruchu stoi, gdy
+stoi pętla (łącze niepotwierdzone); odczyt zamrożony albo starszy niż 150 ms
+kończy ruch (`hold`, powód `frozen telemetry` / `stale feedback`).
 
-**Strażnik uderzeń** (`twin/impact.py`) słucha każdego taktu pętli:
+galaxeo odmawia jednego ruchu dłuższego niż 45° na którymś stawie. Kierowca
+tnie więc każdy odcinek na równe kawałki do 40° po tej samej prostej w
+przestrzeni stawów, którą sprawdził na kolizje, i jedzie je po kolei, każdy
+jako osobny ruch strzeżony (z krótkim dojeżdżaniem na styku kawałków). Dla
+okularów to dalej jeden odcinek i jedno `moving`.
 
-- **opóźnienie** — staw ponad 6° za rozkazem przez 0,15 s, a przy tym prawie
-  stoi (< 15°/s): rozkaz jedzie, staw nie idzie, więc coś go trzyma (przy
-  zejściu `--grasp`: 3°). Po końcu rampy, w czasie dojeżdżania: 2,5° przez 0,3 s.
-  Wyzwala przed własnym progiem „głuchy albo zablokowany” backendu A1X (3° przez
-  1 s → STOP). W `start_center` (10°/s) ciaśniej: 4° w rampie i 2,5° przez
-  0,2 s przy dojeżdżaniu — staw zablokowany z 3-6° rampy przed sobą wyzwala co
-  najmniej 0,3 s przed błędem backendu;
-- **wysiłek** — |effort| stawu ponad próg przez 3 kolejne odczyty. A1X: 20
-  jednostek surowych (skala `/600` galaxeo), przy zejściu 12; symulacja:
-  0,8 × `forcerange` napędu (przy zejściu 0,5), ale nie dla SO-101: jego napęd
-  (kp 998 N·m/rad, `forcerange` 2,94 N·m) nasyca się przy 0,17° uchybu, więc w
-  zwykłym ruchu siła stoi na `forcerange` i żaden próg nie odróżni ściany —
-  w symulacji SO-101 działa sama reguła opóźnienia. Bez odczytów wysiłku działa
-  tylko reguła opóźnienia. Staw, który już na starcie odcinka ma wysiłek ponad
-  połowę progu, na ten odcinek traci regułę wysiłku (WARNING w logu).
+Na czas jazdy granica prędkości nadzoru (`Twin.set_speed`, jak suwak prędkości
+w panelu) spada do 35°/s (ograniczenie narastania galaxeo przy 20°/s), na czas
+cofania do 15°/s, potem wraca do poprzedniej — nadzór nie zostaje w tyle za
+rampą (to wyzwalałoby regułę opóźnienia), a ponowne zasianie rozkazu po
+przestoju łącza nie pojedzie szybciej. STOP, Dom, Połącz, Rozłącz i każdy inny
+właściciel odbierają ramię w dowolnym takcie: ruch galaxeo jest przerywany
+(`cancel`), ramię trzyma zmierzoną pozę. Nowy cel w czasie jazdy przerywa ją
+tak samo i jedzie od zmierzonej pozy. Po dojechaniu ramię jest zwalniane, cel
+zostaje trzymany.
 
-Po wyzwoleniu ramię najpierw trzyma **zmierzoną** pozę (nie dociska dalej),
-potem cofa się z 8°/s do pozy sprzed ok. 0,4 s — najnowszej dobrej próbki
-starszej niż 0,4 s i co najmniej 3° dalej na największym stawie (inaczej
-najstarszej z 3 s bufora). Stan `backoff`, powód `impact lag arm_joint1` albo
-`impact effort arm_joint1`. To nie jest STOP: następny pinch działa. Drugie
-uderzenie w czasie cofania = samo trzymanie i stan `hold`, bez kolejnego
-cofania. Wszystko to jest **pod** nadzorem bliźniaka i własnymi progami backendu,
-nie zamiast nich. Przez pierwsze 0,3 s cofania strażnik nie słucha (staw oparty
-o przeszkodę ma jeszcze wysiłek ponad próg) — przy 8°/s to ok. 2,4° drogi.
+**Strażnik uderzeń** (w galaxeo) wyzwala na opóźnieniu stawu (rozkaz jedzie,
+staw stoi: 6° przez 0,15 s, przy zejściu `--grasp` 3°, przy dojeżdżaniu 2,5°
+przez 0,3 s) albo na wysiłku (A1X: 20 jednostek 0x052, przy zejściu 12;
+symulacja: 0,8 × `forcerange` napędu, przy zejściu 0,5). Musi wyzwolić przed
+własnym progiem „głuchy albo zablokowany” backendu A1X (3° przez 1 s → STOP).
+W `start_center` (10°/s) kierowca podaje galaxeo ciaśniejsze progi (4° w
+rampie, 0,2 s przy dojeżdżaniu): staw zablokowany z 3-6° rampy przed sobą
+wyzwala co najmniej 0,3 s przed błędem backendu. Po wyzwoleniu: stan `backoff`,
+powód `impact lag arm_joint1` albo `impact effort arm_joint1`; drugie uderzenie
+w czasie cofania = samo trzymanie i `hold`. To nie jest STOP: następny pinch
+działa. Uderzenie w `start_center` też kończy się cofnięciem, a start zwraca
+powód uderzenia. Wszystko to jest **pod** nadzorem bliźniaka i własnymi progami
+backendu, nie zamiast nich.
 
 ### Pierwsza sesja na sprzęcie — czego się spodziewać
 
 - **Progi wysiłku A1X (20 / 12) to zgadywanie** — nikt ich nie mierzył na tym
   łączu. Do czasu pomiaru główną ochroną jest reguła opóźnienia. Zmierz effort
   każdego stawu przy spokojnej jeździe w pudełku (w `dry` log co 1 s, na starcie
-  każdego odcinka też) i przy lekkim oporze ręką, potem ustaw `SpecsReach.real_effort_abs` /
-  `real_effort_abs_descend`.
-- **Bez `--start-center` pierwszy cel po połączeniu dostaje `jump`.** Z domu A1X
-  każdy punkt pudełka wymaga 47–70° na którymś stawie (limit 45°). Uruchom
+  każdego odcinka też) i przy lekkim oporze ręką, potem zmień progi w galaxeo
+  (`EFFORT_MOVE` / `EFFORT_DESCEND` w `galaxeo/arm/transport.py`).
+- **Bez `--start-center` pierwszy cel po połączeniu to długa jazda.** Z domu A1X
+  każdy punkt pudełka wymaga 47–70° na którymś stawie: pod limitem `--max-jump-deg`,
+  więc ramię jedzie tam od razu, w kawałkach po 40°, prostą w przestrzeni stawów. Uruchom
   `lerobot-twin specs --mode real --i-know --start-center` i potwierdź Enterem
   przejazd nad środek pudełka (etapami, 10°/s). Inaczej: podjedź z panelu
   (uchwyt 3D), zdejmij UZBROJONE (inaczej `busy`) i dopiero wtedy pinch.
@@ -828,10 +825,11 @@ o przeszkodę ma jeszcze wysiłek ponad próg) — przy 8°/s to ok. 2,4° drogi
   strażnik jest za łagodny; jeśli `backoff` strzela przy spokojnej jeździe —
   za ostry.
 
-Kod: `twin/specsreach.py` (kierowca), `twin/reach.py`, `twin/impact.py`,
-`twin/ui/specs_panel.py`; testy: `tests/test_twin_specsreach.py` (udawany
-przekaźnik, symulacja A1X, uderzenie w ścianę z wysiłku i z opóźnienia),
-`tests/test_twin_reach.py`, `tests/test_twin_impact.py`.
+Kod: `twin/specsreach.py` (kierowca), `twin/armlink.py` (transport galaxeo przez
+bliźniaka), `twin/ui/specs_panel.py`; ramię: `galaxeo.arm`. Testy:
+`tests/test_twin_specsreach.py` (udawany przekaźnik, symulacja A1X, uderzenie w
+ścianę z wysiłku i z opóźnienia, podział długiego odcinka) i
+`tests/test_twin_specsreach_a1x.py` (backend `a1x` na udawanej magistrali CAN).
 
 ---
 
@@ -1054,9 +1052,8 @@ src/lerobot_mp/twin/
 ├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
-├── reach.py         pudełko zasięgu (Spectacles): domyślne ramienia albo ze stanowiska
-├── impact.py        strażnik uderzeń: opóźnienie stawu, wysiłek, poza do cofnięcia
-├── specsreach.py    kierowca Spectacles: przekaźnik → sprawdzenia → rampa z cofaniem
+├── armlink.py       transport galaxeo.arm przez bliźniaka (set_target jako właściciel)
+├── specsreach.py    kierowca Spectacles: przekaźnik → sprawdzenia → ruch strzeżony galaxeo
 ├── cli.py           lerobot-twin
 ├── calib/
 │   ├── tags.py        AprilTag 36h11 + korekta półpiksela

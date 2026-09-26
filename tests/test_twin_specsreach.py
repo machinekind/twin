@@ -21,11 +21,12 @@ pytest.importorskip("websockets")
 
 from websockets.sync.server import serve  # noqa: E402
 
+from galaxeo.arm import JOINTS, Arm  # noqa: E402
+
 from lerobot_mp.twin import runtime as rt  # noqa: E402
-from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
-from lerobot_mp.twin.reach import ReachVolume  # noqa: E402
+from lerobot_mp.twin.armlink import to_joints, to_q  # noqa: E402
 from lerobot_mp.twin.scene import Box  # noqa: E402
-from lerobot_mp.twin.specsreach import SpecsReach  # noqa: E402
+from lerobot_mp.twin.specsreach import PIECE_DEG, SpecsReach, overlay_object, pieces  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -114,13 +115,14 @@ def twin():
 
 
 @pytest.fixture(scope="module")
-def vol(twin):
-    return ReachVolume.from_workspace(twin.workspace)
+def kin():
+    """galaxeo's planning-only arm: FK, IK and the reach box."""
+    return Arm()
 
 
 @pytest.fixture(scope="module")
-def kin(twin):
-    return RobotKinematics(twin.spec)
+def vol(kin):
+    return kin.reach
 
 
 @pytest.fixture
@@ -135,10 +137,9 @@ def ready(twin, kin, vol) -> None:
     if twin.safety_state is not None and twin.safety_state.value == "estop":
         twin.clear_estop()
     twin.configure(objects=None)
-    sol = kin.ik(vol.center, seed=twin.spec.home, tol=0.003)
+    sol = kin.kin.ik(vol.center, seed=kin.kin.home, tol=0.003)
     assert sol.ok
-    goal = {k: v for k, v in sol.joints.items() if k != twin.spec.gripper}
-    twin.move(goal, 2.0, owner="test")
+    twin.move(to_joints(sol.q), 2.0, owner="test")
     twin.release("test")
 
 
@@ -152,7 +153,7 @@ def driver(twin, relay, **kw) -> SpecsReach:
 
 
 def tcp(kin, twin) -> np.ndarray:
-    return kin.tcp(twin.status.measured or twin.joints())[:3, 3]
+    return kin.fk(to_q(twin.status.measured or twin.joints()))[:3, 3]
 
 
 def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
@@ -211,7 +212,7 @@ def test_rejections(twin, kin, vol, relay, case):
         if case == "stale":
             assert "0.80 s" in st["detail"], st
         after = twin.status.measured
-        assert max(abs(after[k] - before[k]) for k in d.arm) < 0.5
+        assert max(abs(after[k] - before[k]) for k in JOINTS) < 0.5
     finally:
         d.stop()
 
@@ -224,10 +225,9 @@ def test_object_target_goes_above_it_pointing_down(twin, kin, vol, relay):
         ts = relay.target(p, source="object", label="cup", depthMeasured=True, age=0.2)
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 12.0)
         assert st["state"] == "reached", st
-        T = kin.tcp(twin.status.measured)
+        T = kin.fk(to_q(twin.status.measured))
         assert np.linalg.norm(T[:3, 3] - (p + [0.0, 0.0, 0.08])) < 0.005
-        approach = T[:3, :3] @ np.asarray(twin.spec.tcp_approach)
-        assert approach[2] < -0.95                          # gripper points down
+        assert T[2, 0] < -0.95                              # tool x (approach) points down
     finally:
         d.stop()
 
@@ -259,7 +259,7 @@ def test_dry_mode_accepts_then_holds_and_does_not_move(twin, kin, vol, relay):
         assert relay.states_for(ts) == ["accepted", "hold"]
         assert relay.states[-1]["mode"] == "dry"
         after = twin.status.measured
-        assert max(abs(after[k] - before[k]) for k in d.arm) < 0.5
+        assert max(abs(after[k] - before[k]) for k in JOINTS) < 0.5
         assert any(o["id"] == "target" for m in relay.overlays for o in m["objects"])   # planned target still shown
     finally:
         d.stop()
@@ -318,17 +318,30 @@ def _dist_to_box(p, lo, hi) -> float:
     return float(np.linalg.norm(p - np.clip(p, lo, hi)))
 
 
+def on_backoff_start(d: SpecsReach, fn) -> None:
+    """Call `fn()` once, on the first tick of galaxeo's backoff (the arm has just been held at the trip)."""
+    real = d.motion.on_tick
+    fired: list[bool] = []
+
+    def spy(now, cmd, reading, phase):
+        if phase == "backoff" and not fired:
+            fired.append(True)
+            fn()
+        real(now, cmd, reading, phase)
+    d.motion.on_tick = spy
+
+
 @pytest.mark.parametrize("rule", ["effort", "lag"])
 def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, rule):
     ready(twin, kin, vol)
     d = driver(twin, relay)
     if rule == "lag":
-        d.sim_effort_frac = 100.0                          # effort never trips, leaving only the lag rule
+        d.link.sim_effort_frac = 100.0                     # effort never trips, leaving only the lag rule
     try:
-        d._tools()                                         # build the collision checker before the wall exists
         c = vol.center
         half = (0.12, 0.01, 0.15)
         xy = (float(c[0]), float(c[1]) + 0.09)
+        # The wall is in the sim scene only: galaxeo's collision check (table and self) does not see it.
         wall = Box("wall", size=half, xy=xy, rgba=(0.5, 0.5, 0.5, 1.0), free=False)
         twin.configure(objects=[wall])
         with twin.lock:
@@ -337,31 +350,25 @@ def test_impact_on_a_static_wall_backs_off_without_stop(twin, kin, vol, relay, r
         lo = np.array([xy[0] - half[0], xy[1] - half[1], 0.0])
         hi = np.array([xy[0] + half[0], xy[1] + half[1], 2 * half[2]])
         trip_tcp: list[np.ndarray] = []
-        real_backoff = d._backoff
-
-        hits: list = []
-
         trip_q: list[dict] = []
 
-        def spy(t):
+        def trip():
             trip_tcp.append(tcp(kin, twin))
             trip_q.append(dict(twin.status.measured))
-            hits.append(d._impact)
-            return real_backoff(t)
-        d._backoff = spy
+        on_backoff_start(d, trip)
         ts = relay.target(c + np.array([0.0, 0.2, -0.05]))
         st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 15.0)
         assert st["state"] == "backoff", (st, relay.states_for(ts))
         assert st["reason"] == f"impact {rule} arm_joint1", st
         assert trip_tcp
         # Backoff goes to the pose from >= 0.4 s earlier that is >= 3 deg away on the most-moved joint
-        # (the guard's rule), not necessarily J1, which hit. The TCP ends farther from the wall than the
-        # ~2 mm rebound alone; a forearm hit moves the TCP only a little.
+        # (galaxeo's guard rule), not necessarily J1, which hit. The TCP ends farther from the wall than
+        # the ~2 mm rebound alone; a forearm hit moves the TCP only a little.
         measured = twin.status.measured
-        assert max(abs(measured[j] - trip_q[0][j]) for j in d.arm) >= 2.5, (measured, trip_q[0])
+        assert max(abs(measured[j] - trip_q[0][j]) for j in JOINTS) >= 2.5, (measured, trip_q[0])
         assert _dist_to_box(tcp(kin, twin), lo, hi) > _dist_to_box(trip_tcp[0], lo, hi) + 0.005
-        pose = hits[0].backoff_pose
-        assert max(abs(measured[j] - pose[j]) for j in d.arm) < 2.0, (measured, pose)
+        pose = d.last_result.impact.backoff_pose
+        assert max(abs(measured[j] - pose[j]) for j in JOINTS) < 2.0, (measured, pose)
         assert twin.safety_state.value != "estop"
         assert twin.owner is None
     finally:
@@ -386,7 +393,7 @@ def _stands(twin, d, secs: float = 0.5) -> bool:
     a = dict(twin.status.measured)
     time.sleep(secs)
     b = twin.status.measured
-    return max(abs(a[k] - b[k]) for k in d.arm) < 0.5
+    return max(abs(a[k] - b[k]) for k in JOINTS) < 0.5
 
 
 def test_stop_mid_move_holds_and_releases_the_arm(twin, kin, vol, relay):
@@ -402,6 +409,71 @@ def test_stop_mid_move_holds_and_releases_the_arm(twin, kin, vol, relay):
     finally:
         d.stop()
         twin.clear_estop()
+
+
+def test_preempt_by_the_panel_mid_move_holds(twin, kin, vol, relay):
+    d, ts = _moving(twin, kin, vol, relay)
+    try:
+        twin.preempt("panel: UZBROJONE")
+        st = relay.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("hold", "preempted")
+        assert twin.owner is None
+        assert _stands(twin, d)
+        assert d._worker is not None and d._worker.is_alive()
+    finally:
+        d.stop()
+
+
+def test_pieces_cut_the_straight_path_below_galaxeos_jump_limit():
+    a = np.radians([0.0, 60.0, -90.0, 30.0, 0.0, 0.0])
+    b = np.radians([95.0, 20.0, -60.0, 30.0, 10.0, 0.0])
+    out = pieces(a, b)
+    assert len(out) == 3                                   # 95 deg on J1 -> 3 pieces of 31.7 deg
+    assert np.allclose(out[-1], b)
+    prev = a
+    for q in out:
+        assert np.degrees(np.max(np.abs(q - prev))) <= PIECE_DEG + 1e-9
+        s_ = (q - a)[0] / (b - a)[0]
+        assert np.allclose(q, a + s_ * (b - a))            # on the straight path that was collision-checked
+        prev = q
+    assert len(pieces(a, a + np.radians(10.0))) == 1
+
+
+def test_a_leg_longer_than_galaxeos_jump_limit_runs_as_several_guarded_moves(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay, speed_deg_s=30.0)
+    moves: list[float] = []
+    real = d.motion.move
+
+    def count(goal, *a, **kw):
+        moves.append(np.degrees(np.max(np.abs(np.asarray(goal) - to_q(twin.status.measured)))))
+        return real(goal, *a, **kw)
+    d.motion.move = count
+    try:
+        # From above the box centre to its far corner side: J1 turns ~50 deg, over galaxeo's 45 deg limit.
+        p = np.array([vol.lo[0] + 0.05, vol.hi[1] - 0.02, vol.center[2]])
+        ts = relay.target(p)
+        st = relay.wait_state(ts, {"reached", "rejected", "hold", "backoff"}, 20.0)
+        assert st["state"] == "reached", (st, relay.states_for(ts))
+        assert relay.states_for(ts).count("moving") == 1        # one leg for the glasses
+        assert len(moves) >= 2 and max(moves) <= 45.0, moves
+        assert np.linalg.norm(tcp(kin, twin) - p) < 0.005
+    finally:
+        d.stop()
+
+
+def test_frozen_loop_mid_move_holds_on_galaxeos_feedback_rule(twin, kin, vol, relay, monkeypatch):
+    d, ts = _moving(twin, kin, vol, relay)
+    try:
+        monkeypatch.setattr(twin, "_frozen", lambda: True)          # link unconfirmed: the transport clock stops
+        st = relay.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+        assert (st["state"], st.get("reason")) == ("hold", "frozen telemetry"), relay.states_for(ts)
+        monkeypatch.undo()
+        assert twin.owner is None
+        assert _stands(twin, d)
+    finally:
+        monkeypatch.undo()
+        d.stop()
 
 
 def test_command_moved_during_the_real_hold_off_holds_with_moved(twin, kin, vol, relay):
@@ -489,7 +561,7 @@ def test_cli_specs_help():
     out = subprocess.run([sys.executable, "-m", "lerobot_mp.twin.cli", "specs", "--help"], capture_output=True,
                          text=True, env=_env(), timeout=60)
     assert out.returncode == 0, out.stderr
-    for flag in ("--relay", "--mode", "--grasp", "--allow-untrusted", "--i-know", "--seconds"):
+    for flag in ("--relay", "--mode", "--grasp", "--trusted-only", "--max-jump-deg", "--i-know", "--seconds"):
         assert flag in out.stdout
 
 
@@ -507,3 +579,17 @@ def test_cli_specs_runs_against_the_relay_in_sim(relay, tmp_path):
     assert out.returncode == 0, out.stdout + out.stderr
     assert "tryb sim" in out.stdout
     assert relay.overlays and relay.overlays[0]["objects"][0]["kind"] == "volume"
+
+
+def test_cli_specs_refuses_a_workspace_without_the_a1x(relay, tmp_path, capsys):
+    from lerobot_mp.twin.cli import main
+    ws = tmp_path / "twin.json"
+    ws.write_text(json.dumps({"robot": "so101", "backend": "sim"}), encoding="utf-8")
+    assert main(["specs", "--relay", relay.url, "--seconds", "1", "--workspace", str(ws)]) == 2
+    assert "tylko A1X" in capsys.readouterr().err
+
+
+def test_overlay_object_is_the_galaxeo_reach_box(vol):
+    o = overlay_object(vol)
+    assert (o["id"], o["kind"], o["alpha"]) == ("reach", "volume", 0.35)
+    assert np.allclose(o["pos"], vol.center, atol=1e-4) and np.allclose(o["size"], vol.size, atol=1e-4)

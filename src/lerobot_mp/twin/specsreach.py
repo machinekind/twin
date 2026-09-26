@@ -1,4 +1,4 @@
-"""Spectacles glasses -> a target in the reach box -> arm motion, backing off gently on impact.
+"""Spectacles glasses -> a target in the A1X reach box -> a guarded arm move through the twin.
 
     drv = SpecsReach(twin, relay_url="ws://127.0.0.1:8080/twin", mode="sim")
     drv.start()                                        # network thread + worker thread
@@ -15,23 +15,22 @@ The twin connects to the relay (`server.js` in the specs-lens repo) as `/twin`:
   backoff / hold. `type` must be the first key: the relay reads it with a regex.
 
 The network thread only receives and queues targets. One worker thread does everything
-else: validation, IK, collisions, motion, backoff. The checks run in this order, and their
-names are the `reason` sent back: not connected, stop, busy, not armed, untrusted,
-session, outside volume, no depth, stale, ik, jump, collision.
+else. The checks run in this order, and their names are the `reason` sent back: not
+connected, stop, busy, not armed, untrusted, session, outside volume, no depth, stale,
+ik, jump, collision.
 
-Motion is our own 50 Hz smoothstep ramp rather than `Twin.move`, because every tick must
-be interruptible: by a new target (continuing from the current command), an impact
-(`ImpactGuard` on the loop's tick listener) or losing the arm (STOP, Home). Ownership works
-as in `Twin.move`: `claim` with `gen`, engage, `set_target` as owner on every tick, and the
-ramp clock pauses while the loop does. On arrival the arm is released but stays engaged,
-holding the target.
+Everything about the arm comes from `galaxeo.arm`: the reach box (`ReachBox`), IK and FK
+of the tool frame, the self/table collision checks, and the move itself (`Motion.move`:
+smoothstep ramp, impact guard, arrival, backoff). This module only supplies targets:
+parsing, session trust, hover/descend/lift legs, grasp, modes and the relay protocol.
+Moves go through `armlink.TwinTransport`, i.e. `Twin.set_target` as owner "specs", so
+STOP, Home, the panel, the supervisor and ownership work as for any other owner, and
+the twin's backend stays the only writer on the CAN bus.
 
 Modes: `dry` runs every check and shows the planned target without moving (accepted, then
 hold); `sim` moves only a simulated arm; `real` moves the real arm, only with `real_ok`,
-and waits `hold_off_s` after a hand target. While moving, the supervisor speed cap
-(`Twin.set_speed`) drops to ~1.5x the ramp speed + 5 deg/s, and to 15 deg/s during
-backoff; it is restored afterwards. In `real`, losing the relay stops the motion (hold).
-The glasses have no STOP: use Enter/Ctrl-C in the console or STOP in the panel.
+and waits `hold_off_s` after a hand target. In `real`, losing the relay stops the motion
+(hold). The glasses have no STOP: use Enter/Ctrl-C in the console or STOP in the panel.
 """
 
 from __future__ import annotations
@@ -42,19 +41,17 @@ import math
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, get_args
+from typing import Any, Literal, get_args
 
 import numpy as np
+from galaxeo.arm import JOINTS, Arm, Kinematics, Motion, MoveResult, ReachBox, down_rotation
+from galaxeo.arm.motion import BACKOFF_CAP_DEG_S, MAX_JUMP_DEG
 
-from . import scene as sc
-from .collision import CollisionChecker
-from .impact import Impact, ImpactGuard
-from .kinematics import RobotKinematics
-from .reach import ReachVolume
-from .runtime import Twin, smoothstep
+from .armlink import TwinTransport, to_joints, to_q
+from .runtime import Twin
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +63,22 @@ State = Literal["accepted", "rejected", "moving", "reached", "backoff", "hold"]
 Profile = Literal["normal", "descend"]
 #: Read from other threads (network, panel).
 Phase = Literal["idle", "moving", "backoff"]
-Cause = Literal["", "retarget", "impact", "preempt", "stop", "mode", "relay"]
+Cause = Literal["", "retarget", "preempt", "stop", "mode", "relay", "not connected"]
 
 MODES: tuple[Mode, ...] = get_args(Mode)
 SOURCES: tuple[Source, ...] = get_args(Source)
 OWNER = "specs"
+#: The only arm galaxeo.arm models.
+ROBOT = "a1x"
+#: Longest piece of one guarded move [deg]: below galaxeo's 45 deg jump limit, with room
+#: for the measured start sagging a degree or two off the previous goal.
+PIECE_DEG = 40.0
+assert PIECE_DEG < MAX_JUMP_DEG
 
 # Overlay colours, RGB 0..1.
+REACH_COLOR = (0.2, 0.65, 1.0)
 TCP_COLOR = (1.0, 0.8, 0.1)
 TARGET_COLOR = (0.2, 0.9, 0.35)
-
-Joints = dict[str, float]
 
 
 @dataclass
@@ -108,16 +110,12 @@ class _Waypoint:
 
 @dataclass
 class _Leg:
-    goal: Joints
+    start: np.ndarray                 # rad; the path was collision-checked from here
+    goal: np.ndarray                  # rad
     speed: float                      # deg/s of the fastest joint
     profile: Profile
     what: str
     close_gripper: bool = False
-
-
-class _Sample(NamedTuple):
-    t: float
-    joints: Joints
 
 
 class _Abort(Exception):
@@ -135,20 +133,24 @@ class _Rejected(_Abort):
         super().__init__("rejected", reason, detail)
 
 
-class _LoopClock:
-    """Ramp time that stops while the twin's loop is frozen."""
+def overlay_object(box: ReachBox, alpha: float = 0.35) -> dict[str, Any]:
+    """The reach box as the glasses' overlay object of kind `volume` (base frame, m)."""
+    return {
+        "id": "reach",
+        "kind": "volume",
+        "pos": [round(float(v), 4) for v in box.center],
+        "size": [round(float(v), 4) for v in box.size],
+        "color": list(REACH_COLOR),
+        "alpha": float(alpha),
+        "label": "zasieg",
+    }
 
-    def __init__(self, twin: Twin):
-        self._frozen: Callable[[], bool] | None = getattr(twin, "_frozen", None)
-        self._start = self._last = time.monotonic()
-        self._paused = 0.0
 
-    def elapsed(self) -> float:
-        now = time.monotonic()
-        if self._frozen is not None and self._frozen():
-            self._paused += now - self._last
-        self._last = now
-        return now - self._start - self._paused
+def pieces(start: np.ndarray, goal: np.ndarray, max_deg: float = PIECE_DEG) -> list[np.ndarray]:
+    """The straight joint-space path start -> goal cut into equal pieces of at most `max_deg`."""
+    start, goal = np.asarray(start, float), np.asarray(goal, float)
+    n = max(1, math.ceil(math.degrees(float(np.max(np.abs(goal - start)))) / max_deg - 1e-9))
+    return [start + (goal - start) * k / n for k in range(1, n + 1)]
 
 
 def parse_target(msg: Mapping[str, Any], now: float) -> Target | None:
@@ -181,21 +183,6 @@ def parse_target(msg: Mapping[str, Any], now: float) -> Target | None:
     )
 
 
-def down_rotation(spec, p: np.ndarray) -> np.ndarray:
-    """TCP rotation in the base frame: approach axis pointing down, jaws closing horizontally,
-    across the line from the base to `p`."""
-    a = np.asarray(spec.tcp_approach, float)
-    c = np.asarray(spec.tcp_closing, float)
-    local = np.column_stack([a, c, np.cross(a, c)])
-
-    bearing = math.atan2(float(p[1]), float(p[0]))
-    down = np.array([0.0, 0.0, -1.0])
-    side = np.array([-math.sin(bearing), math.cos(bearing), 0.0])
-    world = np.column_stack([down, side, np.cross(down, side)])
-
-    return world @ local.T
-
-
 def _check_mode(mode: str) -> None:
     if mode not in MODES:
         raise ValueError(f"tryb {mode!r}: dozwolone {', '.join(MODES)}")
@@ -205,35 +192,13 @@ def _rounded(v: np.ndarray | list[float]) -> list[float]:
     return [round(float(x), 4) for x in v]
 
 
+def _deg(q: np.ndarray) -> float:
+    """Largest joint move [deg] of a joint-space difference [rad]."""
+    return math.degrees(float(np.max(np.abs(q)))) if len(q) else 0.0
+
+
 class SpecsReach:
-    """Drives the arm from the glasses: a relay client plus one worker thread."""
-
-    # Arrival: every arm joint within `arrive_deg` of the goal and slower than `still_deg_s`.
-    tick_s = 0.02
-    arrive_deg = 2.0
-    still_deg_s = 10.0
-    arrive_timeout_s = 3.0
-
-    # A servo under load settles 1-2 deg off its command (in sim the TCP ends 8 mm low), so after
-    # arrival the command is nudged by the error, at most `trim_max_deg` away from the IK goal.
-    trim_steps = 4
-    trim_deg = 0.2
-    trim_max_deg = 2.5
-
-    lag_deg = 6.0
-    lag_deg_descend = 3.0
-    lag_s = 0.15
-
-    # Tighter guard once the ramp ends, so a joint stalled at the goal backs off before the A1X
-    # backend declares it "deaf" (3 deg for 1 s) and stops.
-    arrive_lag_deg = 2.5
-    arrive_lag_s = 0.3
-
-    # `start_center` (10 deg/s): a joint stalled with 3-6 deg of ramp ahead never exceeds 6 deg,
-    # but the backend's deaf timer already counts above 3 deg. 4 deg during the ramp and 0.2 s on
-    # arrival trip at least 0.3 s before the backend faults.
-    center_lag_deg = 4.0
-    center_arrive_lag_s = 0.2
+    """Drives the A1X from the glasses: a relay client plus one worker thread."""
 
     tcp_period_s = 0.2
     target_linger_s = 2.0
@@ -251,44 +216,34 @@ class SpecsReach:
     grip_closed = 0.0
     grip_wait_s = 1.2
 
-    # Sim effort threshold as a fraction of the actuator's forcerange (normal / descending).
-    sim_effort_frac = 0.8
-    sim_effort_frac_descend = 0.5
-    # No effort rule in sim for these robots, lag rule only. SO-101: kp 998 N m/rad against a
-    # 2.94 N m forcerange saturates at 0.17 deg of error, so normal motion already sits at the force
-    # limit (measured on 4 of 5 joints) and no threshold has headroom. The lag rule catches walls.
-    sim_effort_off = frozenset({"so101"})
-    # A1X thresholds in raw units of CAN frame 0x052. Guessed; see docs/TWIN.md.
-    real_effort_abs = 20.0
-    real_effort_abs_descend = 12.0
-    # A joint already above this fraction of its threshold at rest gets no effort rule for that move.
-    effort_rest_frac = 0.5
-
-    # The backoff guard starts late: a joint pressed against an obstacle still shows effort above
-    # the threshold for a moment (27 N m on J1 in sim right after the impact).
-    backoff_grace_s = 0.3
-    backoff_cap_deg_s = 15.0
+    # `start_center` runs at 10 deg/s: a joint stalled with 3-6 deg of ramp ahead never exceeds
+    # galaxeo's 6 deg lag threshold, while the A1X backend's "deaf" timer (3 deg for 1 s,
+    # robot/a1x.py) already counts above 3 deg. 4 deg during the ramp and 0.2 s on arrival
+    # trip at least 0.3 s before the backend faults.
+    center_lag_deg = 4.0
+    center_arrive_lag_s = 0.2
 
     # dry mode logs joint efforts this often, to pick thresholds on the first real session.
     dry_effort_period_s = 1.0
 
-    def __init__(self, twin: Twin, *, relay_url: str, volume: ReachVolume | None = None, mode: Mode = "dry",
+    def __init__(self, twin: Twin, *, relay_url: str, volume: ReachBox | None = None, mode: Mode = "dry",
                  hover: float = 0.08, touch_dz: float = 0.01, speed_deg_s: float = 20.0,
-                 backoff_speed_deg_s: float = 8.0, max_jump_deg: float = 150.0, grasp: bool = False,
-                 allow_untrusted: bool = False, real_ok: bool = False, hold_off_s: float = 1.0,
-                 on_state: Callable[[dict], None] | None = None):
+                 max_jump_deg: float = 150.0, grasp: bool = False, allow_untrusted: bool = False,
+                 real_ok: bool = False, hold_off_s: float = 1.0, on_state: Callable[[dict], None] | None = None):
         _check_mode(mode)
+        if twin.spec.name != ROBOT:
+            raise ValueError(f"okulary prowadza tylko A1X (galaxeo.arm), a stanowisko ma ramie {twin.spec.name!r}")
         self.twin = twin
         self.spec = twin.spec
-        self.arm = tuple(j for j in self.spec.joints if j != self.spec.gripper)
         self.relay_url = relay_url
-        self.volume = volume if volume is not None else ReachVolume.from_workspace(twin.workspace)
+        # Planning only (reach box, IK, FK, collisions); moves go through `link`.
+        self.arm = Arm()
+        self.volume = volume if volume is not None else self.arm.reach
         self.mode: Mode = mode
         self.real_ok = bool(real_ok)
         self.hover = float(hover)
         self.touch_dz = float(touch_dz)
         self.speed = float(speed_deg_s)
-        self.backoff_speed = float(backoff_speed_deg_s)
         self.max_jump = float(max_jump_deg)
         self.grasp = bool(grasp)
         self.allow_untrusted = bool(allow_untrusted)
@@ -310,30 +265,27 @@ class SpecsReach:
         self._cancel = threading.Event()
         self._cause: Cause = ""
         self._phase: Phase = "idle"
+        # `preempt_gen` of the arm while we own it; checked on every tick of a move.
+        self._gen: int | None = None
 
-        # Read by `_on_tick` on the twin's loop thread.
-        self._guard: ImpactGuard | None = None
-        self._guard_from = 0.0
-        self._impact: Impact | None = None
+        self.link = TwinTransport(twin, OWNER, cancel=self._cancel, on_lost=lambda: self._interrupt("preempt"))
+        self.motion = Motion(self.link, self.arm.lo, self.arm.hi, on_tick=self._on_tick)
+        #: The last guarded move's result (diagnostics and tests).
+        self.last_result: MoveResult | None = None
 
         self._last_state: dict | None = None
         self._target_shown_until: float | None = None
 
-        # The network thread has its own kinematics for the TCP sphere; IK and collisions run on the worker.
-        self._kin_net = RobotKinematics(self.spec)
-        self._kin_worker = RobotKinematics(self.spec)
-        self._checker: CollisionChecker | None = None
-        self._checker_version = -1
-        self._kin: RobotKinematics | None = None
-        self._effort_ids: np.ndarray | None = None
+        # The network thread has its own kinematics (own MjData) for the TCP sphere.
+        self._kin_net = Kinematics()
 
         # The panel's speed cap from before our first move, restored afterwards.
         self._prev_cap: float | None = None
         self._capped = False
 
         self._current: Target | None = None
-        # The command the target was validated from; `_recheck` compares against it.
-        self._validated_from: Joints | None = None
+        # The command the target was validated from [rad]; `_recheck` compares against it.
+        self._validated_from: np.ndarray | None = None
 
     def start(self) -> None:
         if self._net is not None:
@@ -410,7 +362,7 @@ class SpecsReach:
     def _serve(self, ws) -> None:
         self._ws = ws
         try:
-            self._send({"type": "overlay", "objects": [self.volume.overlay_object(), self._tcp_object()]})
+            self._send({"type": "overlay", "objects": [overlay_object(self.volume), self._tcp_object()]})
             self._pump(ws)
         except Exception as exc:
             if not self._stop.is_set():
@@ -451,9 +403,9 @@ class SpecsReach:
             return False
         return True
 
-    def _tcp_now(self, kin: RobotKinematics | None = None) -> list[float]:
+    def _tcp_now(self, kin: Kinematics | None = None) -> list[float]:
         kin = kin or self._kin_net
-        return _rounded(kin.tcp(self.twin.joints())[:3, 3])
+        return _rounded(kin.fk(to_q(self.twin.joints()))[:3, 3])
 
     def _tcp_object(self) -> dict:
         return {"id": "tcp", "kind": "sphere", "pos": self._tcp_now(), "size": [0.02], "color": list(TCP_COLOR)}
@@ -510,6 +462,8 @@ class SpecsReach:
             if not self._cancel.is_set():
                 self._cause = cause
                 self._cancel.set()
+            cause = self._cause
+        self.motion.cancel(cause)
 
     def _reset_cancel(self) -> None:
         with self._lock:
@@ -533,7 +487,7 @@ class SpecsReach:
             msg["detail"] = detail
         msg["pos"] = _rounded(t.pos)
         with suppress(Exception):                       # diagnostic only
-            msg["tcp"] = self._tcp_now(self._kin_worker)
+            msg["tcp"] = self._tcp_now(self.arm.kin)
         msg["ts"] = t.ts
         msg["mode"] = self.mode
         self._last_state = msg
@@ -593,6 +547,7 @@ class SpecsReach:
             self._hold_after_error(exc)
         finally:
             self._current = None
+            self._gen = None
             self._phase = "idle"
             self._release()
             self._restore_speed()
@@ -651,7 +606,7 @@ class SpecsReach:
             return self._after_cancel(t)
 
         try:
-            gen = self._take()
+            self._gen = self._take()
             self._recheck(legs)
         except _Abort as exc:
             # Nothing has moved yet. Note: unlike the other paths, this one doesn't fade the target sphere.
@@ -659,19 +614,15 @@ class SpecsReach:
             self._release()
             return None
 
-        self._cap_speed(1.5 * self.speed + 5.0)         # smoothstep peaks at 1.5x its average speed
-        self._guard = ImpactGuard(self.arm)
+        # The supervisor must never lag galaxeo's slew cap (1.5x speed + 5), or the lag guard trips.
+        self._cap_speed(1.5 * self.speed + 5.0)
         self._report(t, "moving")
         try:
-            arrived = self._drive(t, legs, gen)
-        except _Abort as exc:
-            self._finish(t, exc.state, exc.reason, exc.detail)
-            return None
-        if not arrived:
-            return self._after_cancel(t)
-
-        self._finish(t, "reached")                      # stays engaged, holding the target
-        return None
+            result = self._drive(t, legs)
+        finally:
+            self._gen = None
+            self.link.grip(None)
+        return self._after_move(t, result)
 
     def _held_off(self, t: Target) -> bool:
         """In `real`, a hand target waits `hold_off_s` before moving. True = interrupted meanwhile."""
@@ -679,20 +630,68 @@ class SpecsReach:
             return self._cancel.wait(self.hold_off_s)
         return False
 
-    def _drive(self, t: Target, legs: list[_Leg], gen: int) -> bool:
-        """Drives the legs in order. False = interrupted (see `_cause`)."""
+    def _drive(self, t: Target, legs: list[_Leg]) -> MoveResult:
+        """Drives the legs in order; stops at the first one that doesn't arrive."""
+        result = MoveResult("reached")
         for i, leg in enumerate(legs):
             if i > 0:
                 self._report(t, "moving")
             if leg.close_gripper:
-                self._close_gripper(gen)
-            self._tune_guard(self._guard, leg.profile)
-            if not self._ramp(leg.goal, leg.speed, gen, profile=leg.profile):
-                return False
-        return True
+                self.link.grip(self.grip_closed)
+                if self._cancel.wait(self.grip_wait_s):
+                    return MoveResult("hold", self._cancel_cause or "stop")
+            result = self._move(leg.start, leg.goal, leg.speed, profile=leg.profile)
+            if not result:
+                return result
+        return result
+
+    def _move(self, start: np.ndarray, goal: np.ndarray, speed: float, *, profile: Profile = "normal",
+              lag_deg: float | None = None, arrive_lag_s: float | None = None) -> MoveResult:
+        """One leg as consecutive guarded moves along the checked straight path (`pieces`)."""
+        result = MoveResult("reached")
+        for piece in pieces(start, goal):
+            if self._cancel.is_set():
+                return MoveResult("hold", self._cancel_cause or "stop")
+            self.motion.begin()
+            if self._cancel.is_set():                   # an interrupt that `begin` just cleared
+                self.motion.cancel(self._cancel_cause or "stop")
+            self._phase = "moving"
+            result = self.motion.move(piece, speed, profile=profile, lag_deg=lag_deg, arrive_lag_s=arrive_lag_s)
+            self.last_result = result
+            if not result:
+                return result
+        return result
+
+    def _on_tick(self, now: float, cmd: np.ndarray, reading: Any, phase: str) -> None:
+        """Every tick of a guarded move, on the worker thread."""
+        gen = self._gen
+        if gen is not None:
+            cause = self._check(gen)
+            if cause:
+                self._interrupt(cause)
+        if phase == "backoff" and self._phase != "backoff":
+            self._phase = "backoff"
+            self._cap_speed(BACKOFF_CAP_DEG_S)
+
+    def _after_move(self, t: Target, result: MoveResult) -> Target | None:
+        if result.state == "reached":
+            self._finish(t, "reached")                  # stays engaged, holding the target
+            return None
+        if result.impact is not None:
+            hit = result.impact
+            logger.warning("Uderzenie: %s %s (%.1f) - %s", hit.kind, hit.joint, hit.value, result.state)
+            self._report(t, "backoff" if result.state == "backoff" else "hold", result.reason, detail=result.detail)
+            self._reject_queued()
+            self._let_go()
+            return None
+        if self._cancel.is_set():
+            return self._after_cancel(t)
+        # Stale or frozen feedback, not arrived, a refused piece: the arm holds where it is.
+        self._finish(t, "hold", result.reason, result.detail)
+        return None
 
     def _after_cancel(self, t: Target) -> Target | None:
-        """After an interrupted ramp: a new target takes over, an impact backs off, anything else holds."""
+        """After an interrupted move: a new target takes over, anything else holds."""
         cause = self._cancel_cause
         if cause == "retarget":
             try:
@@ -702,11 +701,7 @@ class SpecsReach:
             self._report(t, "hold", "retargeted")
             return newer
 
-        if cause == "impact":
-            self._backoff(t)
-            return None
-
-        if cause in ("relay", "mode"):
+        if cause in ("relay", "mode", "not connected"):
             reason = cause
         elif cause == "stop" and self._stop.is_set():
             reason = "stop"
@@ -752,32 +747,26 @@ class SpecsReach:
 
     def _legs(self, t: Target) -> list[_Leg]:
         """Target points -> joints (IK) -> legs, each checked for jumps and collisions."""
-        kin, checker = self._tools()
-        command = self._command()
-        self._validated_from = self._arm_joints(command)
-        prev = self._validated_from
+        self._validated_from = prev = self.link.command_q()
 
         legs: list[_Leg] = []
         for wp in self._waypoints(t):
-            goal = self._solve(kin, wp, seed={**command, **prev})
-            self._check_leg(checker, prev, goal, wp.what)
-            legs.append(_Leg(goal, self.speed * wp.speed_factor, wp.profile, wp.what))
+            goal = self._solve(wp, seed=prev)
+            self._check_leg(prev, goal, wp.what)
+            legs.append(_Leg(prev, goal, self.speed * wp.speed_factor, wp.profile, wp.what))
             prev = goal
 
         if t.source == "object" and self.grasp:
-            legs.append(self._lift_leg(legs[0].goal))
+            # After the grasp, back up to the hover pose along the same (already checked) path.
+            legs.append(_Leg(prev, legs[0].goal, self.speed * 0.5, "descend", "w gore", close_gripper=True))
         return legs
 
     def _waypoints(self, t: Target) -> list[_Waypoint]:
         if t.source == "hand":
             return [_Waypoint(t.pos, "dlon")]
 
-        # An arm with fewer than 6 joints (SO-101) can't reach an arbitrary rotation: IK solves position
-        # only, and the approach axis is checked only before descending (--grasp).
-        full_rotation = len(self.arm) >= 6
-        rotation = down_rotation(self.spec, t.pos) if full_rotation else None
-        hover = _Waypoint(self._hover_point(t.pos), "nad obiekt", rotation,
-                          check_down=full_rotation or self.grasp)
+        rotation = down_rotation(t.pos)
+        hover = _Waypoint(self._hover_point(t.pos), "nad obiekt", rotation, check_down=True)
         if not self.grasp:
             return [hover]
 
@@ -785,48 +774,35 @@ class SpecsReach:
                           check_down=True, speed_factor=0.5, profile="descend")
         return [hover, touch]
 
-    def _lift_leg(self, hover_goal: Joints) -> _Leg:
-        """After the grasp, back up to the hover pose along the same (already checked) path."""
-        back = dict(hover_goal)
-        gripper = self.spec.gripper
-        if gripper:
-            back[gripper] = self.grip_closed
-        return _Leg(back, self.speed * 0.5, "descend", "w gore", close_gripper=bool(gripper))
-
-    def _solve(self, kin: RobotKinematics, wp: _Waypoint, seed: Joints) -> Joints:
-        _, checker = self._tools()
-        sol = kin.ik(wp.pos, rotation=wp.rotation, seed=seed, tol=self.ik_tol,
-                     accept=lambda joints: checker.config_clear(joints) is None)
+    def _solve(self, wp: _Waypoint, seed: np.ndarray) -> np.ndarray:
+        kin = self.arm.kin
+        sol = kin.ik(wp.pos, wp.rotation, seed=seed, tol=self.ik_tol)
         if not sol.ok:
             raise _Rejected("ik", f"IK {wp.what}: blad {sol.pos_err * 1000:.1f} mm")
 
         if wp.check_down:
-            approach = kin.tool_axes(sol.joints)[0]
+            approach = kin.fk(sol.q)[:3, 0]             # tool x is the approach axis
             tilt = float(np.arccos(np.clip(-approach[2], -1.0, 1.0)))
             if tilt > self.approach_tol:
                 raise _Rejected("ik", f"IK {wp.what}: os podejscia {math.degrees(tilt):.0f} st. od pionu")
+        return sol.q
 
-        return {k: float(v) for k, v in sol.joints.items() if k in self.arm}
-
-    def _check_leg(self, checker: CollisionChecker, start: Joints, goal: Joints, what: str) -> None:
-        jump = self._largest_step(start, goal)
+    def _check_leg(self, start: np.ndarray, goal: np.ndarray, what: str) -> None:
+        jump = _deg(goal - start)
         if jump > self.max_jump:
             raise _Rejected("jump", f"skok {what} {jump:.0f} st. > {self.max_jump:.0f}")
-        collision = checker.path_clear(start, goal)
+        collision = self.arm.collision.path_clear(start, goal)
         if collision is not None:
             raise _Rejected("collision", f"kolizja {what}: {collision}")
 
     def _recheck(self, legs: list[_Leg]) -> None:
         """Someone moved the arm during the hold-off (panel sliders, a jog): the plan was validated
         from a pose the arm no longer has, so hold "moved" and let the wearer pinch again."""
-        if not legs:
+        if not legs or self._validated_from is None:
             return
-        start = self._arm_joints(self._command())
-        validated = self._validated_from
-        if validated is not None and all(abs(v - validated.get(k, math.inf)) < self.unchanged_deg
-                                         for k, v in start.items()):
+        moved = _deg(self.link.command_q() - self._validated_from)
+        if moved < self.unchanged_deg:
             return
-        moved = self._largest_step(validated or {}, start) if validated else math.inf
         raise _Abort("hold", "moved", f"rozkaz zmieniony w czasie odczekania: o {moved:.0f} st.")
 
     def _hover_point(self, pos: np.ndarray) -> np.ndarray:
@@ -856,28 +832,14 @@ class SpecsReach:
         with suppress(Exception):
             self.twin.release(OWNER)
 
-    def _command_arm(self, target: Joints) -> None:
-        """`set_target` as owner; a refusal means the arm was taken away (STOP or another owner)."""
-        try:
-            self.twin.set_target(target, owner=OWNER)
-        except RuntimeError:
-            raise _Abort("hold", self._lost_reason()) from None
-
-    def _check(self, gen: int) -> None:
+    def _check(self, gen: int) -> Cause | None:
+        """Why the arm is no longer ours, or None."""
         tw = self.twin
-        if self._estopped():
-            raise _Abort("hold", "stop")
-        if tw.preempt_gen != gen:
-            raise _Abort("hold", "preempted")
+        if self._estopped() or tw.preempt_gen != gen:
+            return "preempt"
         if not tw.connected:
-            raise _Abort("hold", "not connected")
-
-    def _close_gripper(self, gen: int) -> None:
-        self.twin.set_target({self.spec.gripper: self.grip_closed}, owner=OWNER)
-        if self._cancel.wait(self.grip_wait_s):
-            return
-        if self.twin.preempt_gen != gen:
-            raise _Abort("hold", self._lost_reason())
+            return "not connected"
+        return None
 
     def _cap_speed(self, deg_s: float) -> None:
         """Caps the supervisor speed while we move, never above the panel's setting."""
@@ -896,51 +858,27 @@ class SpecsReach:
         except Exception:
             logger.exception("Przywracanie granicy predkosci")
 
-    def _tools(self) -> tuple[RobotKinematics, CollisionChecker]:
-        """IK and collision checker for the bench scene WITHOUT extras (task objects, the card).
-
-        Built on the worker thread and rebuilt when the twin's scene changes (`twin.version`).
-        """
-        version = self.twin.version
-        if self._checker is None or self._checker_version != version:
-            scene = sc.build(self.twin.workspace.scene_config())
-            self._checker = CollisionChecker(scene)
-            self._kin = RobotKinematics(self.spec, scene.model, sc.PREFIX)
-            self._checker_version = version
-        assert self._kin is not None
-        return self._kin, self._checker
-
     def _estopped(self) -> bool:
         from ..control.safety import SafetyState
 
         return self.twin.safety_state == SafetyState.ESTOP
 
-    def _command(self) -> Joints:
-        tw = self.twin
-        return {k: float(v) for k, v in (tw.status.command or tw.joints()).items()}
+    def _center_q(self) -> np.ndarray | None:
+        kin = self.arm.kin
+        sol = kin.ik(self.volume.center, seed=kin.home, tol=self.ik_tol)
+        return sol.q if sol.ok else None
 
-    def _arm_joints(self, joints: Mapping[str, float]) -> Joints:
-        """Arm joints only, without the gripper."""
-        return {k: float(joints[k]) for k in self.arm if k in joints}
-
-    def _largest_step(self, start: Mapping[str, float], goal: Mapping[str, float]) -> float:
-        """Largest arm-joint move between two poses, deg."""
-        return max((abs(v - start.get(k, v)) for k, v in goal.items() if k in self.arm), default=0.0)
-
-    def center_pose(self) -> Joints | None:
-        """Arm joints with the TCP above the centre of the reach box (IK from home); None if IK fails."""
-        kin, _ = self._tools()
-        sol = kin.ik(self.volume.center, seed=self.spec.home, tol=self.ik_tol)
-        if not sol.ok:
-            return None
-        return {k: float(v) for k, v in sol.joints.items() if k in self.arm}
+    def center_pose(self) -> dict[str, float] | None:
+        """Arm joints [deg] with the TCP above the centre of the reach box (IK from home); None if IK fails."""
+        q = self._center_q()
+        return None if q is None else to_joints(q)
 
     def start_center(self, speed_deg_s: float = 10.0) -> str | None:
-        """Moves above the centre of the reach box in stages (`spec.home_stages`), under the impact guard.
-        From home, every point in the box is a jump over 45 deg, so the first target would be refused.
+        """Moves above the centre of the reach box in stages (`spec.home_stages`), each piece a guarded
+        move. From home, every point in the box is a jump over 45 deg, so the first target would be refused.
 
-        Call BEFORE `start()`, from the thread that then starts the driver. An impact holds the measured
-        pose without backing off. Returns None on arrival, otherwise the reason.
+        Call BEFORE `start()`, from the thread that then starts the driver. An impact backs off and
+        stops there. Returns None on arrival, otherwise the reason.
         """
         tw = self.twin
         if not tw.connected:
@@ -949,12 +887,12 @@ class SpecsReach:
             return "stop"
         if not (tw.status.simulated or (self.mode == "real" and self.real_ok)):
             return "not armed"
-        goal = self.center_pose()
+        goal = self._center_q()
         if goal is None:
             return "ik"
 
-        _, checker = self._tools()
-        steps, collision = self._stage_plan(self._arm_joints(self._command()), goal, checker)
+        start = self.link.command_q()
+        steps, collision = self._stage_plan(start, goal)
         if collision is not None:
             logger.warning("Start nad srodek pudelka: %s", collision)
             return "collision"
@@ -963,322 +901,70 @@ class SpecsReach:
             self._cancel.clear()
             self._cause = ""
         try:
-            gen = self._take()
+            self._gen = self._take()
         except _Abort as exc:
             return exc.reason
 
         self._cap_speed(1.5 * speed_deg_s + 5.0)
-        self._guard = ImpactGuard(self.arm)
         try:
+            prev = start
             for step in steps:
-                self._tune_guard(self._guard, "normal")
-                self._guard.lag_deg = self.center_lag_deg
-                if not self._ramp(step, speed_deg_s, gen, arrive_lag_s=self.center_arrive_lag_s):
-                    return self._center_interrupted()
+                result = self._move(prev, step, speed_deg_s, lag_deg=self.center_lag_deg,
+                                    arrive_lag_s=self.center_arrive_lag_s)
+                prev = step
+                if not result:
+                    if result.impact is not None:
+                        logger.warning("Start nad srodek pudelka: %s - %s", result.reason, result.state)
+                    elif self._cancel.is_set():
+                        return self._cancel_cause or "preempted"
+                    return result.reason
             return None
-        except _Abort as exc:
-            return exc.reason
         finally:
-            self._guard = None
+            self._gen = None
             self._phase = "idle"
             self._release()
             self._restore_speed()
 
-    def _center_interrupted(self) -> str:
-        cause = self._cancel_cause
-        self.twin.hold_measured()
-        hit, self._impact = self._impact, None
-        if cause == "impact" and hit is not None:
-            logger.warning("Start nad srodek pudelka: uderzenie %s %s - trzymanie", hit.kind, hit.joint)
-            return f"impact {hit.kind} {hit.joint}"
-        return cause or "preempted"
-
-    def _stage_plan(self, start: Joints, goal: Joints,
-                    checker: CollisionChecker) -> tuple[list[Joints], str | None]:
+    def _stage_plan(self, start: np.ndarray, goal: np.ndarray) -> tuple[list[np.ndarray], str | None]:
         """Intermediate poses as in staged homing: joint groups one after another (also in reverse),
         then the whole goal. The first plan with clear paths wins; with no stages, a straight move.
         Returns (poses, None) or ([], the first collision)."""
-        stages = [tuple(j for j in stage if j in self.arm) for stage in self.spec.home_stages]
+        index = {j: k for k, j in enumerate(JOINTS)}
+        stages = [tuple(index[j] for j in stage if j in index) for stage in self.spec.home_stages]
         stages = [stage for stage in stages if stage]
         orders = [stages, stages[::-1]] if stages else []
+        every = tuple(range(len(JOINTS)))
 
         first_collision: str | None = None
         for order in [*orders, []]:
-            poses, collision = self._walk_stages(start, goal, [*order, self.arm], checker)
+            poses, collision = self._walk_stages(start, goal, [*order, every])
             if collision is None:
                 return poses, None
             first_collision = first_collision or collision
         return [], first_collision
 
-    def _walk_stages(self, start: Joints, goal: Joints, stages: list[tuple[str, ...]],
-                     checker: CollisionChecker) -> tuple[list[Joints], str | None]:
-        pose = dict(start)
-        poses: list[Joints] = []
+    def _walk_stages(self, start: np.ndarray, goal: np.ndarray,
+                     stages: list[tuple[int, ...]]) -> tuple[list[np.ndarray], str | None]:
+        pose = start.copy()
+        poses: list[np.ndarray] = []
         for stage in stages:
-            nxt = {**pose, **{j: goal[j] for j in stage}}
-            if self._largest_step(pose, nxt) < 1e-3:
+            nxt = pose.copy()
+            nxt[list(stage)] = goal[list(stage)]
+            if _deg(nxt - pose) < 1e-3:
                 continue
-            collision = checker.path_clear(pose, nxt)
+            collision = self.arm.collision.path_clear(pose, nxt)
             if collision is not None:
                 return poses, collision
             poses.append(nxt)
             pose = nxt
         return poses, None
 
-    def _ramp(self, goal: Mapping[str, float], speed: float, gen: int, *, guarded: bool = True,
-              profile: Profile = "normal", arrive_lag_s: float | None = None) -> bool:
-        """Smoothstep ramp to `goal`, then wait for arrival. True = arrived, False = interrupted (`_cause`).
-        Raises `_Abort` if the arm is taken away or doesn't arrive (it then holds its measured pose)."""
-        command = self._command()
-        start = {k: command.get(k, float(v)) for k, v in goal.items()}
-        goal = {k: float(v) for k, v in goal.items()}
-        duration = max(0.5, self._largest_step(start, goal) / max(speed, 1e-3))
-        with self._listening(guarded):
-            self._phase = "moving" if guarded else "backoff"
-            if not self._sweep(start, goal, duration, gen):
-                return False
-            self._tighten_guard_for_arrival(arrive_lag_s)
-            return self._settle(goal, gen, profile)
-
-    def _sweep(self, start: Joints, goal: Joints, duration: float, gen: int) -> bool:
-        clock = _LoopClock(self.twin)
-        while True:
-            if self._cancel.is_set():
-                return False
-            self._check(gen)
-
-            s = smoothstep(clock.elapsed() / duration)
-            self._command_arm({k: start[k] + s * (goal[k] - start[k]) for k in goal})
-            if s >= 1.0:
-                return True
-
-            if self._cancel.wait(self.tick_s):
-                return False
-
-    def _tighten_guard_for_arrival(self, arrive_lag_s: float | None) -> None:
-        guard = self._guard
-        if guard is None:
-            return
-        guard.lag_deg = self.arrive_lag_deg
-        guard.lag_s = self.arrive_lag_s if arrive_lag_s is None else float(arrive_lag_s)
-
-    def _settle(self, goal: Joints, gen: int, profile: Profile) -> bool:
-        """Waits until every arm joint is within `arrive_deg` of the goal and still. After
-        `arrive_timeout_s`: holds the measured pose and raises `_Abort("hold", "not arrived")`."""
-        deadline = time.monotonic() + self.arrive_timeout_s
-        previous: _Sample | None = None
-        while True:
-            if self._cancel.wait(0.05):
-                return False
-            self._check(gen)
-
-            status = self.twin.status
-            sample = _Sample(status.measured_t, dict(status.measured))
-            still = False
-            if previous is None or sample.t > previous.t:
-                still = previous is not None and self._stood_still(previous, sample)
-                previous = sample
-
-            far = self._far_joints(goal, sample.joints)
-            if not far and still:
-                if profile == "descend":
-                    return True                         # no trim when descending: keep pressing on the object
-                return self._trim(goal, gen)
-
-            if time.monotonic() > deadline:
-                # A stalled joint must not keep pushing into the obstacle towards a goal it can't reach.
-                self.twin.hold_measured()
-                misses = ", ".join(f"{k} {sample.joints.get(k, math.nan) - goal[k]:+.1f} st." for k in far)
-                raise _Abort("hold", "not arrived", misses)
-
-    def _far_joints(self, goal: Joints, measured: Joints) -> list[str]:
-        return [k for k in goal if k in self.arm and abs(measured.get(k, goal[k]) - goal[k]) > self.arrive_deg]
-
-    def _stood_still(self, before: _Sample, after: _Sample) -> bool:
-        dt = after.t - before.t
-        return all(abs(v - before.joints.get(k, v)) / dt < self.still_deg_s
-                   for k, v in after.joints.items() if k in self.arm)
-
-    def _trim(self, goal: Joints, gen: int) -> bool:
-        """Commands goal + error, a few times, so the measured pose lands on the IK goal. False = interrupted."""
-        guard = self._guard
-        if guard is not None and guard.effort_abs:
-            loaded = self._loaded_joints(self._efforts() or {}, guard.effort_abs)
-            if loaded:
-                logger.info("Bez docinania: wysilek %s ponad polowe progu", loaded)
-                return True
-
-        command = dict(goal)
-        for _ in range(self.trim_steps):
-            measured = dict(self.twin.status.measured)
-            error = {k: goal[k] - measured[k] for k in goal if k in self.arm and k in measured}
-            if not error or max(abs(v) for v in error.values()) < self.trim_deg:
-                break
-            for k, v in error.items():
-                command[k] = float(np.clip(command[k] + v, goal[k] - self.trim_max_deg, goal[k] + self.trim_max_deg))
-            self._command_arm(command)
-            if self._cancel.wait(0.4):
-                return False
-            self._check(gen)
-        return True
-
-    @contextmanager
-    def _listening(self, enabled: bool = True) -> Iterator[None]:
-        """The impact guard listens to the twin's loop ticks for the duration of the block."""
-        handle = self.twin.add_tick_listener(self._on_tick) if enabled else None
-        try:
-            yield
-        finally:
-            if handle is not None:
-                self.twin.remove_tick_listener(handle)
-
-    def _on_tick(self, sample) -> None:
-        """Runs on the twin's loop thread: only records the impact and interrupts the ramp."""
-        guard = self._guard
-        if guard is None or self._cancel.is_set() or time.monotonic() < self._guard_from:
-            return
-        hit = guard.feed(sample.t, sample.sent, sample.measured, sample.fresh,
-                         efforts=self._efforts(), velocities=self._velocities())
-        if hit is not None:
-            self._impact = hit
-            self._interrupt("impact")
-
-    def _tune_guard(self, guard: ImpactGuard, profile: Profile) -> None:
-        """Guard thresholds for one leg. One guard serves the whole target, so its buffer of good
-        samples (the backoff poses) carries across legs."""
-        descend = profile == "descend"
-        guard.lag_deg = self.lag_deg_descend if descend else self.lag_deg
-        guard.lag_s = self.lag_s
-
-        limits = self._effort_limits(descend) or {}
-        # A joint already loaded at rest (weight, spring) would trip on every move: lag rule only for it.
-        at_rest = (self._log_efforts("start odcinka") or {}) if limits else {}
-        for joint in self._loaded_joints(at_rest, limits):
-            logger.warning("Wysilek %s w spoczynku %.1f > %.0f%% progu %.1f - regula wysilku wylaczona "
-                           "dla tego stawu w tym ruchu", joint, at_rest[joint], 100 * self.effort_rest_frac,
-                           limits[joint])
-            del limits[joint]
-        guard.effort_abs = limits
-
-    def _loaded_joints(self, efforts: Mapping[str, float], limits: Mapping[str, float]) -> list[str]:
-        return [j for j, limit in limits.items() if j in efforts and abs(efforts[j]) > self.effort_rest_frac * limit]
-
-    def _backoff(self, t: Target) -> None:
-        """After an impact: hold the measured pose, then move slowly to the backoff pose.
-        A second impact during the backoff only holds."""
-        tw = self.twin
-        hit, self._impact = self._impact, None
-        # The measured pose, not the braking target: a joint pressed against an obstacle stops pushing.
-        tw.hold_measured(dict(tw.status.measured) or None)
-
-        why = f"impact {hit.kind} {hit.joint}" if hit is not None else "impact"
-        logger.warning("Uderzenie: %s (%.1f) - wycofanie", why, hit.value if hit is not None else math.nan)
-        pose = dict(hit.backoff_pose or {}) if hit is not None else {}
-        gen = tw.preempt_gen
-        if not pose or tw.owner != OWNER:
-            self._finish(t, "hold", why)
-            return
-
-        self._reset_cancel()
-        self._cap_speed(self.backoff_cap_deg_s)
-        try:
-            arrived = self._retreat(pose, gen)
-        except _Abort as exc:
-            self._finish(t, "hold", f"{why}; {exc.reason}", exc.detail)
-            return
-
-        cause = self._cancel_cause
-        if arrived:
-            self._report(t, "backoff", why)
-        elif cause == "impact":
-            tw.hold_measured()                          # second impact: no further backoff
-            self._impact = None
-            self._report(t, "hold", why)
-        else:
-            self._report(t, "hold", cause)
-        self._reject_queued()
-        self._let_go()
-
-    def _retreat(self, pose: Joints, gen: int) -> bool:
-        """Ramps to the backoff pose under a fresh guard that starts late. False = interrupted."""
-        self._guard = ImpactGuard(self.arm, effort_abs=self._effort_limits(False))
-        self._guard_from = time.monotonic() + self.backoff_grace_s
-        try:
-            with self._listening():
-                if self._cancel.wait(0.06):             # ramp from the command AFTER the hold (next loop tick)
-                    raise _Abort("hold", self._cancel_cause or "preempted")
-                return self._ramp(pose, self.backoff_speed, gen, guarded=False)
-        finally:
-            self._guard = None
-
-    def _effort_limits(self, descend: bool) -> Joints | None:
-        """Per-joint effort thresholds; {} = no effort rule, None = the backend can't measure effort."""
-        b = self.twin.backend
-        if b is None:
-            return None
-        if b.info.simulated:
-            return self._sim_effort_limits(descend)
-        try:
-            probe = b.efforts()
-        except Exception:
-            probe = None
-        if probe is None:
-            return None
-        limit = self.real_effort_abs_descend if descend else self.real_effort_abs
-        return dict.fromkeys(self.arm, limit)
-
-    def _sim_effort_limits(self, descend: bool) -> Joints:
-        model = self.twin.scene.model
-        ids = [model.actuator(sc.PREFIX + j).id for j in self.arm]
-        self._effort_ids = np.array(ids)
-        if self.spec.name in self.sim_effort_off:
-            return {}
-
-        frac = self.sim_effort_frac_descend if descend else self.sim_effort_frac
-        ranges = model.actuator_forcerange[ids]
-        limited = model.actuator_forcelimited[ids]
-        return {j: frac * float(max(abs(lo), abs(hi)))
-                for j, (lo, hi), is_limited in zip(self.arm, ranges, limited, strict=True)
-                if is_limited and hi > lo}
-
-    def _efforts(self) -> Joints | None:
-        """Joint efforts from the backend; in sim, the arm actuators' `actuator_force` (N m)."""
-        tw = self.twin
-        b = tw.backend
-        if b is None:
-            return None
-        if not b.info.simulated:
-            try:
-                return b.efforts()
-            except Exception:
-                return None
-
-        ids = self._effort_ids
-        if ids is None or not tw.lock.acquire(timeout=0.005):
-            return None
-        try:
-            forces = tw.scene.data.actuator_force[ids]
-            return {j: float(f) for j, f in zip(self.arm, forces, strict=True)}
-        finally:
-            tw.lock.release()
-
-    def _velocities(self) -> dict[str, float] | None:
-        b = self.twin.backend
-        if b is None or b.info.simulated:
-            return None
-        try:
-            return b.velocities()
-        except Exception:
-            return None
-
-    def _log_efforts(self, what: str) -> Joints | None:
+    def _log_efforts(self, what: str) -> None:
         """Logs arm joint efforts: the A1X guard thresholds are guesses, and this gives real numbers."""
-        b = self.twin.backend
-        if b is None:
-            return None
-        if b.info.simulated and self._effort_ids is None:
-            self._effort_limits(False)                  # sets up `_effort_ids`
-        efforts = self._efforts()
-        if efforts:
-            logger.info("Wysilek stawow (%s): %s", what, {k: round(float(v), 2) for k, v in efforts.items()})
-        return efforts
+        try:
+            reading = self.link.read()
+        except Exception:
+            return
+        if reading is not None:
+            logger.info("Wysilek stawow (%s): %s", what,
+                        {j: round(float(v), 2) for j, v in zip(JOINTS, reading.effort, strict=True)})

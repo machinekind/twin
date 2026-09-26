@@ -10,14 +10,13 @@ so while the panel is armed the glasses get a "busy" refusal.
 
 from __future__ import annotations
 
-import os
-
 import logging
+import os
 from typing import Any
 
 import viser
 
-from ..specsreach import MODES, SpecsReach
+from ..specsreach import MODES, ROBOT, SpecsReach
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +71,10 @@ class SpecsFolder:
 
     def start(self) -> None:
         self.stop(keep_consent=True)
+        robot = self.app.twin.spec.name
+        if robot != ROBOT:
+            self.md.content = f"Okulary: tylko A1X (galaxeo.arm) - to stanowisko ma ramie {robot}"
+            return
         self.driver = SpecsReach(self.app.twin, relay_url=str(self.url.value).strip() or DEFAULT_RELAY,
                                  mode=self.mode.value, real_ok=bool(self.real_ok.value))
         self.driver.start()

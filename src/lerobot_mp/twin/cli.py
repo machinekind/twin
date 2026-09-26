@@ -449,7 +449,7 @@ def _specs(a: argparse.Namespace) -> int:
     import time
 
     from .runtime import Twin
-    from .specsreach import SpecsReach
+    from .specsreach import ROBOT, SpecsReach
     from .workspace import Workspace
 
     if a.mode == "real" and not a.i_know:
@@ -458,6 +458,10 @@ def _specs(a: argparse.Namespace) -> int:
     # Refusals, impacts, a missing relay and joint efforts (dry) are reported via logging.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ws = Workspace.load(a.workspace)
+    if ws.robot != ROBOT:
+        print(f"lerobot-twin specs prowadzi tylko A1X (galaxeo.arm), a stanowisko ma ramie {ws.robot!r}.",
+              file=sys.stderr)
+        return 2
     # dry and sim default to the simulated arm so nothing touches hardware without --backend.
     backend = a.backend or ("sim" if a.mode in ("dry", "sim") else None)
     if a.mode == "real":
@@ -666,7 +670,8 @@ def parser() -> argparse.ArgumentParser:
                    help="przyjmuj cele tylko przy zaufanej rejestracji okularow (domyslnie kazda rejestracja wystarczy)")
     p.add_argument("--i-know", action="store_true", help="wymagane w --mode real: rozumiem, ze ramie sie ruszy")
     p.add_argument("--max-jump-deg", type=float, default=150.0,
-                   help="odrzuc cel, gdy jakis staw mialby sie obrocic o wiecej w jednym ruchu (domyslnie 150)")
+                   help="odrzuc cel, gdy jakis staw mialby sie obrocic o wiecej na jednym odcinku (domyslnie 150; "
+                        "galaxeo jedzie po kawalkach do 40 st.)")
     p.add_argument("--start-center", action="store_true",
                    help="przed startem etapami (10 st./s, straznik uderzen) nad srodek pudelka; w real po Enter")
     p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")

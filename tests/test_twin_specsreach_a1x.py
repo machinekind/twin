@@ -18,18 +18,17 @@ pytest.importorskip("websockets")
 pytest.importorskip("galaxeo")
 
 from galaxeo import protocol as P  # noqa: E402
+from galaxeo.arm import JOINTS as ARM  # noqa: E402
+from galaxeo.arm import Arm  # noqa: E402
 from test_a1x import LSB_DEG, STEP, Clock, FakeA1XBus  # noqa: E402
-from test_twin_specsreach import FakeRelay  # noqa: E402
+from test_twin_specsreach import FakeRelay, on_backoff_start  # noqa: E402
 
 from lerobot_mp.robot.a1x import A1XArm  # noqa: E402
-from lerobot_mp.twin import robots  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
-from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
-from lerobot_mp.twin.reach import ReachVolume  # noqa: E402
+from lerobot_mp.twin.armlink import to_joints  # noqa: E402
 from lerobot_mp.twin.specsreach import SpecsReach  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
 
-ARM = tuple(f"arm_joint{i}" for i in range(1, 7))
 DT = 0.02                                      # twin loop period (4 bus ticks)
 
 
@@ -52,12 +51,11 @@ class Rig:
     """Twin on the fake A1X, plus driver and relay; `pump` runs the loop at wall-clock pace."""
 
     def __init__(self, monkeypatch, relay: FakeRelay, offset: dict[str, float] | None = None):
-        spec = robots.REGISTRY["a1x"]
-        self.kin = RobotKinematics(spec)
-        self.vol = ReachVolume.from_workspace(Workspace(robot="a1x"))
-        sol = self.kin.ik(self.vol.center, seed=spec.home, tol=0.003)
+        self.kin = Arm()
+        self.vol = self.kin.reach
+        sol = self.kin.kin.ik(self.vol.center, seed=self.kin.kin.home, tol=0.003)
         assert sol.ok
-        self.start = {k: float(sol.joints[k]) for k in ARM}  # from home every target is a > 45 deg jump
+        self.start = to_joints(sol.q)                        # from home every target is a > 45 deg jump
         self.clock = Clock()
         # `offset` [deg]: start this far from the pose above the volume centre (for `start_center`).
         self.bus = WallBus([self.start[k] + (offset or {}).get(k, 0.0) for k in ARM])
@@ -174,22 +172,19 @@ def test_sim_mode_or_real_without_consent_on_the_a1x_is_not_armed(rig, mode, rea
 def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
     d = rig.connect_driver()
     trip: dict = {}
-    real_backoff = d._backoff
 
-    def spy(t):
+    def at_trip():
         rig.bus.eff[:6] = [0.0] * 6                                # force gone, so backing off doesn't trip again
-        trip["hit"] = d._impact
         trip["tx"] = len(rig.bus.tx)
-        return real_backoff(t)
-    d._backoff = spy
+    on_backoff_start(d, at_trip)
     ts = rig.relay.target(far_target(rig))
     rig.wait_state(ts, {"moving"}, 5.0)
     rig.pump(0.6)
     before = dict(rig.twin.status.measured)
-    rig.bus.eff[0] = 60.0                                           # > threshold of 20 in 0x052 frame units
+    rig.bus.eff[0] = 60.0                                           # > galaxeo's threshold of 20 (0x052 units)
     st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 15.0)
     assert (st["state"], st.get("reason")) == ("backoff", "impact effort arm_joint1"), rig.relay.states_for(ts)
-    hit = trip["hit"]
+    hit = d.last_result.impact
     assert hit is not None and hit.backoff_pose
     frames = rig.cmd_frames(trip["tx"])
     assert frames
@@ -199,7 +194,7 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
     ahead = np.sign(before["arm_joint1"] - rig.start["arm_joint1"])              # direction of travel
     assert ahead != 0 and (j1[-1] - j1[0]) * ahead < -2.0
     # Slow: smoothstep peak 1.5 x 8 = 12 deg/s (+ test clock jitter) over 0.2 s windows,
-    # never above the supervisor's 15 deg/s cap.
+    # never above galaxeo's and the supervisor's 15 deg/s cap.
     win = int(round(0.2 / STEP))
     rates = [abs(j1[i + win] - j1[i]) / 0.2 for i in range(len(j1) - win)]
     assert rates and max(rates) <= 13.0, max(rates)
@@ -212,14 +207,7 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
 
 
 def test_stall_at_a_wall_trips_the_guard_before_the_backend_deaf_fault(rig):
-    d = rig.connect_driver()
-    tripped: list[float] = []
-    real_backoff = d._backoff
-
-    def spy(t):
-        tripped.append(rig.clock.t)
-        return real_backoff(t)
-    d._backoff = spy
+    rig.connect_driver()
     target = far_target(rig)
     ts = rig.relay.target(target)
     rig.wait_state(ts, {"moving"}, 5.0)
@@ -231,7 +219,6 @@ def test_stall_at_a_wall_trips_the_guard_before_the_backend_deaf_fault(rig):
     st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 15.0)
     rig.bus.wall = None
     assert (st["state"], st.get("reason")) == ("backoff", "impact lag arm_joint1"), rig.relay.states_for(ts)
-    assert tripped
     assert not any("gluche" in f for f in rig.faults), rig.faults
     rig.pump(1.5)                                                   # no servo fault after the backoff either
     assert not any("gluche" in f for f in rig.faults), rig.faults
@@ -271,27 +258,43 @@ def test_relay_loss_mid_move_in_real_mode_holds(rig):
     assert max(abs(rig.twin.status.command[k] - cmd[k]) for k in ARM) < 0.2
 
 
+@pytest.mark.parametrize("knob", ["silent", "frozen"])
+def test_lost_or_frozen_feedback_mid_move_holds(rig, knob):
+    d = rig.connect_driver()
+    ts = rig.relay.target(far_target(rig))
+    rig.wait_state(ts, {"moving"}, 5.0)
+    rig.pump(0.4)
+    setattr(rig.bus, knob, True)
+    st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+    assert st["state"] == "hold", rig.relay.states_for(ts)
+    # On the fake bus the backend's own "no response" fault (STOP) usually beats galaxeo's 150 ms stale rule.
+    assert st.get("reason") in ("stale feedback", "frozen telemetry", "stop"), st
+    assert d.last_state["state"] != "reached"
+    assert rig.twin.owner is None
+    setattr(rig.bus, knob, False)
+
+
 @pytest.mark.parametrize("left_deg", [6.0, 7.0, 8.0])
 def test_start_center_stall_near_the_end_holds_before_the_backend_deaf_fault(monkeypatch, relay, left_deg):
     """`start_center` at 10 deg/s; J1 gets stuck 2 deg further when `left_deg` of the ramp remains.
 
-    The error ends at about 4-6 deg: up to the old 6 deg lag threshold, above the backend's 3 deg "deaf"
+    The error ends at about 4-6 deg: up to galaxeo's 6 deg lag threshold, above the backend's 3 deg "deaf"
     threshold. With 6 deg / 0.3 s (the normal-move setting) the backend had already counted up to 0.74 s
-    of its 1 s deaf timeout; with 4 deg / 0.2 s, only up to 0.34 s.
+    of its 1 s deaf timeout; with 4 deg / 0.2 s (`Motion.move` kwargs), only up to 0.34 s.
     """
     rig = Rig(monkeypatch, relay, offset={"arm_joint1": -15.0})
     try:
         d = SpecsReach(rig.twin, relay_url=relay.url, mode="real", real_ok=True)
         goal = rig.start["arm_joint1"]
         trip: dict = {}
-        real_interrupt = d._interrupt
+        real_tick = d.motion.on_tick
 
-        def spy(cause):
-            if cause == "impact" and "deaf_age" not in trip:
-                # How long the backend has been counting a joint as "deaf" when the guard trips.
+        def spy(now, cmd, reading, phase):
+            if phase == "moving":
+                # How long the backend has been counting a joint as "deaf" at the last guarded tick before the trip.
                 trip["deaf_age"] = max((rig.clock.t - t0 for t0 in rig.arm._deaf_since.values()), default=0.0)
-            real_interrupt(cause)
-        d._interrupt = spy
+            real_tick(now, cmd, reading, phase)
+        d.motion.on_tick = spy
         out: dict = {}
         th = threading.Thread(target=lambda: out.setdefault("r", d.start_center(10.0)))
         th.start()
@@ -302,7 +305,7 @@ def test_start_center_stall_near_the_end_holds_before_the_backend_deaf_fault(mon
         assert out["r"] == "impact lag arm_joint1", (out, rig.faults)
         assert not any("gluche" in f for f in rig.faults), rig.faults
         assert trip["deaf_age"] <= 1.0 - 0.3, trip                     # >= 0.3 s before the backend fault
-        rig.pump(1.5)                                                   # holds: no backoff and no fault
+        rig.pump(1.5)                                                   # backed off and holds: no fault
         rig.bus.wall = None
         assert not any("gluche" in f for f in rig.faults), rig.faults
         meas, cmd = rig.twin.status.measured, rig.twin.status.command

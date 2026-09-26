@@ -378,8 +378,23 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
     app.twin._backend = None
 
 
-def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app):
+def test_spectacles_refuses_a_workspace_without_the_a1x(app):
     specs = app.specs
+    assert app.twin.spec.name != "a1x"
+    specs.start()
+    assert specs.driver is None
+    assert "tylko A1X" in specs.md.content
+
+
+def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from lerobot_mp.twin.runtime import Twin
+    from lerobot_mp.twin.workspace import Workspace
+
+    specs = app.specs
+    twin = Twin(Workspace(robot="a1x"))                               # the driver knows only the A1X
+    monkeypatch.setattr(specs, "app", SimpleNamespace(twin=twin))
     specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nothing listens; the driver keeps retrying
     specs.mode.value = "real"
     specs.real_ok.value = True
@@ -395,5 +410,6 @@ def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_con
         drv._phase = "idle"
     finally:
         specs.stop()
+        twin.close()
     assert specs.driver is None
     assert specs.real_ok.value is False                               # consent doesn't carry to the next connection
