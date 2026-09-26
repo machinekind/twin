@@ -150,7 +150,15 @@ def make_task(name: str = "reach", spec: RobotSpec | None = None, **overrides) -
         base = replace(base, n_joints=len(spec.joints), goal_radius=d.goal_radius, goal_height=d.goal_height,
                        cube_radius=d.cube_radius, cube_bearing=d.cube_bearing,
                        target_radius=d.cube_radius, target_bearing=d.cube_bearing)
-    return replace(base, **overrides)
+    task = replace(base, **overrides)
+    if spec is not None:
+        if not np.isfinite(task.control_hz) or task.control_hz <= 0:
+            raise ValueError("control_hz must be finite and > 0")
+        speed = robot_config(spec).joint(spec.gripper).max_vel
+        task = replace(task, grip_step=min(task.grip_step, speed / (100.0 * task.control_hz)))
+        if spec.name == "a1x" and name in ("lift", "pickplace") and "end_on_success" not in overrides:
+            task = replace(task, end_on_success=int(np.ceil(2.0 * task.control_hz)))
+    return task
 
 
 # --------------------------------------------------------------- limity

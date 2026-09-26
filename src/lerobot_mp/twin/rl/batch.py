@@ -29,7 +29,10 @@ Budzet kontaktow na swiat (`CONTACTS`: nconmax, njmax) dla zadan z kostka. Zmier
 w MuJoCo na CPU (najwiecej w jednym kroku fizyki, epizody losowe i ekspert pickplace):
 SO-101 24 kontakty / 142 wiersze wiezow (ekspert, chwyt), A1X 12 / 49. MuJoCo Warp
 generuje kontakty siatek (otoczki wypukle ogniw A1X) inaczej niz CPU - A1X dostaje
-zapas 64 / 384, do potwierdzenia na GPU (`int(env.d.ncon.numpy().max())` po 200 krokach).
+zapas 64 / 384. `physics_diagnostics()` records peak usage and overflow at every
+physics substep. In MuJoCo Warp 3.14, `d.nacon` is the total contact count across
+all worlds; `d.nefc` contains constraint rows per world. See A1X_OFFLINE_VALIDATION.md
+for measured A1X CPU/GPU trajectories and the limits of that evidence.
 """
 
 from __future__ import annotations
@@ -90,8 +93,34 @@ class BatchEnv:
             # nie blad - na CPU nikt o tym nie krzyczy. Tu drukowaloby sie co krok.
             self.m.opt.warn_overflow = 0
         cube = self.task.cube is not None
-        nconmax, njmax = CONTACTS.get(spec.name, CONTACTS["so101"]) if cube else (16, 64)
+        # A1X reach can still produce arm/table contacts during exploration:
+        # 64 constraint rows overflowed at 69 in the first longer reach run.
+        nconmax, njmax = CONTACTS.get(spec.name, CONTACTS["so101"]) if cube or spec.name == "a1x" else (16, 64)
         self.d = mjw.put_data(mjm, scene.data, nworld=N, nconmax=nconmax, njmax=njmax)
+        from .warp_diagnostics import record_capacity, record_forbidden_contacts
+        self._peak_nefc = wp.zeros(N, dtype=wp.int32, device=str(self.device))
+        self._peak_nacon = wp.zeros(1, dtype=wp.int32, device=str(self.device))
+        self._seen_overflow = wp.zeros(N, dtype=wp.int32, device=str(self.device))
+        self._capacity_mask = int(mjw.OverflowType.ALL) & ~int(
+            mjw.OverflowType.ITERATIONS | mjw.OverflowType.LS_ITERATIONS)
+        self._overflow = wp.to_torch(self._seen_overflow)
+        self._unsafe_wp = wp.zeros(N, dtype=wp.int32, device=str(self.device))
+        self._unsafe = wp.to_torch(self._unsafe_wp)
+        self._forbidden = None
+        if spec.name == "a1x":
+            from ..collision import CollisionChecker
+            mask = CollisionChecker(scene, grasp_objects=("cube",) if cube else ()).forbidden_pairs()
+            self._forbidden = wp.array(mask.astype(np.int32), dtype=wp.int32, device=str(self.device))
+
+        def record():
+            wp.launch(record_capacity, dim=N, inputs=[self.d.nefc, self.d.nacon, self.d.overflow,
+                                                     self._peak_nefc, self._peak_nacon, self._seen_overflow],
+                      device=str(self.device))
+            if self._forbidden is not None:
+                c = self.d.contact
+                wp.launch(record_forbidden_contacts, dim=self.d.naconmax,
+                          inputs=[self.d.nacon, c.geom, c.dist, c.worldid, self._forbidden, self._unsafe_wp],
+                          device=str(self.device))
 
         t = lambda a: wp.to_torch(a)                                            # noqa: E731
         self.qpos, self.qvel, self.ctrl = t(self.d.qpos), t(self.d.qvel), t(self.d.ctrl)
@@ -148,7 +177,8 @@ class BatchEnv:
         self.ar = torch.arange(N, device=dev)
         self.t = torch.zeros(N, dtype=torch.long, device=dev)
         self.streak = torch.zeros(N, dtype=torch.long, device=dev)   # takty sukcesu z rzedu
-        self.noise = float(np.radians(self.rand.obs_noise_deg))
+        noise = self.rand.joint_noise_std(self.kin)
+        self.noise = torch.as_tensor(noise, **f32) if np.any(noise) else None
         # Percepcja kostki (patrz Randomization.cube_*): historia w buforze pierscieniowym,
         # opoznienie i okres odswiezania osobno dla kazdego swiata.
         self.H = int(self.rand.cube_delay) + 1
@@ -161,16 +191,28 @@ class BatchEnv:
         self.seen_rot = torch.eye(3, **f32).repeat(N, 1, 1)
 
         mjw.step(self.m, self.d)                          # kompilacja kerneli (raz, potem z cache)
+        record()
         wp.synchronize_device()
         with wp.ScopedCapture() as cap:
             for _ in range(self.task.substeps):
                 mjw.step(self.m, self.d)
+                record()
             # Jak w TwinEnv.step: po krokach xpos/site_xpos sa sprzed ostatniego calkowania,
             # wiec kinematyka od nowa - TCP i kostka z tego samego q, co katy w obserwacji.
             mjw.kinematics(self.m, self.d)
         self.graph = cap.graph
 
     # ------------------------------------------------------------ pomocnicze
+    def physics_diagnostics(self) -> dict:
+        """Peak usage since construction, including intermediate physics substeps."""
+        flags = self._seen_overflow.numpy()
+        return {"worlds": self.num_envs, "peak_contacts_total": int(self._peak_nacon.numpy()[0]),
+                "contact_capacity_total": int(self.d.naconmax),
+                "peak_constraint_rows_per_world": int(self._peak_nefc.numpy().max()),
+                "constraint_capacity_per_world": int(self.d.njmax),
+                "overflow_flags": sorted(int(x) for x in np.unique(flags)),
+                "capacity_overflow_worlds": int(np.count_nonzero(flags & self._capacity_mask))}
+
     def _u(self, *shape, lo=0.0, hi=1.0):
         return lo + (hi - lo) * torch.rand(*shape, generator=self.gen, device=self.device)
 
@@ -189,7 +231,7 @@ class BatchEnv:
 
     def _obs(self, s: dict[str, torch.Tensor]) -> torch.Tensor:
         q = s["q"]
-        if self.noise > 0:
+        if self.noise is not None:
             q = q + self.noise * torch.randn(q.shape, generator=self.gen, device=self.device)
         cube = self.task.cube is not None
         return tk.observe(torch, self.task, self.limits, q, self.q_cmd, s["tcp"], self.prev_action,
@@ -346,9 +388,12 @@ class BatchEnv:
         executed = torch.where((self.t >= self.delay_n)[:, None], executed, torch.zeros_like(executed))
         self.q_cmd = tk.apply_action(torch, self.task, self.limits, self.q_cmd, executed)
         self.ctrl[:, self.act] = self.q_cmd
+        self._unsafe.zero_()
         torch.cuda.synchronize(self.device)
         self.wp.capture_launch(self.graph)
         self.wp.synchronize_device()
+        if torch.any(self._overflow & self._capacity_mask):
+            raise RuntimeError(f"MuJoCo Warp capacity overflow: {self.physics_diagnostics()}")
         self.t += 1
 
         s = self._state()
@@ -365,15 +410,18 @@ class BatchEnv:
             self._perceive(s)
         # Straznik: swiat, ktory mimo wszystko wybuchl, konczy epizod bez nagrody,
         # zanim jego liczby zatruja gradient.
-        broken = ~torch.isfinite(self.qvel).all(1) | (self.qvel.abs().amax(1) > 100.0)
+        broken = ~torch.isfinite(self.qpos).all(1) | ~torch.isfinite(self.qvel).all(1) | (self.qvel.abs().amax(1) > 100.0)
+        unsafe = self._unsafe != 0
         rew = torch.where(broken, torch.zeros_like(rew), rew)
+        rew = torch.where(unsafe, torch.full_like(rew, -10.0), rew)
         self.prev_action = action
         # Seria sukcesow konczy epizod jak limit czasu - PPO dolicza wartosc stanu
         # (patrz `task.success_streak`), inaczej oplacaloby sie nie konczyc.
         time_out = (self.t >= self.task.episode_steps) | finished
-        terminated = failure | broken
+        terminated = failure | broken | unsafe
         done = terminated | time_out
-        info = {"success": success, "time_outs": time_out & ~terminated, "broken": broken,
+        info = {"success": success & ~terminated, "time_outs": time_out & ~terminated, "broken": broken,
+                "unsafe": unsafe,
                 "finished": finished & ~terminated}
         if self.task.name == "reach":
             info["distance"] = ((self.goal - s["tcp"]) ** 2).sum(1).sqrt()

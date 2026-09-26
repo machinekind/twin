@@ -33,19 +33,23 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     rand = randomization if randomization is not None else \
         Randomization.nominal(Dynamics.from_dict(workspace.dynamics) if workspace is not None else None)
     env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None)
-    succ, final, ever, place = [], [], [], []
+    succ, final, ever, place, final_state = [], [], [], [], []
+    collisions = numerical = 0
     try:
         for ep in range(episodes):
             obs, _ = env.reset(seed=seed + ep)
             hit = False
             for _ in range(task.episode_steps):
                 obs, _, term, trunc, info = env.step(policy.act(obs))
+                collisions += int(info.get("unsafe", False))
+                numerical += int(info.get("broken", False))
                 hit |= info["success"]
                 if on_frame is not None:
                     on_frame(env.render())
                 if term or trunc:
                     break
-            succ.append(float(info["success"]))
+            final_state.append(float(info["success"]))
+            succ.append(float(info["finished"] if task.end_on_success > 0 else info["success"]))
             ever.append(float(hit))
             final.append(info["distance"] if task.name == "reach" else info["height"])
             if "dist_target" in info:
@@ -53,6 +57,9 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     finally:
         env.close()
     out = {"episodes": episodes, "success": float(np.mean(succ)), "ever_success": float(np.mean(ever)),
+           "collision_episodes": collisions, "numerical_failures": numerical,
+           "final_state_success": float(np.mean(final_state)),
+           "required_hold_s": task.end_on_success / task.control_hz,
            "randomized": rand.randomized, "centre": rand.centre.source}
     key = "final_distance_mm" if task.name == "reach" else "final_height_mm"
     out[key] = float(np.median(final) * 1000)

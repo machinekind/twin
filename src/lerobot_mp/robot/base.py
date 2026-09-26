@@ -72,6 +72,16 @@ class RobotBackend(ABC):
         """
         return []
 
+    def cancel_commands(self, reason: str) -> None:
+        """Cancel an asynchronous sender without releasing motor holding torque.
+
+        Synchronous backends have no independent command queue to cancel.
+        Streaming backends must latch the cancellation until deliberate recovery.
+        """
+
+    def resume_commands(self) -> None:
+        """Clear a streaming backend's cancellation, without replaying old targets."""
+
     def joint_limits(self) -> dict[str, tuple[float, float]]:
         """Twarde limity samego sprzetu w jednostkach aplikacji: {staw: (min, max)}.
 

@@ -54,6 +54,16 @@ def drive(twin, runner, seconds: float, t0: float = 0.0) -> float:
     return t0 + n * 0.01
 
 # ------------------------------------------------------------ rozjazd = kolizja
+def test_physical_policy_refuses_command_only_gripper_state(twin, monkeypatch):
+    arm = FakeArm()
+    arm.gripper_measured = lambda: False
+    connect_fake(twin, monkeypatch, arm)
+    runner = PolicyRunner(twin, constant_policy(tk.make_task("reach")))
+    with pytest.raises(RuntimeError, match="calibrated gripper feedback"):
+        runner.start(threaded=False)
+    assert twin.owner is None and not runner.status.running
+
+
 def test_tracking_stop_holds_the_measured_pose_instead_of_pressing_on(twin, monkeypatch):
     """Staw zablokowany (kolizja): polityka staje, a ramie trzyma ZMIERZONA poze.
 

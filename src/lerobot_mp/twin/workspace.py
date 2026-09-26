@@ -65,6 +65,20 @@ def same_intrinsics(a: tuple[Any, Any], b: tuple[Any, Any]) -> bool:
     return bool(np.allclose(da, db, rtol=1e-9, atol=1e-9))
 
 
+def require_physical_cameras(cameras, names) -> None:
+    """Reject synthetic or untrusted sources before using a pose for physical motion."""
+    by_name = {c.name: c for c in cameras}
+    names = tuple(names)
+    if not names:
+        raise RuntimeError("Physical motion requires observations from calibrated physical cameras")
+    for name in names:
+        camera = by_name.get(name)
+        if (camera is None or not camera.enabled or camera.simulated or not camera.calibrated
+                or not camera.trusted or camera.intrinsics_problem()):
+            raise RuntimeError(f"Camera {name!r} is not a trusted physical observation source; "
+                               "check its device and physical calibration")
+
+
 @dataclass
 class CameraRecord:
     name: str

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..config import AppConfig, JointConfig, config_from_data, read_config_data
+from ..config import A1XConfig, AppConfig, JointConfig, config_from_data, read_config_data
 
 #: Korzen repozytorium (wspolny dla calego pakietu, patrz `lerobot_mp.paths`).
 from ..paths import REPO_ROOT
@@ -256,7 +256,7 @@ A1X = RobotSpec(
         "gripper": (0.0, 100.0),
     },
     # 90 st/s = ogranicznik predkosci mostka; chwytak jak SO-101 (ten sam `grip_step` zadan RL).
-    max_vel={**{f"arm_joint{k}": 90.0 for k in range(1, 7)}, "gripper": 300.0},
+    max_vel={**{f"arm_joint{k}": 90.0 for k in range(1, 7)}, "gripper": A1XConfig().gripper_speed},
     # Wysuw szczeki [m]: 0 = plytki zsuniete (czubki 3 mm od siebie), 0,05 = pelne otwarcie.
     gripper_range_q=(0.0, 0.05),
     mirror_joints={"gripper_finger_joint2": ("gripper", -1.0)},
@@ -336,7 +336,11 @@ def robot_config(
     if not (_has_home(data) or _has_home(overrides or {})):
         safety = data.get("safety")
         data = dict(data, safety=dict(safety if isinstance(safety, dict) else {}, home=dict(spec.home)))
-    return config_from_data(data, overrides, joints=joint_configs(spec))
+    cfg = config_from_data(data, overrides, joints=joint_configs(spec))
+    if spec.name == "a1x":
+        grip = cfg.joint(spec.gripper)
+        grip.max_vel = min(grip.max_vel, cfg.a1x.gripper_speed)
+    return cfg
 
 
 def _has_home(data: dict[str, Any]) -> bool:

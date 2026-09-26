@@ -33,7 +33,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import mujoco
 import numpy as np
@@ -361,6 +361,7 @@ class Twin:
         self._listeners: dict[int, Callable[[TickSample], None]] = {}
         self._listener_seq = 0
         self._listeners_lock = threading.Lock()
+        self._collision_checker = None
 
     # ------------------------------------------------------------ scena
     def rebuild(self) -> None:
@@ -845,10 +846,46 @@ class Twin:
         watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego."""
         cmd = self._ramp_start(joints)
         target = {**cmd, **{k: float(v) for k, v in joints.items()}}
+        self._validate_target(cmd, target)
         with self._own_lock:
             if owner is not None and self._owner != owner:
                 raise RuntimeError(f"ramie odebrane ({self._refusal(owner)})")
             self._target = target
+
+    def _validate_target(self, start: Mapping[str, float], target: Mapping[str, float],
+                         *, check_limits: bool = True) -> None:
+        """Validate requested paths and the final command path through the same guard."""
+        if set(target) - set(self._names):
+            raise ValueError("Unknown joint in motion target")
+        if not all(np.isfinite(float(v)) for v in target.values()):
+            raise ValueError("Motion targets must be finite")
+        if self.spec.name != "a1x":
+            return
+        for name, (lo, hi) in (self.joint_limits().items() if check_limits else ()):
+            if name in target and not lo <= target[name] <= hi:
+                # An unchanged measured coordinate may be outside the configured
+                # range at startup. Do not force it through its mechanical stop.
+                old = start.get(name, target[name])
+                old_distance = max(lo - old, old - hi, 0.0)
+                new_distance = max(lo - target[name], target[name] - hi, 0.0)
+                if new_distance > old_distance + 1e-6:
+                    raise ValueError(f"{name}: target outside joint limits")
+        from .collision import CollisionChecker
+        with self.lock:
+            checker = self._collision_checker
+            if checker is None or checker.scene is not self.scene:
+                checker = self._collision_checker = CollisionChecker(self.scene, grasp_objects=("cube",))
+            opening = checker.blocked_gripper_opening()
+            if opening is not None and self._grip is not None:
+                # A squeeze setpoint can be narrower than a solid object. Check
+                # arm travel at the observed jaw opening once BOTH fingertips
+                # contact that object, instead of teleporting fingers through it.
+                # Opening requests and every other collision check remain active.
+                start = {**start, self._grip: max(start[self._grip], opening)}
+                target = {**target, self._grip: max(target[self._grip], opening)}
+            why = checker.path_clear(start, target)
+        if why:
+            raise RuntimeError(f"A1X motion rejected: {why}")
 
     def home(self) -> None:
         """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa.
@@ -990,6 +1027,8 @@ class Twin:
                 pass
 
     def estop(self, reason: str = "STOP awaryjny") -> None:
+        if self._backend is not None:
+            self._backend.cancel_commands(reason)
         sup = self._supervisor
         if sup is None:
             return
@@ -1008,6 +1047,8 @@ class Twin:
         ktory serwo trzyma do ponownego wlaczenia momentu, kasuje dopiero "Polacz".
         """
         if self._supervisor is not None:
+            if self._backend is not None:
+                self._backend.resume_commands()
             with self._sup_lock:
                 self._supervisor.clear_estop()
             self._fault, self._note = "", ""
@@ -1041,6 +1082,8 @@ class Twin:
         if not self.connected:
             raise RuntimeError("ramie nie jest polaczone")
         self._wait_for_homing()
+        initial = self._ramp_start(joints)
+        self._validate_target(initial, {**initial, **joints})
         with self._own_lock:
             sup = self._supervisor
             if sup is not None and sup.estopped:
@@ -1073,6 +1116,7 @@ class Twin:
             with self._own_lock:
                 if self._gen != gen:
                     raise RuntimeError(f"ruch przerwany: {self._gen_reason}")
+                self._validate_target(start, target)
                 self._target = target
             if s >= 1.0:
                 break
@@ -1126,6 +1170,10 @@ class Twin:
             return True
         fn = getattr(b, "gripper_known", None)
         return bool(fn()) if fn is not None else _gripper_measured(b)
+
+    def gripper_measured(self) -> bool:
+        """Whether grasp logic may use the reported opening as a measurement."""
+        return self._backend is not None and _gripper_measured(self._backend)
 
     def _frozen(self) -> bool:
         """Petla stoi: lacze z serwami niepotwierdzone albo utracone."""
@@ -1354,6 +1402,11 @@ class Twin:
             # (tam, gdzie stoi) - do pierwszego ruchu nic nie wysylamy: backend przycina
             # rozkaz do limitow, wiec staw spoza nich dostawal skok od razu po polaczeniu.
             if not frozen and (b.info.simulated or ls.moved):
+                # Recheck against current object poses immediately before the
+                # backend: every source (policy, tag, jog, home) passes here.
+                # The supervisor owns limits here, including gradual recovery
+                # from an initially out-of-range measured pose.
+                self._validate_target(ls.measured, command, check_limits=False)
                 self._sync_backend_limits(b, outside)
                 sent = b.send_joints(command) or {}
                 if command and not sent:
@@ -1396,7 +1449,11 @@ class Twin:
         except Exception as exc:                           # odczyt z portu padl, kabel wypadl...
             logger.exception("Petla ramienia przerwana")
             reason = f"{type(exc).__name__}: {exc}"
-            self.status = RobotStatus(False, self.status.backend, error=reason)
+            try:
+                b.cancel_commands(f"controller failure: {reason}")
+            except Exception:
+                logger.exception("Could not cancel backend commands after controller failure")
+            self.status = replace(self.status, connected=False, engaged=False, owner="", error=reason)
             # Martwa petla nie wysyla juz nic - wlasciciel (identyfikacja, polityka,
             # fala) musi sie o tym dowiedziec, a nie pisac dalej cele w proznie.
             with self._own_lock:

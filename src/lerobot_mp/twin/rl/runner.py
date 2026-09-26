@@ -236,6 +236,9 @@ class PolicyRunner:
         """
         if not self.twin.connected:
             raise RuntimeError("ramie blizniaka nie jest polaczone")
+        if not self.twin.status.simulated and not self.twin.gripper_measured():
+            raise RuntimeError("Physical policies require calibrated gripper feedback; "
+                               "a commanded opening is not a measured grasp")
         self.stop()
         # Najpierw wlasnosc: fala albo identyfikacja w toku, aktywny STOP albo odebranie
         # w trakcie startu -> RuntimeError, nic nie rusza.

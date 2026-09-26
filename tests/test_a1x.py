@@ -138,13 +138,15 @@ def connected(**kw):
     return arm, bus, clock
 
 
-def run(arm, bus, clock, secs: float, read: bool = True) -> None:
-    for _ in range(int(round(secs / STEP))):
+def run(arm, bus, clock, secs: float, read: bool = True, *, renew: bool = True) -> None:
+    for k in range(int(round(secs / STEP))):
         clock.t += STEP
         bus.tick(STEP)
         arm.io_step(clock.t)
         if read:
             arm.read_joints()
+        if renew and k % 4 == 0 and arm.goal_positions():
+            arm.send_joints(arm.goal_positions())  # Healthy supervisor at 50 Hz.
 
 
 # ------------------------------------------------------------------ polaczenie
@@ -202,7 +204,7 @@ def test_stale_feedback_sets_link_silent_stops_transmit_and_reports_a_fault():
     run(arm, bus, clock, 0.2)
     assert arm.link_silent and set(arm._stale) == set(ARM)
     faults = arm.faults()
-    assert len(faults) == 1 and faults[0].startswith("brak odpowiedzi ramienia od")
+    assert any(f.startswith("brak odpowiedzi ramienia od") for f in faults)
     n = len(bus.tx)
     run(arm, bus, clock, 0.3)
     assert len(bus.tx) == n                                                      # wysylka stoi
@@ -211,8 +213,10 @@ def test_stale_feedback_sets_link_silent_stops_transmit_and_reports_a_fault():
     # dopoki blizniak (po STOP i potwierdzeniu pomiaru) nie wysle nowego rozkazu
     bus.silent = False
     run(arm, bus, clock, 0.3)
-    assert not arm.link_silent and arm.faults() == []
+    assert not arm.link_silent and arm.faults()  # Recovery must be deliberate.
     assert len(bus.tx) == n
+    assert arm.send_joints({"arm_joint1": 25.0}) == {}
+    arm.resume_commands()
     q0 = math.degrees(bus.q[0])
     arm.send_joints({"arm_joint1": 25.0})
     run(arm, bus, clock, 0.05)
@@ -277,7 +281,7 @@ def test_limits_are_urdf_widened_to_the_start_pose():
 
 # --------------------------------------------------------------------- chwytak
 def test_gripper_0_100_maps_linearly_to_pdes_endpoints_in_a_ten_byte_frame():
-    arm, bus, clock = connected()
+    arm, bus, clock = connected(bus=FakeA1XBus(grip_q=-2.0), gripper_fb_closed=0.6, gripper_fb_open=-2.0)
     for v, want in ((0.0, 0.6), (100.0, -2.0), (50.0, -0.7)):
         assert arm.send_joints({"gripper": v}) == {"gripper": v}
         run(arm, bus, clock, 1.5)
@@ -292,9 +296,9 @@ def test_gripper_0_100_maps_linearly_to_pdes_endpoints_in_a_ten_byte_frame():
 
 
 def test_gripper_stream_starts_only_after_a_real_command():
-    arm, bus, clock = connected()
+    arm, bus, clock = connected(bus=FakeA1XBus(grip_q=-2.0), gripper_fb_closed=0.6, gripper_fb_open=-2.0)
     held = arm.read_joints()
-    assert held["gripper"] == 100.0                                              # gripper_start, bez sprzezenia
+    assert held["gripper"] == pytest.approx(100.0)
     arm.send_joints(held)                                                        # utrzymanie pozy po Polacz
     run(arm, bus, clock, 0.3)
     assert bus.frames(P.CMD_ID) and not bus.frames(P.GRIP_ID)
@@ -308,7 +312,7 @@ def test_gripper_stream_starts_only_after_a_real_command():
 
 
 def test_gripper_target_freezes_on_contact_but_send_joints_returns_the_command():
-    arm, bus, clock = connected()
+    arm, bus, clock = connected(bus=FakeA1XBus(grip_q=-2.0), gripper_fb_closed=0.6, gripper_fb_open=-2.0)
     assert arm.send_joints({"gripper": 0.0}) == {"gripper": 0.0}
     run(arm, bus, clock, 0.4)
     bus.grip_effort = 2.0                                                        # szczeki na kostce
@@ -364,7 +368,9 @@ def test_link_lost_during_enable_leaves_no_target_to_resume_to():
     n = len(bus.tx)
     bus.silent = False
     run(arm, bus, clock, 0.5)
-    assert len(bus.tx) == n and arm.faults() == []
+    assert len(bus.tx) == n and arm.faults()
+    arm.resume_commands()
+    assert arm.faults() == []
 
 
 def test_send_joints_is_refused_while_enabling_and_enable_refuses_a_silent_link():
@@ -393,7 +399,7 @@ def test_kp_zero_never_reaches_the_bus():
 
 
 def test_disconnect_never_sends_a_release_frame(caplog):
-    arm, bus, clock = make_arm()
+    arm, bus, clock = make_arm(gripper_fb_closed=0.6, gripper_fb_open=-2.0)
     arm.cfg.robot.torque_off_on_exit = True
     bus.tick(n=60)
     arm.connect()

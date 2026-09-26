@@ -113,6 +113,10 @@ class TwinEnv(gym.Env):
         self.render_camera = render_camera or (self.scene.cfg.cameras[0].name if self.scene.cfg.cameras else None)
         self.kin = self.scene.kin
         self.limits = tk.Limits.of(self.kin)
+        self._forbidden = None
+        if self.kin.spec.name == "a1x":
+            from ..collision import CollisionChecker
+            self._forbidden = CollisionChecker(self.scene, grasp_objects=("cube",) if self.task.cube else ()).forbidden_pairs()
         self.rand = randomization if randomization is not None else Randomization()
         self.fields = ModelFields(self.scene, self.task.cube)
         m = self.scene.model
@@ -138,7 +142,7 @@ class TwinEnv(gym.Env):
         self.t = 0
         self._streak = 0                     # takty sukcesu z rzedu (`task.end_on_success`)
         self._delay: list[np.ndarray] = []
-        self._noise = 0.0
+        self._noise = np.zeros(self.task.n_joints)
         self._cube_delay, self._cube_period = 0, 1
         self._cube_hist: list[tuple[np.ndarray, np.ndarray]] = []
         self._cube_seen = (np.zeros(3), np.eye(3))
@@ -161,7 +165,7 @@ class TwinEnv(gym.Env):
         return out
 
     def _obs(self, s: dict[str, np.ndarray]) -> np.ndarray:
-        q = s["q"] + np.radians(self.np_random.normal(0.0, self._noise, self.task.n_joints)) if self._noise > 0 else s["q"]
+        q = s["q"] + self.np_random.normal(0.0, self._noise) if np.any(self._noise) else s["q"]
         cube_pos, cube_rot = self._cube_seen if self.task.cube else (np.zeros(3), np.eye(3))
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], s["tcp"][None],
                          self.prev_action[None], goal=self.goal[None],
@@ -195,7 +199,7 @@ class TwinEnv(gym.Env):
         m, d = self.scene.model, self.scene.data
         s = {k: float(v[0]) for k, v in self.rand.sample(rng, 1).items()}
         self.fields.apply(m, d, s)
-        self._noise = self.rand.obs_noise_deg
+        self._noise = self.rand.joint_noise_std(self.kin)
         self._delay = [np.zeros(self.task.act_dim)] * int(s["delay"])
         self._cube_delay, self._cube_period = int(s["cube_delay"]), int(s["cube_period"])
         self._cube_hist = []
@@ -257,7 +261,14 @@ class TwinEnv(gym.Env):
         self.q_cmd = tk.apply_action(np, self.task, self.limits, self.q_cmd[None], executed[None])[0]
         d = self.scene.data
         d.ctrl[self.scene.act_ids] = self.q_cmd
-        mujoco.mj_step(self.scene.model, d, nstep=self.task.substeps)
+        unsafe = False
+        if self._forbidden is None:
+            mujoco.mj_step(self.scene.model, d, nstep=self.task.substeps)
+        else:
+            for _ in range(self.task.substeps):
+                mujoco.mj_step(self.scene.model, d)
+                unsafe |= any(c.dist <= 0 and self._forbidden[int(c.geom1), int(c.geom2)]
+                              for c in d.contact[:d.ncon])
         # Po mj_step qpos jest juz po calkowaniu, a site_xpos/xpos/xmat - z przejscia w przod
         # PRZED nim (5 ms starsze). TCP w obserwacji rozjezdzal sie z FK(q) o 4-8 mm w ruchu,
         # a runner na ramieniu liczy TCP dokladnie z q - polityka uczyla sie relacji,
@@ -276,10 +287,16 @@ class TwinEnv(gym.Env):
                                         goal=self.goal[None], cube_pos=s.get("cube_pos", np.zeros(3))[None],
                                         jaw_contacts=s.get("jaws", np.zeros(2))[None],
                                         q_cmd=self.q_cmd[None], limits=self.limits, **kw)
+        broken = not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all() or np.max(np.abs(d.qvel)) > 100
+        if unsafe or broken:
+            success[:] = False
+            failure[:] = True
+            r[:] = -10.0 if unsafe else 0.0
         self.prev_action = action
         streak, finished = tk.success_streak(np, self.task, np.array([self._streak]), success)
         self._streak = int(streak[0])
-        info = {"success": bool(success[0]), "finished": bool(finished[0])}
+        info = {"success": bool(success[0]), "finished": bool(finished[0]),
+                "unsafe": bool(unsafe), "broken": bool(broken)}
         if self.task.name == "reach":
             info["distance"] = float(np.linalg.norm(self.goal - s["tcp"]))
         else:

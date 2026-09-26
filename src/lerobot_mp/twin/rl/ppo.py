@@ -88,6 +88,9 @@ class Progress:
     elapsed: float = 0.0
     status: str = "uczenie"
     history: list[dict[str, float]] = field(default_factory=list)
+    physics: dict = field(default_factory=dict)
+    numerical_failures: int = 0
+    collision_episodes: int = 0
 
 
 def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace: Workspace | None = None,
@@ -167,13 +170,16 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
                 logp = dist.log_prob(act).sum(-1)
                 val = ac.value(obs_n)
                 obs, rew, done, info = env.step(act)
+                prog.numerical_failures += int(info["broken"].sum().item())
+                prog.collision_episodes += int(info["unsafe"].sum().item())
                 rew = rew + cfg.gamma * val * info["time_outs"].float()
                 buf_obs[t], buf_act[t], buf_logp[t], buf_val[t] = obs_n, act, logp, val
                 buf_rew[t], buf_done[t] = rew, done.float()
                 ep_ret += rew
                 ep_len += 1
                 if done.any():
-                    recent_succ += info["success"][done].float().tolist()
+                    completed = info["finished"] if tsk.end_on_success > 0 else info["success"] & ~info["broken"]
+                    recent_succ += completed[done].float().tolist()
                     recent_ret += ep_ret[done].tolist()
                     recent_len += ep_len[done].tolist()
                     ep_ret[done] = 0.0
@@ -244,6 +250,7 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
         prog.episode_len = float(np.mean(recent_len)) if recent_len else 0.0
         prog.lr, prog.std = lr, float(ac.log_std.detach().exp().mean())
         prog.elapsed = time.perf_counter() - t_start
+        prog.physics = env.physics_diagnostics()
         prog.history.append({"it": it, "steps": prog.steps, "success": prog.success, "reward": prog.reward})
         stopping = stop is not None and stop.is_set()
         if it == cfg.iterations or stopping:
@@ -266,7 +273,10 @@ def _finish(ac: ActorCritic, prog: Progress, path: Path | None) -> Policy:
     pol.critic_state = {k: v.detach().cpu().clone() for k, v in ac.critic.state_dict().items()}
     pol.meta.steps, pol.meta.iterations = prog.steps, prog.iteration
     pol.meta.success = prog.success
-    pol.meta.evals["gpu"] = {"success": prog.success, "reward": prog.reward, "steps": prog.steps}
+    pol.meta.evals["gpu"] = {"success": prog.success, "reward": prog.reward, "steps": prog.steps,
+                             "numerical_failures": prog.numerical_failures,
+                             "collision_episodes": prog.collision_episodes,
+                             "physics": prog.physics}
     if path is not None:
         pol.save(path)
     return pol
