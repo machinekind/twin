@@ -112,7 +112,8 @@ What the command prints: the arm line
 SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
 ```
 
-`SPECS_RELAY` pre-fills the relay field. `--port 8765` keeps the panel off
+`SPECS_RELAY` pre-fills the relay field; `SPECS_CONNECT=1` also presses
+**Polacz z okularami** at start (mode `dry`, the arm stays put). `--port 8765` keeps the panel off
 8080, which is the relay's port. Open `http://localhost:8765`.
 
 1. Tab **Ramie**: connect the arm (A1X on its port, or `sim`).

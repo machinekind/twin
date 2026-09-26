@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -45,6 +46,7 @@ from .bridge import SceneMirror, mat_to_wxyz
 from .specs_panel import add_specs_folder
 from .watch import CameraWatch, arm_mask, distort_mask
 
+from .stream import FrameServer
 #: Gotowe obiektywy z innych kalibracji (pliki tekstowe: K, dystorsja) - do wczytania w kroku 1.
 LENS_DIR = REPO_ROOT / "assets" / "calib"
 #: Co ile sekund panel probuje na nowo otworzyc kamere, ktorej strumien padl albo sie nie otworzyl.
@@ -463,10 +465,15 @@ def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240))
 
 
 class TwinApp:
-    def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080):
+    def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080,
+                 stream_port: int | None = None, stream_host: str = "0.0.0.0"):
         self.host = host
         self.ws = Workspace.load(workspace)
         self.ws_path = Path(self.ws.path).resolve() if self.ws.path else None
+        #: Podglad kamer po HTTP (MJPEG) na osobnym porcie - tylko do odczytu, wiec domyslnie cala siec.
+        self.stream: FrameServer | None = None
+        if stream_port is not None:
+            self.stream = FrameServer(self.stream_frames, host=stream_host, port=stream_port)
         self.twin = Twin(self.ws)
         self.watch = CameraWatch()
         self.frames: dict[str, np.ndarray] = {}
@@ -595,6 +602,11 @@ class TwinApp:
         logger.info("Panel gotowy w %.1f s", time.monotonic() - t_start)
 
     # ================================================================ narzedzia
+        if self.stream is not None:
+            self.stream.start()
+        # SPECS_CONNECT=1: polacz z przekaznikiem od razu (tryb dry - ramie stoi), bez klikania w panelu.
+        if os.environ.get("SPECS_CONNECT", "").strip().lower() in ("1", "true", "yes", "tak"):
+            self._guard("spectacles", self.specs.start)
     def _safe(self, fn):
         """Wyjatek w przycisku ma trafic do uzytkownika, a nie zginac w watku visera."""
         @wraps(fn)
@@ -3574,5 +3586,18 @@ def main(argv: list[str] | None = None) -> int:
     # Sondy HTTP (HEAD, niedokonczone polaczenia) nie sa bledami panelu - websockets
     # drukuje po kilkadziesiat linii stosu na kazda, zasypujac to, co wazne.
     logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-    TwinApp(a.workspace, a.host, a.port).run()
+    TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host).run()
     return 0
+    def stream_frames(self) -> dict[str, tuple[np.ndarray, float]]:
+        """Kadry z ostatniego `_grab` z chwilami wykonania - dla `FrameServer` (inny watek, tylko odczyt).
+        Nie `cameras.frame_t`: symulowane renderuja sie w MuJoCo, a to nie jest bezpieczne z innego watku."""
+        with self.frame_lock:
+            return {n: (img, self.frame_times.get(n, 0.0)) for n, img in self.frames.items()}
+
+        if self.stream is not None:
+            print(f"Podglad kamer:  {self.stream.url}  (z sieci: http://<adres-maszyny>:{self.stream.port}/)",
+                  flush=True)
+                    if self.stream is not None:
+                        self._guard("podglad kamer", self.stream.stop)
+    ap.add_argument("--stream-port", type=int, default=None)
+    ap.add_argument("--stream-host", default="0.0.0.0")

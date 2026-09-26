@@ -14,6 +14,7 @@
     lerobot-twin policies                    # zapisane polityki i ich wyniki
     lerobot-twin ui                          # panel w przegladarce: http://localhost:8080
     lerobot-twin ui --host 0.0.0.0           # ... dostepny z sieci (bez hasla - tylko w zaufanej)
+    lerobot-twin ui --stream-port 8766       # ... plus podglad kamer (MJPEG, tylko odczyt): http://<maszyna>:8766
     lerobot-twin --config configs/local.yaml ui   # tiki chwytaka, baudrate itd. z pliku YAML
     lerobot-twin specs                       # Spectacles glasses via the relay: checks only (dry)
     lerobot-twin specs --mode sim            # ... simulated arm moves to the pointed target
@@ -430,6 +431,8 @@ def _ui(a: argparse.Namespace) -> int:
     argv = ["--host", a.host, "--port", str(a.port)]
     if a.workspace:
         argv += ["--workspace", a.workspace]
+    if a.stream_port is not None:
+        argv += ["--stream-port", str(a.stream_port), "--stream-host", a.stream_host]
     return ui_main(argv)
 
 
@@ -652,6 +655,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8080,
                    help="port panelu (domyslnie 8080; zajety przez inna usluge? np. --port 8765)")
     p.add_argument("--workspace", default=None)
+    # Podglad kamer nie steruje niczym, wiec moze sluchac w sieci nawet gdy panel jest tylko lokalny.
+    p.add_argument("--stream-port", type=int, default=None,
+                   help="podglad kamer po HTTP (MJPEG, tylko odczyt) na tym porcie, np. 8766; bez flagi - brak")
+    p.add_argument("--stream-host", default="0.0.0.0",
+                   help="adres nasluchu podgladu kamer (domyslnie cala siec - obraz, bez sterowania)")
     p.set_defaults(fn=lambda a: _ui(a))
 
     p = sub.add_parser("specs", help="okulary Spectacles: pudelko zasiegu, pinch -> ruch ramienia (przez przekaznik)")
