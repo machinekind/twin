@@ -105,6 +105,10 @@ class SpecsFolder:
                 pos = ", ".join(f"{v * 100:.0f}" for v in last.get("pos", []))
                 why = f" ({last['reason']})" if last.get("reason") else ""
                 text += f"  \nostatni cel [{pos}] cm: **{last['state']}**{why}"
+            grip = st.get("grip")
+            if grip:
+                why = f" ({grip['reason']})" if grip.get("reason") else ""
+                text += f"  \nchwytak {grip['action']}: **{grip['state']}**{why}"
         if self.md.content != text:
             self.md.content = text
 

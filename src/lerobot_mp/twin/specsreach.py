@@ -9,15 +9,24 @@ The twin connects to the relay (`server.js` in the specs-lens repo) as `/twin`:
 
 * on connect it sends the overlay: the reach box (`kind: "volume"`) and a TCP sphere,
   then the TCP sphere every 0.2 s, and a `target` sphere for an accepted target;
-* it receives `registration` (the glasses' session and whether it is trusted)
-  and `target` (a hand point or an object centre, base frame, metres);
+* it receives `registration` (the glasses' session and whether it is trusted),
+  `target` (a hand point or an object centre, base frame, metres) and `gripper`
+  (a fist in the glasses: open or close the gripper);
 * it answers every target with `targetState`: accepted / rejected / moving / reached /
-  backoff / hold. `type` must be the first key: the relay reads it with a regex.
+  backoff / hold, and every gripper command with `gripperState`: accepted / rejected /
+  done / hold. `type` must be the first key: the relay reads it with a regex.
 
-The network thread only receives and queues targets. One worker thread does everything
-else: validation, IK, collisions, motion, backoff. The checks run in this order, and their
-names are the `reason` sent back: not connected, stop, busy, not armed, untrusted,
-session, outside volume, no depth, stale, ik, jump, collision.
+The network thread only receives and queues targets and gripper commands. One worker
+thread does everything else: validation, IK, collisions, motion, backoff. The checks run
+in this order, and their names are the `reason` sent back: not connected, stop, busy,
+not armed, untrusted, session, outside volume, no depth, stale, ik, jump, collision.
+
+A gripper command gets the arm checks only (not connected, stop, busy, not armed, plus
+`no gripper`). It does not interrupt a move: it waits in the queue and runs after the
+target, so "pinch, then a fist" closes the gripper at the point. It takes the arm, sets
+the gripper joint to open or closed, waits `grip_wait_s` for it to settle and releases
+the arm (`done`). The TCP sphere turns red with the label "closed" while the gripper's
+command is nearer closed than open, whoever set it.
 
 Motion is our own 50 Hz smoothstep ramp rather than `Twin.move`, because every tick must
 be interruptible: by a new target (continuing from the current command), an impact
@@ -62,6 +71,9 @@ Mode = Literal["dry", "sim", "real"]
 Source = Literal["hand", "object"]
 #: `targetState.state` values: a contract with the glasses.
 State = Literal["accepted", "rejected", "moving", "reached", "backoff", "hold"]
+#: `gripper.action` and `gripperState.state` values: the same contract.
+GripAction = Literal["open", "close"]
+GripState = Literal["accepted", "rejected", "done", "hold"]
 #: "descend" is slower with a tighter guard: going down to an object and back up.
 Profile = Literal["normal", "descend"]
 #: Read from other threads (network, panel).
@@ -70,10 +82,12 @@ Cause = Literal["", "retarget", "impact", "preempt", "stop", "mode", "relay"]
 
 MODES: tuple[Mode, ...] = get_args(Mode)
 SOURCES: tuple[Source, ...] = get_args(Source)
+GRIP_ACTIONS: tuple[GripAction, ...] = get_args(GripAction)
 OWNER = "specs"
 
 # Overlay colours, RGB 0..1.
 TCP_COLOR = (1.0, 0.8, 0.1)
+TCP_CLOSED_COLOR = (1.0, 0.3, 0.1)
 TARGET_COLOR = (0.2, 0.9, 0.35)
 
 Joints = dict[str, float]
@@ -93,6 +107,19 @@ class Target:
     t_rx: float = 0.0                 # receive time, our monotonic clock
     #: Objects: seconds since the glasses last saw the detection; None = not sent (fake glasses).
     age: float | None = None
+
+
+@dataclass
+class GripCommand:
+    """A gripper command from the glasses (a fist), as received."""
+
+    action: GripAction
+    ts: Any                           # the glasses' clock: echoed back
+    t_rx: float = 0.0
+
+
+#: What the worker's queue holds.
+Item = Target | GripCommand
 
 
 @dataclass(frozen=True, eq=False)
@@ -181,6 +208,14 @@ def parse_target(msg: Mapping[str, Any], now: float) -> Target | None:
     )
 
 
+def parse_grip(msg: Mapping[str, Any], now: float) -> GripCommand | None:
+    """Relay `gripper` message -> `GripCommand`; None if it is malformed."""
+    action = msg.get("action")
+    if action not in GRIP_ACTIONS:
+        return None
+    return GripCommand(action=action, ts=msg.get("ts"), t_rx=now)
+
+
 def down_rotation(spec, p: np.ndarray) -> np.ndarray:
     """TCP rotation in the base frame: approach axis pointing down, jaws closing horizontally,
     across the line from the base to `p`."""
@@ -248,7 +283,9 @@ class SpecsReach:
 
     max_object_age_s = 0.5
 
+    # The gripper joint in the app's units: 0 closed, 100 open (A1X and SO-101 alike).
     grip_closed = 0.0
+    grip_open = 100.0
     grip_wait_s = 1.2
 
     # Sim effort threshold as a fraction of the actuator's forcerange (normal / descending).
@@ -298,7 +335,7 @@ class SpecsReach:
         self._stop = threading.Event()
         self._net: threading.Thread | None = None
         self._worker: threading.Thread | None = None
-        self._queue: queue.Queue[Target] = queue.Queue()
+        self._queue: queue.Queue[Item] = queue.Queue()
         self._ws = None
         self._send_lock = threading.Lock()
         self._lock = threading.Lock()
@@ -317,6 +354,7 @@ class SpecsReach:
         self._impact: Impact | None = None
 
         self._last_state: dict | None = None
+        self._last_grip: dict | None = None
         self._target_shown_until: float | None = None
 
         # The network thread has its own kinematics for the TCP sphere; IK and collisions run on the worker.
@@ -332,6 +370,7 @@ class SpecsReach:
         self._capped = False
 
         self._current: Target | None = None
+        self._current_grip: GripCommand | None = None
         # The command the target was validated from; `_recheck` compares against it.
         self._validated_from: Joints | None = None
 
@@ -382,6 +421,7 @@ class SpecsReach:
             "session": self._session_any if self.allow_untrusted else self._session,
             "phase": self._phase,
             "last": self._last_state,
+            "grip": self._last_grip,
         }
 
     def _net_loop(self) -> None:
@@ -456,7 +496,21 @@ class SpecsReach:
         return _rounded(kin.tcp(self.twin.joints())[:3, 3])
 
     def _tcp_object(self) -> dict:
-        return {"id": "tcp", "kind": "sphere", "pos": self._tcp_now(), "size": [0.02], "color": list(TCP_COLOR)}
+        obj: dict[str, Any] = {"id": "tcp", "kind": "sphere", "pos": self._tcp_now(), "size": [0.02],
+                               "color": list(TCP_COLOR)}
+        if self._gripper_closed():
+            obj["color"] = list(TCP_CLOSED_COLOR)
+            obj["label"] = "closed"
+        return obj
+
+    def _gripper_closed(self) -> bool:
+        """The gripper's command is nearer closed than open (whoever set it)."""
+        g = self.spec.gripper
+        if not g:
+            return False
+        cmd = self.twin.status.command
+        v = cmd.get(g) if cmd else None
+        return v is not None and float(v) < (self.grip_closed + self.grip_open) / 2
 
     def _send_tcp(self, now: float) -> None:
         msg: dict[str, Any] = {"type": "overlay", "objects": [self._tcp_object()]}
@@ -480,6 +534,8 @@ class SpecsReach:
             self._on_registration(msg)
         elif kind == "target":
             self._on_target(msg, text)
+        elif kind == "gripper":
+            self._on_gripper(msg, text)
 
     def _on_registration(self, msg: dict) -> None:
         session = msg.get("session")
@@ -504,6 +560,18 @@ class SpecsReach:
         # A new target interrupts the move; the worker continues from the current command.
         if self._phase == "moving":
             self._interrupt("retarget")
+
+    def _on_gripper(self, msg: dict, text: str | bytes) -> None:
+        cmd = parse_grip(msg, time.monotonic())
+        if cmd is None:
+            logger.warning("Zepsuty rozkaz chwytaka z okularow: %.200s", text)
+            return
+        # No interrupt: a fist during a move closes the gripper once the arm is at the point.
+        self._queue.put(cmd)
+
+    def _target_queued(self) -> bool:
+        with self._queue.mutex:
+            return any(isinstance(item, Target) for item in self._queue.queue)
 
     def _interrupt(self, cause: Cause) -> None:
         with self._lock:
@@ -550,6 +618,22 @@ class SpecsReach:
             except Exception:
                 logger.exception("on_state rzucilo wyjatek")
 
+    def _report_grip(self, cmd: GripCommand, state: GripState, reason: str | None = None, *, detail: str = "") -> None:
+        msg: dict[str, Any] = {"type": "gripperState", "action": cmd.action, "state": state}
+        if reason:
+            msg["reason"] = reason
+        if detail:
+            msg["detail"] = detail
+        msg["ts"] = cmd.ts
+        msg["mode"] = self.mode
+        self._last_grip = msg
+
+        log = logger.warning if state == "rejected" else logger.info
+        because = f" ({reason})" if reason else ""
+        more = f" - {detail}" if detail else ""
+        log("Chwytak %s: %s%s%s", cmd.action, state, because, more)
+        self._send(msg)
+
     def _finish(self, t: Target, state: State, reason: str | None = None, detail: str = "") -> None:
         """Final state of a target: report it, fade the target sphere, release the arm."""
         self._report(t, state, reason, detail=detail)
@@ -583,16 +667,18 @@ class SpecsReach:
         self._release()
         self._restore_speed()
 
-    def _run(self, t: Target | None) -> None:
-        """Runs a target and any that replace it. An error leaves the arm holding its measured pose."""
+    def _run(self, item: Item | None) -> None:
+        """Runs a target or gripper command and any that replace it. An error leaves the arm holding
+        its measured pose."""
         try:
-            while t is not None and not self._stop.is_set():
-                t = self._execute(t)
+            while item is not None and not self._stop.is_set():
+                item = self._execute_grip(item) if isinstance(item, GripCommand) else self._execute(item)
         except Exception as exc:
             logger.exception("Kierowca okularow: blad wykonania celu")
             self._hold_after_error(exc)
         finally:
             self._current = None
+            self._current_grip = None
             self._phase = "idle"
             self._release()
             self._restore_speed()
@@ -605,34 +691,97 @@ class SpecsReach:
                 logger.exception("hold_measured po bledzie")
         if self._current is not None:
             self._report(self._current, "hold", "error", detail=f"{type(exc).__name__}: {exc}"[:200])
+        if self._current_grip is not None:
+            self._report_grip(self._current_grip, "hold", "error", detail=f"{type(exc).__name__}: {exc}"[:200])
 
-    def _latest(self, t: Target) -> Target:
-        """Takes the newest queued target; older unhandled ones are rejected as "busy"."""
+    def _latest(self, item: Item) -> Item:
+        """Takes the newest queued item; older unhandled ones are rejected as "busy"."""
         while True:
             try:
                 newer = self._queue.get_nowait()
             except queue.Empty:
-                return t
-            self._report(t, "rejected", "busy")
-            t = newer
+                return item
+            self._report_busy(item)
+            item = newer
 
     def _reject_queued(self) -> None:
-        """Rejects every queued target as "busy", so the glasses ask the user to point again."""
+        """Rejects every queued item as "busy", so the glasses ask the user to point again."""
         while True:
             try:
-                t = self._queue.get_nowait()
+                item = self._queue.get_nowait()
             except queue.Empty:
                 return
-            self._report(t, "rejected", "busy")
+            self._report_busy(item)
 
-    def _execute(self, t: Target) -> Target | None:
-        """Handles one target; returns the next one if a new target interrupted this one."""
+    def _report_busy(self, item: Item) -> None:
+        if isinstance(item, GripCommand):
+            self._report_grip(item, "rejected", "busy")
+        else:
+            self._report(item, "rejected", "busy")
+
+    def _execute_grip(self, cmd: GripCommand) -> Item | None:
+        """One gripper command: the arm checks, then the gripper joint to open or closed. Returns the
+        next item if a new target interrupted the settle wait."""
+        self._current_grip = cmd
+        self._reset_cancel()
+        self._phase = "moving"                          # so a new target interrupts the settle wait
+        try:
+            self._gate_arm()
+            if not self.spec.gripper:
+                raise _Rejected("no gripper")
+        except _Abort as exc:
+            self._report_grip(cmd, exc.state, exc.reason, detail=exc.detail)
+            return None
+
+        self._report_grip(cmd, "accepted")
+        if self.mode == "dry":
+            self._report_grip(cmd, "hold")
+            return None
+
+        value = self.grip_closed if cmd.action == "close" else self.grip_open
+        try:
+            gen = self._take()
+            self._command_arm({self.spec.gripper: value})
+            if self._cancel.wait(self.grip_wait_s):
+                return self._after_cancel_grip(cmd)
+            self._check(gen)
+        except _Abort as exc:
+            self._report_grip(cmd, exc.state, exc.reason, detail=exc.detail)
+            self._release()
+            return None
+        self._report_grip(cmd, "done")
+        self._release()                                 # stays engaged, holding the gripper
+        return None
+
+    def _after_cancel_grip(self, cmd: GripCommand) -> Item | None:
+        """The settle wait was interrupted: a new target takes over, anything else holds."""
+        cause = self._cancel_cause
+        if cause == "retarget":
+            try:
+                newer = self._latest(self._queue.get_nowait())
+            except queue.Empty:
+                newer = None
+            self._report_grip(cmd, "hold", "retargeted")
+            return newer
+        if cause in ("relay", "mode"):
+            reason = cause
+        elif cause == "stop" and self._stop.is_set():
+            reason = "stop"
+        else:
+            reason = self._lost_reason()
+        self._report_grip(cmd, "hold", reason)
+        self._release()
+        return None
+
+    def _execute(self, t: Target) -> Item | None:
+        """Handles one target; returns the next item if a new target interrupted this one."""
         self._current = t
         self._reset_cancel()
         # "moving" already during validation (IK and collision checks take time), so a target arriving
-        # meanwhile replaces this one instead of queueing and moving the arm after it.
+        # meanwhile replaces this one instead of queueing and moving the arm after it. A queued
+        # gripper command waits: it runs once this target is done.
         self._phase = "moving"
-        if not self._queue.empty():
+        if self._target_queued():
             self._interrupt("retarget")
 
         try:
@@ -691,7 +840,7 @@ class SpecsReach:
                 return False
         return True
 
-    def _after_cancel(self, t: Target) -> Target | None:
+    def _after_cancel(self, t: Target) -> Item | None:
         """After an interrupted ramp: a new target takes over, an impact backs off, anything else holds."""
         cause = self._cancel_cause
         if cause == "retarget":
@@ -719,8 +868,8 @@ class SpecsReach:
         self._gate(t)
         return self._legs(t)
 
-    def _gate(self, t: Target) -> None:
-        """The checks that need no kinematics, in the order listed in the module docstring."""
+    def _gate_arm(self) -> None:
+        """The arm checks, shared by targets and gripper commands."""
         tw = self.twin
         if not tw.connected:
             raise _Rejected("not connected")
@@ -733,6 +882,9 @@ class SpecsReach:
         if self.mode == "sim" and not tw.status.simulated:
             raise _Rejected("not armed")
 
+    def _gate(self, t: Target) -> None:
+        """The checks that need no kinematics, in the order listed in the module docstring."""
+        self._gate_arm()
         with self._lock:
             session = self._session_any if self.allow_untrusted else self._session
         if not (t.trusted or self.allow_untrusted) or session is None:

@@ -14,6 +14,9 @@ tested in simulation, with a fake relay and a fake CAN bus.
 - The glasses send a point in the arm's base frame. The point is either a hand
   pinch inside the reach box or the centre of an object the glasses detected.
 - The twin checks the point and, if every check passes, moves the arm there.
+- The glasses also send a gripper command (a fist: open or close). The twin
+  runs the arm checks and sets the gripper joint. See
+  [The gripper](#the-gripper).
 - The twin does all of this with its own code:
   - `twin/reach.py`: the reach box.
   - `twin/kinematics.py`: IK (inverse kinematics: joint angles for a tool
@@ -327,6 +330,38 @@ Usual order: `accepted`, `moving` (once per leg), then `reached`, `backoff` or
 `hold`. In `dry`: `accepted`, `hold`. After `accepted` a target can still get
 `rejected` (`busy` or `stop`) if the arm could not be taken.
 
+### The gripper
+
+A fist in the glasses sends `gripper` with `action` `close` or `open`. The
+network thread queues it like a target, but it does not interrupt a move: it
+runs after the target the arm is on, so "pinch, then a fist while the arm
+moves" closes the gripper at the point. (The glasses also hold a fist made
+during a move until the target is `reached`, so the twin normally sees the
+command only once the arm is there.)
+
+The worker runs the arm checks only: `not connected`, `stop`, `busy`,
+`not armed`, plus `no gripper` for an arm without one. There is no trust or
+session check and no reach box: a gripper command has no point. Then:
+
+1. `accepted`. In `dry` it then sends `hold` and stops there.
+2. It takes the arm as owner `specs` (else `rejected` with `busy` or `stop`),
+   sets the gripper joint to `SpecsReach.grip_closed` (0) or `grip_open` (100)
+   through `Twin.set_target`, and waits `grip_wait_s` (1.2 s) for it to
+   settle. The gripper joint is not under the impact guard; the backend's own
+   limits apply.
+3. `done`. The arm is released and keeps holding the gripper.
+
+A new target during the settle wait ends the command with `hold`, reason
+`retargeted` (the gripper was already commanded), and the target runs. A mode
+change, lost relay, STOP or another owner end it with `hold` and the same
+reasons as a target. A gripper command waiting behind a newer target or
+gripper command is `rejected` with `busy` (the newest command wins), and so is
+one waiting when a backoff happens.
+
+The TCP sphere turns red with the label `closed` while the gripper's command is
+nearer closed than open, whoever set it (the glasses, `--grasp`, the panel).
+The panel's status line shows the last gripper command and its state.
+
 ## 4. Modes and consent
 
 | mode | what moves | needs |
@@ -403,12 +438,14 @@ with a regular expression. Positions are in the base frame, in metres.
 | `registration` | relay to twin | `session`, `trusted` (the driver reads only these two) | when the registration changes; the relay also sends its last one when the twin connects |
 | `target` | glasses to twin | `source` (`hand` or `object`), `pos` `[x,y,z]`, `session`, `ts`, `trusted`; for objects also `depthMeasured`, `age` (seconds since the detection was seen), `label` | on a pinch |
 | `targetState` | twin to glasses | `state`, `reason`, `detail` (both optional), `pos` (the target), `tcp` (tool position now), `ts` (the target's, echoed), `mode` | for every target, at each state |
+| `gripper` | glasses to twin | `action` (`open` or `close`), `session` (not checked), `ts` | on a fist |
+| `gripperState` | twin to glasses | `action`, `state` (`accepted`, `rejected`, `done`, `hold`), `reason`, `detail` (both optional), `ts` (the command's, echoed), `mode` | for every gripper command, at each state |
 | `overlay` object `volume` | twin to glasses | `id: "reach"`, `pos` (centre), `size`, `color`, `alpha` 0.35, `label` | once on connect |
-| `overlay` object `sphere` `tcp` | twin to glasses | `id: "tcp"`, `pos`, `size` `[0.02]`, `color` | on connect, then every 0.2 s |
+| `overlay` object `sphere` `tcp` | twin to glasses | `id: "tcp"`, `pos`, `size` `[0.02]`, `color` (red with `label: "closed"` while the gripper is commanded closed) | on connect, then every 0.2 s |
 | `overlay` object `sphere` `target` | twin to glasses | `id: "target"`, `pos` (hand point, or the point above the object), `size` `[0.025]`, green | on `accepted`; removed with `"remove": ["target"]` 2 s after the final state |
 
-The glasses match a `targetState` to their target by `ts`. Other message types
-are ignored. For the full relay protocol see the specs-lens README, section
+The glasses match a `targetState` to their target and a `gripperState` to their
+gripper command by `ts`. Other message types are ignored. For the full relay protocol see the specs-lens README, section
 "Messages".
 
 ## 7. Troubleshooting

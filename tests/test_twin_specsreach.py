@@ -38,6 +38,9 @@ class FakeRelay:
         self.session, self.trusted = session, trusted
         self.overlays: list[dict] = []
         self.states: list[dict] = []
+        self.grips: list[dict] = []
+        #: Every targetState and gripperState in the order received.
+        self.events: list[dict] = []
         self.clients: list = []
         self.cond = threading.Condition()
         self.server = serve(self._handler, "127.0.0.1", 0)
@@ -61,6 +64,10 @@ class FakeRelay:
                         self.overlays.append(msg)
                     elif msg["type"] == "targetState":
                         self.states.append(msg)
+                        self.events.append(msg)
+                    elif msg["type"] == "gripperState":
+                        self.grips.append(msg)
+                        self.events.append(msg)
                     self.cond.notify_all()
         finally:
             with self.cond:
@@ -80,6 +87,29 @@ class FakeRelay:
         for ws in clients:
             ws.send(json.dumps(msg))
         return ts
+
+    def grip(self, action: str, *, ts: int | None = None) -> int:
+        """A fist in the glasses."""
+        ts = ts if ts is not None else int(time.time() * 1000) + len(self.grips)
+        msg = {"type": "gripper", "action": action, "session": self.session, "ts": ts}
+        with self.cond:
+            clients = list(self.clients)
+        for ws in clients:
+            ws.send(json.dumps(msg))
+        return ts
+
+    def grips_for(self, ts: int) -> list[str]:
+        with self.cond:
+            return [g["state"] for g in self.grips if g["ts"] == ts]
+
+    def wait_grip(self, ts: int, states: set[str], timeout: float) -> dict:
+        def found():
+            with_ts = [g for g in self.grips if g["ts"] == ts and g["state"] in states]
+            return with_ts[-1] if with_ts else None
+        with self.cond:
+            ok = self.cond.wait_for(found, timeout)
+            assert ok, f"brak stanu chwytaka {states} dla {ts}: {[(g['ts'], g['state'], g.get('reason')) for g in self.grips]}"
+            return found()
 
     def states_for(self, ts: int) -> list[str]:
         with self.cond:
@@ -244,6 +274,72 @@ def test_object_grasp_descends_closes_and_lifts(twin, kin, vol, relay):
         # The down/up legs aren't corrected for sag under load, so it remains (up to ~8 mm in sim).
         assert np.linalg.norm(tcp(kin, twin) - (p + [0.0, 0.0, 0.08])) < 0.008
         assert twin.status.command["gripper"] < 5.0
+    finally:
+        d.stop()
+
+
+def test_fist_closes_then_opens_the_gripper(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay)
+    try:
+        ts = relay.grip("close")
+        st = relay.wait_grip(ts, {"done", "rejected", "hold"}, 10.0)
+        assert st["state"] == "done" and st["action"] == "close" and st["mode"] == "sim", st
+        assert relay.grips_for(ts) == ["accepted", "done"]
+        assert twin.status.command["gripper"] < 5.0
+        assert twin.owner != "specs"                                  # released, still holding
+        # The TCP sphere says so.
+        with relay.cond:
+            assert relay.cond.wait_for(
+                lambda: any(o["id"] == "tcp" and o.get("label") == "closed"
+                            for m in relay.overlays[-3:] for o in m["objects"]), 2.0)
+
+        ts = relay.grip("open")
+        st = relay.wait_grip(ts, {"done", "rejected", "hold"}, 10.0)
+        assert st["state"] == "done", st
+        assert twin.status.command["gripper"] > 95.0
+        # A malformed action is dropped without a reply.
+        relay.grip("squeeze")
+        time.sleep(0.5)
+        assert len(relay.grips) == 4
+    finally:
+        d.stop()
+
+
+def test_fist_during_a_move_closes_the_gripper_once_the_arm_is_there(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    twin.set_target({"gripper": 100.0}, owner=None)
+    d = driver(twin, relay)
+    try:
+        ts = relay.target(vol.center + np.array([0.05, 0.05, 0.05]))
+        relay.wait_state(ts, {"moving"}, 10.0)
+        g = relay.grip("close")
+        st = relay.wait_grip(g, {"done", "rejected", "hold"}, 25.0)
+        assert st["state"] == "done", (st, relay.grips_for(g))
+        assert relay.states_for(ts)[-1] == "reached", relay.states_for(ts)
+        kinds = [(e["type"], e["state"]) for e in relay.events]
+        # The target finished before the gripper command was even looked at.
+        assert kinds.index(("targetState", "reached")) < kinds.index(("gripperState", "accepted"))
+        assert twin.status.command["gripper"] < 5.0
+    finally:
+        d.stop()
+
+
+@pytest.mark.parametrize("mode,real_ok,want", [("dry", False, "hold"), ("real", False, "rejected")])
+def test_gripper_in_dry_mode_only_checks_and_real_needs_consent(twin, kin, vol, relay, mode, real_ok, want):
+    ready(twin, kin, vol)
+    twin.set_target({"gripper": 100.0}, owner=None)
+    d = driver(twin, relay, mode=mode, real_ok=real_ok)
+    try:
+        ts = relay.grip("close")
+        st = relay.wait_grip(ts, {"done", "rejected", "hold"}, 10.0)
+        assert st["state"] == want, st
+        if want == "rejected":
+            assert st["reason"] == "not armed"
+        else:
+            assert relay.grips_for(ts) == ["accepted", "hold"]
+        time.sleep(0.3)
+        assert twin.status.command["gripper"] > 95.0                   # nothing moved
     finally:
         d.stop()
 
