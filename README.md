@@ -300,6 +300,22 @@ ruchu; sekwencja włączenia FF 1-5-6 jest tylko ręczna („Włącz silniki A1X
 **A1X nie ma hamulców** — przed pierwszą sesją przeczytaj
 [docs/TWIN.md](docs/TWIN.md#galaxea-a1x), „Galaxea A1X”.
 
+### Kamera IDS uEye
+
+Kamery IDS (np. UI-1240) nie dają urządzenia V4L2, więc OpenCV ich nie
+otworzy — bliźniak rozmawia z nimi przez `pyueye` i IDS Software Suite
+(demon `ueyeusbd`/`ueyeethd`, `libueye_api`):
+
+```bash
+pip install -e ".[ueye]" -c constraints.txt
+```
+
+W panelu **Szukaj kamer USB** znajduje też kamery uEye (źródło `ueye` =
+pierwsza wolna kamera, `ueye:<id>` = numer z IDS Camera Manager). Kamera
+startuje z automatyczną migawką ograniczoną do 20 ms i automatycznym
+wzmocnieniem — bez tego obraz IDS jest czarny. Gdy sterownik nie widzi
+kamery (kabel, `ueyeusbd`), panel pokazuje to przy kamerze zamiast kadru.
+
 ### Naprawa OpenCV po LeRobocie
 
 Opcjonalny backend `lerobot` (`pip install -e ".[robot]" -c constraints.txt`,

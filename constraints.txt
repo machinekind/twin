@@ -30,6 +30,9 @@ pyserial==3.5
 lerobot==0.6.1
 feetech-servo-sdk==1.0.0
 
+# [ueye] - kamera IDS uEye (wymaga IDS Software Suite 4.96 z libueye_api)
+pyueye==4.96.952
+
 # [research], [dev]
 trimesh==5.1.0
 pytest==9.1.1
