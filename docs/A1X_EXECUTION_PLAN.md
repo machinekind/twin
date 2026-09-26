@@ -171,17 +171,20 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **screen candidate 016 autonomously on the 14 already
-assigned training seeds in `gripper-pilot-audit-001.json`, then target actual
-failed learner trajectories for teacher recovery**. Continuous teacher-gripper
-collection and a five-case closing-burst probe did not cover the slowest closing
-states from the diagnosed failures. Two short gripper-only refinements failed
-to improve autonomous results. Do not enlarge random collection or lengthen fits
-before obtaining relevant correction coverage. Keep the three validation seeds,
-development set and reserved holdout out of targeted training-case selection.
-Retained baseline 011 remains best at 16/20; feature candidate 016 is experimental.
-Preserve episode roles if collecting another variant of an existing training
-case; never concatenate duplicate seed variants as independent episodes.
+Current next action: **test a small independent nonlinear gripper residual using
+the existing observation/geometry inputs, while preserving candidate 016's arm
+mapping**. Initialize the added residual to zero, verify exact baseline outputs
+and reload, then compare one bounded fit on the fixed targeted-recovery dataset
+with the existing linear-head control. This is a hypothesis about the frozen
+representation and fitting objective, not proof that additional capacity solves
+the task. No new collection or longer uniform final-row fit is justified yet.
+Three actual training failures now have successful teacher-gripper recoveries,
+but candidate 020 still scores 15/20 autonomously. Even the least-squares optimum
+for its frozen linear head requests only 0.333 mm average closure on the targeted
+states versus the teacher's 1 mm. Keep validation, development and reserved
+holdout roles fixed. Retained baseline 011 remains best at 16/20 with no guard
+rejections; feature candidate 016 is experimental. Do not aggregate original and
+replacement variants of the same training episode.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
@@ -431,6 +434,66 @@ labels. Exact pre-correction collection helper sources are archived under
 above are under `workspace/validation/`. No job is running; no qualification,
 robustness campaign, PPO or physical test has been started.
 
+The subsequent training-only screen locates genuine failures without consuming
+evaluation cases. `gripper-training-screen-001` runs all 14 already assigned
+new-pilot training cases: **14/14 autonomous successes** in 19.61 s, including one
+transient slowdown that recovers. `gripper-training-screen-002` then runs a fixed
+subset (the first 20 sorted original training seeds): **17/20 successes** in
+27.57 s. Seed 44013 stalls before bilateral grasp; 44006 and 44022 grasp too late
+and achieve only 1.825/1.790 s of qualifying hold. There are zero prohibited
+contacts, guard rejections or numerical failures in either screen. Teacher
+queries diagnose decisions but never supply actions in these screens.
+
+`gripper-training-recovery-001` replays those three failures. The learner controls
+all actions until steps 53/82/85, respectively (20 steps after the first observed
+slow-closing frame, capped at 100); the teacher then supplies only the gripper.
+The arms remain learned throughout. All **3/3 assisted recoveries** finish the
+full two-second hold by the unchanged 10 s deadline, with zero actual contacts,
+rejections or numerical faults. Recorded pre-intervention observations exactly
+match the autonomous traces; all 492 teacher labels replay from the 36 inputs.
+The recovered trajectories include **57 slow-closing frames**, using the same
+0-0.4 mm learner / at least 0.8 mm teacher proxy as the earlier burst probe.
+
+`lift-demos-targeted-gripper-001` replaces exactly those three training episodes
+in the original observable-relabel source. It retains every episode's role and
+report order, and all other episode files and validation arrays are identical.
+The original source remains intact; never aggregate it with its replacement.
+The combined four-source data now contain 26,795 training frames and the same
+6,602 validation frames, with 196 training / 49 validation / 9 excluded episodes.
+
+Candidate **020** changes only those three data trajectories relative to control
+018: initialization 016, frozen arm/hidden mapping and input statistics, uniform
+sampling, seed 23, learning rate 0.0001, and 3,000 updates all match. Fitting takes
+6.45 s plus 4.32 s feature preparation, selecting update 2,600. Guarded evaluation
+is **15/20**, one table-directed rejection, zero actual contacts/numerical faults;
+failures are 50007/50008/50009/50014/50015. Bare CPU is 17/20 with one prohibited
+contact and does not qualify the candidate. Checkpoint SHA256 starts `773f8e3c`.
+`targeted-gripper-comparison-001.json` verifies identical evaluation conditions,
+validation arrays, arm outputs, source/configuration, old roles and frozen
+baseline bundles. Candidate 020 is rejected as a replacement for 011.
+
+Separate autonomous replays on the three selected training failures show that
+018 and 020 each solve only 44022. The persistent stall at 44013 remains; 020
+improves 44006's hold from the control's 1.32 s to about 1.99 s, still a failure.
+On the 57 corrective frames, mean predicted closure changes only from 0.286 mm
+(018) to 0.291 mm (020), versus 1 mm teacher targets. Corrective coverage has
+improved; reliable learned closure has not. Teacher label replay establishes
+that the information is available in the observation, not that this frozen
+network representation can fit or generalize the decision boundary.
+
+`gripper-linear-diagnostic-001.json` solves the 129-parameter final gripper layer
+directly in float64, with uniform training-only least squares, on the original
+and replacement datasets. Both matrices have full rank; each solve takes under
+0.2 s, and the whole diagnostic takes 11.89 s including feature extraction. On
+the replacement data, training MSE falls from 0.001201 to 0.001145, but raw
+validation MSE slightly worsens (0.0009983 to 0.0010039). Mean closure on the
+targeted frames rises only to 0.333 mm. No checkpoint or runtime action was
+produced. This tests the optimum of the current uniform linear-head objective;
+it does not prove that all representations or loss weightings are inadequate.
+The next comparison changes the gripper's representation without changing arm
+outputs or collecting additional examples. All diagnostic checks pass; no
+production code changed in this cycle, so earlier unit tests were not rerun.
+
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
 reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
 the held-out seeds. Keep them out of demonstrations, fitting and development
@@ -549,6 +612,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Continuous learner-arm / teacher-gripper pilot succeeds but misses the slowest closing states | `gripper-pilot-audit-001`: 17/20 assisted, all 3,032 labels verified; 668 closing frames; zero actual contacts/rejections; 14 training / 3 validation / 3 excluded | Keep all outcomes; diagnose coverage rather than scale from assisted success |
 | 2026-09-27 | Gripper-only refinements preserve arm mapping but fail the autonomous comparison | `gripper-refinement-comparison-001`: existing-data control 018 16/20, added-data 019 15/20; one rejection each, no actual contacts; 61 tests pass | Reject both replacements; retained 011 remains 16/20 with zero rejections |
 | 2026-09-27 | Matched closing-burst probe still misses the diagnosed slow-closing range | `gripper-burst-comparison-001`: 4/5 assisted for each schedule, 1,653 labels verified, no slow-closing proxy frames; 36 collection tests and two final counter checks pass | Screen existing training cases for actual learner failures, then collect recovery examples; no fit on this probe and no blind expansion |
+| 2026-09-27 | Training-only screens find three actual learner failures and targeted teaching recovers them | `gripper-training-screen-001/002`: 14/14 and 17/20 autonomous; `gripper-training-recovery-001`: 3/3 assisted, 57 slow-closing frames, 492 labels replayed, original splits and all validation data preserved | Coverage is now relevant; successful assisted recovery remains distinct from learned success |
+| 2026-09-27 | Targeted-data refinement fails autonomous comparison and the linear-head optimum still under-closes | `targeted-gripper-comparison-001`: 020 15/20 versus control 018 16/20, one rejection each, zero actual contacts; `gripper-linear-diagnostic-001`: optimum predicts 0.333 mm versus 1 mm target | Retain 011; test a separate nonlinear gripper residual on fixed data with frozen arm mapping, not longer training of the same uniform linear head |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
