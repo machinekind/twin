@@ -31,7 +31,6 @@ from __future__ import annotations
 import copy
 import logging
 import threading
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
@@ -43,6 +42,7 @@ from ..robot import create_backend
 from ..robot.base import RobotBackend, RobotInfo
 from . import scene as sc
 from .cameras import CameraHub
+from .clock import Clock, VirtualClock, WallClock
 from .robots import robot_config
 from .workspace import Workspace
 
@@ -101,7 +101,7 @@ class SceneBackend(RobotBackend):
 class TickSample:
     """Jeden takt petli ramienia dla sluchaczy (`Twin.add_tick_listener`).
 
-    `t` - czas petli tego taktu (monotoniczny; w `threaded=False` - zegar `step`),
+    `t` - czas petli tego taktu na zegarze blizniaka (`Twin.clock`: monotoniczny albo wirtualny),
     `sent` - rozkaz, ktory NAPRAWDE poszedl do serw w tym takcie ({} = nic nie poszlo),
     `measured` / `measured_t` - ostatni pomiar i jego chwila, `fresh` - ten takt mial swiezy odczyt.
     """
@@ -125,7 +125,7 @@ class RobotStatus:
     at_limit: list[str] = field(default_factory=list)
     loop_hz: float = 0.0
     error: str = ""
-    #: Kiedy (czas petli, monotoniczny) przyszedl ostatni odczyt `measured` - po tym
+    #: Kiedy (czas petli, `Twin.clock`) przyszedl ostatni odczyt `measured` - po tym
     #: identyfikacja odroznia nowy pomiar od powtorzonego.
     measured_t: float = 0.0
     #: Kto teraz steruje ramieniem (`Twin.owner`), "" = nikt.
@@ -293,8 +293,14 @@ class Twin:
     move_still_speed = 10.0
     move_arrive_s = 1.5
 
-    def __init__(self, workspace: Workspace, loop_hz: float = 50.0):
+    def __init__(self, workspace: Workspace, loop_hz: float = 50.0, clock: Clock | None = None):
         self.workspace = workspace
+        #: Zegar petli i wszystkiego, co na nia czeka (kierowca okularow): `WallClock` w aplikacji.
+        #: Bez `clock` blizniak wybiera sam przy `connect`: z watkiem - zegar sciany, bez watku
+        #: (`threaded=False`) - nowy `VirtualClock` od 0 s, ktory przesuwa `step(dt)`. Testy, w ktorych
+        #: kierowca i petla maja dzielic czas, podaja wlasny `VirtualClock`.
+        self._own_clock = clock is None
+        self.clock: Clock = clock if clock is not None else WallClock()
         #: Opis ramienia stanowiska. Ramie stanowiska nie zmienia sie po zbudowaniu
         #: blizniaka (scena powstaje z niego tutaj) - nowe ramie = nowy `Twin`.
         self.spec = workspace.spec()
@@ -337,7 +343,6 @@ class Twin:
         self._ls: _LoopState | None = None
         self._manual = False              # connect(threaded=False): takty z `step()`, bez watku
         self._alive = False
-        self._clock = 0.0
         self._latest: dict[str, float] = {}
 
         # Wlasnosc ramienia (K3). `_gen` rosnie przy kazdym odebraniu ramienia
@@ -620,7 +625,7 @@ class Twin:
             return False
         if ls is None:
             return True
-        now = self._clock if self._manual else time.monotonic()
+        now = self.clock.now()
         if ls.grip_tight_since is None or now - ls.grip_tight_since < self.grip_block_s:
             return False
         a, b = ls.measured.get(self._grip), ls.prev_measured.get(self._grip)
@@ -653,7 +658,7 @@ class Twin:
         span = ls.measured_t - ls.prev_measured_t
         if span <= 1e-6:
             return m
-        now = self._clock if self._manual else time.monotonic()
+        now = self.clock.now()
         horizon = min(max(now - ls.measured_t, 0.0) + 1.0 / self.loop_hz, 2 * self._read_period)
         cmd = sup.command if sup is not None else {}
         for k, v in m.items():
@@ -690,8 +695,11 @@ class Twin:
         """Laczy z ramieniem. `sim` - blizniak sam jest ramieniem; inaczej prawdziwy sprzet.
 
         `threaded=False` (testy): bez watku petli - takty robi `step(dt)` w czasie
-        symulowanym, wiec wynik nie zalezy od obciazenia procesora.
+        symulowanym, wiec wynik nie zalezy od obciazenia procesora. Zegar wirtualny
+        (`VirtualClock`) dziala tylko bez watku: petla w watku spalaby na nim bez konca.
         """
+        if threaded and isinstance(self.clock, VirtualClock) and not self._own_clock:
+            raise ValueError("VirtualClock tylko z connect(..., threaded=False) - takty robi step(dt)")
         self.preempt("ponowne laczenie")
         self.disconnect()
         ws = self.workspace
@@ -770,8 +778,10 @@ class Twin:
         self._stop.clear()
         self._manual = not threaded
         self._alive = True
-        self._clock = 0.0
-        now = self._clock if self._manual else time.monotonic()
+        if self._own_clock:
+            # Jak dawny licznik `step`: kazde polaczenie bez watku liczy czas od 0 s.
+            self.clock = WallClock() if threaded else VirtualClock(t0=0.0)
+        now = self.clock.now()
         self._ls = _LoopState(prev=now, measured=dict(measured), measured_t=now, t_hz=now,
                               last_sent=self._supervisor.command)
         if threaded:
@@ -974,7 +984,7 @@ class Twin:
         backendem wysylal 0 przy zglaszanym "otwarty" i strumien zamykal szczeki; bez przestawienia nastepne
         "zamknij" szlo rampa od starego 100 i szczeki najpierw drgaly w strone otwarcia. Po odmowie nic nie
         rusza szczekami: przycisk tylko zapisuje dom. Sim: chwytak sceny (poza i serwo) zamyka sie od razu.
-        Backend z pomiarem (Feetech): pomiar jest prawda, dom zapisany, stan bez zmian (False).
+        Backend z pomiarem (Feetech, A1X z `gripper_fb_*`): pomiar jest prawda, dom zapisany, stan bez zmian (False).
         """
         b, g = self._backend, self._grip
         if b is None or g is None:
@@ -1036,6 +1046,11 @@ class Twin:
         rampa smoothstep najwyzej `HOME_STAGE_DEG_S`, STOP / Dom / Polacz przerywaja.
         Chwytak sciskajacy kostke zostaje zamkniety (`_squeeze_keep`).
         """
+        # Uczestnik zegara wirtualnego (testy): planowanie etapow nie zjada czasu symulowanego.
+        with self.clock.member():
+            self._home_stages()
+
+    def _home_stages(self) -> None:
         from .collision import CollisionChecker
         owner = "dom"
         try:
@@ -1137,6 +1152,9 @@ class Twin:
         Zegar rampy stoi, gdy stoi petla (lacze niepotwierdzone): nadzor wtedy nie jedzie,
         a zegar liczony dalej konczyl rampe w czasie przestoju i po nim rozkaz gonil cel
         z pelna predkoscia.
+
+        Czas z `self.clock` (jak petla): w aplikacji zegar sciany; na `VirtualClock` (testy) `move`
+        wolany z innego watku jedzie w czasie symulowanym, ktory przesuwa `step(dt)`.
         """
         if not self.connected:
             raise RuntimeError("ramie nie jest polaczone")
@@ -1160,11 +1178,12 @@ class Twin:
             self._engaged = True
         start = self._ramp_start(joints)
         goal = {k: float(joints.get(k, v)) for k, v in start.items()}
-        t0 = t_prev = time.monotonic()
+        clock = self.clock
+        t0 = t_prev = clock.now()
         paused = 0.0
         while True:
             self._check_move(gen)
-            now = time.monotonic()
+            now = clock.now()
             if self._frozen():
                 paused += now - t_prev
             t_prev = now
@@ -1176,11 +1195,11 @@ class Twin:
                 self._target = target
             if s >= 1.0:
                 break
-            time.sleep(1.0 / self.loop_hz)
-        t_end = time.monotonic() + settle
-        while time.monotonic() < t_end:
+            clock.sleep(1.0 / self.loop_hz)
+        t_end = clock.now() + settle
+        while clock.now() < t_end:
             self._check_move(gen)
-            time.sleep(min(0.05, settle))
+            clock.sleep(min(0.05, settle))
         deadline = t_end + self.move_arrive_s + self._command_lag(goal)
         prev_cmd: dict[str, float] | None = None
         while True:
@@ -1188,9 +1207,9 @@ class Twin:
             why, prev_cmd = self._arrival(prev_cmd)
             if not why:
                 return
-            if time.monotonic() > deadline:
+            if clock.now() > deadline:
                 raise RuntimeError(f"ruch nie dojechal do celu w {settle + self.move_arrive_s:.1f} s: {why}")
-            time.sleep(0.05)
+            clock.sleep(0.05)
 
     def _command_lag(self, goal: Mapping[str, float]) -> float:
         """Ile sekund ROZKAZ nadzoru jeszcze pojedzie do celu po koncu rampy (z zapasem).
@@ -1279,13 +1298,14 @@ class Twin:
 
     def _wait_for_homing(self, timeout: float = 6.0) -> None:
         """Ruch zaczety w trakcie rampy do domu startowalby z pozy, ktora zaraz sie zmieni."""
-        t_end = time.monotonic() + timeout
+        clock = self.clock
+        t_end = clock.now() + timeout
         while self._supervisor is not None and not self._supervisor.is_homing_done:
             if self._manual:
                 raise RuntimeError("ramie jedzie do domu - poczekaj na koniec rampy")
-            if time.monotonic() > t_end:
+            if clock.now() > t_end:
                 raise RuntimeError("ramie wciaz jedzie do domu")
-            time.sleep(0.02)
+            clock.sleep(0.02)
 
     # ---------------------------------------------------------- sluchacze taktow
     def add_tick_listener(self, fn: Callable[[TickSample], None]) -> int:
@@ -1318,22 +1338,30 @@ class Twin:
 
     # ---------------------------------------------------------- petla
     def step(self, dt: float) -> None:
-        """Jeden takt petli w czasie symulowanym - tylko po `connect(threaded=False)`."""
+        """Jeden takt petli w czasie symulowanym - tylko po `connect(threaded=False)`.
+
+        Najpierw zegar (`VirtualClock.advance(dt)`: watki czekajace na ten czas, np. rampa kierowcy,
+        licza swoj rozkaz), potem takt petli z nowym czasem - jak petla 50 Hz za watkiem 50 Hz.
+        """
         if not self._manual:
             raise RuntimeError("step() tylko po connect(..., threaded=False)")
         if not self.connected:
             raise RuntimeError("ramie nie jest polaczone")
-        self._clock += dt
-        if not self._tick(self._clock):
+        advance = getattr(self.clock, "advance", None)
+        if advance is None:
+            raise RuntimeError("step() wymaga zegara wirtualnego (VirtualClock)")
+        advance(dt)
+        if not self._tick(self.clock.now()):
             self._alive = False
 
     def _loop(self) -> None:
         period = 1.0 / self.loop_hz
+        clock = self.clock
         while not self._stop.is_set():
-            now = time.monotonic()
+            now = clock.now()
             if not self._tick(now):
                 break
-            time.sleep(max(0.0, period - (time.monotonic() - now)))
+            clock.sleep(period - (clock.now() - now))
 
     def _tick(self, now: float) -> bool:
         """Jeden takt: odczyt, bledy serw, nadzor, rozkaz, scena. False = petla padla."""

@@ -6,6 +6,7 @@ w czasie symulowanym: wynik nie zalezy od obciazenia procesora.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -15,6 +16,7 @@ pytest.importorskip("mujoco")
 
 from lerobot_mp.robot.base import RobotBackend, RobotInfo  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
+from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.robots import SO101  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -179,11 +181,19 @@ class FakeArm(RobotBackend):
 
 @pytest.fixture
 def twin():
-    tw = Twin(Workspace())
+    # Petla bez watku na zegarze wirtualnym: `step(dt)` go przesuwa (`connect(threaded=False)` bez
+    # `clock` tez by go zalozyl - tu jawnie, jak w testach kierowcy okularow).
+    tw = Twin(Workspace(), clock=VirtualClock(t0=0.0))
     try:
         yield tw
     finally:
         tw.close()
+    assert_on_time(tw)
+
+
+def assert_on_time(tw) -> None:
+    """Zadna bariera zegara nie przekroczyla czasu (watek spozniony o takt psuje pozniejsze asercje)."""
+    assert tw.clock.late == 0, f"VirtualClock: {tw.clock.late} barier(y) po czasie - watek nie zaparkowal (ostrzezenie w logu)"
 
 
 def connect_fake(twin, monkeypatch, arm: FakeArm, **kw):
@@ -197,6 +207,29 @@ def connect_fake(twin, monkeypatch, arm: FakeArm, **kw):
 def run(twin, seconds):
     for _ in range(int(round(seconds / DT))):
         twin.step(DT)
+
+
+def move_stepped(twin, joints, max_s: float = 15.0, **kw) -> None:
+    """`Twin.move` w watku pomocniczym, a petla krokami `step` na zegarze wirtualnym: przejazd trwa tyle,
+    ile obliczenia, a nie sekundy sciany. Wyjatek z `move` idzie dalej."""
+    out: dict = {}
+
+    def go():
+        with twin.clock.member():                          # kazdy krok rampy przed taktem petli
+            try:
+                twin.move(joints, **kw)
+            except Exception as exc:                       # noqa: BLE001 - rzucony dalej ponizej
+                out["exc"] = exc
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    for _ in range(int(round(max_s / DT))):
+        if not th.is_alive():
+            break
+        twin.step(DT)
+    th.join(5.0)
+    assert not th.is_alive(), "move nie skonczyl sie"
+    if "exc" in out:
+        raise out["exc"]
 
 
 # ------------------------------------------------------------ wlasnosc ramienia
@@ -299,7 +332,9 @@ def test_servo_fault_triggers_estop_and_preempts_the_owner(twin, monkeypatch):
     assert twin.safety_state.value == "ESTOP"
     assert "przeciazenie" in twin.status.error
     assert twin.owner is None
-    time.sleep(0.1)                                        # wywolanie zwrotne z watku petli idzie osobno
+    deadline = time.monotonic() + 2.0                      # wywolanie zwrotne z watku petli idzie osobno
+    while not called and time.monotonic() < deadline:
+        time.sleep(0.002)
     assert called == [True]
 
 
@@ -589,13 +624,14 @@ def test_move_raises_when_the_arm_stops_short_of_the_command(monkeypatch):
     arm = FakeArm()
     arm.wall["shoulder_pan"] = (-1e9, 65.0)
     monkeypatch.setattr(rt, "create_backend", lambda cfg: arm)
-    tw = Twin(Workspace())
+    tw = Twin(Workspace(), clock=VirtualClock())
     try:
-        tw.connect("feetech", port="COM_TEST")
+        tw.connect("feetech", port="COM_TEST", threaded=False)
         with pytest.raises(RuntimeError, match="shoulder_pan"):
-            tw.move({"shoulder_pan": 80.0}, duration=0.5, settle=0.2)
+            move_stepped(tw, {"shoulder_pan": 80.0}, duration=0.5, settle=0.2)
     finally:
         tw.close()
+    assert_on_time(tw)
 
 
 # ------------------------------------------------------------ runda 3: sprzeglo z wlascicielem
@@ -790,16 +826,17 @@ def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():
     """Suwak Predkosc 20 st./s ogranicza rozkaz nadzoru; obrot nadgarstka o 60 st. potrzebuje 3 s,
     a staly termin 0,5 + 0,4 + 1,5 s konczyl przejazd bledem "rozkaz jeszcze jedzie" - fala
     z 21 i 11 obserwacjami przepadla na jednym takim przejezdzie."""
-    tw = Twin(Workspace())
+    tw = Twin(Workspace(), clock=VirtualClock())
     try:
-        tw.connect("sim")
+        tw.connect("sim", threaded=False)
         tw.set_speed(20.0)
         roll = tw.joints()["wrist_roll"]
-        tw.move({"wrist_roll": roll + 60.0}, duration=0.5, settle=0.2)
+        move_stepped(tw, {"wrist_roll": roll + 60.0}, duration=0.5, settle=0.2)
         assert abs(tw.status.command["wrist_roll"] - (roll + 60.0)) < 1.0
         tw.home()
     finally:
         tw.close()
+    assert_on_time(tw)
 
 
 def test_a_partial_target_of_the_same_owner_merges_over_its_pending_target(twin, monkeypatch):

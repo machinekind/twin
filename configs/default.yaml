@@ -139,10 +139,10 @@ a1x:
   kp: 20.0                   # nigdy 0: przy kp 0 ramie jest gluche; dziala i tak tylko p_des
   kd: 1.0                    # tlumienie w 0x050/0x051; na ruch nie wplywa
   gripper_kp: 25.0           # kp ramki chwytaka 0x051; tez > 0
-  gripper_open_pdes: -2.0    # p_des chwytaka przy 100 (otwarty); bardziej ujemne = szerzej
-  gripper_closed_pdes: 0.6   # p_des przy 0 (zamkniety)
-  gripper_fb_closed: null    # grupa 7 z 0x052 [rad] przy 0 i przy 100 - zmierz; null = panel
-  gripper_fb_open: null      #   pokazuje rozkaz chwytaka, nie pomiar
+  gripper_open_pdes: -1.95   # p_des chwytaka [rad] przy 100 (otwarty); bardziej ujemne = szerzej; wlos przed ogranicznikiem
+  gripper_closed_pdes: 0.08  # p_des przy 0 (zamkniety): 0,04 rad za ogranicznikiem +0,039. NIE +0,6 (utyk, przegrzanie)
+  gripper_fb_closed: 0.039   # grupa 7 z 0x052 [rad] na ogranicznikach, zmierzone 2026-09-27 (--grip-test);
+  gripper_fb_open: -1.992    #   wazne od pierwszej 0x051 (w spoczynku po zasilaniu grupa 7 bywa dowolna); null = rozkaz
   gripper_start: 0.0         # co zglaszac jako chwytak przed pierwszym rozkazem (bez sprzezenia); 0 = zamkniety
   gripper_rate_pdes_s: 2.0   # slew p_des chwytaka [1/s]
   gripper_force: 1.2         # |effort| przy zamykaniu ponad spoczynek (pierwsze 0,1 s) = kontakt, cel zamarza

@@ -137,6 +137,24 @@ SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
 **Polacz z okularami** at start (mode `dry`, the arm stays put). `--port 8765` keeps the panel off
 8080, which is the relay's port. Open `http://localhost:8765`.
 
+One command brings the panel up in the same state as
+`lerobot-twin specs --mode real --i-know --follow-speed 0.10`, with the 3D view:
+
+```bash
+SPECS_RELAY=ws://127.0.0.1:8080/twin lerobot-twin ui --port 8765 --arm --specs real --i-know --follow-speed 0.10
+```
+
+- `--arm`: connect the arm at start with the workspace's backend and port, no
+  homing (the **Polacz** button; a `sim` workspace connects the simulation).
+- `--specs dry|sim|real`: set **Tryb okularow** and press **Polacz z okularami**.
+- `--i-know`: tick the consent box. `--specs real` without it refuses to start.
+- `--relay URL` (default `SPECS_RELAY`), `--follow-speed M`, `--hold-off S`:
+  pre-fill the folder's fields.
+
+The arm connects first, then the glasses. A failure goes to the log and the
+folder's status line; the panel keeps running. The console prints the
+resulting configuration before the panel loads.
+
 1. Tab **Ramie**: connect the arm (A1X on its port, or `sim`).
 2. Tab **Polityki**, folder **Spectacles**:
    - **Przekaznik**: the relay address, path `/twin`.
@@ -152,11 +170,11 @@ SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
    - The status line: `Okulary: polaczone, tryb dry, sesja: <id>`, then the
      last target, for example `ostatni cel [35, 0, 17] cm: reached`, the last
      gripper command, the last follow stream (`sledzenie <id>: moving - paused:
-     collision, 0.20 m/s`) and the last grab (`chwyt: held - assumed`). When the
-     backend cannot drive the gripper it adds `chwytak: brak sterowania przez
-     XCAN` (the A1X over macOS XCAN, see [The gripper](#the-gripper)).
-     With the XCAN override on, the panel's main status line says
-     `chwytak przez XCAN: proba` instead.
+     collision, 0.20 m/s`) and the last grab (`chwyt: held` or `chwyt: missed`;
+     `held - assumed` with an unmeasured gripper). When the backend cannot drive
+     the gripper (`a1x.gripper_over_xcan: false` on XCAN) it adds `chwytak: brak
+     sterowania przez XCAN`, see [The gripper](#the-gripper). Over XCAN the
+     panel's main status line says `chwytak przez XCAN (zmierzone 2026-09-27)`.
 
 The panel differs from the command in three ways. It has no
 `--start-center`: move the arm near the box first with the panel. It does not
@@ -373,16 +391,15 @@ is there.)
 
 The worker runs the arm checks only: `not connected`, `stop`, `busy`,
 `not armed`, plus `no gripper` for an arm without one or a backend that cannot
-drive it: `gripper_drivable()` False, with `detail` `xcan: 0x051 not
-deliverable`. That is the A1X over macOS XCAN without the override: see
-[The gripper](#the-gripper). There is no trust or
+drive it: `gripper_drivable()` False (the A1X over macOS XCAN with
+`a1x.gripper_over_xcan: false`, see [The gripper](#the-gripper)). There is no trust or
 session check and no reach box: a gripper command has no point. Then:
 
 1. `accepted`. In `dry` it then sends `hold` and stops there.
 2. It takes the arm as owner `specs` (else `rejected` with `busy` or `stop`),
    sets the gripper joint to `SpecsReach.grip_closed` (0) or `grip_open` (100)
    through `Twin.set_target`, and waits for it to settle: the backend's
-   `gripper_travel_s()` when it has one (A1X: 1.5 s), else `grip_wait_s`
+   `gripper_travel_s()` when it has one (A1X: 1.2 s), else `grip_wait_s`
    (1.2 s). The gripper joint is not under the impact guard; the backend's own
    limits apply.
 3. `done`. The arm is released and keeps holding the gripper.
@@ -398,9 +415,30 @@ The TCP sphere turns red with the label `closed` while the gripper's command is
 nearer closed than open, whoever set it (the glasses, `--grasp`, the panel).
 The panel's status line shows the last gripper command and its state.
 
-**The gripper starts closed.** The A1X has no gripper position feedback in the
-twin (`a1x.gripper_fb_closed/open` unmeasured), so the twin only knows what it
-commanded. Before the first command it reports `a1x.gripper_start`, which is 0
+**A1X gripper: measured endpoints (2026-09-27).** A bench run on the real A1X
+over XCAN (galaxeo `python -m galaxeo.xcan_usb --grip-test`, kp 20, 3 s per
+step) showed that group 7 of frame `0x052` is the jaw position, in radians like
+`p_des`: `p_des` -1.5 read -1.494 rad, 0.0 read -0.007, -2.0 read -1.992 (the
+open stop, effort 3.7), and +0.6 read +0.039 (the closed stop). The old closed
+setpoint +0.6 held the jaws 0.56 rad past the stop at stall current (effort 7.8
+against about 0.2 in free travel), and that overheated the gripper motor. The
+defaults are now `gripper_closed_pdes` 0.08 (0.04 rad of squeeze past the stop;
+the contact stop still catches objects), `gripper_open_pdes` -1.95 (just short
+of the open stop), and `gripper_fb_closed` / `gripper_fb_open` 0.039 / -1.992,
+so a driven A1X gripper is measured (`gripper_measured()`): the panel, the 3D
+jaws and the grab result read the jaws, not the command. Fully open reads about
+98. At rest after power-up group 7 shows an arbitrary value (-164.9 deg, -2.88
+rad, with the jaws at about -85 deg); it tracks `p_des` only while `0x051`
+streams. So the backend trusts it only from 4 feedback frames after the first
+`0x051` of the connection (again after a link loss), and logs the resting value
+at connect. Until then it behaves as unmeasured (below).
+Not yet checked on the bench: that 0.04 rad closes empty jaws fully, and that
+-1.95 clears the open stop. To re-measure, see docs/TWIN.md, "Chwytak A1X:
+pomiar".
+
+**The gripper starts closed.** This applies until the first gripper command of
+the connection, and always with `a1x.gripper_fb_closed/open` set to `null`: the
+twin then only knows what it commanded. Before the first command it reports `a1x.gripper_start`, which is 0
 (closed), and the sim A1X starts closed too. The workstation contract is
 "home = jaws closed": the panel's *Ustaw dom = tu* (set home here) always
 stores gripper 0 and, with an unmeasured gripper, tells the backend that the
@@ -414,24 +452,19 @@ gripper was already commanded in this session, the button only stores the home
 and leaves the gripper's state alone (log: `chwytak juz sterowany`): close it
 with the slider and press the button again.
 
-**macOS XCAN: the gripper is refused by default; you can try it.** galaxeo
-said the gripper ignores the XCAN `0x051` frame: the 10-byte payload goes out
-as 12 bytes (DLC 9). CAN FD has no 10-byte frame, so Linux SocketCAN also
-sends 12 bytes. Only the 2 padding bytes can differ, so the claim is
-unverified, and on 2026-09-27 it was disproved on the bench: `python -m
-galaxeo.xcan_usb --grip-test` moved the jaws 85 to 116 degrees over XCAN.
-So the gripper is driven over XCAN by default (`a1x.gripper_over_xcan: true`);
-`false` restores the refusal (`rejected` `no gripper`, `detail` `gripper
-disabled`). To re-check the adapter, run the grip test with the panel closed
-(one process per adapter); it prints `RESULT:`.
+**macOS XCAN drives the gripper.** galaxeo said the gripper ignores the XCAN
+`0x051` frame: the 10-byte payload goes out as 12 bytes (DLC 9). CAN FD has no
+10-byte frame, so Linux SocketCAN also sends 12 bytes, and on 2026-09-27 the
+claim was disproved on the bench: `python -m galaxeo.xcan_usb --grip-test`
+moved the jaws over XCAN (the measurement above). So the gripper is driven over
+XCAN by default (`a1x.gripper_over_xcan: true`); `false` restores the refusal
+(`rejected` `no gripper`, `detail` `gripper disabled`). To re-check the
+adapter, run the grip test with the panel closed (one process per adapter); it
+prints `RESULT:`. Over XCAN the status line says `chwytak przez XCAN`. With the
+gripper driven once, the panel and the 3D jaws show where the jaws really are; the TCP sphere still shows the command.
 
-Over XCAN the status line says `chwytak przez XCAN` and reminds you that
-proba`. Without feedback the twin cannot notice whether the jaws move: the
-panel, the 3D jaws and the TCP sphere show the command, so watch the jaws.
-
-A full A1X gripper stroke takes 1.3 s (2.6 `p_des` at 2.0 per second);
-`A1XArm.gripper_travel_s()` gives it with a 0.2 s margin (1.5 s), longer than
-`grip_wait_s`.
+A full A1X gripper stroke takes about 1.0 s (2.03 `p_des` at 2.0 per second);
+`A1XArm.gripper_travel_s()` gives it with a 0.2 s margin (1.2 s).
 
 The glasses do not track the gripper themselves: they take their belief from the
 TCP sphere (label `closed` present means closed), so the toggle sends `open` when
@@ -480,18 +513,28 @@ loop's clock):
 - The tool points down with the jaws closing along `yaw` (sent by the glasses,
   else across the line from the base), turning at most 1 rad/s. Best effort:
   the follower never refuses on tilt; `detail` says `tilt 21 deg` when the
-  tool ends more than 15 degrees from straight down.
+  tool ends more than 15 degrees from straight down. Once the glasses have
+  sent a yaw, `detail` also says `yaw 37/12 deg`: asked / achieved (the
+  measured jaws, on the asked side of the symmetric pair), and the twin's log
+  gives asked, commanded and measured yaw once a second, plus the joints the
+  follower is stopped for.
 - One warm-started IK step (`RobotKinematics.ik_step`, within 3 mm), joints
   clipped to the limits, no joint step above 5 degrees per tick, and the
   collision check. A failed tick sends nothing and the tracker stops where
   it is.
 - Real arm: the stream's impact guard uses the lag rule with 2.5 degrees for
   0.3 s while the joint moves slower than 15 degrees per second (tighter than
-  for a target, well before the A1X backend's 3 degrees for 1 s). While a joint
-  meets that rule the follower stops, point and rotation, so the command does
-  not run ahead of a stalled joint; 0.3 s of it is an impact (`impact`, detail
-  `lag arm_joint1`). The servo's steady-state error under load (1 to 2
-  degrees) or a joint that is still moving does not stop it.
+  for a target, well before the A1X backend's 3 degrees for 1 s). The rule
+  starts timing a joint only while its command has moved more than 0.2
+  degrees in the last 0.3 s; once timed, the joint stays timed until it
+  catches up or moves, even if its command stops. While a joint is timed the
+  follower stops, point and rotation, so the command does not run ahead of a
+  stalled joint; 0.3 s of it is an impact (`impact`, detail `lag
+  arm_joint1`). A joint that is still moving does not stop it, and neither
+  does the servo's steady-state error under a still command (1 to 3 degrees
+  under load: before 2026-09-27 an error above 2.5 degrees with the hand held
+  still ended the stream in `impact`, and one around 2.5 degrees kept pausing
+  the follower, so turning the hand at a still point turned the jaws slowly).
 - Gripper load (backends that read the gripper's effort: the A1X, frame
   0x052 `eff[6]`, also on macOS XCAN where the gripper can't be commanded):
   the effort is sampled on the stream's first tick (its rest). Above rest +
@@ -508,7 +551,8 @@ always ends a stream: after 1 s of IK failures (`ik`) or 2 s of collision
 
 **Reports.** `accepted` once; `moving` on a change of its `detail`, at most
 every 0.5 s (2 Hz), and at least every 1 s; then one final `hold` (or
-`rejected`). Every `targetState` of a stream carries `stream` and the `ts` of
+`rejected`). The `moving` detail joins its parts with `, `: `paused: ik` or
+`paused: collision` first, else `tilt 21 deg`, then `yaw 37/12 deg`. Every `targetState` of a stream carries `stream` and the `ts` of
 the sample it answers.
 
 **End.** A stream ends with `hold` and one of these reasons:
@@ -561,7 +605,8 @@ close along the object's `yaw` when given, else across the line from the base.
 
 **Result.** `held` or `missed`. A backend that measures the gripper: `held`
 when the jaws stand still wider than empty-closed (`spec.jaw`), else `missed`
-(`detail` gives the opening). The A1X measures nothing: always `held` with
+(`detail` gives the opening). The A1X measures its gripper by default (see
+[The gripper](#the-gripper)); with `gripper_fb_*` unset it is always `held` with
 `detail` `assumed`. The gripper never re-opens after `missed`. An impact
 during a leg backs off as for a target (`backoff`). In `dry`: `accepted`, then
 `hold`.
@@ -674,8 +719,8 @@ read it. Other message types are ignored. For the full relay protocol see the sp
 | After a relay restart nothing is accepted | The twin reconnects by itself within 2 s, but the new relay has no registration yet. Look at the markers until "registration OK". |
 | `hold` with `relay` | The relay connection dropped during a real move. Check the network, then pinch again. |
 | `backoff` during calm moves | The effort thresholds are too tight. See [the effort log](#5-the-effort-log-in-dry-mode). |
-| The gripper command is `done` but the jaws do not move | Over XCAN with the override on (`chwytak przez XCAN: proba`), the frame may not arrive. Run `python -m galaxeo.xcan_usb --grip-test` with the panel closed, or drive the gripper from Linux (SocketCAN). Also check the 0x054 gripper fault bit (galaxeo docs/PROTOCOL.md): only a power cycle clears it. |
-| The jaws are open but the twin shows them closed | The twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
+| The gripper command is `done` but the jaws do not move | The panel reads the measured jaws (group 7 of `0x052`), so it shows this too. Run `python -m galaxeo.xcan_usb --grip-test` with the panel closed, or drive the gripper from Linux (SocketCAN). Also check the 0x054 gripper fault bit (galaxeo docs/PROTOCOL.md): only a power cycle clears it, and an overheated gripper motor needs time to cool. |
+| The jaws are open but the twin shows them closed | Before the first gripper command of the connection (or with `a1x.gripper_fb_*` `null`): the twin has no gripper feedback yet and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
 | Follow ends with `timeout` every few seconds | Samples arrive less often than every 0.3 s: a slow relay or network, or glasses too old to send `follow` at 20 Hz. |
 | `rejected` `no gripper` | `a1x.gripper_over_xcan: false` in the config (the old XCAN refusal). Set it to `true` (the default since 2026-09-27) or use Linux SocketCAN (`can0`). Follow still works. |
 
@@ -685,8 +730,38 @@ read it. Other message types are ignored. For the full relay protocol see the sp
 .venv/bin/python -m pytest -q tests/test_twin_follow.py tests/test_twin_specsreach.py tests/test_twin_specsreach_a1x.py \
     tests/test_twin_specsreach_so101.py tests/test_twin_reach.py tests/test_twin_impact.py tests/test_twin_ui.py
 pytest -q                     # the whole suite
+pytest -q -m "not cli"        # without the CLI subprocess tests (~5 s of the Spectacles tests)
 pytest -q -m "not render"     # a machine without OpenGL
+pytest -q -n auto --dist loadfile   # in parallel, one file per worker (needs pytest-xdist)
 ```
+
+The driver tests run on a virtual clock (`twin/clock.py`), not in wall time.
+The twin has no loop thread (`connect(threaded=False)`); a `VirtualClock`
+moves only when the test steps the loop, and the driver reads the same clock
+(`SpecsReach.clock` defaults to `Twin.clock`). Ramps, arrival, the gripper
+wait, the hold-off, the backoff grace, a stream's timeout and the grab's waits
+all run in simulated seconds, so ten
+seconds of motion cost a fraction of a second and the timings repeat to the
+tick. The relay, the websocket and the driver's network thread stay real.
+`tests/twinbench.py` holds the bench: the fake relay and `Bench.pump(until=...,
+sim_s=..., max_sim_s=10.0, dt=0.02)`, which steps the loop until a condition
+holds. A test that needs the driver to have received a message waits for it in
+real time with the clock stopped (`Bench.target`, `Bench.grip`, `Bench.follow`,
+`Bench.grab_object`), then pumps. Stream reports are flushed after every tick,
+so `Bench.stream_states` sees them on the tick they happened.
+In the app the twin and the driver run on `WallClock` (`time.monotonic`, real
+sleeps), as before.
+
+Measured on a 10-core Mac: the four files `test_twin_follow.py`,
+`test_twin_specsreach.py`, `test_twin_specsreach_a1x.py` and `test_twin_reach.py`
+(79 tests) take ~17 s, of which ~4 s is the CLI run in a subprocess and ~5 s the
+reach-box planning in `test_twin_reach.py` (they took ~300 s in wall time before
+the clock). The whole suite takes a bit over a minute, less with
+`-n auto --dist loadfile`.
+Most of what is left is CPU-bound calibration planning in
+`tests/test_twin_calib.py` (~35 s). `--dist loadfile` keeps each file on one
+worker, so module-scoped twins are built once per file; the relay binds port
+0, so workers do not clash. xdist is not in `addopts`: pass it when you want it.
 
 - `tests/test_twin_specsreach.py`: a fake relay (the `/twin` side of
   `server.js`) and the simulated A1X. Reaching a hand target, the refusals
@@ -697,7 +772,8 @@ pytest -q -m "not render"     # a machine without OpenGL
   (help, `--i-know`, a run in sim), and the grab: `held` with the legs in
   order, `outside grab zone`, `too wide`, `missed`, `dry`.
 - `tests/test_twin_follow.py`: follow streams on the simulated A1X, with the
-  loop ticked by the test (`connect(threaded=False)`): a line at 20 Hz within
+  loop ticked by the test on the virtual clock (`FollowBench`, a `twinbench.Bench`;
+  samples every 50 ms of that clock): a line at 20 Hz within
   3 cm, identical samples, the far entry ramp, `exit`, `outside volume`, a wall
   (pause, then resume; 2 s ends the stream), a gripper command mid-stream,
   a target or grab ending a stream, `timeout`, reordered samples, a new stream

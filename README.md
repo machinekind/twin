@@ -240,6 +240,10 @@ stanowiska (`istnieje` albo `nowe, puste`) i katalog polityk — tak widać, że
 użyty jest `workspace/twin.json` z klonu, także gdy panel odpalono z innego
 katalogu. To samo pokazuje `lerobot-twin workspace`.
 
+Okulary Spectacles jednym poleceniem (ramię ze stanowiska, bez domu, i sterownik okularów):
+`lerobot-twin ui --port 8765 --arm --specs real --i-know --follow-speed 0.10`
+(szczegóły: [docs/SPECS.md](docs/SPECS.md), sekcja „The panel”).
+
 W panelu: zakładka **Ramię** → `sim` → **Połącz**; zakładka **Polityki** →
 `lift-v3`, `lift: skad polozenie kostki` = **kamery**, kostkę kładzie przycisk
 `lift (sim): poloz kostke losowo`. Bez `demo` bliźniak startuje z pustym
