@@ -1,15 +1,15 @@
 """`SpecsReach` driving the `a1x` backend over a fake CAN bus (`FakeA1XBus`), no hardware.
 
-The twin runs with `threaded=False` and the test ticks its loop and the bus (`Rig.pump`). The virtual
-clock follows the wall clock because the driver's worker thread is real (ramps, waiting for arrival).
-The relay is the fake from `test_twin_specsreach.py`.
+The twin runs with `threaded=False` and the test ticks its loop and the bus (`Rig.pump`), all on one
+`VirtualClock` that the backend (`A1XArm(clock=...)`), the loop and the driver's worker share: the bus
+streams 4 frames per loop tick, the worker's ramps and waits run in the same simulated time, and nothing
+is paced by the wall clock. The relay is the fake from `twinbench`.
 """
 
 from __future__ import annotations
 
 import struct
 import threading
-import time
 
 import numpy as np
 import pytest
@@ -19,12 +19,13 @@ pytest.importorskip("websockets")
 pytest.importorskip("galaxeo")
 
 from galaxeo import protocol as P  # noqa: E402
-from test_a1x import LSB_DEG, STEP, Clock, FakeA1XBus  # noqa: E402
-from test_twin_specsreach import FakeRelay  # noqa: E402
+from test_a1x import LSB_DEG, STEP, FakeA1XBus  # noqa: E402
+from twinbench import END, GRIP_END, Bench, FakeRelay  # noqa: E402
 
 from lerobot_mp.robot.a1x import A1XArm  # noqa: E402
 from lerobot_mp.twin import robots  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
+from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
 from lerobot_mp.twin.reach import ReachVolume  # noqa: E402
 from lerobot_mp.twin.specsreach import SpecsReach  # noqa: E402
@@ -49,8 +50,8 @@ class WallBus(FakeA1XBus):
                 self.p_des[j] = lim
 
 
-class Rig:
-    """Twin on the fake A1X, plus driver and relay; `pump` runs the loop at wall-clock pace."""
+class Rig(Bench):
+    """Twin on the fake A1X, plus driver and relay, on one `VirtualClock`; `pump` steps the loop and the bus."""
 
     def __init__(self, monkeypatch, relay: FakeRelay, offset: dict[str, float] | None = None):
         spec = robots.REGISTRY["a1x"]
@@ -59,87 +60,55 @@ class Rig:
         sol = self.kin.ik(self.vol.center, seed=spec.home, tol=0.003)
         assert sol.ok
         self.start = {k: float(sol.joints[k]) for k in ARM}  # from home every target is a > 45 deg jump
-        self.clock = Clock()
+        clock = VirtualClock()
         # `offset` [deg]: start this far from the pose above the volume centre (for `start_center`).
         self.bus = WallBus([self.start[k] + (offset or {}).get(k, 0.0) for k in ARM])
         self.bus.tick(n=60)
         self.arm: A1XArm | None = None
 
-        def sleep(secs):
-            self.clock.t += secs
+        def sleep(secs):                                 # the backend's own waits (connect): bus and time together
+            clock.advance(secs)
             self.bus.tick(secs)
 
         def create(cfg):
-            self.arm = A1XArm(cfg, bus=self.bus, clock=self.clock, threaded=False, sleep=sleep,
+            self.arm = A1XArm(cfg, bus=self.bus, clock=clock.now, threaded=False, sleep=sleep,
                               connect_timeout_s=0.05)
             return self.arm
 
         monkeypatch.setattr(rt, "create_backend", create)
-        self.twin = rt.Twin(Workspace(robot="a1x"))
-        self.twin.connect("a1x", port="fake", threaded=False)
-        self.relay = relay
+        twin = rt.Twin(Workspace(robot="a1x"), clock=clock)
+        twin.connect("a1x", port="fake", threaded=False)
+        super().__init__(twin, relay)
         self.faults: list[str] = []
-        self.driver: SpecsReach | None = None
-        self.pump(0.5)
+        self.pump(sim_s=0.5)
 
-    def tick(self) -> None:
+    def step(self, dt: float = DT) -> None:
+        """One loop tick: `dt / STEP` bus ticks (the backend streams at 200 Hz), each moving the clock, then
+        the loop tick at the time they reached (`Twin.step(0)`: the loop's own gap is still `dt`)."""
         assert self.arm is not None
-        for _ in range(int(round(DT / STEP))):
-            self.clock.t += STEP
+        for _ in range(int(round(dt / STEP))):
+            self.clock.advance(STEP)
             self.bus.tick(STEP)
-            self.arm.io_step(self.clock.t)
-        self.twin.step(DT)
+            self.arm.io_step(self.clock.now())
+        self.twin.step(0.0)
         self.faults.extend(self.twin.status.faults)
-
-    def pump(self, secs: float, until=None) -> bool:
-        """Tick the loop for `secs` of wall time or until `until()`; True if `until` was met."""
-        t0 = time.monotonic()
-        n = 0
-        while time.monotonic() - t0 < secs:
-            if until is not None and until():
-                return True
-            self.tick()
-            n += 1
-            ahead = t0 + n * DT - time.monotonic()
-            if ahead > 0:
-                time.sleep(ahead)
-        return until is not None and bool(until())
+        self.flush_reports()
 
     def connect_driver(self, **kw) -> SpecsReach:
         kw.setdefault("mode", "real")
         kw.setdefault("real_ok", True)
         kw.setdefault("hold_off_s", 0.0)
-        d = SpecsReach(self.twin, relay_url=self.relay.url, **kw)
-        d.start()
-        self.driver = d
-        self.relay.wait_client()
-        self.pump(0.3)
-        return d
-
-    def state(self, ts: int, states: set[str]) -> dict | None:
-        with self.relay.cond:
-            hit = [s for s in self.relay.states if s["ts"] == ts and s["state"] in states]
-        return hit[-1] if hit else None
-
-    def wait_state(self, ts: int, states: set[str], secs: float) -> dict:
-        assert self.pump(secs, lambda: self.state(ts, states) is not None), \
-            f"brak stanu {states}: {[(s['state'], s.get('reason')) for s in self.relay.states]}"
-        st = self.state(ts, states)
-        assert st is not None
-        return st
+        return self.driver(**kw)
 
     def cmd_frames(self, since: int = 0) -> list[list[float]]:
         return [self.bus.pdes_deg(d) for i, d, _ in self.bus.tx[since:] if i == P.CMD_ID]
 
     def close(self) -> None:
-        if self.driver is not None:
-            # The worker may be waiting on the loop (arrival), so keep ticking until the driver stops.
-            import threading
-            t = threading.Thread(target=self.driver.stop)
-            t.start()
-            self.pump(6.0, lambda: not t.is_alive())
-            t.join(1.0)
-        self.twin.close()
+        try:
+            super().close()                              # stops the drivers: their waits end on `clock.set`
+        finally:
+            self.twin.close()
+            self.clock.close()
 
 
 @pytest.fixture
@@ -164,10 +133,10 @@ def far_target(rig: Rig) -> np.ndarray:
 @pytest.mark.parametrize("mode,real_ok", [("sim", True), ("real", False)])
 def test_sim_mode_or_real_without_consent_on_the_a1x_is_not_armed(rig, mode, real_ok):
     rig.connect_driver(mode=mode, real_ok=real_ok)
-    ts = rig.relay.target(rig.vol.center + np.array([0.02, 0.02, 0.0]))
-    st = rig.wait_state(ts, {"rejected", "moving", "reached"}, 5.0)
+    ts = rig.target(rig.vol.center + np.array([0.02, 0.02, 0.0]))
+    st = rig.wait_state(ts, {"rejected", "moving", "reached"}, max_sim_s=5.0)
     assert (st["state"], st.get("reason")) == ("rejected", "not armed")
-    rig.pump(0.3)
+    rig.pump(sim_s=0.3)
     assert rig.cmd_frames() == []
     assert rig.twin.owner is None
 
@@ -183,13 +152,13 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
         trip["tx"] = len(rig.bus.tx)
         return real_backoff(t)
     d._backoff = spy
-    ts = rig.relay.target(far_target(rig))
-    rig.wait_state(ts, {"moving"}, 5.0)
-    rig.pump(0.6)
+    ts = rig.target(far_target(rig))
+    rig.wait_state(ts, {"moving"}, max_sim_s=5.0)
+    rig.pump(sim_s=0.6)
     before = dict(rig.twin.status.measured)
     rig.bus.eff[0] = 60.0                                           # > threshold of 20 in 0x052 frame units
-    st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 15.0)
-    assert (st["state"], st.get("reason")) == ("backoff", "impact effort arm_joint1"), rig.relay.states_for(ts)
+    st = rig.wait_state(ts, END, max_sim_s=15.0)
+    assert (st["state"], st.get("reason")) == ("backoff", "impact effort arm_joint1"), rig.states_for(ts)
     hit = trip["hit"]
     assert hit is not None and hit.backoff_pose
     frames = rig.cmd_frames(trip["tx"])
@@ -199,11 +168,12 @@ def test_effort_spike_mid_ramp_backs_off_slowly_toward_the_earlier_pose(rig):
     assert abs(j1[-1] - hit.backoff_pose["arm_joint1"]) < 0.5
     ahead = np.sign(before["arm_joint1"] - rig.start["arm_joint1"])              # direction of travel
     assert ahead != 0 and (j1[-1] - j1[0]) * ahead < -2.0
-    # Slow: smoothstep peak 1.5 x 8 = 12 deg/s (+ test clock jitter) over 0.2 s windows,
-    # never above the supervisor's 15 deg/s cap.
+    # Slow: smoothstep peak 1.5 x 8 = 12 deg/s over 0.2 s windows, never above the supervisor's 15 deg/s cap.
+    # The loop, the backend and the worker share one clock, so this repeats exactly (11.95 measured); the
+    # 0.5 deg/s is for the backend's 5 ms staircase, not for clock jitter.
     win = int(round(0.2 / STEP))
     rates = [abs(j1[i + win] - j1[i]) / 0.2 for i in range(len(j1) - win)]
-    assert rates and max(rates) <= 13.0, max(rates)
+    assert rates and max(rates) <= 12.5, max(rates)
     # The backend chases the loop command in jumps (90 deg/s, every 4 frames), so only windowed speed is meaningful.
     win = int(round(0.1 / STEP))
     fast = [abs(j1[i + win] - j1[i]) / 0.1 for i in range(len(j1) - win)]
@@ -218,39 +188,39 @@ def test_stall_at_a_wall_trips_the_guard_before_the_backend_deaf_fault(rig):
     real_backoff = d._backoff
 
     def spy(t):
-        tripped.append(rig.clock.t)
+        tripped.append(rig.clock.now())
         return real_backoff(t)
     d._backoff = spy
     target = far_target(rig)
-    ts = rig.relay.target(target)
-    rig.wait_state(ts, {"moving"}, 5.0)
-    rig.pump(0.3)
+    ts = rig.target(target)
+    rig.wait_state(ts, {"moving"}, max_sim_s=5.0)
+    rig.pump(sim_s=0.3)
     # J1 gets stuck 2 deg further along its direction of travel.
     q = rig.bus.q[0]
     sign = 1.0 if rig.bus.p_des[0] >= q else -1.0
     rig.bus.wall = (0, q + sign * np.radians(2.0), sign)
-    st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 15.0)
+    st = rig.wait_state(ts, END, max_sim_s=15.0)
     rig.bus.wall = None
-    assert (st["state"], st.get("reason")) == ("backoff", "impact lag arm_joint1"), rig.relay.states_for(ts)
+    assert (st["state"], st.get("reason")) == ("backoff", "impact lag arm_joint1"), rig.states_for(ts)
     assert tripped
     assert not any("gluche" in f for f in rig.faults), rig.faults
-    rig.pump(1.5)                                                   # no servo fault after the backoff either
+    rig.pump(sim_s=1.5)                                                   # no servo fault after the backoff either
     assert not any("gluche" in f for f in rig.faults), rig.faults
     assert rig.twin.safety_state.value != "estop"
 
 
 def test_stop_mid_ramp_holds_releases_and_streams_only_the_held_pose(rig):
     d = rig.connect_driver()
-    ts = rig.relay.target(far_target(rig))
-    rig.wait_state(ts, {"moving"}, 5.0)
-    rig.pump(0.6)
+    ts = rig.target(far_target(rig))
+    rig.wait_state(ts, {"moving"}, max_sim_s=5.0)
+    rig.pump(sim_s=0.6)
     rig.twin.estop("test")
-    st = rig.wait_state(ts, {"reached", "hold", "backoff", "rejected"}, 5.0)
+    st = rig.wait_state(ts, END, max_sim_s=5.0)
     assert (st["state"], st.get("reason")) == ("hold", "stop")
     assert rig.twin.owner is None
-    rig.pump(0.2)
+    rig.pump(sim_s=0.2)
     n = len(rig.bus.tx)
-    rig.pump(1.0)
+    rig.pump(sim_s=1.0)
     after = rig.cmd_frames(n)
     held = after[0] if after else None
     assert all(max(abs(a - b) for a, b in zip(f, held)) <= 2 * LSB_DEG for f in after)   # no motion
@@ -259,16 +229,18 @@ def test_stop_mid_ramp_holds_releases_and_streams_only_the_held_pose(rig):
 
 def test_relay_loss_mid_move_in_real_mode_holds(rig):
     d = rig.connect_driver()
-    ts = rig.relay.target(far_target(rig))
-    rig.wait_state(ts, {"moving"}, 5.0)
-    rig.pump(0.4)
+    ts = rig.target(far_target(rig))
+    rig.wait_state(ts, {"moving"}, max_sim_s=5.0)
+    rig.pump(sim_s=0.4)
     rig.relay.drop_clients()
-    assert rig.pump(3.0, lambda: (d.last_state or {}).get("state") == "hold")
+    # The network thread notices in real time; the clock stands still meanwhile.
+    Bench.wait_real(lambda: d._cancel_cause == "relay", what="utrata przekaznika u kierowcy")
+    assert rig.pump(until=lambda: (d.last_state or {}).get("state") == "hold", max_sim_s=3.0)
     assert d.last_state["reason"] == "relay"
     assert rig.twin.owner is None
-    rig.pump(0.3)
+    rig.pump(sim_s=0.3)
     cmd = dict(rig.twin.status.command)
-    rig.pump(0.8)
+    rig.pump(sim_s=0.8)
     assert max(abs(rig.twin.status.command[k] - cmd[k]) for k in ARM) < 0.2
 
 
@@ -290,20 +262,20 @@ def test_start_center_stall_near_the_end_holds_before_the_backend_deaf_fault(mon
         def spy(cause):
             if cause == "impact" and "deaf_age" not in trip:
                 # How long the backend has been counting a joint as "deaf" when the guard trips.
-                trip["deaf_age"] = max((rig.clock.t - t0 for t0 in rig.arm._deaf_since.values()), default=0.0)
+                trip["deaf_age"] = max((rig.clock.now() - t0 for t0 in rig.arm._deaf_since.values()), default=0.0)
             real_interrupt(cause)
         d._interrupt = spy
         out: dict = {}
         th = threading.Thread(target=lambda: out.setdefault("r", d.start_center(10.0)))
         th.start()
-        assert rig.pump(5.0, lambda: goal - rig.twin.status.measured["arm_joint1"] < left_deg)
+        assert rig.pump(until=lambda: goal - rig.twin.status.measured["arm_joint1"] < left_deg, max_sim_s=5.0)
         rig.bus.wall = (0, rig.bus.q[0] + np.radians(2.0), 1.0)
-        assert rig.pump(6.0, lambda: not th.is_alive()), "start_center nie skonczyl"
+        assert rig.pump(until=lambda: not th.is_alive(), max_sim_s=6.0), "start_center nie skonczyl"
         th.join(1.0)
         assert out["r"] == "impact lag arm_joint1", (out, rig.faults)
         assert not any("gluche" in f for f in rig.faults), rig.faults
         assert trip["deaf_age"] <= 1.0 - 0.3, trip                     # >= 0.3 s before the backend fault
-        rig.pump(1.5)                                                   # holds: no backoff and no fault
+        rig.pump(sim_s=1.5)                                             # holds: no backoff and no fault
         rig.bus.wall = None
         assert not any("gluche" in f for f in rig.faults), rig.faults
         meas, cmd = rig.twin.status.measured, rig.twin.status.command
@@ -338,15 +310,8 @@ def test_fist_close_then_open_then_close_drives_0x051_and_done_waits_for_the_sle
 
     def run_grip(action: str) -> tuple[dict, int]:
         n = len(rig.bus.tx)
-        ts = rig.relay.grip(action)
-        done: list[dict] = []
-
-        def finished() -> bool:
-            with rig.relay.cond:
-                done[:] = [g for g in rig.relay.grips if g["ts"] == ts and g["state"] in ("done", "rejected", "hold")]
-            return bool(done)
-        assert rig.pump(10.0, finished), rig.relay.grips
-        return done[-1], n
+        ts = rig.grip(action)
+        return rig.wait_grip(ts, GRIP_END, max_sim_s=10.0), n
 
     st, n = run_grip("close")
     assert st["state"] == "done", st
@@ -380,16 +345,19 @@ FOLLOW_PERIOD = 0.05                                            # the glasses se
 
 
 def stream_states(rig: Rig, stream: int = STREAM) -> list[tuple[str, str | None, str | None]]:
-    return [(s["state"], s.get("reason"), s.get("detail")) for s in rig.relay.stream_states(stream)]
+    return [(s["state"], s.get("reason"), s.get("detail")) for s in rig.stream_states(stream)]
 
 
 def send_stream(rig: Rig, points, seq0: int = 0, stream: int = STREAM, until=None) -> int:
-    """Samples every 50 ms, ticking the loop in between; stops early when `until()`. Returns the next seq."""
+    """Samples every 50 ms of the clock, ticking the loop in between; stops early when `until()`. Returns the
+    next seq."""
     seq = seq0
+    t = rig.clock.now()
     for p in points:
-        rig.relay.follow(stream, seq, p)
+        rig.follow(stream, seq, p)
         seq += 1
-        if rig.pump(FOLLOW_PERIOD, until):
+        t += FOLLOW_PERIOD
+        if rig.pump_to(t, until=until) and until is not None:
             break
     return seq
 
@@ -413,8 +381,8 @@ def test_follow_stream_moves_the_real_arm_with_bounded_0x050_steps(rig):
     tcp = rig.kin.tcp(rig.twin.status.measured)[:3, 3]
     assert np.linalg.norm(tcp - line[-1]) < 0.015
     assert not rig.faults and rig.twin.safety_state.value != "estop"
-    rig.relay.follow(STREAM, seq, active=False)
-    assert rig.pump(2.0, lambda: rig.twin.owner is None)
+    rig.follow(STREAM, seq, active=False)
+    assert rig.pump(until=lambda: rig.twin.owner is None, max_sim_s=2.0)
     assert stream_states(rig)[-1][:2] == ("hold", "exit")
 
 
@@ -424,7 +392,7 @@ def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(
     real_hold_now = d._hold_now
 
     def spy():
-        trip.setdefault("grips", rig.relay.grips_for(g))
+        trip.setdefault("grips", rig.grips_for(g))
         trip.setdefault("tx", len(rig.bus.tx))
         trip.setdefault("q", rig.bus.pdes_deg(next(dd for i, dd, _ in reversed(rig.bus.tx) if i == P.CMD_ID)))
         real_hold_now()
@@ -437,12 +405,14 @@ def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(
     d._follow_backoff = backoff_spy
     c = rig.vol.center
     far = c + np.array([0.0, 0.15, -0.02])                          # J1 turns towards +y
-    seq = send_stream(rig, [far] * 6)
+    # 0.6 s of stream before the wall (8 + 4 samples), what the wall-paced version of this test measured for
+    # its 6 + 4 samples: J1 meets the wall late in the move, so the guard's backoff pose takes J1 off it.
+    seq = send_stream(rig, [far] * 8)
     # A gripper command keeps the worker in its settle wait while the arm hits the wall: the hold must not
     # wait for the worker.
-    g = rig.relay.grip("close")
+    g = rig.grip("close")
     seq = send_stream(rig, [far] * 4, seq0=seq)
-    assert rig.relay.grips_for(g) == ["accepted"]
+    assert rig.grips_for(g) == ["accepted"]
     assert stream_states(rig)[-1][0] == "moving", stream_states(rig)
     # J1 gets stuck 2 deg further along its direction of travel.
     q = rig.bus.q[0]
@@ -453,7 +423,7 @@ def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(
     def ended():
         return any(k[0] == "hold" for k in stream_states(rig))
     send_stream(rig, [far] * 60, seq0=seq, until=ended)
-    rig.pump(0.3)
+    rig.pump(sim_s=0.3)
     kinds = stream_states(rig)
     assert kinds[-1][:2] == ("hold", "impact"), kinds
     assert "tx" in trip and trip["grips"] == ["accepted"], trip       # the worker was busy at the impact
@@ -468,7 +438,7 @@ def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(
     near = [f[0] for f in window[3 * tick:]]
     assert near and max(sign * (v - np.degrees(wall)) for v in near) < 0.5, (np.degrees(wall), near[:10])
     # The backoff: the arm ends at the guard's backoff pose, J1 away from the wall, and is released.
-    assert rig.pump(8.0, lambda: rig.twin.owner is None)
+    assert rig.pump(until=lambda: rig.twin.owner is None, max_sim_s=8.0)
     rig.bus.wall = None
     pose = trip["hit"].backoff_pose
     measured = rig.twin.status.measured
@@ -476,7 +446,7 @@ def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(
     j1 = np.degrees(rig.bus.q[0])
     assert sign * (np.degrees(wall) - j1) > 1.0, (np.degrees(wall), j1)
     assert not any("gluche" in f for f in rig.faults), rig.faults
-    rig.pump(1.0)
+    rig.pump(sim_s=1.0)
     assert not any("gluche" in f for f in rig.faults), rig.faults
     assert rig.twin.safety_state.value != "estop"
     assert d._stream is None and d._follow_handle is None
@@ -520,7 +490,7 @@ def test_follow_stream_with_the_gripper_loaded_ends_in_impact_and_stops_advancin
         closest = min(closest, float(np.linalg.norm(rig.kin.tcp(cmd)[:3, 3] - d.volume.clamp(far))))
         return rig.twin.owner is None
     rig.bus.grip_effort = 0.0
-    assert rig.pump(8.0, track)
+    assert rig.pump(until=track, max_sim_s=8.0)
     assert closest > trip["dist"] - 0.005, (closest, trip["dist"])
     assert rig.twin.safety_state.value != "estop"
     assert d._stream is None and d._follow_handle is None
