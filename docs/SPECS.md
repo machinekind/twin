@@ -368,9 +368,12 @@ commanded. Before the first command it reports `a1x.gripper_start`, which is 0
 (closed), and the sim A1X starts closed too. The workstation contract is
 "home = jaws closed": the panel's *Ustaw dom = tu* (set home here) always
 stores gripper 0 and, with an unmeasured gripper, tells the backend that the
-jaws are closed now. Close the empty jaws for real before you press it. The
-first `open` after that goes to the target at once; every `close` is a ramp,
-and the backend's contact stop still freezes the jaws on an object. If the
+jaws are closed now. Close the empty jaws for real before you press it. While
+the gripper's state is only a guess (`gripper_start` after connecting, or the
+assumption of *Ustaw dom = tu*), the first `open` goes to the target at once,
+so jaws that are already open do not move and closed ones never snap shut
+first. Every `close` is a ramp, and the backend's contact stop still freezes
+the jaws on an object. If the
 gripper was already commanded in this session, the button only stores the home
 and leaves the gripper's state alone (log: `chwytak juz sterowany`): close it
 with the slider and press the button again.
@@ -489,7 +492,7 @@ gripper command by `ts`. Other message types are ignored. For the full relay pro
 | `hold` with `relay` | The relay connection dropped during a real move. Check the network, then pinch again. |
 | `backoff` during calm moves | The effort thresholds are too tight. See [the effort log](#5-the-effort-log-in-dry-mode). |
 | The gripper command is `done` but the jaws do not move | On macOS over XCAN the gripper frame never arrives (the panel says `chwytak: brak sterowania przez XCAN`). Drive the gripper from Linux (SocketCAN). |
-| The jaws are open but the twin shows them closed | The twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then: move it open and back to 0 so the jaws really close, then press *Ustaw dom = tu*. |
+| The jaws are open but the twin shows them closed | The twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
 
 ## 8. Tests
 

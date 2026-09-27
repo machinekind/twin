@@ -479,8 +479,9 @@ i uruchom skrypt: wynik to `gripper_fb_closed`. To samo przy 100 daje
 (czytających może być wielu, nadawca jeden). Na macOS przejściówkę trzyma panel,
 więc przed każdym odczytem daj *Rozłącz* — chwytak zostaje na ostatnim `p_des`.
 Po ponownym *Połącz* backend w pętli otwartej zgłasza chwytak jako 0
-(`gripper_start`, zamknięty). Pierwszy ruch suwaka startuje więc od zamknięcia:
-otwarte szczęki najpierw się zamkną. Przed *Rozłącz* zamknij je więc suwakiem.
+(`gripper_start`, zamknięty), a to tylko zgadnięcie. Pierwsze otwieranie idzie
+więc od razu na cel (otwarte szczęki nie drgną), a zamykanie zawsze rampą.
+Przed *Rozłącz* i tak zamknij je suwakiem, żeby zgadnięcie się zgadzało.
 Sprawdź też kilka punktów pośrednich (np. 50). Zależność ma być liniowa, patrz
 otwarte pytania niżej.
 
@@ -572,13 +573,16 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   `0x051` rusza dopiero przy rozkazie różnym od zgłoszonej wartości (o > 0,5),
   więc *Połącz* niczego nie domyka. Przy zamykaniu cel zamarza, gdy |effort|
   przekroczy spoczynek z pierwszych 0,1 s zamykania o `gripper_force` (1,2);
-  każdy rozkaz otwierania (albo równy celowi) zdejmuje zamrożenie. Bez
-  zmierzonego sprzężenia pierwszy ruch chwytaka po *Połącz* zaczyna od
-  `gripper_start` (zamknięty): stan szczęk to założenie, nie pomiar. Otwarte
-  szczęki zamknij suwakiem przed *Rozłącz* i przed *Ustaw dom = tu*. Po *Ustaw
-  dom = tu* pierwsze otwieranie idzie od razu na cel (pusty, zamknięty chwytak
-  nic nie traci, a przy złym założeniu szczęki nie zatrzaskują się w pierwszej
-  ramce), zamykanie zawsze rampą.
+  każdy rozkaz otwierania (albo równy celowi) zdejmuje zamrożenie. Spoczynek
+  mierzy się od nowa dopiero po otwarciu o 0,3 p_des od najciaśniejszego punktu
+  zamykania: po uchyleniu o kreskę szczęki dalej dociskają kostkę i docisk nie
+  może zostać nowym spoczynkiem (próg rósłby z każdym cyklem). Bez zmierzonego
+  sprzężenia stan szczęk po *Połącz* to `gripper_start` (zamknięty), założenie,
+  nie pomiar. Otwarte szczęki zamknij suwakiem przed *Rozłącz* i przed *Ustaw
+  dom = tu*. Dopóki stan jest tylko zgadnięty (`gripper_start` albo *Ustaw dom
+  = tu*), pierwsze otwieranie idzie od razu na cel (pusty, zamknięty chwytak nic
+  nie traci, otwarty nie drgnie, a przy złym zgadnięciu szczęki nie zatrzaskują
+  się w pierwszej ramce), zamykanie zawsze rampą.
 - **Chwytak przez XCAN (macOS) nie rusza.** Przejściówka wysyła 10-bajtową
   ramkę `0x051` jako 12 bajtów, a chwytak ją ignoruje. Programowo się tego nie
   naprawi: chwytak tylko z Linuksa (SocketCAN). Panel pisze w linii stanu

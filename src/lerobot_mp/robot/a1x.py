@@ -13,7 +13,8 @@ Jednostki: jak w calej aplikacji - stawy ramienia w stopniach, chwytak 0..100
   pomiar z grupy 7 ramki 0x052 przez dwa punkty `gripper_fb_closed/open`, gdy zmierzone,
   inaczej petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`). Przed pierwszym
   rozkazem petla otwarta zglasza `gripper_start` (0 = zamkniety), a "Ustaw dom = tu" blizniaka
-  potwierdza to przez `assume_gripper(0)` - umowa stanowiska: dom = szczeki zamkniete.
+  potwierdza to przez `assume_gripper(0)` - umowa stanowiska: dom = szczeki zamkniete. Dopoki
+  rozwarcie jest tylko zgadniete, pierwsze otwieranie idzie od razu na cel, zamykanie rampa.
 * Chwytak przez XCAN (macOS) nie rusza: przejsciowka wysyla 10-bajtowa 0x051 jako 12 bajtow,
   a chwytak ja ignoruje (galaxeo `bus.py`). Tylko SocketCAN (Linux) - `gripper_drivable()`.
 
@@ -62,6 +63,9 @@ ENABLE_STEP_S = 0.3
 #: Spoczynkowy |effort| chwytaka: mediana z tylu taktow strumienia na poczatku kazdego zamykania
 #: (0,1 s przy 200 Hz); w tym oknie cel nie zamarza. Kontakt = |effort| > spoczynek + `gripper_force`.
 GRIP_REST_STEPS = 20
+#: Otwarcie [p_des] od najciasniejszego punktu zamykania, po ktorym nastepne zamykanie mierzy
+#: spoczynek od nowa. Mniejsze uchylenie (szczeki dalej na kostce) zostawia stary spoczynek.
+GRIP_REOPEN_PDES = 0.3
 #: Zapas na czas pelnego skoku chwytaka [s] (`gripper_travel_s`).
 GRIP_TRAVEL_MARGIN_S = 0.2
 
@@ -139,6 +143,7 @@ class A1XArm(RobotBackend):
         self._g_assumed = False                      # `_g_cmd` z `assume_gripper`, strumien jeszcze nie ruszyl
         self._g_rest_eff: list[float] = []           # |effort| z poczatku zamykania (spoczynek)
         self._g_rest: float | None = None            # ich mediana; None = zamykanie nie trwa albo okno zbiera
+        self._g_hi: float | None = None              # najciasniejszy p_des tego zamykania (odniesienie otwarcia)
         self._goal: dict[str, float] = {}            # ostatnie cele w jednostkach aplikacji
         self._pinned = False                         # sekwencja wlaczenia: p_des = pomiar
         self._last_io: float | None = None
@@ -313,7 +318,7 @@ class A1XArm(RobotBackend):
                 self._p_target = self._p_stream = None
                 self._g_target = self._g_stream = None
                 self._g_frozen = False
-                self._g_rest_eff, self._g_rest = [], None
+                self._g_rest_eff, self._g_rest, self._g_hi = [], None, None
                 self._deaf_since, self._deaf = {}, ""
                 return
             if self._pinned:
@@ -330,10 +335,17 @@ class A1XArm(RobotBackend):
                 if self._g_stream is None:
                     self._g_stream = self._pdes(self._grip_app())
                 closing = self._g_target > self._g_stream
+                if closing:
+                    self._g_hi = self._g_stream if self._g_hi is None else max(self._g_hi, self._g_stream)
                 if self._g_target < self._g_stream:
-                    # Otwieranie: nastepne zamykanie mierzy spoczynek od nowa. Cel osiagniety (albo zamrozony)
-                    # spoczynku nie zeruje - inaczej suwak zamykany malymi krokami bralby docisk za spoczynek.
-                    self._g_rest_eff, self._g_rest = [], None
+                    # Otwieranie: spoczynek mierzy sie od nowa dopiero, gdy szczeki odeszly o GRIP_REOPEN_PDES
+                    # od najciasniejszego punktu zamykania. Po uchyleniu o jedna kreske suwaka szczeki dalej
+                    # dociskaja kostke, a nowy "spoczynek" bylby dociskiem - prog rosl z kazdym cyklem.
+                    # Cel osiagniety (albo zamrozony) spoczynku nie zeruje - inaczej suwak zamykany malymi
+                    # krokami tez bralby docisk za spoczynek.
+                    hi = self._g_hi
+                    if self._g_rest is None or hi is None or self._g_stream < hi - GRIP_REOPEN_PDES:
+                        self._g_rest_eff, self._g_rest, self._g_hi = [], None, None
                 elif closing and self._g_rest is None:
                     # Poczatek zamykania: spoczynkowy effort grupy 7 (nieznany, bywa staly ~3) z pierwszych
                     # taktow. Staly prog 1,2 zamrazal cel juz w pierwszym takcie i chwytak przestawal sluchac.
@@ -421,11 +433,15 @@ class A1XArm(RobotBackend):
                                     "" if self.gripper_measured() else ", bez pomiaru", want)
                         # Pierwszy rozkaz: strumien od ZGLOSZONEGO rozwarcia, nie od celu.
                         stream = self._pdes(reported)
-                        if self._g_assumed:
-                            # Rozwarcie tylko zalozone ("Ustaw dom = tu": zamkniete): start od bardziej otwartego
-                            # z {zalozenie, cel}. Otwieranie idzie od razu na cel (pusty, zamkniety chwytak nic
-                            # nie traci), a gdyby zalozenie bylo zle, pierwsza ramka nie zatrzaskuje szczek
-                            # (+0,6 z kp 25, bez progu sily - ten dziala tylko przy zamykaniu).
+                        if self._g_assumed or (self._g_cmd is None and not self.gripper_measured()):
+                            # Rozwarcie tylko zgadniete: `assume_gripper` ("Ustaw dom = tu": zamkniete)
+                            # albo sam `gripper_start` po Polacz (A1X trzyma ostatnia poze miedzy sesjami,
+                            # szczeki moga byc otwarte). Start od bardziej otwartego z {zgadniete, cel}:
+                            # otwieranie idzie od razu na cel (pusty, zamkniety chwytak nic nie traci,
+                            # otwarty nie drgnie), a przy zlym zgadnieciu pierwsza ramka nie zatrzaskuje
+                            # szczek (+0,6 z kp 25, bez progu sily - ten dziala tylko przy zamykaniu).
+                            # `_g_cmd` z rozkazu, ktory naprawde poszedl, przezywa przerwe lacza i dalej
+                            # jest rampa od niego.
                             stream = min(stream, want)
                         self._g_target, self._g_stream, self._g_assumed = want, stream, False
                     elif want <= self._g_target:
@@ -514,7 +530,8 @@ class A1XArm(RobotBackend):
         Tylko dopoki strumien 0x051 nie ruszyl: potem prawda jest ostatni rozkaz, ktory naprawde poszedl,
         a zalozenie jest odrzucane (False, ostrzezenie w logu). Po udanym `gripper_known()` jest True,
         wiec nastepne rozkazy ida rampa od zalozenia; pierwszy strumien startuje od bardziej otwartego
-        z {zalozenie, cel} (`send_joints`). Chwytak z pomiarem niczego nie zaklada (False).
+        z {zalozenie, cel} (`send_joints`, tak samo jak od samego `gripper_start`). Chwytak z pomiarem
+        niczego nie zaklada (False).
         """
         with self._lock:
             if self.gripper_measured():
