@@ -460,6 +460,119 @@ def test_start_center_goes_above_the_volume_centre_in_stages(twin, kin, vol, rel
     assert twin.owner is None and twin._speed_cap is None
 
 
+# ------------------------------------------------------------------ grab (select mode)
+GRAB_AT = (0.30, -0.05)
+GRAB_END = {"held", "missed", "rejected", "hold", "backoff"}
+
+
+def grab_log(relay, ts) -> list[tuple[str, str | None, str | None]]:
+    return [(s["state"], s.get("reason"), s.get("detail")) for s in relay.stream_states(ts)]
+
+
+def test_grab_of_a_cube_on_the_table_opens_hovers_descends_closes_lifts_and_holds_it(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    h = 0.015
+    twin.configure(objects=[Box("cube", (h, h, h), GRAB_AT, rgba=(0.85, 0.25, 0.2, 1.0))])
+    d = driver(twin, relay)
+    try:
+        ts = relay.grab_object([*GRAB_AT, h], size=[2 * h, 2 * h])
+        st = relay.wait_stream(ts, GRAB_END, 40.0)
+        log = grab_log(relay, ts)
+        assert st["state"] == "held", log
+        assert log[0][0] == "accepted"
+        legs = [detail for state, _, detail in log if state == "moving"]
+        assert legs == ["open", "hover", "descend", "close", "lift"], log
+        assert st["stream"] == ts and st["ts"] == ts and list(st)[0] == "type" and st["mode"] == "sim"
+        # Lifted back to the hover point (tips at h: TCP h + 0.033, hover 8 cm above), jaws closed on the cube.
+        hover = np.array([*GRAB_AT, h + 0.033 + 0.08])
+        assert np.linalg.norm(tcp(kin, twin) - hover) < 0.012
+        assert twin.status.command["gripper"] < 5.0
+        with twin.lock:
+            cube_z = float(twin.scene.data.body("cube").xpos[2])
+        assert cube_z > h + 0.03, cube_z                     # it came up with the gripper
+        assert d.status()["grab"]["state"] == "held"
+        assert twin.owner is None                            # released, holding the object up
+    finally:
+        d.stop()
+        twin.configure(objects=None)
+
+
+def test_grab_closing_on_nothing_is_missed_and_does_not_reopen(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay)
+    try:
+        ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
+        st = relay.wait_stream(ts, GRAB_END, 40.0)
+        log = grab_log(relay, ts)
+        assert st["state"] == "missed", log
+        assert [detail for state, _, detail in log if state == "moving"] == ["open", "hover", "descend", "close",
+                                                                             "lift"]
+        time.sleep(0.5)
+        assert twin.status.command["gripper"] < 5.0            # never re-opens after `missed`
+    finally:
+        d.stop()
+
+
+@pytest.mark.parametrize("case", ["outside grab zone", "too wide", "no depth", "stale"])
+def test_grab_refusals(twin, kin, vol, relay, case):
+    ready(twin, kin, vol)
+    d = driver(twin, relay)
+    try:
+        before = dict(twin.status.measured)
+        if case == "outside grab zone":
+            ts = relay.grab_object([0.45, 0.0, 0.015], size=[0.03, 0.03])           # in the reach box, not the zone
+        elif case == "too wide":
+            ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.15, 0.05])            # 80 % of 15 cm > 9 cm
+        elif case == "no depth":
+            ts = relay.grab_object([*GRAB_AT, 0.015], depth=False)
+        else:
+            ts = relay.grab_object([*GRAB_AT, 0.015], age=0.9)
+        st = relay.wait_stream(ts, GRAB_END, 5.0)
+        assert (st["state"], st.get("reason")) == ("rejected", case), grab_log(relay, ts)
+        if case == "too wide":
+            assert "15 cm" in st["detail"]
+        time.sleep(0.3)
+        after = twin.status.measured
+        assert max(abs(after[k] - before[k]) for k in twin.status.measured) < 0.5
+    finally:
+        d.stop()
+
+
+def test_grab_without_a_drivable_gripper_is_refused(twin, kin, vol, relay, monkeypatch):
+    ready(twin, kin, vol)
+    monkeypatch.setattr(twin.backend, "gripper_drivable", lambda: False, raising=False)
+    d = driver(twin, relay)
+    try:
+        assert d.status()["gripper_drivable"] is False
+        ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
+        st = relay.wait_stream(ts, GRAB_END, 5.0)
+        assert (st["state"], st.get("reason"), st.get("detail")) == ("rejected", "no gripper",
+                                                                      "xcan: 0x051 not deliverable")
+        g = relay.grip("close")
+        gs = relay.wait_grip(g, {"rejected", "done", "hold"}, 5.0)
+        assert (gs["state"], gs.get("reason")) == ("rejected", "no gripper")
+    finally:
+        d.stop()
+
+
+def test_grab_in_dry_mode_accepts_then_holds_and_nothing_moves(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay, mode="dry")
+    try:
+        before = dict(twin.status.measured)
+        grip = twin.status.command["gripper"]
+        ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
+        st = relay.wait_stream(ts, GRAB_END, 5.0)
+        assert [(s, r) for s, r, _ in grab_log(relay, ts)] == [("accepted", None), ("hold", None)], st
+        time.sleep(0.5)
+        after = twin.status.measured
+        assert max(abs(after[k] - before[k]) for k in before) < 0.5
+        assert twin.status.command["gripper"] == pytest.approx(grip)
+        assert twin.owner is None
+    finally:
+        d.stop()
+
+
 def _dist_to_box(p, lo, hi) -> float:
     return float(np.linalg.norm(p - np.clip(p, lo, hi)))
 

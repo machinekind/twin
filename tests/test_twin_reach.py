@@ -1,5 +1,5 @@
 """Specs reach volume: defaults, helpers, workspace persistence, and every default grid point reachable
-without colliding with the empty table."""
+without colliding with the empty table. The grab zone: every grid point solves top-down."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ import pytest
 from lerobot_mp.twin import scene as sc
 from lerobot_mp.twin.collision import CollisionChecker
 from lerobot_mp.twin.kinematics import RobotKinematics
-from lerobot_mp.twin.reach import MIN_Z, ReachVolume
+from lerobot_mp.twin.follow import down_rotation, tilt_of
+from lerobot_mp.twin.reach import GRAB_ZONES, MIN_Z, ReachVolume, grab_zone, grab_zone_object
 from lerobot_mp.twin.robots import get_spec
 from lerobot_mp.twin.workspace import Workspace
 
@@ -88,3 +89,41 @@ def test_workspace_override_survives_save_and_load_and_old_files_still_load(tmp_
     assert vol.lo.tolist() == pytest.approx([0.25, -0.2, 0.06]) and vol.hi.tolist() == pytest.approx([0.45, 0.2, 0.25])
     with pytest.raises(ValueError):
         ReachVolume.from_dict({"lo": [0, 0, 0]})
+
+
+# TCP heights a grab uses: the lowest grasp (tips at 12 mm), a middle hover, and the highest hover
+# (tips at 60 mm + TIP_AHEAD 33 mm + hover 80 mm).
+GRAB_TCP_Z = (0.045, 0.125, 0.173)
+
+
+def test_every_grab_zone_grid_point_solves_top_down_without_collision():
+    """5x5 over the grab zone footprint at each grab height: IK within 3 mm with the tool pointing down
+    (tilt < 0.26 rad, as `SpecsReach.approach_tol`) and the pose clear of the table."""
+    spec = get_spec("a1x")
+    zone = grab_zone(spec)
+    assert zone is not None
+    kin = RobotKinematics(spec)
+    checker = CollisionChecker(sc.build(Workspace(robot="a1x").scene_config()))
+    bad = []
+    for x, y, z in itertools.product(np.linspace(zone.lo[0], zone.hi[0], 5), np.linspace(zone.lo[1], zone.hi[1], 5),
+                                     GRAB_TCP_Z):
+        p = np.array([x, y, z])
+        sol = kin.ik(p, rotation=down_rotation(spec, p), seed=spec.home, tol=0.003,
+                     accept=lambda j: checker.config_clear(j) is None)
+        tilt = tilt_of(kin.tool_axes(sol.joints)[0])
+        why = checker.config_clear(sol.joints) if sol.ok else f"IK {sol.pos_err * 1000:.1f} mm"
+        if why is None and tilt >= 0.26:
+            why = f"tilt {tilt:.2f} rad"
+        if why is not None:
+            bad.append((p.round(3).tolist(), why))
+    assert bad == []
+
+
+def test_grab_zone_numbers_and_overlay_object():
+    lo, hi = GRAB_ZONES["a1x"]
+    assert lo == pytest.approx((0.20, -0.25, -0.03)) and hi == pytest.approx((0.40, 0.25, 0.18))
+    assert grab_zone(get_spec("so101")) is None
+    obj = grab_zone_object(grab_zone(get_spec("a1x")))
+    assert obj["id"] == "grab" and obj["kind"] == "volume" and obj["label"] == "grab" and obj["alpha"] == 0.12
+    assert obj["pos"] == pytest.approx([0.30, 0.0, 0.075]) and obj["size"] == pytest.approx([0.20, 0.50, 0.21])
+    assert json.loads(json.dumps(obj)) == obj

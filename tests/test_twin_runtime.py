@@ -800,3 +800,60 @@ def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():
         tw.home()
     finally:
         tw.close()
+
+
+def test_a_partial_target_of_the_same_owner_merges_over_its_pending_target(twin, monkeypatch):
+    """Sledzenie z okularow podaje co takt same stawy ramienia: rampa chwytaka z wczesniejszego celu
+    tego samego wlasciciela jedzie dalej (nie staje na ostatnim wyslanym rozkazie)."""
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    connect_fake(twin, monkeypatch, arm)
+    pan = twin.status.command["shoulder_pan"]
+    twin.claim("specs")
+    twin.set_engaged(True, owner="specs")
+    twin.set_target({"gripper": 0.0}, owner="specs")
+    twin.step(DT)
+    assert 0.0 < twin.status.command["gripper"] < 100.0
+    for i in range(1, 60):
+        twin.set_target({"shoulder_pan": pan + 0.1 * i}, owner="specs")
+        twin.step(DT)
+    assert twin._target["gripper"] == 0.0
+    assert twin.status.command["gripper"] == pytest.approx(0.0)
+    assert twin.status.command["shoulder_pan"] == pytest.approx(pan + 5.9, abs=0.2)
+
+
+def test_a_partial_target_does_not_merge_over_another_owners_target(twin, monkeypatch):
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    connect_fake(twin, monkeypatch, arm)
+    pan = twin.status.command["shoulder_pan"]
+    twin.claim("specs")
+    twin.set_engaged(True, owner="specs")
+    twin.set_target({"gripper": 0.0}, owner="specs")
+    twin.step(DT)
+    twin.release("specs")
+    twin.claim("panel")
+    twin.set_target({"shoulder_pan": pan + 2.0}, owner="panel")
+    g = twin.status.command["gripper"]
+    assert 0.0 < g < 100.0 and twin._target["gripper"] == pytest.approx(g)     # from the ramp start
+    # Without an owner: never merged either.
+    twin.set_target({"gripper": 0.0}, owner="panel")
+    twin.set_target({"shoulder_pan": pan + 3.0})
+    assert twin._target["gripper"] == pytest.approx(twin.status.command["gripper"])
+
+
+def test_hold_command_stops_the_arm_where_its_command_is_and_keeps_the_gripper_goal(twin, monkeypatch):
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    connect_fake(twin, monkeypatch, arm)
+    pan = twin.status.command["shoulder_pan"]
+    twin.claim("specs")
+    twin.set_engaged(True, owner="specs")
+    twin.set_target({"shoulder_pan": pan + 30.0, "gripper": 0.0}, owner="specs")
+    run(twin, 0.1)
+    held = twin.hold_command(owner="specs")
+    assert held is not None and held["gripper"] == 0.0
+    at = twin.status.command["shoulder_pan"]
+    assert pan < at < pan + 30.0 and held["shoulder_pan"] == pytest.approx(at)
+    run(twin, 1.0)
+    assert twin.status.command["shoulder_pan"] == pytest.approx(at)
+    assert twin.status.command["gripper"] == pytest.approx(0.0)
+    with pytest.raises(RuntimeError):
+        twin.hold_command(owner="panel")
