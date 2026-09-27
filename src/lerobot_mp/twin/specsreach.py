@@ -44,10 +44,11 @@ stepping is a tick listener on the twin's loop (`twin/follow.py`: a bounded trac
 step per tick; all times from the loop's `TickSample.t`). The network thread only writes the newest sample
 into the stream's slot. A stream ends with `hold`: exit (`active: false`), timeout (no sample for 0.6 s; the
 arm is released 2 s after the last one), outside volume, ik / collision (1 s / 2 s of failed ticks; shorter
-failures only pause it: `moving` with detail "paused: ik" / "paused: collision"), impact (then the backoff), retargeted (a new
-stream, target or grab), stop, preempted, mode, relay. A new stream starts only from a new stream id.
-The driver holds the arm for "worker" and "follow" (`_holders`) and releases it when neither needs it,
-so a gripper command during a stream runs without ending it.
+failures only pause it: `moving` with detail "paused: ik" / "paused: collision"), impact (the loop thread
+holds the measured pose at once, then the worker backs off), retargeted (a new stream, target or grab),
+stop, preempted, mode, relay. At its end the arm stops where its command is (`Twin.hold_command`). A new
+stream starts only from a new stream id. The driver holds the arm for "worker" and "follow" (`_holders`)
+and releases it when neither needs it, so a gripper command during a stream runs without ending it.
 
 A grab (`policy: "topdown"`) is a worker item like a target: gate (grab zone, width, gripper), then
 open, hover, descend, close, lift, and `held` or `missed` (`held` with detail "assumed" when the backend
