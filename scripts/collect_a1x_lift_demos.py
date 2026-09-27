@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 from lerobot_mp.twin.rl.env import TwinEnv
+from lerobot_mp.twin.rl.perception import PoseCorruption
 from lerobot_mp.twin.rl.randomize import Randomization
 from lerobot_mp.twin.rl.task import fold_yaw, make_task
 from lerobot_mp.twin.robots import A1X
@@ -167,6 +168,12 @@ def main():
                         help="Optional A1X checkpoint whose occasional actions elicit teacher corrections")
     parser.add_argument("--learner-probability", type=float, default=.2,
                         help="Chance of executing the learner instead of the teacher; labels remain teacher actions")
+    parser.add_argument("--cube-yaw-mode", choices=("canonical", "continuous"),
+                        help="Runtime only; default inherits the learner, or canonical for pure teaching")
+    parser.add_argument("--cube-height-error-bound-mm", type=float,
+                        help="Runtime only; default inherits the learner's saved completion bound")
+    parser.add_argument("--pose-corruption", type=Path,
+                        help="Runtime observable teacher only: JSON PoseCorruption fields, in metres/degrees/seconds")
     args = parser.parse_args()
     if not (1 <= args.episodes <= 200 and 1 <= args.seconds <= 600):
         parser.error("Limits: 200 episodes, 600 seconds")
@@ -215,6 +222,20 @@ def main():
         if (learner.meta.robot != "a1x" or asdict(learner.task) != asdict(task)
                 or not learner.meta.randomization.get("fold_yaw", False)):
             parser.error("Learner must match the A1X lift task and folded-yaw observation contract")
+    yaw_mode = args.cube_yaw_mode or (learner.meta.cube_yaw_mode if learner else "canonical")
+    height_bound = (args.cube_height_error_bound_mm / 1000 if args.cube_height_error_bound_mm is not None
+                    else learner.meta.cube_height_error_bound_m if learner else 0.0)
+    if (not np.isfinite(height_bound) or height_bound < 0 or
+            (learner and (yaw_mode != learner.meta.cube_yaw_mode
+                          or height_bound != learner.meta.cube_height_error_bound_m))):
+        parser.error("Preserve the learner's yaw and completion contract; height bound must be finite and nonnegative")
+    corruption = None
+    if args.pose_corruption:
+        if not args.runtime or args.teacher != "observable":
+            parser.error("Pose corruption requires the runtime and observable teacher")
+        corruption = PoseCorruption(**json.loads(args.pose_corruption.read_text()))
+    if not args.runtime and (yaw_mode != "canonical" or height_bound):
+        parser.error("Saved yaw/completion options require --runtime")
     args.out.mkdir(parents=True, exist_ok=False)
     teacher = None
     if args.teacher == "observable":
@@ -224,6 +245,9 @@ def main():
                     controller="observation-only feedback" if teacher else
                                "state-triggered waypoints" if args.state_triggered else "timed waypoints",
                     teacher_contract=teacher.contract if teacher else "legacy-waypoints",
+                    cube_yaw_mode=yaw_mode, cube_height_error_bound_m=height_bound,
+                    pose_corruption=asdict(corruption) if corruption is not None else None,
+                    learner_gripper_decoder=learner.meta.gripper_decoder if learner else None,
                     learner_phases=args.learner_phases if teacher else "all phases",
                     learner_channels=args.learner_channels if teacher else "all",
                     learner_prefix_steps=args.learner_prefix_steps,
@@ -253,7 +277,8 @@ def main():
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if args.runtime:
         from a1x_runtime_env import RuntimeLiftEnv
-        env = RuntimeLiftEnv(task)
+        env = RuntimeLiftEnv(task, cube_yaw_mode=yaw_mode, cube_height_error_bound_m=height_bound,
+                             pose_corruption=corruption)
     else:
         env = TwinEnv(task, workspace=Workspace(robot="a1x"), randomization=rand)
     # The generic IK solver otherwise uses wider vendor limits. Search within
@@ -264,13 +289,16 @@ def main():
         for seed in range(args.seed, args.seed + args.episodes):
             if time.monotonic() - started >= args.seconds:
                 break
-            executed = []
+            executed, perception_records = [], []
             if teacher:
                 report, obs, act = observable_trial(env, seed, teacher=teacher, learner=learner,
                     learner_probability=args.learner_probability, executed_actions=executed,
                     learner_phases=args.learner_phases, learner_channels=args.learner_channels,
                     learner_prefix_steps=args.learner_prefix_steps,
-                    learner_gripper_burst_steps=args.learner_gripper_burst_steps)
+                    learner_gripper_burst_steps=args.learner_gripper_burst_steps,
+                    perception_seed=int(np.random.SeedSequence([seed, 73129]).generate_state(1)[0])
+                                    if corruption is not None else None,
+                    perception_records=perception_records if corruption is not None else None)
             else:
                 report, obs, act = trial(env, seed, state_triggered=args.state_triggered,
                                         synchronized=args.synchronized, measured_close=args.measured_close,
@@ -280,6 +308,9 @@ def main():
             results.append(report)
             np.savez_compressed(args.out / f"seed-{seed}.npz", obs=np.asarray(obs, np.float32),
                                 actions=np.asarray(act, np.float32), executed_actions=np.asarray(executed, np.float32))
+            if corruption is not None:
+                (args.out / f"seed-{seed}-perception.jsonl").write_text(
+                    ''.join(json.dumps(row, allow_nan=False) + '\n' for row in perception_records))
             print(json.dumps(report), flush=True)
     finally:
         env.close()

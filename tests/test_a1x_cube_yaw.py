@@ -133,7 +133,7 @@ def test_training_cannot_silently_drop_continuous_observation_mode(monkeypatch):
     policy = Policy(metadata())
     x, y = np.zeros((4, 36), np.float32), np.zeros((4, 7), np.float32)
     demos = Demonstrations(policy.meta.task, policy.meta.randomization, x, y, x, y, {})
-    with pytest.raises(ValueError, match="matching demonstration contract"):
+    with pytest.raises(ValueError, match="same cube yaw contract"):
         fit(demos, init=policy, updates=1, seconds=1)
     def must_not_construct_environment(*args, **kwargs):
         pytest.fail("Unsupported observations must fail before GPU initialization")

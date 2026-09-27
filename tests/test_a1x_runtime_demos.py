@@ -128,6 +128,82 @@ def test_observation_only_teacher_completes_guarded_grasp_and_full_hold(runtime_
     assert len(observations) == len(labels) == report['steps']
 
 
+def test_corrupted_teacher_labels_use_logged_policy_pose_and_true_hold(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / 'scripts'))
+    from a1x_runtime_env import RuntimeLiftEnv
+    from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
+    from lerobot_mp.twin.rl.perception import PoseCorruption
+    env = RuntimeLiftEnv(make_task('lift', A1X), cube_yaw_mode='continuous',
+        cube_height_error_bound_m=.005, pose_corruption=PoseCorruption(translation_m=(0, .002, 0)))
+    records = []
+    try:
+        report, observations, labels = observable_trial(env, 53076,
+            perception_seed=1655373122, perception_records=records)
+        assert report['success'] and report['max_continuous_hold_s'] >= 2
+        assert not report['collision'] and not report['guard_rejection']
+        assert report['perception_seed'] == 1655373122
+        assert len(records) == len(observations) == len(labels)
+        teacher = ObservableLiftTeacher()
+        for record, obs, label in zip(records, observations, labels):
+            np.testing.assert_array_equal(teacher.act(obs), label)
+            np.testing.assert_allclose(obs[17:20], record['supplied_position_m'], atol=2e-8, rtol=0)
+            np.testing.assert_allclose(np.array(record['supplied_position_m'])-record['true_position_m'],
+                                       [0, .002, 0], atol=1e-14)
+        assert records[0]['time_s'] < records[-1]['time_s']
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize('options', [[], ['--runtime'], ['--runtime', '--teacher', 'observable',
+    '--cube-height-error-bound-mm', '-1']])
+def test_collector_rejects_invalid_corruption_contract_before_output(monkeypatch, tmp_path, options):
+    import sys
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / 'scripts'))
+    import collect_a1x_lift_demos
+    config = tmp_path / 'corruption.json'
+    config.write_text('{"translation_m": [0, 0.002, 0]}')
+    target = tmp_path / 'must-not-exist'
+    monkeypatch.setattr(sys, 'argv', ['collect', '--out', str(target), '--pose-corruption', str(config), *options])
+    with pytest.raises(SystemExit) as exc:
+        collect_a1x_lift_demos.main()
+    assert exc.value.code == 2 and not target.exists()
+
+
+def test_collector_inherits_checkpoint_contract_and_records_corrupted_inputs(monkeypatch, tmp_path):
+    from dataclasses import asdict
+    import json
+    import sys
+    from lerobot_mp.twin.rl.policy import Policy, PolicyMeta
+    from lerobot_mp.twin.rl.randomize import Randomization
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / 'scripts'))
+    import collect_a1x_lift_demos
+    policy = Policy(PolicyMeta(task=asdict(make_task('lift', A1X)), hidden=[8], obs_dim=36,
+        act_dim=7, robot='a1x', randomization={**asdict(Randomization.none()), 'fold_yaw': True},
+        cube_yaw_mode='continuous', gripper_decoder='a1x-templates-v1', cube_height_error_bound_m=.005))
+    checkpoint = policy.save(tmp_path / 'policy.pt')
+    config = tmp_path / 'corruption.json'
+    config.write_text('{"translation_m": [0, 0.002, 0]}')
+    output = tmp_path / 'collected'
+    argv = ['collect', '--out', str(output), '--pose-corruption', str(config), '--runtime',
+        '--teacher', 'observable', '--learner', str(checkpoint), '--learner-probability', '.2',
+        '--episodes', '1', '--seed', '53076', '--seconds', '15']
+    monkeypatch.setattr(sys, 'argv', argv)
+    collect_a1x_lift_demos.main()
+    manifest = json.loads((output / 'manifest.json').read_text())
+    assert manifest['cube_yaw_mode'] == 'continuous'
+    assert manifest['cube_height_error_bound_m'] == .005
+    assert manifest['learner_gripper_decoder'] == 'a1x-templates-v1'
+    with np.load(output / 'seed-53076.npz') as data:
+        frames = [json.loads(s) for s in (output / 'seed-53076-perception.jsonl').read_text().splitlines()]
+        np.testing.assert_array_equal(data['obs'][:,17:20], np.asarray([f['supplied_position_m'] for f in frames], np.float32))
+    for flag, value in (('--cube-yaw-mode', 'canonical'), ('--cube-height-error-bound-mm', '0')):
+        argv[2] = str(tmp_path / 'must-not-exist')
+        monkeypatch.setattr(sys, 'argv', argv + [flag, value])
+        with pytest.raises(SystemExit) as exc:
+            collect_a1x_lift_demos.main()
+        assert exc.value.code == 2 and not (tmp_path / 'must-not-exist').exists()
+
+
 def test_observable_corrections_reproduce_labels_and_target_close_or_lift(runtime_env):
     from a1x_observable_teacher import ObservableLiftTeacher, observable_trial
     teacher = ObservableLiftTeacher()

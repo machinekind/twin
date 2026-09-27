@@ -93,7 +93,8 @@ class ObservableLiftTeacher:
 
 def observable_trial(env, seed, *, teacher=None, learner=None, learner_probability=.2,
                      executed_actions=None, learner_phases=('close', 'lift'), learner_channels='all',
-                     learner_prefix_steps=0, learner_gripper_burst_steps=0):
+                     learner_prefix_steps=0, learner_gripper_burst_steps=0,
+                     perception_seed=None, perception_records=None):
     """Correct grasp/lift deviations; evaluate via independent guarded physics.
 
     Default interventions target close/lift; an explicit phase selection also
@@ -124,7 +125,7 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
              or learner_channels != 'arm' or learner_probability != 1
              or set(learner_phases) != {'approach', 'close', 'lift'}))):
         raise ValueError('Gripper burst requires continuous learned arms, all phases, no prefix, and at most a quarter episode')
-    obs, _ = env.reset(seed=seed)
+    obs, _ = env.reset(seed=seed, **({'perception_seed': perception_seed} if perception_seed is not None else {}))
     rng = np.random.default_rng(np.random.SeedSequence([seed, 9127]))
     observations, labels = [], []
     gripper_burst_start = None
@@ -134,6 +135,7 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
                   learner_phases=list(learner_phases), learner_channels=learner_channels,
                   learner_prefix_steps=learner_prefix_steps,
                   learner_gripper_burst_steps=learner_gripper_burst_steps, learner_gripper_steps=0,
+                  perception_seed=perception_seed,
                   gripper_burst_start_step=None,
                   execution_schedule=('learner prefix then teacher' if learner_prefix_steps else
                       'learned arms; closing gripper burst then teacher gripper' if learner_gripper_burst_steps else 'interleaved'),
@@ -159,6 +161,9 @@ def observable_trial(env, seed, *, teacher=None, learner=None, learner_probabili
                 report['learner_gripper_steps'] += int(learner_channels == 'all' or gripper_burst)
             observations.append(obs.copy())
             labels.append(label.copy())
+            if perception_records is not None:
+                stream = getattr(env, 'perception', None)
+                perception_records.append(stream.last_log if stream is not None else None)
             if executed_actions is not None:
                 executed_actions.append(np.asarray(applied).copy())
             obs, _, term, trunc, info = env.step(applied)

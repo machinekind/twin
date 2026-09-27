@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from .policy import Policy, PolicyMeta
-from .task import TaskConfig
+from .task import TaskConfig, cube_yaw_tracker
 
 
 @dataclass
@@ -51,6 +51,8 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
                 raise ValueError("Demonstration sources must have identical task and observation contracts")
             if data.provenance["teacher_contract"] != first.provenance["teacher_contract"]:
                 raise ValueError("Demonstration sources must use the same teacher contract")
+            if data.provenance.get("cube_yaw_mode", "canonical") != first.provenance.get("cube_yaw_mode", "canonical"):
+                raise ValueError("Demonstration sources must use the same cube yaw contract")
             recorded = set(sum([data.provenance[k] for k in keys], []))
             if seen & recorded:
                 raise ValueError("Episode seeds overlap across demonstration sources")
@@ -58,6 +60,8 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
         provenance = dict(sources=[d.provenance for d in sources], split_seed=seed,
                           teacher_contract=first.provenance["teacher_contract"],
                           **{key: sum([d.provenance[key] for d in sources], []) for key in keys})
+        if "cube_yaw_mode" in first.provenance:
+            provenance["cube_yaw_mode"] = first.provenance["cube_yaw_mode"]
         return Demonstrations(first.task, first.randomization,
             *[np.concatenate([getattr(d, key) for d in sources]) for key in
               ("train_obs", "train_actions", "valid_obs", "valid_actions")], provenance)
@@ -69,6 +73,8 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
     task = TaskConfig(**manifest["task"])
     if task.name != "lift" or task.n_joints != 7:
         raise ValueError("Expected the seven-action A1X lift task")
+    yaw_mode = manifest.get("cube_yaw_mode", "canonical")
+    cube_yaw_tracker(yaw_mode, task=task, robot="a1x", fold=manifest["randomization"].get("fold_yaw", False))
     seen, good, excluded, hashes = set(), [], [], {}
     for item in report["episodes"]:
         episode = item["seed"]
@@ -90,15 +96,34 @@ def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
         good.append((episode, obs.astype(np.float32), actions.astype(np.float32)))
     if len(good) < 3:
         raise ValueError("Need at least three successful episodes for an episode-level split")
-    order = np.random.default_rng(seed).permutation(len(good))
-    n_valid = max(1, min(len(good) - 1, round(len(good) * validation_fraction)))
-    valid, train = [good[i] for i in order[:n_valid]], [good[i] for i in order[n_valid:]]
+    declared_split = manifest.get("episode_split")
+    if declared_split is None:
+        order = np.random.default_rng(seed).permutation(len(good))
+        n_valid = max(1, min(len(good) - 1, round(len(good) * validation_fraction)))
+        valid, train = [good[i] for i in order[:n_valid]], [good[i] for i in order[n_valid:]]
+    else:
+        if (not isinstance(declared_split, dict) or set(declared_split) != {"train", "validation"}
+                or any(not isinstance(v, list) or any(type(s) is not int for s in v)
+                       for v in declared_split.values())):
+            raise ValueError("Explicit episode split must contain integer train and validation lists")
+        all_seeds = declared_split["train"] + declared_split["validation"]
+        if len(all_seeds) != len(set(all_seeds)) or set(all_seeds) != seen:
+            raise ValueError("Explicit episode split must assign every recorded seed exactly once")
+        train = [item for item in good if item[0] in declared_split["train"]]
+        valid = [item for item in good if item[0] in declared_split["validation"]]
+        if not train or not valid:
+            raise ValueError("Explicit episode split needs successful training and validation episodes")
     for name in ("manifest.json", "report.json"):
         hashes[name] = hashlib.sha256((path / name).read_bytes()).hexdigest()
     provenance = dict(directory=str(path), file_sha256=hashes, split_seed=seed,
                       teacher_contract=manifest.get("teacher_contract", "legacy-waypoints"),
                       train_seeds=[x[0] for x in train], validation_seeds=[x[0] for x in valid],
                       excluded_seeds=excluded)
+    # Preserve legacy provenance/signatures when no new contract is declared.
+    if "cube_yaw_mode" in manifest:
+        provenance["cube_yaw_mode"] = yaw_mode
+    if declared_split is not None:
+        provenance["episode_split"] = declared_split
     return Demonstrations(manifest["task"], manifest["randomization"],
                           np.concatenate([x[1] for x in train]), np.concatenate([x[2] for x in train]),
                           np.concatenate([x[1] for x in valid]), np.concatenate([x[2] for x in valid]), provenance)
@@ -149,11 +174,20 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     weights = (_sampling_weights(train_weights, len(demos.train_obs)) if train_weights is not None
                else np.ones(len(demos.train_obs), np.float32))
     weighted = not np.all(weights == weights[0])
+    yaw_mode = demos.provenance.get("cube_yaw_mode", "canonical")
     if init is not None:
         if init.meta.gripper_decoder != "identity":
-            raise ValueError("Imitation refinement does not yet support a decoded gripper action contract")
-        if init.meta.cube_yaw_mode != "canonical":
-            raise ValueError("Continuous cube yaw requires a matching demonstration contract; current datasets are canonical")
+            if (init.meta.gripper_decoder != "a1x-templates-v1"
+                    or demos.provenance.get("teacher_contract") != "a1x-lift-observable-v1"):
+                raise ValueError("A decoded gripper action contract requires matching observable teacher labels")
+            for obs, actions in ((demos.train_obs, demos.train_actions), (demos.valid_obs, demos.valid_actions)):
+                templates = np.column_stack((np.full(len(obs), .2), np.clip(obs[:, 6] - .04, -1, 1),
+                                             np.full(len(obs), -1)))
+                error = np.min(np.abs(templates - actions[:, 6:7]), axis=1)
+                if not np.isfinite(error).all() or (error > 2e-6).any():
+                    raise ValueError("A decoded gripper action contract requires labels within its supported templates")
+        if init.meta.cube_yaw_mode != yaw_mode:
+            raise ValueError("Initial policy and demonstrations must use the same cube yaw contract")
         # JSON canonicalizes tuple/list differences in saved task configurations.
         if (init.meta.robot != "a1x" or json.dumps(init.meta.task, sort_keys=True) !=
                 json.dumps(demos.task, sort_keys=True) or
@@ -184,6 +218,8 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
                       robot="a1x", randomization=demos.randomization, features=features,
                       gripper_residual=gripper_residual,
+                      cube_yaw_mode=yaw_mode,
+                      gripper_decoder=init.meta.gripper_decoder if init is not None else "identity",
                       cube_height_error_bound_m=init.meta.cube_height_error_bound_m if init is not None else 0.0,
                       notes="Behavior cloning of scripted simulation lifts; not RL or physical validation")
     policy = Policy(meta).to(device)
@@ -299,6 +335,8 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     policy.meta.iterations = best_at
     policy.meta.steps = 0  # No new environment transitions were collected by this learner.
     result = dict(method="behavior cloning", initialized=init is not None,
+                  cube_yaw_mode=yaw_mode, gripper_decoder=policy.meta.gripper_decoder,
+                  prediction_loss="raw actor outputs against teacher actions; runtime decoding evaluated separately",
                   train_channels=train_channels,
                   gripper_residual=gripper_residual,
                   features=features, feature_prepare_s=feature_prepare_s,

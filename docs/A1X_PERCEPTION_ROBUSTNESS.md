@@ -263,3 +263,53 @@ does not explain every rejection. Screen fresh training-only starts near these
 conditions and test teacher recoveries before collecting labels. Preserve the
 continuous-yaw, decoder and completion contracts during any later bounded fit;
 current imitation refinement still rejects unsupported yaw/decoder combinations.
+
+## Corrective collection and matched refinement, 2026-09-27
+
+Two fresh training-only screens retain 80 trials. The targeted screen finds
+seed 53076 passing nominally but rejected with +2 mm Y. Teacher control from
+reset succeeds (2.185 s true hold); takeover after 48 learner steps succeeds
+(2.195 s), while takeover at 56 is too late. The targeted screen completed every
+trial but failed during duplicate cleanup; `calibration-training-screen-002`
+preserves that failure and verifies all saved traces without rerunning them.
+
+`calibration-teaching-001` collects a fixed 48-step learner prefix then observable
+teacher recovery at +2 mm Y: 19/20 successful training episodes and 18/20 separately
+reserved validation episodes (53100-53119). Every attempt is retained; failed
+episodes are excluded from imitation. All supplied-pose records and teacher labels
+are checked against the actor's observations. Old episode roles remain unchanged.
+Old canonical-yaw data are explicitly re-encoded to continuous yaw: one of 33,397
+frames changes and is relabelled by the same observation-only teacher. These old
+physical outcomes are historical trajectories, not newly executed demonstrations.
+
+The loader now validates orientation contracts and explicit per-episode roles.
+Decoded-gripper refinement requires the observable teacher contract and checks
+every label against the supported action templates. It retains the saved yaw,
+decoder, completion allowance and normalizer; raw prediction loss is not a
+decoded-action or task-success measure. Focused checks: 95 distinct passes,
+three actual PPO training cases excluded. Initial test-only field-name and CLI
+probability mistakes are retained in logs 001/002; corrected checks pass in
+002/003. No PPO training was run.
+
+`calibration-correction-comparison-001` compares two 1,000-update fits from frozen
+028, learning rate 0.00003, seed 23, uniform sampling, identical validation data,
+and unchanged input normalization. Each fit takes under four seconds. Control
+029 uses previous training examples; 030 adds the new successful corrections.
+The saved best prediction checkpoint, including initialization, is then evaluated
+autonomously through the guarded runtime. The fresh 028 control exactly reproduces
+saved outcomes, steps, final controller/physical state and commanded/measured joints.
+
+| Development condition, 20 starts each | 028 baseline | 029 control fit | 030 corrective fit |
+|---|---:|---:|---:|
+| Zero error | 19 | 20 | 19 |
+| +2 mm Y translation | 17 | 20 | 19 |
+| -0.5 degree Z rotation | 18 | 19 | 16 |
+| Training failure 53076, +2 mm Y | Fail | Pass | Pass |
+
+All 183 autonomous trials have zero prohibited contacts/numerical faults; the
+training probe is separate from development counts. Candidate 029 alone meets
+the frozen no-regression plus improvement rule. The added corrections do not
+demonstrate an incremental benefit. Preserve 030 as a rejected experiment.
+Candidate 029's all-direction tolerance is not established by these three
+conditions. Freeze it before evaluating the unused robustness holdout; publication
+will include exact code/checkpoint identity, evaluator commands, and physical limits.

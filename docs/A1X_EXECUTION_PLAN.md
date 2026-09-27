@@ -168,13 +168,26 @@ limitations, startup/stop instructions, and operator handoff recorded.
   and pick-and-place until the narrow baseline succeeds.
 - If RL does not become reliable in the available time, retain the verified
   scripted demo as an explicitly labelled fallback; do not present it as learned.
-- Preserve vendor/upstream attribution. No remote publication or merging is part
-  of merely writing or following the local plan.
+- Preserve vendor/upstream attribution. On 2026-09-27 the user authorized a
+  comparison-package pull request in `machinekind/digital_twin_training` so Marcin
+  can compare policies. Publishing a simulation package does not authorize merging
+  into the team branch or powered-arm tests.
 
 ## Progress and resumption
 
-Current next action: **screen fresh training-only cases for residual approach/grasp
-clearance failures and test observation-only teacher recovery before fitting**.
+Current next action: **freeze candidate 029, verify the publication branch against
+its evaluated behavior, and run the reserved perception qualification before a
+comparison-package PR**. `calibration-correction-comparison-001` reproduces 028
+exactly and compares two matched 1,000-update fits (3.66/3.52 s). Control 029 uses
+the previous examples with one explicitly re-encoded/relabelled orientation frame;
+corrective 030 adds 19 successful training recoveries. Both use identical old plus
+new validation episodes, unchanged normalization and saved runtime conventions.
+At zero / +2 mm Y / -0.5 degree Z, autonomous development scores are 028: 19/17/18,
+029: **20/20/19**, 030: 19/19/16 (out of 20 each). All prohibited-contact and
+numerical-fault counts are zero. Both new fits recover training seed 53076; only
+029 meets the predeclared no-regression promotion rule. No improvement can be
+attributed to the added corrective examples. Broader tolerance and fresh held-out
+qualification for 029 are pending; the following 028 evidence remains historical.
 Nominal development is 19/20; the first fixed held-out nominal qualification is
 **20/20**, with true holds of 2.005-2.055 s, zero guard rejections, prohibited
 contacts or numerical faults for reference 027. Preferred development candidate
@@ -881,6 +894,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Persistent calibration-error evaluation exposes premature completion | `perception-development-002`: 320 development trials in 425.11 s; 51 early completions and 18 guarded rejections, zero actual prohibited contacts/numerical faults; 42,021 input frames audited; 73 focused tests pass | Test a fixed uncertainty-aware completion bound before more fitting; no nonzero all-direction tolerance demonstrated at 2 mm / 0.5 degree; robustness holdout remains unused |
 | 2026-09-27 | Saved completion uncertainty bound removes all early completions | 028 preserves actor tensors; paired sweep recovers 51 failures with no regressions, true holds 2.050-2.325 s, zero actual contacts; nominal holdout regression 20/20; 66 focused tests pass | Preferred development candidate frozen as `851b34fe`; target remaining clearance/grasp failures without discarding saved runtime contracts |
 | 2026-09-27 | Initial nonzero calibration tolerance measured in development | +/-1 mm translation: 19/20 in every signed axis; +/-0.5 degree rotation: 18-19/20; separate factors, 20 starts each; +2 mm Y remains 17/20; all contacts/numerical faults zero | Screen fresh training-only starts and test observable teacher recovery; combined-error testing and fresh robustness holdout remain pending |
+| 2026-09-27 | Fresh training screen isolates a recoverable biased-grasp failure | 40 initial and 40 targeted trials; seed 53076 passes nominally but rejects +2 mm Y. Teacher from start or after 48 learner steps succeeds; takeover at 56 fails. All labels replay from actor inputs | Teach early corrections; retain targeted-screen duplicate-close cleanup failure and reconciled evidence |
+| 2026-09-27 | Calibration corrective examples and runtime-compatible refinement verified | `calibration-teaching-001`: 19/20 training and 18/20 validation assisted successes; all 40 attempts retained. Prior 33,397 frames keep split roles; one orientation frame explicitly converted and relabelled. 95 distinct focused checks pass, three PPO training cases excluded | Compare matched short fits before scaling; no teacher intervention in policy evaluation |
+| 2026-09-27 | Short control fit outperforms added corrective data | `calibration-correction-comparison-001`: 183 autonomous trials, 235.27 s total; 029 scores 20/20 nominal, 20/20 at +2 mm Y, 19/20 at -0.5 degree Z versus 028 at 19/17/18 and corrective 030 at 19/19/16. Baseline reproduced exactly; zero prohibited contacts/numerical faults | Freeze 029; reserved perception qualification and user-authorized comparison PR; physical validation still deferred |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

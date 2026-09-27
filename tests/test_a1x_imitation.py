@@ -132,6 +132,79 @@ def test_aggregation_rejects_overlapping_seeds_and_mismatched_tasks(tmp_path):
         load_demonstrations([a, b])
 
 
+def test_declared_episode_roles_survive_random_seed_and_failed_trials(tmp_path):
+    dataset(tmp_path)
+    path = tmp_path / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    split = dict(train=[0, 2, 4], validation=[1, 3])
+    manifest['episode_split'] = split
+    path.write_text(json.dumps(manifest))
+    for seed in (0, 7, 41):
+        data = load_demonstrations(tmp_path, seed=seed)
+        assert data.provenance['train_seeds'] == [0, 2]
+        assert data.provenance['validation_seeds'] == [1, 3]
+        assert data.provenance['excluded_seeds'] == [4]
+    for invalid in (dict(train=[0, 2, 4], validation=[0, 1, 3]),
+                    dict(train=[0, 2], validation=[1, 3]),
+                    dict(train=[0, 1, 2, 3], validation=[4]),
+                    dict(train=[0, 2, 4], validation=[1, '3'])):
+        manifest['episode_split'] = invalid
+        path.write_text(json.dumps(manifest))
+        with pytest.raises(ValueError, match='episode split'):
+            load_demonstrations(tmp_path)
+
+
+def test_loader_does_not_mix_orientation_contracts(tmp_path):
+    paths = [tmp_path / 'canonical', tmp_path / 'continuous']
+    for i, path in enumerate(paths):
+        path.mkdir()
+        dataset(path, i * 10)
+        manifest_path = path / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['randomization']['fold_yaw'] = True
+        if i:
+            manifest['cube_yaw_mode'] = 'continuous'
+        manifest_path.write_text(json.dumps(manifest))
+    assert load_demonstrations(paths[1]).provenance['cube_yaw_mode'] == 'continuous'
+    with pytest.raises(ValueError, match='same cube yaw contract'):
+        load_demonstrations(paths)
+
+
+def test_continuous_decoded_refinement_preserves_runtime_contract_and_source(tmp_path):
+    torch.set_num_threads(2)
+    task = make_task('lift', A1X)
+    rand = {**asdict(Randomization.none()), 'fold_yaw': True}
+    torch.manual_seed(81)
+    initial = Policy(PolicyMeta(task=asdict(task), hidden=[16], obs_dim=36, act_dim=7,
+        robot='a1x', randomization=rand, cube_yaw_mode='continuous',
+        gripper_decoder='a1x-templates-v1', cube_height_error_bound_m=.005))
+    x = np.random.default_rng(1).normal(0, .3, (40, 36)).astype(np.float32)
+    y = initial.act(x)
+    before = {k: v.clone() for k, v in initial.state_dict().items()}
+    demos = Demonstrations(asdict(task), rand, x[:30], y[:30], x[30:], y[30:],
+        dict(cube_yaw_mode='continuous', teacher_contract='a1x-lift-observable-v1'))
+    fitted, report = fit(demos, init=initial, updates=10, seconds=10, report_every=5)
+    assert fitted.meta.cube_yaw_mode == 'continuous'
+    assert fitted.meta.gripper_decoder == 'a1x-templates-v1'
+    assert fitted.meta.cube_height_error_bound_m == .005
+    assert report['gripper_decoder'] == 'a1x-templates-v1'
+    for key, value in before.items():
+        torch.testing.assert_close(initial.state_dict()[key], value, rtol=0, atol=0)
+        if key.startswith('norm.'):
+            torch.testing.assert_close(fitted.state_dict()[key], value, rtol=0, atol=0)
+    saved = fitted.save(tmp_path / 'policy.pt')
+    np.testing.assert_array_equal(Policy.load(saved).act(x), fitted.act(x))
+    templates = np.column_stack((np.full(len(x), .2), np.clip(x[:, 6]-.04, -1, 1), np.full(len(x), -1)))
+    assert np.min(abs(templates-fitted.act(x)[:, 6:7]), axis=1).max() < 1e-6
+    demos.provenance['cube_yaw_mode'] = 'canonical'
+    with pytest.raises(ValueError, match='same cube yaw'):
+        fit(demos, init=initial, updates=1, seconds=1)
+    demos.provenance['cube_yaw_mode'] = 'continuous'
+    demos.valid_actions[0, 6] = .7
+    with pytest.raises(ValueError, match='supported templates'):
+        fit(demos, init=initial, updates=1, seconds=1)
+
+
 @pytest.mark.parametrize('reserved_source', [False, True])
 @pytest.mark.parametrize('reserved_seed', [51000, 52000])
 def test_imitation_runner_protects_reserved_holdout(tmp_path, monkeypatch, capsys, reserved_source, reserved_seed):
