@@ -14,6 +14,7 @@ import numpy as np
 from evaluate_a1x_runtime import PhysicsMonitor
 from lerobot_mp.twin.rl.env import TwinEnv, scene_config
 from lerobot_mp.twin.rl.policy import PolicyMeta
+from lerobot_mp.twin.rl.perception import PoseCorruption, PoseCorruptor
 from lerobot_mp.twin.rl.randomize import Randomization
 from lerobot_mp.twin.rl.runner import PolicyRunner
 from lerobot_mp.twin.rl.task import Limits
@@ -22,10 +23,12 @@ from lerobot_mp.twin.workspace import Workspace
 
 
 class RuntimeLiftEnv:
-    def __init__(self, task, *, view=False, cube_yaw_mode="canonical"):
+    def __init__(self, task, *, view=False, cube_yaw_mode="canonical", pose_corruption: PoseCorruption | None = None):
         if task.name != "lift" or task.n_joints != 7 or task.control_hz != 20 or task.timestep != .005:
             raise ValueError("This adapter supports only A1X lift at 20 Hz / 5 ms physics")
         self.task = task
+        self.pose_corruption = pose_corruption
+        self.perception = None
         workspace = Workspace(robot="a1x")
         self.rand = replace(Randomization.none(), fold_yaw=True)
         self.resetter = TwinEnv(task, workspace=workspace, randomization=self.rand, cube_yaw_mode=cube_yaw_mode)
@@ -51,7 +54,7 @@ class RuntimeLiftEnv:
     def q_cmd(self):
         return self.runner.q_cmd
 
-    def reset(self, *, seed):
+    def reset(self, *, seed, perception_seed=None):
         self._stop()
         self.resetter.reset(seed=seed)
         m, d = self.scene.model, self.scene.data
@@ -67,7 +70,16 @@ class RuntimeLiftEnv:
             raise RuntimeError("Demonstration collection must never connect to physical hardware")
         self.monitor = PhysicsMonitor(self.scene, self.task)
         self.scene.step = self.monitor.step
-        self.runner = PolicyRunner(self.twin, self.policy, cube_provider=self.monitor.cube)
+        self.perception = (PoseCorruptor(self.pose_corruption, seed=seed if perception_seed is None else perception_seed)
+                           if self.pose_corruption is not None else None)
+        def perceived_cube():
+            position, rotation, source = self.monitor.cube()
+            position, rotation = self.perception.sample(float(self.scene.data.time), position, rotation)
+            return position, rotation, source
+        # Install before the first observation so continuous yaw starts from the
+        # supplied, possibly biased pose, never from a privileged true pose.
+        self.runner = PolicyRunner(self.twin, self.policy,
+            cube_provider=perceived_cube if self.perception is not None else self.monitor.cube)
         self.runner.start(threaded=False)
         self.observation = self.runner.observation(dict(self.twin.status.measured))
         self.t = 0

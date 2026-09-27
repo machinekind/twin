@@ -171,9 +171,14 @@ def main():
     if not (1 <= args.episodes <= 200 and 1 <= args.seconds <= 600):
         parser.error("Limits: 200 episodes, 600 seconds")
     root = Path(__file__).resolve().parents[1]
-    held_out = json.loads((root / "configs/a1x_lift_evaluation.json").read_text())["held_out"]["seeds"]
-    if set(range(args.seed, args.seed + args.episodes)) & set(held_out):
+    nominal = json.loads((root / "configs/a1x_lift_evaluation.json").read_text())
+    robustness = json.loads((root / "configs/a1x_perception_robustness.json").read_text())
+    held_out = set(nominal["held_out"]["seeds"]) | set(robustness["held_out_seeds"])
+    requested_seeds = set(range(args.seed, args.seed + args.episodes))
+    if requested_seeds & held_out:
         parser.error("Reserved held-out seeds cannot supply demonstrations")
+    if requested_seeds & (set(nominal["development"]["seeds"]) | set(robustness["development_seeds"])):
+        parser.error("Reserved development seeds cannot supply demonstrations")
     if args.teacher == "observable" and (not args.runtime or args.state_triggered or args.synchronized
             or args.measured_close or args.lift_rate != 1 or args.grasp_offset_mm != 0):
         parser.error("Observable teacher requires --runtime and uses its own recorded controller parameters")

@@ -55,9 +55,13 @@ def main():
     recorded_seeds = set(sum([demos.provenance[k] for k in
                              ("train_seeds", "validation_seeds", "excluded_seeds")], []))
     root = Path(__file__).resolve().parents[1]
-    held_out = json.loads((root / "configs/a1x_lift_evaluation.json").read_text())["held_out"]["seeds"]
-    if (recorded_seeds | evaluation_seeds) & set(held_out):
+    nominal = json.loads((root / "configs/a1x_lift_evaluation.json").read_text())
+    robustness = json.loads((root / "configs/a1x_perception_robustness.json").read_text())
+    held_out = set(nominal["held_out"]["seeds"]) | set(robustness["held_out_seeds"])
+    if (recorded_seeds | evaluation_seeds) & held_out:
         parser.error("Reserved held-out seeds cannot enter training or automatic development evaluation")
+    if recorded_seeds & (set(nominal["development"]["seeds"]) | set(robustness["development_seeds"])):
+        parser.error("Reserved development seeds cannot enter demonstration training or validation")
     if evaluation_seeds & recorded_seeds:
         parser.error("Physics evaluation seeds overlap the demonstration collection")
     args.out.mkdir(parents=True, exist_ok=False)

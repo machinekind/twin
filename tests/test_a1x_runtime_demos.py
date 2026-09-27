@@ -145,14 +145,16 @@ def test_observable_corrections_reproduce_labels_and_target_close_or_lift(runtim
         np.testing.assert_array_equal(applied, command if decision['stage'] in ('close', 'lift') else label)
 
 
-def test_collector_rejects_reserved_holdout_before_creating_output(runtime_env, monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize('reserved_seed,kind', [(51000, 'held-out'), (52000, 'held-out'), (50000, 'development')])
+def test_collector_rejects_reserved_holdout_before_creating_output(runtime_env, monkeypatch, tmp_path, capsys,
+                                                               reserved_seed, kind):
     import collect_a1x_lift_demos
     import sys
     target = tmp_path / 'must-not-exist'
-    monkeypatch.setattr(sys, 'argv', ['collect', '--out', str(target), '--seed', '51000'])
+    monkeypatch.setattr(sys, 'argv', ['collect', '--out', str(target), '--seed', str(reserved_seed)])
     with pytest.raises(SystemExit) as exc:
         collect_a1x_lift_demos.main()
-    assert exc.value.code == 2 and 'held-out seeds' in capsys.readouterr().err
+    assert exc.value.code == 2 and f'{kind} seeds' in capsys.readouterr().err
     assert not target.exists() and not runtime_env.twin.connected
 
 

@@ -1,13 +1,15 @@
 # A1X perception robustness protocol
 
-Status: next active stage, simulation only; no calibration-error tolerance measured yet.
+Status: active development measurements, simulation only; no nonzero tolerance
+across all tested calibration-error directions demonstrated yet.
 The user explicitly requires persistent camera-to-arm translation and rotation
 errors as well as pose noise and delay. Frozen candidate 027 has now passed
 nominal qualification: 19/20 development and 20/20 first held-out lifts, full
 true two-second holds and zero prohibited contacts. Use its preserved checkpoint
 (`workspace/validation/baselines/lift-imitation-027/policy.pt`, SHA256 `22d79622`),
-continuous cube yaw and explicit `a1x-templates-v1` gripper decoder. Reserve a
-separate robustness evaluation set before corruption fitting. The previously
+continuous cube yaw and explicit `a1x-templates-v1` gripper decoder. The separate
+robustness holdout is reserved at seeds 52000-52019; training uses 53000-53999.
+Development remains 50000-50019. The previously
 used nominal held-out set is now regression evidence, never fresh qualification.
 
 ## Injection and independent truth
@@ -86,3 +88,102 @@ Physical validation remains deferred. When access resumes, measure the actual
 two-camera calibration residuals and pose latency against known arm-frame points,
 then compare them with the simulated curves. Jitter tests cannot certify persistent
 calibration accuracy, and simulated tolerance cannot certify the physical setup.
+
+## Implemented evaluation and information boundary
+
+`rl/perception.py` applies the rigid transform and separate jitter to a causal
+pose history. Repeated reads at the same simulation timestamp return the same
+sample. `RuntimeLiftEnv` installs it before the first observation, including
+continuous-yaw initialization. The independent `PhysicsMonitor` remains unchanged.
+The scene collision guard also retains its true simulated geometry: these runs
+test supplied-pose error, not an erroneous collision map or robot/table model.
+
+`scripts/evaluate_a1x_perception.py` freezes each batch's checkpoint hash, seeds,
+conditions, source archive and runtime versions before execution. It saves full
+pose/action traces, partial results on interruption, and per-condition counts
+with Wilson intervals. A baseline control must reproduce saved success, true
+holds, final joint positions/commands, height, coupling and underlying stop cause.
+It distinguishes the adapter's status prefix from the original evaluator's
+exception prefix without ignoring a changed guard cause.
+
+Example bounded development invocation, in the existing Python environment:
+
+```sh
+python scripts/evaluate_a1x_perception.py \
+  workspace/validation/baselines/lift-imitation-027/policy.pt \
+  --out workspace/validation/perception-development-002 \
+  --translation-mm 2 --rotation-deg 0.5 \
+  --position-noise-mm 1 --rotation-noise-deg 0.5 --delay-ms 50 \
+  --seconds 600
+```
+
+Use a new output directory for any rerun. Both demonstration collection and
+imitation training now reject development cases as fitting data and protect both
+nominal and robustness holdouts. The robustness holdout has not been evaluated.
+
+`workspace/validation/calibration-observability-001.json` records eight
+pre-contact counterfactual pairs from four training-only starts. Opposite 2/5 mm
+horizontal biases and corresponding object displacements produce identical
+36-element policy observations and identical learned actions, while the true
+grasp centres differ by 4/10 mm and truth-informed teacher actions differ.
+These are diagnostic counterfactuals, not executed demonstrations or training
+labels. Exact oracle corrections are not identifiable from the present input
+alone. Wider grasp margins, contact feedback/history or an independent frame
+reference can still help; this is not a claim that robust grasping is impossible.
+Known tabletop geometry can constrain vertical bias separately.
+
+## First frozen-policy development results, 2026-09-27
+
+`workspace/validation/perception-development-002/report.json` contains 320 trials
+in 425.11 s, 20 identical development starts for each of 16 conditions. The
+zero-error control reproduces saved candidate 027 exactly under the comparisons
+above. The first attempt (`perception-development-001`) stopped after its control
+because of the stop-message prefix difference; it is retained as a failed audit
+attempt, not merged into these denominators. No fitting or policy change occurred.
+
+| Persistent error, applied alone | +X | -X | +Y | -Y | +Z | -Z |
+|---|---:|---:|---:|---:|---:|---:|
+| 2 mm translation | 20/20 | 19/20 | 17/20 | 19/20 | 1/20 | 19/20 |
+| 0.5 degree rotation about base origin | 15/20 | 15/20 | 19/20 | 0/20 | 19/20 | 18/20 |
+
+Separate factors: zero error **19/20**; position jitter with 1 mm per-axis SD
+**13/20**; rotation-vector jitter with 0.5 degree per-axis SD **19/20**; requested
+50 ms delay **19/20**. With the current capture cadence, non-warmup delivered
+ages are **60 ms (1,322 frames) or 100 ms (1,303 frames)**. Initial frames explicitly
+mark shorter-history warmup. Do not interpret the requested value as exact.
+There are zero prohibited contacts and zero numerical failures in all 320 trials.
+These small development samples and one noise realization per start are not
+statistical certification. Factors have not yet been combined.
+
+Of 69 failures, **51 are premature controller completion**: the true continuous
+hold is 1.900-1.995 s even though the estimated-pose timer reaches two seconds.
+The +2 mm Z condition accounts for 18 of these; -0.5 degree Y accounts for 19.
+Rotation about Y changes the apparent height of objects forward of the base,
+so orientation jitter alone would not expose this failure. The true scorer
+continues to reject every shortened hold; no acceptance threshold was relaxed.
+The other **18 failures are collision-guard rejections**, including one predicted
+table/finger collision. Fifteen involve the existing difficult start 50009;
+three additional rejections occur at 50014/50015 (+Y translation) and 50012
+(-Z rotation). Early bilateral sensor contact alone is not proof of a secure grasp.
+
+**Achieved calibration tolerance:** only zero error currently passes the stated
+criterion across all tested directions. No nonzero all-direction tolerance is
+demonstrated at 2 mm or 0.5 degree. This does not mean arbitrarily small errors
+always fail: intermediate magnitudes are untested. Do not extrapolate a physical
+or combined-error limit from these results.
+
+`workspace/validation/perception-analysis-001/` contains `audit.json`,
+`curves.csv`, and PNG/PDF curves. The audit checks 42,021 logged input frames,
+identical true initial states across conditions, rigid-transform/noise math,
+causal delay selection, supplied policy position, true success, and source/trace
+hashes. The frozen checkpoint is unchanged. `calibration-observability-001.json`
+supports the information-boundary finding above. Focused checks: 73 passed,
+four PPO/warmup tests excluded; two comparison checks rerun after the prefix fix.
+
+Next: test a conservative completion check using an explicit, fixed pose-height
+uncertainty bound, without feeding it the injected error or simulator truth.
+Compare it on zero error and the same failing conditions; retain the full true
+two-second hold and collision guards. Then generate training-only corrections
+for the residual approach/grasp rejections, after confirming the teacher can
+make its decisions from the supplied observations. Do not broaden fitting or
+spend the reserved robustness holdout before this diagnostic correction.

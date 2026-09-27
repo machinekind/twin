@@ -133,18 +133,33 @@ def test_aggregation_rejects_overlapping_seeds_and_mismatched_tasks(tmp_path):
 
 
 @pytest.mark.parametrize('reserved_source', [False, True])
-def test_imitation_runner_protects_reserved_holdout(tmp_path, monkeypatch, capsys, reserved_source):
+@pytest.mark.parametrize('reserved_seed', [51000, 52000])
+def test_imitation_runner_protects_reserved_holdout(tmp_path, monkeypatch, capsys, reserved_source, reserved_seed):
     import sys
     from pathlib import Path
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / 'scripts'))
     import train_a1x_imitation
-    dataset(tmp_path, offset=51000 if reserved_source else 0)
+    dataset(tmp_path, offset=reserved_seed if reserved_source else 0)
     target = tmp_path / 'must-not-exist'
     monkeypatch.setattr(sys, 'argv', ['train', str(tmp_path), '--out', str(target),
-        '--eval-seed', '50000' if reserved_source else '51000'])
+        '--eval-seed', '50000' if reserved_source else str(reserved_seed)])
     with pytest.raises(SystemExit) as exc:
         train_a1x_imitation.main()
     assert exc.value.code == 2 and 'held-out seeds' in capsys.readouterr().err
+    assert not target.exists()
+
+
+def test_imitation_runner_never_trains_on_development_even_with_another_eval_set(tmp_path, monkeypatch, capsys):
+    import sys
+    from pathlib import Path
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / 'scripts'))
+    import train_a1x_imitation
+    dataset(tmp_path, offset=50000)
+    target = tmp_path / 'must-not-exist'
+    monkeypatch.setattr(sys, 'argv', ['train', str(tmp_path), '--out', str(target), '--eval-seed', '54000'])
+    with pytest.raises(SystemExit) as exc:
+        train_a1x_imitation.main()
+    assert exc.value.code == 2 and 'development seeds' in capsys.readouterr().err
     assert not target.exists()
 
 
