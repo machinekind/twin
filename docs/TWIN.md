@@ -472,9 +472,21 @@ Wnioski:
 - **Grupa 7 ramki `0x052` to pozycja szczęk**, w tych samych jednostkach co
   `p_des` (rad, `surowe / 4700`). W swobodnym ruchu pomiar = rozkaz (−1,494 przy
   −1,5; −0,007 przy 0,0). Backend czyta ją jako `pos[6]` i przelicza przez
-  `gripper_fb_closed/open` na 0..100, więc domyślnie **chwytak jest zmierzony**
-  (`gripper_measured()`): panel, szczęki w 3D i rozpoznawanie chwytu („w dłoni”,
-  `held`/`missed` w sterowniku Specs) widzą szczęki, nie rozkaz.
+  `gripper_fb_closed/open` na 0..100. Gdy chwytak jest sterowany, **chwytak jest
+  zmierzony** (`gripper_measured()`): panel, szczęki w 3D i rozpoznawanie chwytu
+  („w dłoni”, `held`/`missed` w sterowniku Specs) widzą szczęki, nie rozkaz.
+- **W spoczynku po włączeniu zasilania grupa 7 pokazuje dowolną wartość**, np.
+  −164,9° (−2,88 rad), choć szczęki stały tam, gdzie zostawił je poprzedni
+  przebieg (ok. −85°). Za `p_des` idzie dopiero, gdy płynie `0x051` (−85,6° przy
+  −1,5; −0,4° przy 0,0). Dlatego backend liczy grupę 7 jako pomiar dopiero od
+  4 ramek `0x052` po pierwszej wysłanej `0x051` w tym połączeniu (i od nowa po
+  utracie łącza, bo ramię mogło zostać wyłączone). Wcześniej zgłasza
+  przekonanie jak bez sprzężenia: `gripper_start` (0), *Ustaw dom = tu* działa
+  (`assume_gripper`), a pierwsze otwieranie idzie od razu na cel. Reguła
+  „od strumienia”, a nie „wartość w zmierzonym zakresie ± 0,15 rad”, bo dowolna
+  wartość spoczynkowa może trafić w zakres, a strumień `0x051` to warunek, który
+  pomiar naprawdę pokazał. Surową wartość spoczynkową backend loguje przy *Połącz*
+  („A1X chwytak: grupa 7 w spoczynku …”).
 - **Ograniczniki:** zamknięty ok. +0,039 rad (+2,2°), otwarty ok. −1,992 rad
   (−114°). To są domyślne `gripper_fb_closed` / `gripper_fb_open`.
 - **Dlaczego nie +0,6.** Chwytak jest pozycyjny: przy `p_des` +0,6 szczęki stają
@@ -524,10 +536,11 @@ finally:
 ```
 
 Pusty chwytak, UZBRÓJ, suwak chwytaka na 0, poczekaj, aż szczęki staną,
-i uruchom skrypt; to samo przy 100. Na Linuksie skrypt może czytać równolegle
-z panelem (czytających może być wielu, nadawca jeden). Na macOS przejściówkę
-trzyma panel, więc przed każdym odczytem daj *Rozłącz* — chwytak zostaje na
-ostatnim `p_des`.
+i uruchom skrypt; to samo przy 100. Czytaj tylko przy płynącym `0x051`: na
+Linuksie skrypt może czytać równolegle z panelem (czytających może być wielu,
+nadawca jeden). Na macOS przejściówkę trzyma panel, a po *Rozłącz* strumień
+staje — taki odczyt nie jest pewny (w spoczynku po włączeniu zasilania grupa 7
+bywa dowolna), więc tam użyj `--grip-test`.
 
 ### Pierwsza sesja krok po kroku
 
@@ -569,11 +582,11 @@ potrzebuje.
 (J2 57°, J3 −92°, J4 34°, szczęki zamknięte). Pierwszy Dom to więc duży ruch w górę.
 *Ustaw dom = tu* zapisuje zmierzoną pozę ramienia i **zawsze chwytak 0
 (zamknięty)**: to umowa stanowiska, dom = szczęki zamknięte. Najpierw zamknij
-puste szczęki naprawdę. Ze zmierzonym sprzężeniem (domyślnie) stan chwytaka to
-pomiar i przycisk go nie zmienia. Bez sprzężenia (`gripper_fb_*` = `null`)
-bliźniak przyjmuje od tej chwili, że są zamknięte (panel, szczęki w 3D, następne „otwórz” jako rampa od 0).
+puste szczęki naprawdę. Dopóki chwytak nie był w tym połączeniu sterowany (grupa 7
+w spoczynku niepewna, patrz „Chwytak A1X: pomiar”) albo bez sprzężenia
+(`gripper_fb_*` = `null`), bliźniak przyjmuje od tej chwili, że są zamknięte (panel, szczęki w 3D, następne „otwórz” jako rampa od 0).
 Jeśli chwytak był już sterowany w tej sesji, przycisk tylko zapisuje dom, a stan
-chwytaka zostaje (ostrzeżenie w logu „chwytak juz sterowany”): zamknij go suwakiem
+chwytaka (wtedy już zmierzony) zostaje (ostrzeżenie w logu „chwytak juz sterowany”): zamknij go suwakiem
 i kliknij jeszcze raz. W `sim` chwytak sceny zamyka się od razu.
 **Przed wyłączeniem zasilania złóż ramię** suwakami (J2 → 3°, J3 → −3°, reszta
 → 0) i podeprzyj je, bo A1X nie ma hamulców. Ostatnie 3° do ogranicznika to
@@ -614,8 +627,9 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   STOP. Po powrocie ramek nic nie jedzie do następnego rozkazu, a ten startuje
   od świeżego pomiaru.
 - **Chwytak.** Celu chwytaka nie da się odczytać z ramienia, ale pozycję szczęk
-  tak (grupa 7 `0x052`, domyślnie zmierzone). Zamknięty `p_des` to +0,08, tuż za
-  ogranicznikiem: +0,6 trzymało silnik w utyku i go przegrzało. Bez zmierzonego
+  tak (grupa 7 `0x052`), ale tylko przy sterowanym chwytaku: od pierwszej `0x051`
+  w połączeniu. Zamknięty `p_des` to +0,08, tuż za ogranicznikiem: +0,6
+  trzymało silnik w utyku i go przegrzało. Przed pierwszą `0x051` i bez
   sprzężenia (`gripper_fb_*` = `null`) backend pracuje w pętli otwartej i panel
   pokazuje rozkaz. Strumień
   `0x051` rusza dopiero przy rozkazie różnym od zgłoszonej wartości (o > 0,5),
@@ -639,7 +653,7 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   Chwytak przez XCAN jest więc domyślnie włączony (`a1x.gripper_over_xcan:
   true`); `false` przywraca odmowę („no gripper”). Przejściówkę sprawdzisz tym
   samym testem przy zamkniętym panelu (jedną przejściówkę otwiera jeden proces).
-  Ze zmierzonym sprzężeniem (domyślnie) panel pokazuje, gdzie szczęki naprawdę są.
+  Od pierwszej `0x051` panel pokazuje, gdzie szczęki naprawdę są.
 
 ### Jednostki
 

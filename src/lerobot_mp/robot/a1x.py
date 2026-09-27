@@ -11,8 +11,11 @@ Jednostki: jak w calej aplikacji - stawy ramienia w stopniach, chwytak 0..100
 * staw: ``rad = radians(st. + a1x.joint_offsets_deg[i])`` (przesuniecie zera, J3 ~ +1,49 st.),
 * chwytak: p_des [rad] liniowo ``closed + v/100 * (open - closed)`` (bardziej dodatnie = ciasniej);
   pomiar z grupy 7 ramki 0x052 (pozycja szczek, rad jak p_des; zmierzone 2026-09-27: ograniczniki
-  +0,039 zamkniety, -1,992 otwarty) przez dwa punkty `gripper_fb_closed/open` - domyslnie ustawione;
-  bez nich (oba None) petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`). Przed pierwszym
+  +0,039 zamkniety, -1,992 otwarty) przez dwa punkty `gripper_fb_closed/open` - domyslnie ustawione.
+  Grupa 7 jest wazna TYLKO, gdy chwytak jest sterowany: po wlaczeniu zasilania w spoczynku czyta
+  dowolna wartosc (np. -2,88 rad = -165 st. przy szczekach na -85 st.), a za p_des idzie dopiero,
+  gdy plynie 0x051. Dlatego pomiar liczy sie od `GRIP_LIVE_FRAMES` ramek 0x052 po pierwszej 0x051
+  w tym polaczeniu (i od nowa po utracie lacza); do tego czasu, i bez `gripper_fb_*`, petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`). Przed pierwszym
   rozkazem petla otwarta zglasza `gripper_start` (0 = zamkniety), a "Ustaw dom = tu" blizniaka
   potwierdza to przez `assume_gripper(0)` - umowa stanowiska: dom = szczeki zamkniete. Dopoki
   rozwarcie jest tylko zgadniete, pierwsze otwieranie idzie od razu na cel, zamykanie rampa.
@@ -72,6 +75,10 @@ GRIP_REST_STEPS = 20
 #: Otwarcie [p_des] od najciasniejszego punktu zamykania, po ktorym nastepne zamykanie mierzy
 #: spoczynek od nowa. Mniejsze uchylenie (szczeki dalej na kostce) zostawia stary spoczynek.
 GRIP_REOPEN_PDES = 0.3
+#: Tyle ramek 0x052 po pierwszej wyslanej 0x051 (20 ms), zanim grupa 7 liczy sie jako pomiar chwytaka.
+#: W spoczynku po wlaczeniu zasilania grupa 7 czyta dowolna wartosc (2026-09-27: -165 st. przy szczekach
+#: na -85 st.); za p_des idzie dopiero, gdy chwytak jest sterowany.
+GRIP_LIVE_FRAMES = 4
 #: Zapas na czas pelnego skoku chwytaka [s] (`gripper_travel_s`).
 GRIP_TRAVEL_MARGIN_S = 0.2
 
@@ -150,6 +157,7 @@ class A1XArm(RobotBackend):
         self._g_rest_eff: list[float] = []           # |effort| z poczatku zamykania (spoczynek)
         self._g_rest: float | None = None            # ich mediana; None = zamykanie nie trwa albo okno zbiera
         self._g_hi: float | None = None              # najciasniejszy p_des tego zamykania (odniesienie otwarcia)
+        self._g_live_n: int | None = None            # `_n_fb` przy pierwszej 0x051 (od polaczenia / utraty lacza)
         self._goal: dict[str, float] = {}            # ostatnie cele w jednostkach aplikacji
         self._pinned = False                         # sekwencja wlaczenia: p_des = pomiar
         self._last_io: float | None = None
@@ -169,7 +177,7 @@ class A1XArm(RobotBackend):
     def _grip_app(self) -> float:
         """Chwytak w 0..100: pomiar przez dwa punkty albo (bez nich) ostatni rozkaz / zalozenie."""
         a = self.acfg
-        if a.gripper_fb_closed is not None and a.gripper_fb_open is not None and self._fb is not None:
+        if self.gripper_measured():
             span = a.gripper_fb_open - a.gripper_fb_closed
             return (self._fb.pos[6] - a.gripper_fb_closed) * 100.0 / span
         return a.gripper_start if self._g_cmd is None else self._g_cmd
@@ -197,6 +205,9 @@ class A1XArm(RobotBackend):
                              for (lo, hi), s in zip(self.P.URDF_LIMITS_RAD, self._start_rad))
         self._link_silent, self._stale = False, []
         self._connected = True
+        g7 = self._fb.pos[6]
+        logger.info("A1X chwytak: grupa 7 w spoczynku %.3f rad (%.1f st.) - pomiar dopiero po pierwszej 0x051 "
+                    "(w spoczynku po wlaczeniu zasilania grupa 7 bywa dowolna)", g7, math.degrees(g7))
         logger.info("A1X na %s: poza startowa %s", self.iface or "podanym laczu",
                     ", ".join(f"{n}={v:.1f}" for n, v in self.read_joints().items()))
         self._start_thread()
@@ -325,6 +336,7 @@ class A1XArm(RobotBackend):
                 self._g_target = self._g_stream = None
                 self._g_frozen = False
                 self._g_rest_eff, self._g_rest, self._g_hi = [], None, None
+                self._g_live_n = None                  # ramie moglo byc wylaczone: grupa 7 znow niepewna
                 self._deaf_since, self._deaf = {}, ""
                 return
             if self._pinned:
@@ -365,6 +377,8 @@ class A1XArm(RobotBackend):
                 step = self.acfg.gripper_rate_pdes_s * dt
                 self._g_stream += max(-step, min(step, self._g_target - self._g_stream))
                 self._send(self.P.GRIP_ID, self.P.encode_gripper(self._g_stream, self.acfg.gripper_kp, self.acfg.kd))
+                if self._g_live_n is None:
+                    self._g_live_n = self._n_fb
 
     def _grip_contact(self) -> bool:
         """|effort| chwytaka ponad spoczynek zmierzony na poczatku tego zamykania o wiecej niz `gripper_force`."""
@@ -589,11 +603,15 @@ class A1XArm(RobotBackend):
         return abs(a.gripper_open_pdes - a.gripper_closed_pdes) / a.gripper_rate_pdes_s + GRIP_TRAVEL_MARGIN_S
 
     def gripper_measured(self) -> bool:
-        """Czy chwytak ma pomiar (dwa punkty `gripper_fb_*`; domyslnie tak, od pomiaru 2026-09-27). Bez nich `joints()` zglasza ostatni
-        rozkaz, a przed pierwszym - `gripper_start` (albo `assume_gripper`), ktore nie musi zgadzac
-        sie ze szczekami."""
-        a = self.acfg
-        return a.gripper_fb_closed is not None and a.gripper_fb_open is not None
+        """Czy `joints()` zglasza zmierzony chwytak: sa dwa punkty `gripper_fb_*` I chwytak jest sterowany
+        w tym polaczeniu (co najmniej `GRIP_LIVE_FRAMES` ramek 0x052 po pierwszej 0x051, od nowa po utracie
+        lacza). W spoczynku po wlaczeniu zasilania grupa 7 czyta dowolna wartosc (2026-09-27: -165 st.
+        przy szczekach na -85 st.), wiec do tego czasu backend zglasza ostatni rozkaz, a przed pierwszym
+        `gripper_start` (albo `assume_gripper`), ktore nie musi zgadzac sie ze szczekami."""
+        with self._lock:
+            a = self.acfg
+            return (a.gripper_fb_closed is not None and a.gripper_fb_open is not None and self._fb is not None
+                    and self._g_live_n is not None and self._n_fb - self._g_live_n >= GRIP_LIVE_FRAMES)
 
     def calibration_warnings(self) -> list[str]:
         a = self.acfg

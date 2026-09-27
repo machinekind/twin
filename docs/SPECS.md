@@ -407,15 +407,20 @@ against about 0.2 in free travel), and that overheated the gripper motor. The
 defaults are now `gripper_closed_pdes` 0.08 (0.04 rad of squeeze past the stop;
 the contact stop still catches objects), `gripper_open_pdes` -1.95 (just short
 of the open stop), and `gripper_fb_closed` / `gripper_fb_open` 0.039 / -1.992,
-so the A1X gripper is measured (`gripper_measured()`): the panel, the 3D jaws
-and the grab result read the jaws, not the command. Fully open reads about 98.
+so a driven A1X gripper is measured (`gripper_measured()`): the panel, the 3D
+jaws and the grab result read the jaws, not the command. Fully open reads about
+98. At rest after power-up group 7 shows an arbitrary value (-164.9 deg, -2.88
+rad, with the jaws at about -85 deg); it tracks `p_des` only while `0x051`
+streams. So the backend trusts it only from 4 feedback frames after the first
+`0x051` of the connection (again after a link loss), and logs the resting value
+at connect. Until then it behaves as unmeasured (below).
 Not yet checked on the bench: that 0.04 rad closes empty jaws fully, and that
 -1.95 clears the open stop. To re-measure, see docs/TWIN.md, "Chwytak A1X:
 pomiar".
 
-**The gripper starts closed.** This applies with an unmeasured gripper
-(`a1x.gripper_fb_closed/open` set to `null`): the twin then only knows what it
-commanded. Before the first command it reports `a1x.gripper_start`, which is 0
+**The gripper starts closed.** This applies until the first gripper command of
+the connection, and always with `a1x.gripper_fb_closed/open` set to `null`: the
+twin then only knows what it commanded. Before the first command it reports `a1x.gripper_start`, which is 0
 (closed), and the sim A1X starts closed too. The workstation contract is
 "home = jaws closed": the panel's *Ustaw dom = tu* (set home here) always
 stores gripper 0 and, with an unmeasured gripper, tells the backend that the
@@ -438,8 +443,7 @@ XCAN by default (`a1x.gripper_over_xcan: true`); `false` restores the refusal
 (`rejected` `no gripper`, `detail` `gripper disabled`). To re-check the
 adapter, run the grip test with the panel closed (one process per adapter); it
 prints `RESULT:`. Over XCAN the status line says `chwytak przez XCAN`. With the
-measured feedback (the default) the panel and the 3D jaws show where the jaws
-really are; the TCP sphere still shows the command.
+gripper driven once, the panel and the 3D jaws show where the jaws really are; the TCP sphere still shows the command.
 
 A full A1X gripper stroke takes about 1.0 s (2.03 `p_des` at 2.0 per second);
 `A1XArm.gripper_travel_s()` gives it with a 0.2 s margin (1.2 s).
@@ -687,7 +691,7 @@ read it. Other message types are ignored. For the full relay protocol see the sp
 | `hold` with `relay` | The relay connection dropped during a real move. Check the network, then pinch again. |
 | `backoff` during calm moves | The effort thresholds are too tight. See [the effort log](#5-the-effort-log-in-dry-mode). |
 | The gripper command is `done` but the jaws do not move | The panel reads the measured jaws (group 7 of `0x052`), so it shows this too. Run `python -m galaxeo.xcan_usb --grip-test` with the panel closed, or drive the gripper from Linux (SocketCAN). Also check the 0x054 gripper fault bit (galaxeo docs/PROTOCOL.md): only a power cycle clears it, and an overheated gripper motor needs time to cool. |
-| The jaws are open but the twin shows them closed | Only with an unmeasured gripper (`a1x.gripper_fb_*` `null`): the twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
+| The jaws are open but the twin shows them closed | Before the first gripper command of the connection (or with `a1x.gripper_fb_*` `null`): the twin has no gripper feedback yet and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
 | Follow ends with `timeout` every few seconds | Samples arrive less often than every 0.3 s: a slow relay or network, or glasses too old to send `follow` at 20 Hz. |
 | `rejected` `no gripper` | `a1x.gripper_over_xcan: false` in the config (the old XCAN refusal). Set it to `true` (the default since 2026-09-27) or use Linux SocketCAN (`can0`). Follow still works. |
 

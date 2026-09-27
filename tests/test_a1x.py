@@ -3,7 +3,7 @@
 `FakeA1XBus` udaje ramie na wirtualnym zegarze: trzyma 7 grup (6 stawow + chwytak),
 jedzie do p_des ze skonczona predkoscia, na kazde `tick()` wystawia jedna ramke 0x052
 i zapisuje kazda wyslana ramke (id, dane, fd). Pokretla: `silent`, `frozen`, `deaf`,
-`grip_effort`, `state`.
+`grip_effort`, `grip_rest_reading`, `state`.
 """
 
 from __future__ import annotations
@@ -65,6 +65,9 @@ class FakeA1XBus:
         self.g_des: float | None = None
         self.silent = self.frozen = self.deaf = False
         self.grip_effort = 0.0
+        #: Grupa 7 w ramkach, dopoki nie przyszla zadna 0x051 (jak po wlaczeniu zasilania: dowolna wartosc,
+        #: 2026-09-27 -2,88 rad przy szczekach na -1,49); None = prawdziwa pozycja szczek.
+        self.grip_rest_reading: float | None = None
         self.state = "ok"
         self.rx: deque = deque()
         self.tx: list[tuple[int, bytes, bool]] = []
@@ -103,15 +106,18 @@ class FakeA1XBus:
             self._n += 1
             if self.silent:
                 continue
+            q = list(self.q)
+            if self.g_des is None and self.grip_rest_reading is not None:
+                q[6] = self.grip_rest_reading
             if self.frozen:
                 if self._frozen_payload is None:
-                    self._frozen_payload = P.encode_feedback(self.q, self.v, self.eff)
+                    self._frozen_payload = P.encode_feedback(q, self.v, self.eff)
                 payload = self._frozen_payload
             else:
                 self._frozen_payload = None
                 eff = list(self.eff)
                 eff[0] += 0.002 * (self._n % 2)          # szum pomiaru: zywa telemetria nie powtarza sie
-                payload = P.encode_feedback(self.q, self.v, eff)
+                payload = P.encode_feedback(q, self.v, eff)
             self.rx.append(Frame(P.FB_ID, payload))
 
     # --- odczyt nadawania
@@ -395,9 +401,12 @@ def test_assume_gripper_only_before_the_stream_starts():
     assert bus.frames(P.GRIP_ID)
     assert arm.assume_gripper(0.0) is False                                      # strumien jest prawda
     assert arm.read_joints()["gripper"] == 40.0
-    # Chwytak z pomiarem (domyslny A1X) niczego nie zaklada.
-    measured, _, _ = connected()
-    assert measured.assume_gripper(0.0) is False
+    # Domyslny A1X przed pierwsza 0x051 nie ma jeszcze pomiaru (grupa 7 w spoczynku niepewna): zaklada.
+    arm2, bus2, clock2 = connected()
+    assert not arm2.gripper_measured() and arm2.assume_gripper(0.0) is True
+    arm2.send_joints({"gripper": 60.0})
+    run(arm2, bus2, clock2, 0.1)
+    assert arm2.gripper_measured() and arm2.assume_gripper(0.0) is False     # pomiar niczego nie zaklada
 
 
 def test_gripper_force_is_measured_from_the_rest_effort_of_each_close():
@@ -506,13 +515,41 @@ def test_default_a1x_gripper_is_measured_at_the_stops_found_on_2026_09_27():
     assert CLOSED - _A.gripper_fb_closed == pytest.approx(0.041)
     assert _A.gripper_fb_open < OPEN
     arm, bus, clock = connected()
-    assert arm.gripper_measured() and arm.gripper_known()
     assert arm.calibration_warnings() == []
+    assert not arm.gripper_measured()                                           # nic jeszcze nie steruje chwytakiem
+    arm.send_joints({"gripper": 50.0})
+    run(arm, bus, clock, 1.5)
+    assert arm.gripper_measured() and arm.gripper_known()
+    bus.grip_effort = 0.1                                                       # atrapa: szczeki stoja tam, gdzie je ustawimy
     for q, want in ((0.039, 0.0), (-1.992, 100.0), ((0.039 - 1.992) / 2, 50.0)):
         bus.q[6] = q
         run(arm, bus, clock, 0.02)
         assert arm.read_joints()["gripper"] == pytest.approx(want, abs=0.02)   # 1 LSB = 0,01 jednostki
-    assert not bus.frames(P.GRIP_ID)                                            # sam odczyt niczego nie wysyla
+
+
+def test_resting_group_7_after_power_up_is_not_trusted_until_the_gripper_is_driven():
+    """2026-09-27: po wlaczeniu zasilania grupa 7 w spoczynku czytala -164,9 st. (-2,88 rad), choc szczeki staly
+    na ok. -85 st.; dopiero przy strumieniu 0x051 szla za p_des. Do pierwszej 0x051 backend zglasza przekonanie
+    (`gripper_start` 0) i dziala regula zgadniecia (pierwsze otwieranie od razu na cel), potem pomiar."""
+    bus = FakeA1XBus(grip_q=-1.49)
+    bus.grip_rest_reading = -2.88
+    arm, bus, clock = connected(bus=bus)
+    assert arm._fb.pos[6] == pytest.approx(-2.88, abs=LSB)
+    assert not arm.gripper_measured() and not arm.gripper_known()
+    assert arm.read_joints()["gripper"] == 0.0                                  # gripper_start, nie 142 z -2,88
+    assert arm.assume_gripper(0.0) is True
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 0.02)
+    assert grip_pdes(bus)[0] == pytest.approx(OPEN, abs=LSB)                    # zgadniete: od razu na cel
+    run(arm, bus, clock, 0.5)
+    assert arm.gripper_measured()
+    assert arm.read_joints()["gripper"] == pytest.approx(100.0, abs=2.5)        # -1,95 zmierzone = ok. 98
+    # Utrata lacza (ramie moglo byc wylaczone): pomiar znow niewazny do nastepnej 0x051.
+    bus.silent = True
+    run(arm, bus, clock, 0.3, read=False)
+    bus.silent = False
+    run(arm, bus, clock, 0.05)
+    assert not arm.gripper_measured() and arm.read_joints()["gripper"] == 100.0  # ostatni rozkaz
 
 
 def test_closing_never_sends_a_pdes_past_gripper_closed_pdes():

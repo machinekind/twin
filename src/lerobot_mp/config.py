@@ -390,6 +390,8 @@ class A1XConfig:
     gripper_open_pdes: float = -1.95
     gripper_closed_pdes: float = 0.08
     #: Pozycja grupy 7 z 0x052 [rad] przy 0 i przy 100: ograniczniki zmierzone 2026-09-27 (wyzej).
+    #: Wazna tylko przy sterowanym chwytaku (od pierwszej 0x051 w polaczeniu): w spoczynku po wlaczeniu
+    #: zasilania grupa 7 czyta dowolna wartosc (-165 st. przy szczekach na -85 st.).
     #: None (oba) = sprzezenie niezmierzone: backend zglasza ostatni rozkaz (petla otwarta).
     gripper_fb_closed: float | None = 0.039
     gripper_fb_open: float | None = -1.992
