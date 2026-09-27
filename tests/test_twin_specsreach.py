@@ -20,7 +20,7 @@ import pytest
 pytest.importorskip("mujoco")
 pytest.importorskip("websockets")
 
-from twinbench import END, Bench, FakeRelay  # noqa: E402,F401 - FakeRelay: other test files import it from here
+from twinbench import END, Bench, FakeRelay, ant_workspace  # noqa: E402,F401 - FakeRelay: other test files import it from here
 
 from lerobot_mp.twin import runtime as rt  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
@@ -154,6 +154,40 @@ def test_rejections(bench, kin, vol, relay, case):
         assert "0.80 s" in st["detail"], st
     after = twin.status.measured
     assert max(abs(after[k] - before[k]) for k in d.arm) < 0.5
+
+
+def test_the_ant_is_an_obstacle_and_the_checker_follows_it(relay, kin):
+    """An ant standing in the box (put there on purpose; `workspace --ant` stands it at the table end): a target
+    in it is refused, the box centre is still reached, and the checker sees the ant where the twin has it."""
+    xy = (0.42, -0.18)
+    b = Bench.sim("a1x", relay, ws=ant_workspace(xy))
+    try:
+        twin = b.twin
+        vol = ReachVolume.from_workspace(twin.workspace)
+        b.pump(sim_s=0.5)
+        ready(b, kin, vol)
+        b.driver()
+        ts = b.target([xy[0], xy[1], 0.08])                 # the middle of its body
+        st = b.wait_state(ts, {"rejected", "reached"}, max_sim_s=10.0)
+        assert st["state"] == "rejected" and st.get("reason") in ("collision", "ik"), st
+        ts = b.target(vol.center)
+        st = b.wait_state(ts, END, max_sim_s=15.0)
+        assert st["state"] == "reached", st
+        # The ant moves in the twin: the driver's checker moves it too (no rebuild).
+        d = b.drivers[0]
+        _, checker = d._tools()
+        T = np.array(twin.scene.ant_pose())
+        T[:2, 3] = [0.85, 0.0]
+        assert twin.place_ant(T)
+        b.pump(sim_s=0.3)
+        _, again = d._tools()
+        assert again is checker
+        assert d._c_scene.ant_pose()[:2, 3] == pytest.approx(twin.scene.ant_pose()[:2, 3], abs=0.01)
+        assert np.linalg.norm(d._c_scene.ant_pose()[:2, 3] - [0.85, 0.0]) < 0.03
+    finally:
+        b.close()
+        b.twin.close()
+        b.clock.close()
 
 
 def test_object_target_goes_above_it_pointing_down(bench, kin, vol):

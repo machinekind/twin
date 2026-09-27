@@ -954,6 +954,14 @@ ramienia: model fizyczny RealAnt v2 z realant-rl (`assets/robots/realant`), Apri
 `antmirror.py`, `antwalk.py`, `antdrive.py`, `antpad.py`, `ui/ant_panel.py`); próba bez sprzętu:
 `lerobot-twin demo --ant` (z A1X: `--robot a1x --ant`).
 
+**Mrówka na końcu blatu, przeszkoda dla okularów.** `lerobot-twin workspace --ant` (`--path <plik>`
+dla innego stanowiska) dopisuje do istniejącego stanowiska symulowaną mrówkę z kamerami `sym-mrowka-*`
+(`ant.add_ant`). Stoi na obecnym blacie, 20 cm przed jego dalekim końcem, w y = 0; blat się nie zmienia.
+Na blacie 1,2 × 0,8 m z podstawą w `base_xy` (−0,45, 0) to x = 0,85 m. Obrys mrówki z rozstawionymi
+nogami (~0,30 m) musi zaczynać się co najmniej 15 cm za pudełkiem zasięgu; jeśli blat jest za krótki,
+polecenie odmawia. Sterownik Spectacles traktuje mrówkę jak przeszkodę: jego sprawdzacze kolizji budują
+scenę z mrówką i co 0,2 s przestawiają ją tam, gdzie stoi w bliźniaku ([SPECS.md](SPECS.md)).
+
 **Mrówka jeździ na własnej polityce** — realant-rl `robot_teleop.py` / `robot_policy.py` po jej stronie
 (klawisze, trasy). **Bliźniak niczego jej nie wysyła** (rozkazy z dwóch miejsc naraz się gryzły) — ma jej
 **kopię w fizyce sceny**, która chodzi niezależnie i jest dociągana pomiarami (`antmirror.py`):

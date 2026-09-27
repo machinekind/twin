@@ -115,6 +115,8 @@ GRIP_ACTIONS: tuple[GripAction, ...] = get_args(GripAction)
 #: `grab.policy` values. Only the scripted top-down grasp for now; the field keeps the seam for others.
 GRAB_POLICIES = ("topdown",)
 OWNER = "specs"
+#: The checkers move their ant to where it stands in the twin at most this often [s] (`SpecsReach._sync_ants`).
+ANT_SYNC_S = 0.2
 #: The A1X `tcp` site sits this far before the fingertips along the approach axis [m].
 TIP_AHEAD = 0.033
 
@@ -643,6 +645,10 @@ class SpecsReach:
         self._f_checker: CollisionChecker | None = None
         self._f_kin: RobotKinematics | None = None
         self._f_version = -1
+        self._f_scene: sc.Scene | None = None
+        self._f_ant_t: float | None = None
+        self._c_scene: sc.Scene | None = None
+        self._c_ant_t: float | None = None
 
     @property
     def clock(self) -> Clock:
@@ -1533,16 +1539,18 @@ class SpecsReach:
         self._reject_queued()
 
     def _follow_tools(self) -> tuple[RobotKinematics, CollisionChecker]:
-        """The follower's own IK and collision checker (as `_tools`: the bench scene without extras).
+        """The follower's own IK and collision checker (as `_tools`: the bench scene with the ant, no extras).
 
         Built on the worker when a stream starts, then used only by the tick listener: the worker's
         own `_kin` / `_checker` are not thread-safe.
         """
         version = self.twin.version
         if self._f_checker is None or self._f_version != version:
-            scene = sc.build(self.twin.workspace.scene_config())
+            scene = self._checker_scene()
             self._f_checker = CollisionChecker(scene)
+            self._f_checker.set_world(scene.data)
             self._f_kin = RobotKinematics(self.spec, scene.model, sc.PREFIX)
+            self._f_scene, self._f_ant_t = scene, None
             self._f_version = version
         assert self._f_kin is not None
         return self._f_kin, self._f_checker
@@ -1565,6 +1573,7 @@ class SpecsReach:
         f = st.follower
         assert f is not None and st.guard is not None
         t = float(s.t)
+        self._f_ant_t = self._sync_ants(self._f_scene, self._f_checker, self._f_ant_t)
         with self._follow_lock:
             newest, version = st.sample, st.version
         if version != st.seen:
@@ -2066,18 +2075,47 @@ class SpecsReach:
             logger.exception("Przywracanie granicy predkosci")
 
     def _tools(self) -> tuple[RobotKinematics, CollisionChecker]:
-        """IK and collision checker for the bench scene WITHOUT extras (task objects, the card).
+        """IK and collision checker for the bench scene with the ant (an obstacle), WITHOUT extras (task objects,
+        the card). The ant is moved to where it stands in the twin (`_sync_ants`) at most 5 times a second.
 
         Built on the worker thread and rebuilt when the twin's scene changes (`twin.version`).
         """
         version = self.twin.version
         if self._checker is None or self._checker_version != version:
-            scene = sc.build(self.twin.workspace.scene_config())
+            scene = self._checker_scene()
             self._checker = CollisionChecker(scene)
+            self._checker.set_world(scene.data)
             self._kin = RobotKinematics(self.spec, scene.model, sc.PREFIX)
+            self._c_scene, self._c_ant_t = scene, None
             self._checker_version = version
+        self._c_ant_t = self._sync_ants(self._c_scene, self._checker, self._c_ant_t)
         assert self._kin is not None
         return self._kin, self._checker
+
+    def _checker_scene(self) -> sc.Scene:
+        """The bench scene the checkers see: table, arm and the ant (an obstacle), no extras (task objects, card)."""
+        return sc.build(self.twin.workspace.scene_config(with_ant=True))
+
+    def _sync_ants(self, scene: sc.Scene | None, checker: CollisionChecker | None, last: float | None) -> float | None:
+        """Moves the ant(s) of a checker's scene to where they stand in the twin now, at most every
+        `ANT_SYNC_S` of the clock (the ant walks ~10 cm/s). Returns the time of the last sync."""
+        if scene is None or checker is None or not scene.ants():
+            return last
+        t = self.clock.now()
+        if last is not None and t - last < ANT_SYNC_S:
+            return last
+        tw = self.twin
+        with tw.lock:
+            live = tw.scene
+            poses = {}
+            for prefix in scene.ants():
+                if prefix in live.ants():
+                    q, _ = live.ant_joints(prefix)
+                    poses[prefix] = (live.ant_pose(prefix), {n: float(np.degrees(v)) for n, v in zip(sc.ANT_JOINTS, q)})
+        for prefix, (T, joints) in poses.items():
+            scene.place_ant(T, joints, prefix=prefix)
+        checker.set_world(scene.data)
+        return t
 
     def _estopped(self) -> bool:
         from ..control.safety import SafetyState

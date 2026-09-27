@@ -166,3 +166,34 @@ def test_ant_round_trip_scene_only_in_the_twin_and_live_pose(tmp_path):
         assert abs(ankle - LEG_POSES["stoi"]["ankle_3"]) < 0.5
     finally:
         tw.close()
+
+
+def test_add_ant_stands_it_at_the_far_table_end_clear_of_the_reach_box():
+    """The user's A1X table (1.2 x 0.8 m, base 0.45 m behind its centre): the ant's collision footprint (from the
+    scene, legs out) starts >= 15 cm beyond the reach box and stays on the table."""
+    from lerobot_mp.twin.ant import add_ant, table_far_x
+    from lerobot_mp.twin.reach import ReachVolume
+
+    ws = Workspace(robot="a1x")
+    ws.table = {**ws.table, "size": [1.2, 0.8], "base_xy": [-0.45, 0.0]}
+    assert table_far_x(ws.table) == pytest.approx(1.05)
+    data = add_ant(ws.to_dict())
+    assert data["table"] == ws.to_dict()["table"]                       # the existing table, not enlarged
+    assert {c["name"] for c in data["cameras"]} == {"sym-mrowka-przod", "sym-mrowka-bok"}
+    T = np.asarray(data["ant"]["sim"]["T_ant2base"])
+    assert T[:2, 3] == pytest.approx([0.85, 0.0])
+    ws.ant = data["ant"]
+    scene = sc.build(ws.scene_config(with_ant=True))
+    m, d = scene.model, scene.data
+    to_base = np.linalg.inv(scene.T_base2world)
+    lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
+    for g in range(m.ngeom):
+        if m.body(m.geom_bodyid[g]).name.startswith(sc.ANT_PREFIX) and m.geom_contype[g]:
+            c = (to_base @ np.r_[d.geom_xpos[g], 1.0])[:3]
+            lo, hi = np.minimum(lo, c - m.geom_rbound[g]), np.maximum(hi, c + m.geom_rbound[g])
+    vol = ReachVolume.from_workspace(ws)
+    assert lo[0] >= vol.hi[0] + 0.15, (lo, vol.hi)
+    assert hi[0] <= 1.05 and lo[1] >= -0.40 and hi[1] <= 0.40, (lo, hi)
+    # A table too short for that is refused, not squeezed in.
+    with pytest.raises(ValueError, match="pudelkiem zasiegu"):
+        add_ant({**ws.to_dict(), "table": {**ws.table, "size": [0.9, 0.8]}})

@@ -32,6 +32,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import serve
 
 from lerobot_mp.twin import runtime as rt
+from lerobot_mp.twin.ant import add_ant
 from lerobot_mp.twin.clock import VirtualClock
 from lerobot_mp.twin.runtime import smoothstep
 from lerobot_mp.twin.specsreach import SpecsReach
@@ -212,9 +213,10 @@ class Bench:
         self._late0 = self.clock.late
 
     @classmethod
-    def sim(cls, robot: str = "a1x", relay: FakeRelay | None = None, *, t0: float = 100.0) -> Bench:
-        """A simulated `robot` on a fresh `VirtualClock` starting at `t0` s."""
-        tw = rt.Twin(Workspace(robot=robot), clock=VirtualClock(t0=t0))
+    def sim(cls, robot: str = "a1x", relay: FakeRelay | None = None, *, t0: float = 100.0,
+            ws: Workspace | None = None) -> Bench:
+        """A simulated `robot` (or workspace `ws`) on a fresh `VirtualClock` starting at `t0` s."""
+        tw = rt.Twin(ws if ws is not None else Workspace(robot=robot), clock=VirtualClock(t0=t0))
         tw.connect("sim", threaded=False)
         return cls(tw, relay)
 
@@ -500,3 +502,18 @@ class Bench:
             d.stop()
         self.drivers.clear()
         self.assert_on_time()
+
+
+#: The user's A1X bench: a 1.2 x 0.8 m table with the base 0.45 m behind its centre (the table spans x from
+#: -0.15 to 1.05 m and y +-0.40 m in the base frame).
+USER_TABLE = {"size": [1.2, 0.8], "base_xy": [-0.45, 0.0]}
+
+
+def ant_workspace(xy=None, table=USER_TABLE) -> Workspace:
+    """An A1X workspace with the simulated ant (`ant.add_ant`: the far table end, or `xy`); no cameras."""
+    ws = Workspace(robot="a1x")
+    ws.table = {**ws.table, **table}
+    data = add_ant(ws.to_dict(), xy)
+    ws.ant = data["ant"]
+    return ws
+
