@@ -425,15 +425,50 @@ def _ui_banner(workspace: str | None) -> str:
     return f"Stanowisko: {ws} ({state})\nPolityki:   {policies}"
 
 
+def _ui_startup_line(a: argparse.Namespace) -> str:
+    """Co panel zrobi sam przy starcie (--arm, --specs ...) - jedna linia przed wolnym importem."""
+    import os
+
+    # Jak `ui.specs_panel.DEFAULT_RELAY`, bez importu visera.
+    relay = a.relay or os.environ.get("SPECS_RELAY", "ws://127.0.0.1:8080/twin")
+    arm = "polacz (backend i port stanowiska, bez domu)" if a.arm else "nie"
+    if a.specs is None:
+        glasses = "nie"
+    else:
+        glasses = (f"tryb {a.specs}, przekaznik {relay}, zgoda real "
+                   f"{'tak' if a.i_know else 'nie'}, sledzenie "
+                   f"{a.follow_speed if a.follow_speed is not None else 'domyslne'} m/s, odczekanie "
+                   f"{a.hold_off if a.hold_off is not None else 'domyslne'} s")
+    return f"Start panelu: ramie {arm}; okulary {glasses}"
+
+
 def _ui(a: argparse.Namespace) -> int:
+    if a.specs == "real" and not a.i_know:
+        print("lerobot-twin ui --specs real rusza prawdziwym ramieniem - dodaj --i-know.", file=sys.stderr)
+        return 2
+    print(_ui_banner(a.workspace), flush=True)
+    print(_ui_startup_line(a), flush=True)
+    if a.specs == "real":
+        print(SPECS_REAL_WARNING, flush=True)
     from .ui.app import main as ui_main
 
-    print(_ui_banner(a.workspace), flush=True)
     argv = ["--host", a.host, "--port", str(a.port)]
     if a.workspace:
         argv += ["--workspace", a.workspace]
     if a.stream_port is not None:
         argv += ["--stream-port", str(a.stream_port), "--stream-host", a.stream_host]
+    if a.arm:
+        argv.append("--arm")
+    if a.specs:
+        argv += ["--specs", a.specs]
+    if a.i_know:
+        argv.append("--i-know")
+    if a.relay:
+        argv += ["--relay", a.relay]
+    if a.follow_speed is not None:
+        argv += ["--follow-speed", str(a.follow_speed)]
+    if a.hold_off is not None:
+        argv += ["--hold-off", str(a.hold_off)]
     return ui_main(argv)
 
 
@@ -663,6 +698,17 @@ def parser() -> argparse.ArgumentParser:
                    help="podglad kamer po HTTP (MJPEG, tylko odczyt) na tym porcie, np. 8766; bez flagi - brak")
     p.add_argument("--stream-host", default="0.0.0.0",
                    help="adres nasluchu podgladu kamer (domyslnie cala siec - obraz, bez sterowania)")
+    # Start "gotowy do jazdy" jednym poleceniem - to samo, co `lerobot-twin specs`, ale z widokiem 3D.
+    p.add_argument("--arm", action="store_true",
+                   help="polacz ramie przy starcie: backend i port ze stanowiska, bez jazdy do domu")
+    p.add_argument("--specs", choices=("dry", "sim", "real"), default=None,
+                   help="ustaw tryb folderu Spectacles i polacz z przekaznikiem przy starcie")
+    p.add_argument("--i-know", action="store_true",
+                   help="zaznacz zgode na ruch prawdziwym ramieniem (wymagane dla --specs real)")
+    p.add_argument("--relay", default=None,
+                   help="adres przekaznika okularow (domyslnie SPECS_RELAY albo ws://127.0.0.1:8080/twin)")
+    p.add_argument("--follow-speed", type=float, default=None, help="sledzenie dloni [m/s], np. 0.10")
+    p.add_argument("--hold-off", type=float, default=None, help="odczekanie przed ruchem w trybie real [s]")
     p.set_defaults(fn=lambda a: _ui(a))
 
     p = sub.add_parser("specs", help="okulary Spectacles: pudelko zasiegu, pinch -> ruch ramienia (przez przekaznik)")

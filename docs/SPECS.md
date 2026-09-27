@@ -137,6 +137,24 @@ SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
 **Polacz z okularami** at start (mode `dry`, the arm stays put). `--port 8765` keeps the panel off
 8080, which is the relay's port. Open `http://localhost:8765`.
 
+One command brings the panel up in the same state as
+`lerobot-twin specs --mode real --i-know --follow-speed 0.10`, with the 3D view:
+
+```bash
+SPECS_RELAY=ws://127.0.0.1:8080/twin lerobot-twin ui --port 8765 --arm --specs real --i-know --follow-speed 0.10
+```
+
+- `--arm`: connect the arm at start with the workspace's backend and port, no
+  homing (the **Polacz** button; a `sim` workspace connects the simulation).
+- `--specs dry|sim|real`: set **Tryb okularow** and press **Polacz z okularami**.
+- `--i-know`: tick the consent box. `--specs real` without it refuses to start.
+- `--relay URL` (default `SPECS_RELAY`), `--follow-speed M`, `--hold-off S`:
+  pre-fill the folder's fields.
+
+The arm connects first, then the glasses. A failure goes to the log and the
+folder's status line; the panel keeps running. The console prints the
+resulting configuration before the panel loads.
+
 1. Tab **Ramie**: connect the arm (A1X on its port, or `sim`).
 2. Tab **Polityki**, folder **Spectacles**:
    - **Przekaznik**: the relay address, path `/twin`.
