@@ -210,6 +210,19 @@ def test_shadow_never_sends_an_opening_below_99(rig):
     assert openings and min(openings) >= 99.0 - LSB_UNITS
 
 
+def test_pre_positioning_and_the_episode_report_each_joints_peak_effort(rig):
+    drv = rig.driver(segments((10, STILL)), max_ticks=10)
+    try:
+        run(rig, drv)
+        prepos = dict(drv.arm.effort_peak)
+        rep = drv.episode(rig.hover)
+    finally:
+        drv.close()
+    arm = set(rig.twin.spec.arm_joints)
+    assert set(prepos) == arm and all(math.isfinite(v) and v >= 0.0 for v in prepos.values()), prepos
+    assert set(rep.effort_peak) == arm, rep.effort_peak
+
+
 def close_mid_way(rig: Rig, at_record: int, action: Callable[[], None], **kw) -> tuple[GraspDriver, object]:
     """An episode that closes the jaw at the hover; `action` runs when record `at_record` is written."""
     n = [0]

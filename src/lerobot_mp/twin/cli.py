@@ -25,7 +25,7 @@
     lerobot-twin grasp --mode shadow --backend a1x --i-know  # ... REAL arm, the fingers touch nothing
     lerobot-twin grasp --mode real --backend a1x --i-know    # ... REAL arm grasps
     lerobot-twin grasp-bench show            # per-rig file (workspace/grasp.json) and what each mode misses
-    lerobot-twin grasp-bench table --backend a1x --i-know --xy 0 0.30  # teach the table height by touch
+    lerobot-twin grasp-bench table --backend a1x --i-know --xy 0 0.33  # teach the table height by touch
     lerobot-twin grasp-eval                  # 50 episodes in sim at the sim jaw speed
     lerobot-twin grasp-eval --jaw measured   # ... with the jaw slowed to the measured stroke
     lerobot-twin grasp-model fetch           # download the checkpoint over HTTPS and verify its sha256
@@ -41,6 +41,17 @@ import os
 import platform
 import sys
 from pathlib import Path
+
+
+def _positive_int(text: str) -> int:
+    """Typ argparse: liczba calkowita >= 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"oczekiwano liczby calkowitej, jest {text!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("musi byc >= 1")
+    return value
 
 
 def _check(_: argparse.Namespace) -> int:
@@ -736,7 +747,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.add_argument("--camera", default=None,
                    help="zrodlo kamery na nadgarstku, gdy plik --rig go nie podaje")
-    p.add_argument("--episodes", type=int, default=1, help="ile epizodow (domyslnie 1)")
+    p.add_argument("--episodes", type=_positive_int, default=1, help="ile epizodow (domyslnie 1)")
     p.add_argument("--seed", type=int, default=None,
                    help="ziarno losowania kostki w symulacji (domyslnie z zegara, wypisane na starcie)")
     p.add_argument("--outside-training", action="store_true",
@@ -749,7 +760,7 @@ def parser() -> argparse.ArgumentParser:
                         "inaczej model)")
     p.add_argument("--jaw-stroke-s", type=float, default=None,
                    help="tylko --mode sim: szczeki zwolnione do takiego czasu pelnego ruchu [s]")
-    p.add_argument("--dump-every", type=int, default=20,
+    p.add_argument("--dump-every", type=_positive_int, default=20,
                    help="dry: zrzut obrazu co tyle taktow (domyslnie 20)")
     p.add_argument("--seconds", type=float, default=None,
                    help="dry: zakoncz po tylu sekundach (inaczej Enter albo Ctrl-C)")
@@ -798,7 +809,7 @@ def parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=_grasp_bench)
 
     p = sub.add_parser("grasp-eval", help="ewaluacja studenta chwytu w symulacji (zawsze ramie sim)")
-    p.add_argument("--episodes", type=int, default=50, help="ile epizodow (domyslnie 50)")
+    p.add_argument("--episodes", type=_positive_int, default=50, help="ile epizodow (domyslnie 50)")
     p.add_argument("--seed", type=int, default=50000,
                    help="ziarno losowania kostek (domyslnie 50000, jak ewaluacja w treningu)")
     p.add_argument("--jaw", choices=("sim", "measured"), default="sim",
@@ -828,7 +839,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint", default=None,
                    help="plik modelu; fetch zapisuje tutaj (domyslnie workspace/policies/grasp/student.pt), "
                         "check i time szukaja jak grasp: ten plik, $LEROBOT_GRASP_STUDENT, sciezka domyslna")
-    p.add_argument("--n", type=int, default=200, help="time: ile wywolan (domyslnie 200)")
+    p.add_argument("--n", type=_positive_int, default=200, help="time: ile wywolan (domyslnie 200)")
     p.set_defaults(fn=_grasp_model)
     return ap
 

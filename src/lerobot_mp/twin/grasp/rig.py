@@ -57,16 +57,21 @@ def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
 
 
-def _plain(value: Any) -> Any:
-    """A JSON-ready copy: the teach tools measure with numpy, the file holds plain numbers."""
+def plain(value: Any) -> Any:
+    """A JSON-ready copy: numpy values become plain ones and a non-finite float becomes None.
+
+    The teach tools measure with numpy; the rig file and the episode logs hold plain numbers.
+    """
     if isinstance(value, dict):
-        return {k: _plain(v) for k, v in value.items()}
+        return {k: plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
+        return [plain(v) for v in value]
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        return plain(value.tolist())
     if isinstance(value, np.generic):
-        return value.item()
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     return copy.deepcopy(value)
 
 
@@ -149,7 +154,7 @@ class Rig:
     def to_dict(self) -> dict:
         out: dict[str, Any] = {"version": self.version}
         for name in SECTIONS:
-            out[name] = _plain(getattr(self, name))
+            out[name] = plain(getattr(self, name))
         return out
 
     @staticmethod
@@ -200,7 +205,7 @@ class Rig:
 
     @staticmethod
     def _vector(value: Any, n: int, where: str) -> np.ndarray:
-        value = _plain(value)
+        value = plain(value)
         if not isinstance(value, list) or len(value) != n or not all(_is_number(v) for v in value):
             raise RigError(f"{where}: oczekiwano {n} liczb, jest {value!r}")
         v = np.array(value, dtype=np.float64)
@@ -259,7 +264,7 @@ class Rig:
 
     def intrinsics(self) -> tuple[np.ndarray, np.ndarray]:
         """(K, dist) of the upright raw frame: the rig's own pair, or the contract default."""
-        K, dist = _plain(self.wrist.get("K")), _plain(self.wrist.get("dist"))
+        K, dist = plain(self.wrist.get("K")), plain(self.wrist.get("dist"))
         if K is None and dist is None:
             return WRIST_K_2026_09_26.copy(), WRIST_DIST_2026_09_26.copy()
         # K and dist come from one calibration; half of a new one next to half of the default is wrong.
@@ -274,7 +279,7 @@ class Rig:
 
     def upside_down(self) -> bool:
         """The raw frame is rotated 180 degrees (the camera is mounted upside down); default True."""
-        value = _plain(self.wrist.get("upside_down", True))
+        value = plain(self.wrist.get("upside_down", True))
         if value is None:
             return True
         if not isinstance(value, bool):

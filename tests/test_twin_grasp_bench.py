@@ -725,7 +725,7 @@ def test_ctrl_c_while_jogging_is_a_stop_through_stop_now(sim, monkeypatch, tmp_p
 @pytest.mark.render
 def test_the_latency_tool_on_the_sim_backend_stores_finite_numbers(sim, monkeypatch, tmp_path):
     if CKPT is None:
-        monkeypatch.setattr(policy_mod, "_find_for_cli", lambda a: Path("student.pt"))
+        monkeypatch.setattr(policy_mod, "find_for_cli", lambda a: Path("student.pt"))
         monkeypatch.setattr(bench, "_inference_p95_s", lambda a: 0.012)
     rig_path = tmp_path / "grasp.json"
     monkeypatch.setattr(bench, "_open", lambda a, moves: sim.bench(rig_path))
@@ -751,7 +751,7 @@ def test_a_silent_wrist_camera_ends_the_latency_tool_before_the_arm_is_taken(sim
 
         def close(self) -> None:
             Silent.closed = True
-    monkeypatch.setattr(policy_mod, "_find_for_cli", lambda a: Path("student.pt"))
+    monkeypatch.setattr(policy_mod, "find_for_cli", lambda a: Path("student.pt"))
     monkeypatch.setattr(bench, "_inference_p95_s", lambda a: pytest.fail("timed the policy without a camera"))
     monkeypatch.setattr(bench, "_open_frames", lambda b, a: Silent())
     monkeypatch.setattr(ArmSession, "take", lambda self: pytest.fail("took the arm without a camera"))

@@ -68,6 +68,8 @@ MID_SCALE = 4
 MID_W, MID_H = MID_SCALE * IMG_W, MID_SCALE * IMG_H
 #: Share of the policy frame that may lie past the sensor's edge before the intrinsics are refused.
 MAX_OUTSIDE = 0.005
+#: Frame rate asked of the wrist camera.
+LIVE_FPS = 30
 
 
 @dataclass(frozen=True)
@@ -205,17 +207,17 @@ def _check_map(mx: np.ndarray, my: np.ndarray, intr: WristIntrinsics) -> None:
 class LiveWristSource:
     """FrameSource over the twin's camera layer, for the one wrist camera."""
 
-    def __init__(self, source: str, camera: WristCamera, *, fps: int = 30,
+    def __init__(self, source: str, camera: WristCamera, *,
                  opener: Callable[[CameraRecord], Any] = cameras.open_live) -> None:
         self.camera = camera
-        self.record = CameraRecord(name="wrist", source=str(source), width=RAW_W, height=RAW_H, fps=fps)
+        self.record = CameraRecord(name="wrist", source=str(source), width=RAW_W, height=RAW_H, fps=LIVE_FPS)
         try:
             self._live = opener(self.record)
         except Exception as exc:
             raise CameraError(f"wrist camera {source!r} did not open: {exc}") from exc
         self._frame: Frame | None = None
         self._closed = False
-        logger.info("wrist camera %s opened, %dx%d at %d fps requested", source, RAW_W, RAW_H, fps)
+        logger.info("wrist camera %s opened, %dx%d at %d fps requested", source, RAW_W, RAW_H, LIVE_FPS)
 
     def latest(self) -> Frame | None:
         if self._closed:

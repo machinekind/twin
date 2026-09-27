@@ -95,10 +95,10 @@ class Panel:
 
 @dataclass
 class HandCamera:
-    """A camera riding the hand body (`RobotSpec.hand_body`), such as the A1X wrist camera.
+    """Kamera jadaca na ciele dloni (`RobotSpec.hand_body`), np. kamera na nadgarstku A1X.
 
-    `T_cam2hand` is in OpenCV axes (z forward, y down) relative to the hand body. The camera is
-    an ideal pinhole given by `fovy_deg`: square pixels, principal point at the image centre.
+    `T_cam2hand` jest w osiach OpenCV (z do przodu, y w dol) wzgledem ciala dloni. Kamera to
+    idealna kamera otworkowa dana przez `fovy_deg`: kwadratowe piksele, punkt glowny w srodku obrazu.
     """
 
     name: str                          # model name becomes PREFIX + name
@@ -110,7 +110,7 @@ class HandCamera:
 
 @dataclass(frozen=True)
 class HandCameraJitter:
-    """A small error of the hand camera's mount, applied to one render only."""
+    """Maly blad mocowania kamery na dloni, dla jednego renderu."""
 
     dpos: np.ndarray                   # (3,) m, added to the position in the hand frame
     rotvec: np.ndarray                 # (3,) rad, applied as R_mj @ exp(rotvec) (camera frame)
@@ -119,8 +119,8 @@ class HandCameraJitter:
 
 @dataclass(frozen=True)
 class Light:
-    """A light given in full, for a scene that has to look like another one (the grasp student's
-    training scene). `pos` is above the table top like the short form's; `dir` is used as given."""
+    """Swiatlo podane w calosci, dla sceny, ktora ma wygladac jak inna (scena treningu studenta
+    chwytu). `pos` jest nad blatem jak w krotkiej formie; `dir` idzie bez zmian."""
 
     pos: tuple[float, float, float]
     dir: tuple[float, float, float]

@@ -81,6 +81,7 @@ GRIP_WAIT_S = 2.0
 SAG_AVERAGE_S = 0.3
 SIM_EFFORT_FRAC = 0.5                  # of the arm actuators' forcerange
 CLOSE_WAIT_S = 1.0                     # close(): how long a running move gets to end and hold by itself
+GUARD_LAG_S = 0.15                     # the impact guard's lag rule: how long a joint may trail
 
 
 class Ended(Exception):
@@ -226,6 +227,9 @@ class ArmSession:
         self.detail = ""
         #: (clock time, arm efforts) logged by `log_efforts`, so `guard.effort_abs` can be set from data.
         self.efforts_seen: list[tuple[float, dict[str, float]]] = []
+        #: Per-joint peak |effort| since the guard was last armed: `efforts_seen` holds efforts at
+        #: rest, this one the moves.
+        self.effort_peak: dict[str, float] = {}
         self._cause = ""
         self._lock = threading.Lock()
         self._listener: int | None = None
@@ -411,8 +415,14 @@ class ArmSession:
         guard = self._guard
         if guard is None or self.cancel.is_set():
             return
+        efforts = self._efforts(loop=True)
+        if efforts:
+            peak = dict(self.effort_peak)
+            for j, v in efforts.items():
+                peak[j] = max(peak.get(j, 0.0), abs(float(v)))
+            self.effort_peak = peak                    # swapped whole: the caller's thread reads it
         hit = guard.feed(sample.t, sample.sent, sample.measured, sample.fresh,
-                         efforts=self._efforts(loop=True), velocities=self._velocities())
+                         efforts=efforts, velocities=self._velocities())
         if hit is not None:
             self.impact = hit
             logger.warning("impact %s %s (%.1f)", hit.kind, hit.joint, hit.value)
@@ -485,7 +495,14 @@ class ArmSession:
             logger.info("arm efforts (%s): %s", what, rounded)
         return efforts
 
-    def guard(self, *, lag_deg: float, lag_s: float = 0.15) -> None:
+    def log_effort_peak(self, what: str) -> dict[str, float]:
+        """Logs `effort_peak` rounded, so `guard.effort_abs` can be set from efforts in motion."""
+        rounded = {k: round(v, 2) for k, v in self.effort_peak.items()}
+        if rounded:
+            logger.info("arm effort peak (%s): %s", what, rounded)
+        return rounded
+
+    def guard(self, *, lag_deg: float) -> None:
         """Arm the impact guard for the next move; a joint loaded at rest gets the lag rule only."""
         limits = self._effort_limits()
         self.no_effort_rule = []
@@ -503,7 +520,8 @@ class ArmSession:
                     del limits[j]
                     self.no_effort_rule.append(j)
         self.impact = None
-        self._guard = ImpactGuard(self.arm, lag_deg=lag_deg, lag_s=lag_s, effort_abs=limits)
+        self.effort_peak = {}
+        self._guard = ImpactGuard(self.arm, lag_deg=lag_deg, lag_s=GUARD_LAG_S, effort_abs=limits)
 
     def disarm(self) -> None:
         self._guard = None
@@ -635,6 +653,7 @@ class ArmSession:
                 sag = self._preposition(hover, speed_deg_s)
             except Ended as e:
                 self.detail = e.detail
+                self.log_effort_peak("pre-positioning")
                 logger.warning("pre-positioning ended: %s%s", e.ending, f" ({e.detail})" if e.detail else "")
                 self.hold(e.ending)
                 return e.ending, 0.0
@@ -647,6 +666,7 @@ class ArmSession:
                 self.hold("stop")
                 raise
             self.disarm()
+            self.log_effort_peak("pre-positioning")
             self.moved = True
             return None, sag
 
@@ -656,7 +676,7 @@ class ArmSession:
         # about earlier ones.
         moved = self.moved
         tw.set_speed(speed_deg_s)
-        self.guard(lag_deg=4.0, lag_s=0.15)
+        self.guard(lag_deg=4.0)
         measured = self._measured()
         start = {j: float(measured[j]) for j in self.arm}
         keep = self.jaw_command()

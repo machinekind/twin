@@ -59,7 +59,6 @@ if TYPE_CHECKING:
     from .camera import FrameSource, WristCamera
     from .driver import DryInputs, EpisodeReport, GraspDriver, TickRecord
     from .hover import Hover
-    from .policy import GraspStudentPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +104,6 @@ class Session:
 
     twin: Twin
     driver: GraspDriver
-    policy: GraspStudentPolicy
     frames: FrameSource
     rig: Rig
     mode: str
@@ -355,8 +353,8 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
     from .hover import HoverError, from_rig
 
     mode = a.mode
-    path = policy_mod._find_for_cli(a)
-    policy = policy_mod._load_for_cli(path) if path is not None else None
+    path = policy_mod.find_for_cli(a)
+    policy = policy_mod.load_for_cli(path) if path is not None else None
     if policy is None:
         return 2
     site = load_site(a)
@@ -459,7 +457,7 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
     why = drv.check()
     if why is not None:
         return refuse(why, getattr(drv, "detail", ""))
-    return Session(twin=twin, driver=drv, policy=policy, frames=frames, rig=rig, mode=mode, camera=camera,
+    return Session(twin=twin, driver=drv, frames=frames, rig=rig, mode=mode, camera=camera,
                    hover=hover, ws=ws, kin=kin, simulated=simulated, rng=s_rng, cube=cube)
 
 

@@ -396,7 +396,8 @@ def _model_fetch(a: argparse.Namespace) -> int:
     return 0
 
 
-def _find_for_cli(a: argparse.Namespace) -> Path | None:
+def find_for_cli(a: argparse.Namespace) -> Path | None:
+    """The checkpoint for a command's `--checkpoint`; None after printing why there is none."""
     given = getattr(a, "checkpoint", None)
     path = find_checkpoint(given)
     if path is None and given:
@@ -407,7 +408,8 @@ def _find_for_cli(a: argparse.Namespace) -> Path | None:
     return path
 
 
-def _load_for_cli(path: Path) -> GraspStudentPolicy | None:
+def load_for_cli(path: Path) -> GraspStudentPolicy | None:
+    """The loaded policy; None after printing why the checkpoint was refused."""
     try:
         return GraspStudentPolicy.load(path)
     except CheckpointError as exc:
@@ -416,14 +418,14 @@ def _load_for_cli(path: Path) -> GraspStudentPolicy | None:
 
 
 def _model_check(a: argparse.Namespace) -> int:
-    path = _find_for_cli(a)
+    path = find_for_cli(a)
     if path is None:
         return 1
     digest = sha256_of(path)
     print(f"Model: {path.resolve()}")
     print(f"  rozmiar {path.stat().st_size} B, sha256 {digest}"
           f" ({'opublikowany' if digest == CHECKPOINT_SHA256 else 'INNY niz opublikowany'})")
-    pol = _load_for_cli(path)
+    pol = load_for_cli(path)
     if pol is None:
         return 1
     print(f"  wczytany bez wykonywania kodu (weights_only), {len(pol.net.state_dict())} wpisow wag, "
@@ -437,8 +439,8 @@ def _model_check(a: argparse.Namespace) -> int:
 
 
 def _model_time(a: argparse.Namespace) -> int:
-    path = _find_for_cli(a)
-    pol = _load_for_cli(path) if path is not None else None
+    path = find_for_cli(a)
+    pol = load_for_cli(path) if path is not None else None
     if pol is None:
         return 1
     n = int(getattr(a, "n", 200) or 200)

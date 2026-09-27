@@ -66,7 +66,6 @@ class Hover:
     q: np.ndarray
     j6_margin_deg: float
     outside_training: list[str]       # empty inside the training envelope, else the failed checks
-    source: str                       # "taught" | "scene"
 
 
 @dataclass
@@ -111,34 +110,34 @@ def _candidate(kin: RobotKinematics, p: np.ndarray, yaw: float,
 
     failed: list[str] = []
     if not pos_err < IK_TOL_POS:
-        failed.append(f"position {pos_err * 1000.0:.2f} mm")
+        failed.append(f"pozycja {pos_err * 1000.0:.2f} mm")
     if not rot_err < IK_TOL_ROT:
-        failed.append(f"rotation {rot_err * 1000.0:.2f} mrad")
+        failed.append(f"obrot {rot_err * 1000.0:.2f} mrad")
     j5 = joints[arm[4]]
     if not abs(j5) <= HOVER_J5_MAX_DEG:
-        failed.append(f"J5 {j5:.2f} deg")
-    outside = [f"{n} {joints[n]:.1f} deg" for n in arm if not box[n][0] <= joints[n] <= box[n][1]]
+        failed.append(f"J5 {j5:.2f} st.")
+    outside = [f"{n} {joints[n]:.1f} st." for n in arm if not box[n][0] <= joints[n] <= box[n][1]]
     if outside:
-        failed.append("outside limits " + ", ".join(outside))
+        failed.append("poza limitami " + ", ".join(outside))
     lo6, hi6 = box[arm[5]]
     j6 = joints[arm[5]]
     margin = min(j6 - lo6, hi6 - j6)
     if not margin >= HOVER_J6_MARGIN_DEG:
-        failed.append(f"J6 margin {margin:.1f} deg")
+        failed.append(f"zapas J6 {margin:.1f} st.")
     return _Candidate(yaw, joints, pos_err, rot_err, float(margin), failed)
 
 
 def solve_hover(kin: RobotKinematics, believed: np.ndarray, yaw: float, *,
-                limits: Mapping[str, tuple[float, float]], source: str = "taught") -> Hover:
+                limits: Mapping[str, tuple[float, float]]) -> Hover:
     """Hover above `believed` (base frame, m) with the closing axis at `yaw` or `yaw + pi`.
 
     Raises `HoverError("ik", detail)` when neither candidate passes; the detail names the
-    failed checks of both. `outside_training` is filled but not acted on.
+    failed checks of both in Polish, for the operator. `outside_training` is filled but not acted on.
     """
     believed = np.asarray(believed, dtype=float).reshape(3)
     yaw = float(yaw)
     if not (np.all(np.isfinite(believed)) and math.isfinite(yaw)):
-        raise HoverError("ik", f"not finite: believed {believed.tolist()}, yaw {yaw}")
+        raise HoverError("ik", f"nieskonczone: punkt {believed.tolist()}, yaw {yaw}")
     p = believed + np.array([0.0, 0.0, HOVER])
     box = _joint_box(kin, limits)
     candidates = [_candidate(kin, p, y, box) for y in (wrap(yaw), wrap(yaw + math.pi))]
@@ -148,7 +147,7 @@ def solve_hover(kin: RobotKinematics, believed: np.ndarray, yaw: float, *,
     valid = [c for c in candidates if not c.failed]
     if not valid:
         raise HoverError("ik", "; ".join(
-            f"yaw {math.degrees(c.yaw):.1f} deg: {', '.join(c.failed)}" for c in candidates))
+            f"yaw {math.degrees(c.yaw):.1f} st.: {', '.join(c.failed)}" for c in candidates))
     best = max(valid, key=lambda c: c.j6_margin_deg)
     arm = kin.spec.arm_joints
     return Hover(
@@ -159,7 +158,6 @@ def solve_hover(kin: RobotKinematics, believed: np.ndarray, yaw: float, *,
         q=np.radians([best.joints[n] for n in arm]),
         j6_margin_deg=best.j6_margin_deg,
         outside_training=training_envelope(best.joints, p),
-        source=source,
     )
 
 
@@ -168,7 +166,7 @@ def from_rig(kin: RobotKinematics, rig: Rig, *, limits: Mapping[str, tuple[float
     believed, yaw = rig.believed(), rig.grasp_yaw()
     if believed is None or yaw is None:
         raise HoverError("grasp point not taught")
-    return solve_hover(kin, believed, yaw, limits=limits, source="taught")
+    return solve_hover(kin, believed, yaw, limits=limits)
 
 
 def from_scene(kin: RobotKinematics, grasp_xy: np.ndarray, grasp_yaw: float, *, touch_z: float,
@@ -184,24 +182,24 @@ def from_scene(kin: RobotKinematics, grasp_xy: np.ndarray, grasp_yaw: float, *, 
         dyaw = rng.normal(0.0, NOISE_YAW)
         believed = believed + np.array([dxy[0], dxy[1], dz])
         yaw += float(dyaw)
-    return solve_hover(kin, believed, yaw, limits=limits, source="scene")
+    return solve_hover(kin, believed, yaw, limits=limits)
 
 
 def training_envelope(joints: Mapping[str, float], p: np.ndarray) -> list[str]:
-    """Which checks of the training envelope a hover fails; empty when inside."""
+    """Which checks of the training envelope a hover fails, in Polish; empty when inside."""
     out: list[str] = []
     j1 = float(joints[JOINT1])
     lo, hi = TRAIN_J1_DEG
     if not lo <= j1 <= hi:
-        out.append(f"joint1 {j1:.1f} deg outside {lo:g}..{hi:g}")
+        out.append(f"joint1 {j1:.1f} st. poza {lo:g}..{hi:g}")
     radius = float(math.hypot(p[0], p[1]))
     lo, hi = TRAIN_RADIUS
     if not lo <= radius <= hi:
-        out.append(f"radius {radius:.2f} m outside {lo:g}..{hi:g}")
+        out.append(f"promien {radius:.2f} m poza {lo:g}..{hi:g}")
     z = float(p[2])
     lo, hi = TRAIN_HOVER_Z
     if not lo <= z <= hi:
-        out.append(f"hover z {z:.3f} m outside {lo:g}..{hi:g}")
+        out.append(f"wysokosc zawisu {z:.3f} m poza {lo:g}..{hi:g}")
     return out
 
 
