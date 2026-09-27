@@ -51,8 +51,8 @@ def default_path() -> Path:
 #: side along base y and the window wall (glTF +x) behind the reach box (base +x). glTF y-up maps to
 #: z-up as (x, y, z) -> (x, -z, y), then `yaw_deg` about z, then `offset`.
 ROOM_GLB = "assets/rooms/pokoj.glb"
-ROOM_OFFSET = (1.86, -1.02, -0.76)   # the foam-mat desk by the softbox: centre glTF (-1.41, 0.76, -1.02) -> base (0.45, 0, 0)
-ROOM_YAW_DEG = 0.0
+ROOM_OFFSET = (-0.25, -1.41, -0.76)  # the arm on the room-side edge of the foam-mat desk (glTF x -1.41, z -0.25), reaching across the mat
+ROOM_YAW_DEG = -90.0
 
 
 def room_config(glb: str | Path = ROOM_GLB, current: dict[str, Any] | None = None) -> dict[str, Any]:
