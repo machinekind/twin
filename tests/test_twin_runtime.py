@@ -6,6 +6,7 @@ w czasie symulowanym: wynik nie zalezy od obciazenia procesora.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -200,6 +201,29 @@ def connect_fake(twin, monkeypatch, arm: FakeArm, **kw):
 def run(twin, seconds):
     for _ in range(int(round(seconds / DT))):
         twin.step(DT)
+
+
+def move_stepped(twin, joints, max_s: float = 15.0, **kw) -> None:
+    """`Twin.move` w watku pomocniczym, a petla krokami `step` na zegarze wirtualnym: przejazd trwa tyle,
+    ile obliczenia, a nie sekundy sciany. Wyjatek z `move` idzie dalej."""
+    out: dict = {}
+
+    def go():
+        with twin.clock.member():                          # kazdy krok rampy przed taktem petli
+            try:
+                twin.move(joints, **kw)
+            except Exception as exc:                       # noqa: BLE001 - rzucony dalej ponizej
+                out["exc"] = exc
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    for _ in range(int(round(max_s / DT))):
+        if not th.is_alive():
+            break
+        twin.step(DT)
+    th.join(5.0)
+    assert not th.is_alive(), "move nie skonczyl sie"
+    if "exc" in out:
+        raise out["exc"]
 
 
 # ------------------------------------------------------------ wlasnosc ramienia
@@ -594,11 +618,11 @@ def test_move_raises_when_the_arm_stops_short_of_the_command(monkeypatch):
     arm = FakeArm()
     arm.wall["shoulder_pan"] = (-1e9, 65.0)
     monkeypatch.setattr(rt, "create_backend", lambda cfg: arm)
-    tw = Twin(Workspace())
+    tw = Twin(Workspace(), clock=VirtualClock())
     try:
-        tw.connect("feetech", port="COM_TEST")
+        tw.connect("feetech", port="COM_TEST", threaded=False)
         with pytest.raises(RuntimeError, match="shoulder_pan"):
-            tw.move({"shoulder_pan": 80.0}, duration=0.5, settle=0.2)
+            move_stepped(tw, {"shoulder_pan": 80.0}, duration=0.5, settle=0.2)
     finally:
         tw.close()
 
@@ -795,12 +819,12 @@ def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():
     """Suwak Predkosc 20 st./s ogranicza rozkaz nadzoru; obrot nadgarstka o 60 st. potrzebuje 3 s,
     a staly termin 0,5 + 0,4 + 1,5 s konczyl przejazd bledem "rozkaz jeszcze jedzie" - fala
     z 21 i 11 obserwacjami przepadla na jednym takim przejezdzie."""
-    tw = Twin(Workspace())
+    tw = Twin(Workspace(), clock=VirtualClock())
     try:
-        tw.connect("sim")
+        tw.connect("sim", threaded=False)
         tw.set_speed(20.0)
         roll = tw.joints()["wrist_roll"]
-        tw.move({"wrist_roll": roll + 60.0}, duration=0.5, settle=0.2)
+        move_stepped(tw, {"wrist_roll": roll + 60.0}, duration=0.5, settle=0.2)
         assert abs(tw.status.command["wrist_roll"] - (roll + 60.0)) < 1.0
         tw.home()
     finally:

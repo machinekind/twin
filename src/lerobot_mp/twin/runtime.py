@@ -31,7 +31,6 @@ from __future__ import annotations
 import copy
 import logging
 import threading
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
@@ -1030,6 +1029,11 @@ class Twin:
         rampa smoothstep najwyzej `HOME_STAGE_DEG_S`, STOP / Dom / Polacz przerywaja.
         Chwytak sciskajacy kostke zostaje zamkniety (`_squeeze_keep`).
         """
+        # Uczestnik zegara wirtualnego (testy): planowanie etapow nie zjada czasu symulowanego.
+        with self.clock.member():
+            self._home_stages()
+
+    def _home_stages(self) -> None:
         from .collision import CollisionChecker
         owner = "dom"
         try:
@@ -1131,6 +1135,9 @@ class Twin:
         Zegar rampy stoi, gdy stoi petla (lacze niepotwierdzone): nadzor wtedy nie jedzie,
         a zegar liczony dalej konczyl rampe w czasie przestoju i po nim rozkaz gonil cel
         z pelna predkoscia.
+
+        Czas z `self.clock` (jak petla): w aplikacji zegar sciany; na `VirtualClock` (testy) `move`
+        wolany z innego watku jedzie w czasie symulowanym, ktory przesuwa `step(dt)`.
         """
         if not self.connected:
             raise RuntimeError("ramie nie jest polaczone")
@@ -1154,11 +1161,12 @@ class Twin:
             self._engaged = True
         start = self._ramp_start(joints)
         goal = {k: float(joints.get(k, v)) for k, v in start.items()}
-        t0 = t_prev = time.monotonic()
+        clock = self.clock
+        t0 = t_prev = clock.now()
         paused = 0.0
         while True:
             self._check_move(gen)
-            now = time.monotonic()
+            now = clock.now()
             if self._frozen():
                 paused += now - t_prev
             t_prev = now
@@ -1170,11 +1178,11 @@ class Twin:
                 self._target = target
             if s >= 1.0:
                 break
-            time.sleep(1.0 / self.loop_hz)
-        t_end = time.monotonic() + settle
-        while time.monotonic() < t_end:
+            clock.sleep(1.0 / self.loop_hz)
+        t_end = clock.now() + settle
+        while clock.now() < t_end:
             self._check_move(gen)
-            time.sleep(min(0.05, settle))
+            clock.sleep(min(0.05, settle))
         deadline = t_end + self.move_arrive_s + self._command_lag(goal)
         prev_cmd: dict[str, float] | None = None
         while True:
@@ -1182,9 +1190,9 @@ class Twin:
             why, prev_cmd = self._arrival(prev_cmd)
             if not why:
                 return
-            if time.monotonic() > deadline:
+            if clock.now() > deadline:
                 raise RuntimeError(f"ruch nie dojechal do celu w {settle + self.move_arrive_s:.1f} s: {why}")
-            time.sleep(0.05)
+            clock.sleep(0.05)
 
     def _command_lag(self, goal: Mapping[str, float]) -> float:
         """Ile sekund ROZKAZ nadzoru jeszcze pojedzie do celu po koncu rampy (z zapasem).
@@ -1273,13 +1281,14 @@ class Twin:
 
     def _wait_for_homing(self, timeout: float = 6.0) -> None:
         """Ruch zaczety w trakcie rampy do domu startowalby z pozy, ktora zaraz sie zmieni."""
-        t_end = time.monotonic() + timeout
+        clock = self.clock
+        t_end = clock.now() + timeout
         while self._supervisor is not None and not self._supervisor.is_homing_done:
             if self._manual:
                 raise RuntimeError("ramie jedzie do domu - poczekaj na koniec rampy")
-            if time.monotonic() > t_end:
+            if clock.now() > t_end:
                 raise RuntimeError("ramie wciaz jedzie do domu")
-            time.sleep(0.02)
+            clock.sleep(0.02)
 
     # ---------------------------------------------------------- sluchacze taktow
     def add_tick_listener(self, fn: Callable[[TickSample], None]) -> int:

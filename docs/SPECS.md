@@ -685,8 +685,33 @@ read it. Other message types are ignored. For the full relay protocol see the sp
 .venv/bin/python -m pytest -q tests/test_twin_follow.py tests/test_twin_specsreach.py tests/test_twin_specsreach_a1x.py \
     tests/test_twin_specsreach_so101.py tests/test_twin_reach.py tests/test_twin_impact.py tests/test_twin_ui.py
 pytest -q                     # the whole suite
+pytest -q -m "not cli"        # without the CLI subprocess tests (~5 s of the Spectacles tests)
 pytest -q -m "not render"     # a machine without OpenGL
+pytest -q -n auto --dist loadfile   # in parallel, one file per worker (needs pytest-xdist)
 ```
+
+The driver tests run on a virtual clock (`twin/clock.py`), not in wall time.
+The twin has no loop thread (`connect(threaded=False)`); a `VirtualClock`
+moves only when the test steps the loop, and the driver reads the same clock
+(`SpecsReach.clock` defaults to `Twin.clock`). Ramps, arrival, the gripper
+wait, the hold-off and the backoff grace all run in simulated seconds, so ten
+seconds of motion cost a fraction of a second and the timings repeat to the
+tick. The relay, the websocket and the driver's network thread stay real.
+`tests/twinbench.py` holds the bench: the fake relay and `Bench.pump(until=...,
+sim_s=..., max_sim_s=10.0, dt=0.02)`, which steps the loop until a condition
+holds. A test that needs the driver to have received a message waits for it in
+real time with the clock stopped (`Bench.target`, `Bench.grip`), then pumps.
+In the app the twin and the driver run on `WallClock` (`time.monotonic`, real
+sleeps), as before.
+
+Measured on a loaded 10-core Mac: the three files `test_twin_specsreach.py`,
+`test_twin_specsreach_a1x.py` and `test_twin_reach.py` take ~9 s, of which
+~4 s is the CLI run in a subprocess (they took ~130 s in wall time before the
+clock). The whole suite takes ~65 s, or ~45 s with `-n auto --dist loadfile`.
+Most of what is left is CPU-bound calibration planning in
+`tests/test_twin_calib.py` (~35 s). `--dist loadfile` keeps each file on one
+worker, so module-scoped twins are built once per file; the relay binds port
+0, so workers do not clash. xdist is not in `addopts`: pass it when you want it.
 
 - `tests/test_twin_specsreach.py`: a fake relay (the `/twin` side of
   `server.js`) and the simulated A1X. Reaching a hand target, the refusals
