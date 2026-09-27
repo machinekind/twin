@@ -635,7 +635,7 @@ def test_cli_specs_help():
     out = subprocess.run([sys.executable, "-m", "lerobot_mp.twin.cli", "specs", "--help"], capture_output=True,
                          text=True, env=_env(), timeout=60)
     assert out.returncode == 0, out.stderr
-    for flag in ("--relay", "--mode", "--grasp", "--trusted-only", "--i-know", "--seconds"):
+    for flag in ("--relay", "--mode", "--grasp", "--trusted-only", "--i-know", "--seconds", "--follow-speed"):
         assert flag in out.stdout
 
 

@@ -46,7 +46,7 @@ NEAR_BASE = 0.04  # m
 SIDE_FRACTION = 0.6
 
 # Grab zone (lo, hi), base frame [m]. A1X: x up to 0.40, not 0.42 - at (0.42, +-0.25) with the TCP at the
-# highest hover (0.173 m) the tool cannot point down (tilt 17.8 deg > 15). Other arms: no zone (no grab).
+# highest hover (0.173 m) the tool cannot point down (tilt 0.31 rad > 0.26). Other arms: no zone (no grab).
 GRAB_ZONES: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
     "a1x": ((0.20, -0.25, -0.03), (0.40, 0.25, 0.18)),
 }
