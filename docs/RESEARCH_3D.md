@@ -122,9 +122,9 @@ mają licencje niekomercyjne.
 
 ---
 
-## 3. CPU, GPU i DGX Spark
+## 3. CPU, GPU i chmura
 
-**Na laptopie (i5-7200U, 8 GB)** — szacunki z FLOPs i zmierzonej
+**Na laptopie bez GPU (i5-7200U, 8 GB)** — szacunki z FLOPs i zmierzonej
 przepustowości 34–72 GFLOPS fp32, w praktyce wolniej:
 
 | | czas |
@@ -137,11 +137,6 @@ przepustowości 34–72 GFLOPS fp32, w praktyce wolniej:
 *Zmierzone*: próba chwytu to 0,1–0,45 s symulacji plus 0,03–0,3 s IK;
 nieudane IK trwa 1–5 s, więc przyda się analityczne IK dla 5 osi albo mapa
 osiągalności.
-
-**DGX Spark**: 128 GB pamięci wspólnej zmieści wszystkie te modele. To jednak
-aarch64 z architekturą sm_121 — rozszerzenia CUDA (np. kaolin, potrzebny SAM 3D)
-trzeba budować ze źródeł. Są relacje z uruchamiania SAM 3D na Sparku; czasów
-nie potwierdzono.
 
 **Chmura**: endpointy SAM 3 ok. 0,005 $/obraz i SAM 3D ok. 0,02 $/obiekt;
 wynajem A100 80 GB ok. 1,4 $/h. Karta 24 GB nie wystarczy dla SAM 3D.

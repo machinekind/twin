@@ -47,12 +47,18 @@ def detector():
 
 
 def detect(rgb):
-    """{tag id: (4, 2) float32 pixel corners} for every tag found in an RGB image."""
+    """{tag id: (4, 2) float32 pixel corners} for every tag found in an RGB image.
+
+    Id widziane w kadrze DWA razy (ten sam numer na karcie w szczekach i na obudowie
+    kamery PMD, `tagbody`) jest odrzucane: slownik zostawialby jeden z nich na chybil
+    trafil, a sesja kalibracji brala go za karte.
+    """
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) if rgb.ndim == 3 else rgb
     corners, ids, _ = detector().detectMarkers(gray)
     if ids is None:
         return {}
-    return {int(i): c.reshape(4, 2) - APRILTAG_OFFSET for c, i in zip(corners, ids.ravel())}
+    flat = [int(i) for i in ids.ravel()]
+    return {i: c.reshape(4, 2) - APRILTAG_OFFSET for c, i in zip(corners, flat) if flat.count(i) == 1}
 
 
 def corners_in_tag(size):

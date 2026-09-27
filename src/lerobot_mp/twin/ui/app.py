@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -37,11 +38,16 @@ from ..calib.intrinsics import Board
 from ..kinematics import inverse, pose
 from ..perception import CubeDetector, CubeTracker, TableMapper
 from ..runtime import Twin
+from ..calib import tags as aptags
+from ..pmd import is_pmd
+from ..tagbody import OPTICAL_AXES, TagBody, learn_layout, locate, observe
 from ...paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
+from .specs_panel import add_specs_folder
+from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
 
 #: Gotowe obiektywy z innych kalibracji (pliki tekstowe: K, dystorsja) - do wczytania w kroku 1.
@@ -63,8 +69,8 @@ GIZMO_MAX_STEP_DEG = 15.0
 GIZMO_IDLE_S = 0.5
 #: Kadr starszy niz tyle [s] nie jest kadrem "na zywo" (zamrozony strumien).
 FRAME_MAX_AGE = 1.0
-#: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje USB
-#: na Shadow ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
+#: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje
+#: przekazania USB ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
 GUIDE_FRAME_LOST = 3.0
 #: Detekcja kostki starsza niz tyle [s] nie trafia do polityki jako nowa.
 CUBE_MAX_AGE = 0.5
@@ -462,8 +468,13 @@ def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240))
 
 
 class TwinApp:
-    def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080):
+    def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080,
+                 stream_port: int | None = None, stream_host: str = "0.0.0.0"):
         self.host = host
+        #: Podglad kamer po HTTP (MJPEG) na osobnym porcie - tylko do odczytu, wiec domyslnie cala siec.
+        self.stream: FrameServer | None = None
+        if stream_port is not None:
+            self.stream = FrameServer(self.stream_frames, host=stream_host, port=stream_port)
         self.ws = Workspace.load(workspace)
         self.ws_path = Path(self.ws.path).resolve() if self.ws.path else None
         self.twin = Twin(self.ws)
@@ -592,6 +603,11 @@ class TwinApp:
         self._refresh_cameras()
         self._guard("przewodnik", self._tick_guide)
         logger.info("Panel gotowy w %.1f s", time.monotonic() - t_start)
+        if self.stream is not None:
+            self.stream.start()
+        # SPECS_CONNECT=1: polacz z przekaznikiem od razu (tryb dry - ramie stoi), bez klikania w panelu.
+        if os.environ.get("SPECS_CONNECT", "").strip().lower() in ("1", "true", "yes", "tak"):
+            self._guard("spectacles", self.specs.start)
 
     # ================================================================ narzedzia
     def _safe(self, fn):
@@ -1387,19 +1403,23 @@ class TwinApp:
                                  hint="Nowa kamera symulowana 640x480 ok. 0,55 m od ramienia, patrzaca na blat; "
                                       "kolejne staja z innych stron. Przestawiasz ja potem uchwytem w 3D.")
         probe = g.add_button("Szukaj kamer USB", icon=viser.Icon.SEARCH,
-                             hint="Szuka kamer USB (i IDS uEye, gdy jest pyueye), ktorych nie ma jeszcze w "
-                                  "stanowisku. Na maszynie wirtualnej/zdalnej (np. Shadow) kamera musi byc "
+                             hint="Szuka kamer USB (IDS uEye, gdy jest pyueye; pmd CamBoard nano, gdy jest "
+                                  "PMDSDK), ktorych nie ma jeszcze w "
+                                  "stanowisku. Na maszynie wirtualnej/zdalnej kamera musi byc "
                                   "przepuszczona w kliencie USB.")
         self.usb_box = g.add_folder(None, visible=False)
         with self.usb_box:
             self.usb_pick = g.add_dropdown("Znaleziona", ("-",), initial_value="-",
                                            hint="Kamera z ostatniego Szukaj kamer USB: zrodlo i rozdzielczosc.")
             add_usb = g.add_button("Dodaj kamere USB", icon=viser.Icon.PLUS, color="green",
-                                   hint="Dodaje wybrana kamere USB z nominalnym K - potem zakladka Kalibracja.")
+                                   hint="Dodaje wybrana kamere USB z nominalnym K - potem zakladka Kalibracja. "
+                                        "Kamera pmd dostaje K z wlasnej kalibracji, a poze z tagow na obudowie "
+                                        "(folder Kamera PMD ponizej).")
         with g.add_folder("Nowa symulowana: pole widzenia", expand_by_default=False):
             self.sim_fov = g.add_slider("Pole widzenia [st.]", 40.0, 90.0, 1.0, 62.0,
                                         hint="Pionowe pole widzenia NOWEJ kamery symulowanej [st.], 40-90; "
                                              "typowa kamera USB ok. 60.")
+        self._build_pmd(g)
         self.cam_gizmo = self.server.scene.add_transform_controls("/uchwyt_kamery", scale=0.1, visible=False)
         self._found_usb: list[dict] = []
         self.cam_ask = _TwoClick()
@@ -1478,7 +1498,7 @@ class TwinApp:
             self.usb_pick.value = opts[0]
             self.usb_box.visible = bool(self._found_usb)
             if not self._found_usb:
-                self._notify(event, "Brak nowych kamer", "Sprawdz kabel; na maszynie wirtualnej/zdalnej (np. Shadow) "
+                self._notify(event, "Brak nowych kamer", "Sprawdz kabel; na maszynie wirtualnej/zdalnej "
                                                          "kamere trzeba przepuscic w kliencie USB.")
 
         @add_usb.on_click
@@ -1487,8 +1507,11 @@ class TwinApp:
             if not self._found_usb or self.usb_pick.value == "-":
                 raise RuntimeError("najpierw wyszukaj kamery")
             d = self._found_usb[[x["label"] for x in self._found_usb].index(self.usb_pick.value)]
-            stem = "ueye" if d["source"].startswith("ueye") else "kamera"
-            rec = self.ws.add_camera(CameraRecord(self.ws.free_name(stem), d["source"], d["width"], d["height"]))
+            stem = "ueye" if d["source"].startswith("ueye") else ("pmd" if is_pmd(d["source"]) else "kamera")
+            rec = CameraRecord(self.ws.free_name(stem), d["source"], d["width"], d["height"])
+            if d.get("K") is not None:                  # pmd: K z kalibracji fabrycznej (xyz z SDK)
+                rec.K, rec.intrinsics_from = [list(map(float, r)) for r in d["K"]], "pmd"
+            rec = self.ws.add_camera(rec)
             self._found_usb = []
             self.usb_box.visible = False
             self._save()
@@ -1725,7 +1748,7 @@ class TwinApp:
             return f'<div class="tw-empty">{_html.escape(text)}</div>'
         rows = []
         for c in self.ws.cameras:
-            src = "symulowana" if c.simulated else f"USB {c.source}"
+            src = "symulowana" if c.simulated else (f"glebia {c.source}" if is_pmd(c.source) else f"USB {c.source}")
             badges = [self._k_badge(c), self._pose_badge(c)] if calib else [self._cam_badge(c)]
             b = "".join(f'<span class="tw-badge {cls}">{_html.escape(w)}</span>' for w, cls in badges)
             rows.append(f'<div class="tw-cam"><b>{_html.escape(c.name)}</b><span class="tw-src">{_html.escape(src)}'
@@ -1825,6 +1848,9 @@ class TwinApp:
             info = (f"**poruszona** od kalibracji (obraz przesunal sie o "
                     f"{_px(self.watch.shift.get(rec.name, float('inf')))}) - zakladka **Kalibracja**, "
                     f"pomaranczowy przycisk")
+        elif not rec.calibrated and is_pmd(rec.source):
+            info = ("poza z tagow na obudowie: folder **Kamera PMD** ponizej (os optyczna, Znajdz PMD); "
+                    "K juz jest - z kalibracji fabrycznej")
         elif not rec.calibrated:
             info = "jeszcze nieskalibrowana - dalej zakladka **Kalibracja**"
         elif rec.trusted:
@@ -2881,6 +2907,7 @@ class TwinApp:
                                          "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
                                          "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
             self.tag_md = g.add_markdown("")
+        self.specs = add_specs_folder(self, g)
         self._tag_fix = None
         self.goal_node = self.server.scene.add_icosphere("/cel", radius=0.012, color=(255, 196, 0), visible=False)
         self.goal_gizmo = self.server.scene.add_transform_controls("/cel_uchwyt", scale=0.08, disable_rotations=True,
@@ -3040,6 +3067,274 @@ class TwinApp:
             k = int(s.model.body_mocapid[s.model.body("target").id])
             T = s.T_base2world
             s.data.mocap_pos[k] = T[:3, :3] @ np.array([target_base[0], target_base[1], TARGET_SIZE[2]]) + T[:3, 3]
+
+    # ------------------------------------------------------------ kamera PMD z tagami
+    def _build_pmd(self, g) -> None:
+        """Folder "Kamera PMD" w zakladce Kamery: tagi na obudowie -> uklad tagow z kadrow -> poza w 3D.
+
+        Stan: `self.pmd` (`TagBody`: numery, bok, uklad, os optyczna), `_pmd_obs` (kadry do nauki
+        ukladu), `_pmd_T` (ostatnia poza w ukladzie podstawy), `_pmd_nodes` (wezly 3D pod /pmd).
+        Z pliku stanowiska (sekcja `pmd`) wraca uklad, os i poza - PMD jest w 3D od startu.
+        """
+        self.pmd = TagBody.from_dict(self.ws.pmd) if self.ws.pmd else TagBody()
+        self._pmd_obs: list = []
+        self._pmd_fix = None
+        self._pmd_T: np.ndarray | None = None
+        if self.ws.pmd and self.ws.pmd.get("T_body2base") is not None:
+            self._pmd_T = np.asarray(self.ws.pmd["T_body2base"], float)
+        self._pmd_nodes: dict[str, Any] = {}
+        self._pmd_key = None
+        with g.add_folder("Kamera PMD (tagi na obudowie)", expand_by_default=False):
+            g.add_markdown("Kamera glebi (pmd CamBoard nano) z tagami 36h11 naklejonymi na obudowie: kamery "
+                           "stanowiska, ktore maja poze, widza tagi - stad miejsce PMD w 3D.")
+            self.pmd_ids = g.add_text("id tagow", " ".join(str(i) for i in self.pmd.ids),
+                                      hint="Numery AprilTag 36h11 na obudowie, po spacji. PIERWSZY to uklad kamery PMD "
+                                           "(srodek w srodku tego taga, z = jego normalna). Karta kalibracyjna ma 0 i 1: "
+                                           "te same numery na obudowie myla fale, gdy PMD jest w kadrze.")
+            self.pmd_mm = g.add_number("Bok tagu na obudowie [mm]", round(self.pmd.tag_size * 1000, 1), min=5.0,
+                                       max=100.0, step=0.5,
+                                       hint="Bok CZARNEGO kwadratu taga na obudowie, zmierzony linijka. Zmiana "
+                                            "przeskalowuje nauczony uklad.")
+            self.pmd_optical = g.add_dropdown("Kamera patrzy wzdluz", self._pmd_axis_options(self.pmd.ids),
+                                              initial_value=self._pmd_axis_label(self.pmd.optical),
+                                              hint="Os optyczna PMD wzgledem jednego z tagow: '-z taga 0' = tag 0 na "
+                                                   "tylnej sciance (kamera patrzy od niego); '+x/-x' = tag na bocznej; "
+                                                   "'+y/-y' = tag na gornej. Rysuje piramide pola widzenia 90 x 69 st. "
+                                                   "'nieznana' = same tagi.")
+            learn = g.add_button("Ucz ukladu tagow: dodaj kadr", icon=viser.Icon.CAMERA_PLUS,
+                                 hint="Biezacy kadr kazdej wlaczonej kamery z K (poza kamery niepotrzebna) doklada "
+                                      "do nauki, gdzie na obudowie sa tagi wzgledem siebie. Kilka kadrow z roznych "
+                                      "stron, az kazdy tag ma poze. Ramieniem nie rusza.")
+            forget = g.add_button("Nauka od nowa", icon=viser.Icon.TRASH, color="gray",
+                                  hint="Wyrzuca zebrane kadry i uklad tagow (np. po przeklejeniu taga).")
+            find = g.add_button("Znajdz PMD w kamerach", icon=viser.Icon.TARGET,
+                                hint="Kadry kamer z poza -> poza kamery PMD w ukladzie podstawy (mediana z kamer); "
+                                     "tagi, osie i piramida w 3D. Ramieniem nie rusza.")
+            self.pmd_follow = g.add_checkbox("Sledz na zywo", False,
+                                             hint="Szuka PMD w kazdym takcie panelu i przesuwa ja w 3D - do "
+                                                  "ustawiania kamery na stanowisku.")
+            save = g.add_button("Zapisz do stanowiska", icon=viser.Icon.DEVICE_FLOPPY, color="green",
+                                hint="Numery, bok, uklad tagow, os optyczna i ostatnia znaleziona poza do "
+                                     "twin.json (sekcja pmd) - po restarcie PMD od razu jest w 3D.")
+            self.pmd_md = g.add_markdown("")
+        if self._pmd_T is not None:
+            self._pmd_draw(self._pmd_T)
+            self._pmd_note("poza z pliku stanowiska - Znajdz PMD w kamerach odswieza")
+
+        @learn.on_click
+        @self._safe
+        def _(event):
+            self._pmd_learn()
+
+        @forget.on_click
+        @self._safe
+        def _(event):
+            self._pmd_forget()
+
+        @find.on_click
+        @self._safe
+        def _(event):
+            self._pmd_find(self._grab())
+
+        @save.on_click
+        @self._safe
+        def _(event):
+            self._pmd_save(event)
+
+        @self.pmd_optical.on_update
+        @self._safe
+        def _(event):
+            if event.client is None:
+                return                                  # ustawione z kodu (zmiana numerow)
+            self._pmd_sync()
+            if self._pmd_T is not None:
+                self._pmd_draw(self._pmd_T)
+
+    @staticmethod
+    def _pmd_axis_options(ids) -> tuple[str, ...]:
+        return ("nieznana",) + tuple(f"{axis} taga {i}" for i in ids for axis in OPTICAL_AXES)
+
+    @staticmethod
+    def _pmd_axis_label(optical) -> str:
+        return "nieznana" if optical is None else f"{optical[1]} taga {int(optical[0])}"
+
+    def _pmd_sync(self) -> TagBody:
+        """Bryla PMD z pol panelu. Nowe numery zeruja uklad i nauke; nowy bok skaluje uklad."""
+        try:
+            ids = tuple(int(t) for t in self.pmd_ids.value.replace(",", " ").split())
+        except ValueError:
+            raise ValueError(f"id tagow: liczby po spacji, jest {self.pmd_ids.value!r}") from None
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError("id tagow: co najmniej jeden numer, bez powtorzen")
+        size = float(self.pmd_mm.value) / 1000.0
+        body = self.pmd
+        if ids != body.ids:
+            body = TagBody(body.name, ids, size, {}, None, body.fov_deg, body.resolution)
+            self._pmd_obs, self._pmd_fix = [], None
+            self.pmd_optical.options = self._pmd_axis_options(ids)
+            self.pmd_optical.value = "nieznana"
+        elif abs(size - body.tag_size) > 1e-9:
+            k = size / body.tag_size
+            layout = {i: T.copy() for i, T in body.layout.items()}
+            for T in layout.values():
+                T[:3, 3] *= k
+            body = TagBody(body.name, ids, size, layout, body.optical, body.fov_deg, body.resolution)
+            self._pmd_obs = []                          # pozy tagow w kadrach liczone starym bokiem
+        label = self.pmd_optical.value
+        body.optical = None if label == "nieznana" else (int(label.split()[2]), label.split()[0])
+        self.pmd = body
+        return body
+
+    def _pmd_note(self, text: str) -> None:
+        """Tekst pod przyciskami, z ostrzezeniem o numerach wspolnych z karta kalibracyjna."""
+        shared = sorted(set(self.pmd.ids) & set(self.ws.card_obj().ids))
+        if shared:
+            text += (f"\n\n**Uwaga:** tagi {', '.join(map(str, shared))} sa tez na karcie kalibracyjnej - PMD "
+                     f"w kadrze podczas fali myli kalibracje; bezpieczniej inne numery na obudowie.")
+        self.pmd_md.content = text
+
+    def _pmd_learn(self) -> None:
+        body = self._pmd_sync()
+        obs = observe(self._grab(), self.ws.cameras, body)
+        if not obs:
+            with_k = [c.name for c in self.ws.cameras if c.enabled and c.K is not None]
+            self._pmd_note(f"zadna kamera nie widzi tagow {', '.join(map(str, body.ids))} "
+                           f"(wlaczone z K: {', '.join(with_k) or 'brak - najpierw Kalibracja, krok 1'})")
+            return
+        self._pmd_obs.extend(obs)
+        fit = learn_layout(self._pmd_obs, body)
+        body.layout = fit.layout
+        seen = "; ".join(f"{o.camera}: tagi {', '.join(map(str, o.ids))}" for o in obs)
+        pairs = ", ".join(f"{a}-{b} x{n}" for (a, b), n in sorted(fit.pairs.items()))
+        missing = fit.missing(body.ids)
+        text = f"kadr {len(self._pmd_obs)}: {seen}. Pary tagow w jednym kadrze: {pairs or 'brak'}. "
+        if missing:
+            text += (f"**Bez pozy: tag {', '.join(map(str, missing))}** - pokaz go kamerze razem z tagiem, "
+                     f"ktory juz ma poze.")
+        else:
+            text += "Uklad kompletny - Znajdz PMD w kamerach."
+        self._pmd_note(text)
+        if self._pmd_T is not None:
+            self._pmd_draw(self._pmd_T)
+
+    def _pmd_forget(self) -> None:
+        body = self._pmd_sync()
+        body.layout = {body.ref: np.eye(4)}
+        self._pmd_obs, self._pmd_fix = [], None
+        self._pmd_note("nauka ukladu od nowa - dodaj kadry, w ktorych widac po dwa tagi naraz")
+        if self._pmd_T is not None:
+            self._pmd_draw(self._pmd_T)
+
+    def _pmd_find(self, frames: dict[str, np.ndarray]) -> None:
+        """Poza PMD z kadrow kamer z poza -> wezly 3D i tekst z rozrzutem miedzy kamerami."""
+        body = self._pmd_sync()
+        fix = locate(frames, self.ws.cameras, body)
+        self._pmd_fix = fix
+        if fix is None:
+            posed = [c.name for c in self.ws.cameras if c.enabled and c.T_cam2base is not None and c.K is not None]
+            self._pmd_note(f"tagi {', '.join(map(str, body.known()))} nie widziane (kamery z poza: "
+                           f"{', '.join(posed) or 'brak - najpierw Kalibracja'})")
+            return
+        self._pmd_T = fix.T_body2base
+        self._pmd_draw(fix.T_body2base)
+        self._pmd_pose_to_record(fix)
+        p = fix.position
+        cams = "; ".join(f"{n}: tagi {', '.join(map(str, fix.tags_seen[n]))}, {r:.2f} px"
+                         for n, r in fix.reproj_px.items())
+        text = (f"PMD (tag {body.ref}): x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, z {p[2] * 1000:.0f} mm; "
+                f"{cams}; rozrzut miedzy kamerami {fix.spread_mm:.1f} mm")
+        untrusted = [n for n in fix.per_camera if not self.ws.camera(n).trusted]
+        if untrusted:
+            text += (f". Kamery bez zaufanej pozy: {', '.join(untrusted)} - poza PMD jest tylko tak dobra, "
+                     f"jak ich kalibracja.")
+        self._pmd_note(text)
+
+    def _pmd_records(self) -> list[CameraRecord]:
+        return [c for c in self.ws.cameras if is_pmd(c.source)]
+
+    def _pmd_pose_to_record(self, fix) -> None:
+        """Poza z tagow -> `T_cam2base` kamery stanowiska o zrodle `pmd` (gdy wybrano os optyczna).
+
+        Poza jest NIEZAUFANA z zalozenia: uklad optyczny zaczyna sie w srodku wybranego taga,
+        nie w obiektywie (kilka-kilkanascie mm), a wchodzi przez kalibracje kamer stanowiska.
+        Do sceny i piramidy w 3D wystarcza; mapa i percepcja biora tylko kamery zaufane.
+        """
+        To = self.pmd.T_optical2body()
+        recs = self._pmd_records()
+        if To is None or not recs:
+            return
+        T = np.asarray(fix.T_body2base, float) @ To
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for rec in recs:
+            rec.T_cam2base = T.tolist()
+            rec.calibration = dict(rms_px=float(max(fix.reproj_px.values())), max_px=float(max(fix.reproj_px.values())),
+                                   n_obs=len(fix.per_camera), spread_deg=0.0, trusted=False,
+                                   reason="poza z tagow na obudowie (srodek w tagu, nie w obiektywie)", time=now,
+                                   spread_mm=float(fix.spread_mm), tags=[int(self.pmd.optical[0]), self.pmd.optical[1]])
+            self._update_frustum(rec)
+        self._dirty_rebuild = time.monotonic()          # kamera w scenie MuJoCo - przebudowa po chwili spokoju
+
+    def _tick_pmd(self, frames: dict[str, np.ndarray]) -> None:
+        if self.pmd_follow.value:
+            self._pmd_find(frames)
+
+    def _pmd_draw(self, T_body2base: np.ndarray) -> None:
+        """Tagi (obrazy), osie ukladu PMD i piramida pola widzenia pod /pmd w scenie 3D.
+
+        Wezly powstaja raz na zestaw (tagi, os, bok) i potem tylko sie przesuwaja - w trybie
+        "sledz na zywo" nie ma co slac obrazow tagow co takt.
+        """
+        body = self.pmd
+        Tw = self.T_b2w @ np.asarray(T_body2base, float)
+        has_record = any(c.enabled and c.T_cam2base is not None for c in self._pmd_records())
+        key = (tuple(body.known()), body.optical, round(body.tag_size, 6), has_record)
+        with self.scene_lock:
+            sc_ = self.server.scene
+            if self._pmd_key != key:
+                for h in self._pmd_nodes.values():
+                    h.remove()
+                self._pmd_nodes = {}
+                self._pmd_key = key
+            plate = body.tag_size / aptags.MARKER_FRACTION
+            poses: dict[str, np.ndarray] = {"os": Tw, "etykieta": Tw}
+            for i in body.known():
+                # Plytka 0,5 mm przed srodkiem taga, zeby nie migotala z obudowa / plytka sasiada.
+                poses[f"tag{i}"] = Tw @ body.layout[i] @ pose(np.eye(3), np.array([0.0, 0.0, 0.0005]))
+            To = body.T_optical2body()
+            own_frustum = not any(c.enabled and c.T_cam2base is not None for c in self._pmd_records())
+            if To is not None and own_frustum:          # kamera pmd w stanowisku ma wlasna piramide z obrazem
+                poses["kamera"] = Tw @ To
+            for name, T in poses.items():
+                h = self._pmd_nodes.get(name)
+                if h is not None:
+                    h.position, h.wxyz = T[:3, 3], mat_to_wxyz(T[:3, :3])
+                    continue
+                q = mat_to_wxyz(T[:3, :3])
+                if name == "os":
+                    h = sc_.add_frame("/pmd/os", axes_length=0.03, axes_radius=0.0015, wxyz=q, position=T[:3, 3])
+                elif name == "etykieta":
+                    h = sc_.add_label("/pmd/etykieta", "PMD", wxyz=q, position=T[:3, 3] + np.array([0.0, 0.0, 0.04]))
+                elif name == "kamera":
+                    h = sc_.add_camera_frustum("/pmd/kamera", fov=float(np.radians(body.fov_deg[1])),
+                                               aspect=body.resolution[0] / body.resolution[1], scale=0.05,
+                                               color=(120, 200, 255), thickness=0.002, wxyz=q, position=T[:3, 3])
+                else:
+                    # Wiersz 0 obrazu viser kladzie na -y (jak mapa blatu, `table[::-1]`); tag ma gore na +y.
+                    img = aptags.render(int(name[3:]), 100)[::-1]
+                    img = np.ascontiguousarray(np.repeat(img[:, :, None], 3, axis=2))
+                    h = sc_.add_image(f"/pmd/{name}", img, plate, plate, format="png", wxyz=q, position=T[:3, 3])
+                self._pmd_nodes[name] = h
+
+    def _pmd_save(self, event) -> None:
+        body = self._pmd_sync()
+        data = body.to_dict()
+        if self._pmd_T is not None:
+            data["T_body2base"] = np.asarray(self._pmd_T, float).tolist()
+        self.ws.pmd = data
+        self._save()
+        self._notify(event, "Zapisano", f"kamera PMD w {self.ws_path.name}: tagi {', '.join(map(str, body.ids))}, "
+                                        f"uklad {len(body.known())}/{len(body.ids)}, "
+                                        f"poza {'zapisana' if self._pmd_T is not None else 'jeszcze nieznana'}")
 
     # ------------------------------------------------------------ tag na biurku
     def _find_tag(self) -> None:
@@ -3379,7 +3674,7 @@ class TwinApp:
         """Kadry wlaczonych kamer z chwilami ich wykonania (`frame_times`).
 
         Kadr starszy niz `FRAME_MAX_AGE` jest pomijany: strumien, ktory stanal
-        (przekazanie USB na Shadow), oddawal te sama klatke w nieskonczonosc,
+        (zerwane przekazanie USB), oddawal te sama klatke w nieskonczonosc,
         a mapa co takt "widziala" w niej kostke od nowa.
         """
         frames, times = {}, {}
@@ -3399,6 +3694,12 @@ class TwinApp:
             self.frames, self.frame_times = frames, times
             self._t_grab = now
         return frames
+
+    def stream_frames(self) -> dict[str, tuple[np.ndarray, float]]:
+        """Kadry z ostatniego `_grab` z chwilami wykonania - dla `FrameServer` (inny watek, tylko odczyt).
+        Nie `cameras.frame_t`: symulowane renderuja sie w MuJoCo, a to nie jest bezpieczne z innego watku."""
+        with self.frame_lock:
+            return {n: (img, self.frame_times.get(n, 0.0)) for n, img in self.frames.items()}
 
     def _fresh_frames(self, max_age: float) -> dict[str, np.ndarray]:
         """Kadry z ostatniego `_grab`, jesli sa mlodsze niz `max_age` [s], inaczej nowe."""
@@ -3453,8 +3754,10 @@ class TwinApp:
         self._tick_calibration()
         self._tick_training()
         self._tick_policies()
+        self._guard("pmd", self._tick_pmd, frames)
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
+        self._guard("spectacles", self.specs.tick)
         return frames
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
@@ -3514,6 +3817,9 @@ class TwinApp:
         port = self.server.get_port()
         remote = "  (zdalnie: http://<adres-maszyny>:{port})" if self.host not in ("127.0.0.1", "localhost") else ""
         print(f"Panel blizniaka: http://localhost:{port}{remote.format(port=port)}", flush=True)
+        if self.stream is not None:
+            print(f"Podglad kamer:  {self.stream.url}  (z sieci: http://<adres-maszyny>:{self.stream.port}/)",
+                  flush=True)
         t_slow = t_map = t_watch = t_list = 0.0
         frames: dict[str, np.ndarray] = {}
         try:
@@ -3565,6 +3871,9 @@ class TwinApp:
         try:
             if self.runner is not None:
                 self.runner.stop("zamkniecie panelu")
+            specs = getattr(self, "specs", None)           # release the arm before disconnecting
+            if specs is not None:
+                self._guard("spectacles", specs.stop)
             for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
                 job.stop()
         finally:
@@ -3575,6 +3884,8 @@ class TwinApp:
                     # Trening w osobnym procesie bez konsoli - bez tego zostawal po zamknieciu panelu.
                     self._guard("trening", self.train.shutdown)
                 finally:
+                    if self.stream is not None:
+                        self._guard("podglad kamer", self.stream.stop)
                     self.server.stop()
 
 
@@ -3585,10 +3896,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--workspace", default=None)
+    ap.add_argument("--stream-port", type=int, default=None)
+    ap.add_argument("--stream-host", default="0.0.0.0")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Sondy HTTP (HEAD, niedokonczone polaczenia) nie sa bledami panelu - websockets
     # drukuje po kilkadziesiat linii stosu na kazda, zasypujac to, co wazne.
     logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-    TwinApp(a.workspace, a.host, a.port).run()
+    TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host).run()
     return 0

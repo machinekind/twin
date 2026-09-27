@@ -90,7 +90,8 @@ class CameraRecord:
     K: list[list[float]] | None = None
     dist: list[float] | None = None
     T_cam2base: list[list[float]] | None = None
-    #: Skad sa intrynsyki: "szachownica", "nominalne", "symulacja".
+    #: Skad sa intrynsyki: "szachownica", "nominalne", "symulacja", "pmd" (kalibracja fabryczna
+    #: kamery glebi, odczytana z jej xyz - `twin.pmd.intrinsics_from_xyz`).
     intrinsics_from: str = "nominalne"
     #: Wynik ostatniej kalibracji polozenia: rms_px, spread_deg, n_obs, trusted, reason, time.
     calibration: dict[str, Any] = field(default_factory=dict)
@@ -140,6 +141,8 @@ class CameraRecord:
         """
         if self.simulated:
             return ""
+        if self.intrinsics_from == "pmd" and self.K is not None:
+            return ""                                   # kalibracja fabryczna kamery glebi (xyz z SDK)
         if self.intrinsics_from != "szachownica" or self.K is None:
             return "intrynsyki nominalne - najpierw krok 1 (tablica ChArUco)"
         if not self.intrinsics_info.get("trusted", False):
@@ -195,6 +198,12 @@ class Workspace:
     #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
     #: pusta = model Menagerie. Srodek randomizacji w treningu.
     dynamics: dict[str, Any] = field(default_factory=dict)
+    #: Reach box for the glasses (`reach.ReachVolume`), base frame [m]: {"lo": [x, y, z], "hi": [x, y, z]}.
+    #: None = arm default; None is not written, so older files without the key still load.
+    reach: dict[str, Any] | None = None
+    #: Kamera PMD (CamBoard nano) z tagami na obudowie (`tagbody.TagBody.to_dict` + ostatnia
+    #: poza `T_body2base` w ukladzie podstawy); None = brak, nie jest zapisywane.
+    pmd: dict[str, Any] | None = None
     #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
     #: None = nie wybrano, `load` wgrywa najnowszy.
     calib_preset: str | None = None
@@ -353,6 +362,9 @@ class Workspace:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("path", None)
+        for key in ("reach", "pmd"):
+            if data.get(key) is None:
+                data.pop(key, None)
         return data
 
     def save(self, path: str | Path | None = None) -> Path:

@@ -121,12 +121,12 @@ robot:
   read_state_hz: 10.0
   # --- tylko backend `feetech` (lerobot-mp) i blizniak (lerobot-twin) --------
   # Blizniak przelicza chwytak 0..100 na kat szczeki przez te same tiki, wiec
-  # przy innym ramieniu niz autora trzeba je poprawic TUTAJ (w kopii pliku),
+  # przy innym ramieniu trzeba je poprawic TUTAJ (w kopii pliku),
   # inaczej `lift` sciska za mocno albo nie domyka.
   baudrate: 1000000          # predkosc portu; STS3215 w SO-101 fabrycznie 1 Mbaud
   center_ticks: 2048         # tik zera stawu (4096 tikow na obrot, montaz wysrodkowany)
   gripper_closed_ticks: 1986 # szczeka zamknieta = 0 w skali aplikacji
-  gripper_open_ticks: 2670   # szczeka otwarta = 100; wartosci z EEPROM ramienia autora (nr 1)
+  gripper_open_ticks: 2670   # szczeka otwarta = 100; wartosci z EEPROM przykladowego ramienia
   # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position
   # serwa chwytaka (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u.
   torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte

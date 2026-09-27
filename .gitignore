@@ -29,11 +29,16 @@ recordings/
 configs/local*.yaml
 .DS_Store
 
-# Lokalne stanowisko blizniaka: kalibracja kamer, pozycja stolu (per biurko)
-workspace/
+# Lokalne stanowisko blizniaka: kalibracja kamer, pozycja stolu (per biurko);
+# zestawy polozen kamer z fali (workspace/calib/*.json) ida do repozytorium
+workspace/*
+!workspace/calib/
 
 # Ostrzezenia MuJoCo zapisywane przy kompilacji scen
 MUJOCO_LOG.TXT
 
 # Pliki Claude Code (worktree agentow, launch.json) - lokalne, nie do repozytorium
 .claude/
+
+# PMDSDK (dowiazanie do rozpakowanego pmd/ z plyty) - per maszyna
+/pmd

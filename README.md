@@ -66,10 +66,15 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.
+- **Cele z okularów Spectacles** — pudełko zasięgu w okularach, pinch wysyła
+  cel, ramię jedzie i cofa się po uderzeniu (`lerobot-twin specs`, folder
+  *Spectacles* w panelu; pierwszy ruch prawdziwym A1X 2026-09-26) —
+  [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch).
+  Kierowca okularów po angielsku: [docs/SPECS.md](docs/SPECS.md); okulary i ramię krok po kroku: [docs/RIG.md](docs/RIG.md).
 
 ## Co przyspiesza
 
-Zmierzone na RTX A4500:
+Zmierzone na karcie RTX A4500:
 
 | | czas |
 |---|---|
@@ -88,12 +93,13 @@ zostaje sprawdzenie.
 
 W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 (inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
-8/8. Kod przeszedł trzy rundy przeglądu z niezależną weryfikacją poprawek;
-The figures above are historical SO-101 results, not A1X results. A1X now has
-fake-CAN regression tests, five successful scripted simulation lifts, and small
-GPU training checks on an RTX 2000 Ada 8 GB via WSL. The team has performed
-physical calibration work; an end-to-end learned physical grasp has not been
-established here. Current commands, evidence and limitations are in
+8/8.
+
+The figures above are historical SO-101 results, not A1X results. A1X has
+fake-CAN regression tests, scripted simulation lifts, bounded GPU checks, and
+learned lift checkpoints evaluated through the guarded controller. The team has
+performed physical calibration work; an end-to-end learned physical grasp has
+not been established here. Current commands, evidence and limitations are in
 [A1X_OFFLINE_VALIDATION.md](docs/A1X_OFFLINE_VALIDATION.md); remaining work is in
 [A1X_EXECUTION_PLAN.md](docs/A1X_EXECUTION_PLAN.md).
 Decyzje, historia i pułapki: [HANDOFF.md](HANDOFF.md).
@@ -113,10 +119,10 @@ i dane:
 | `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
 | `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
 | `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
-| `assets/calib/*.txt` | gotowe obiektywy kamer autora (Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
+| `assets/calib/*.txt` | przykładowe obiektywy (Logitech Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
 | `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
-| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | nie |
+| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — przykładowe zestawy z fal A1X |
 | `workspace/policies/` | polityki, które sam wytrenujesz | nie |
 | `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
 
@@ -244,7 +250,7 @@ Karta z panelem musi być widoczna: viser w karcie w tle nic nie rysuje.
 ### 4. Testy
 
 ```bash
-pytest -q                     # ok. 3-4 min na RTX A4500 (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
+pytest -q                     # ok. 3-4 min z GPU (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
 pytest -q -m "not render"     # komputer bez OpenGL
 ```
 
@@ -271,7 +277,7 @@ Do bliźniaka służy backend `feetech` (sam `pyserial`, bez LeRobota i bez jego
 kalibracji). Port pokaże `lerobot-twin check` albo „Wykryj porty” w panelu
 (Windows `COMx`, Linux `/dev/ttyACM0`). Tiki chwytaka w konfiguracji
 (`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670) to wartości
-ramienia autora — sprawdź swoje i wpisz je w kopię konfiguracji:
+przykładowego ramienia — sprawdź swoje i wpisz je w kopię konfiguracji:
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -420,7 +426,6 @@ Pusta lista oznacza jedną z trzech rzeczy, w tej kolejności prawdopodobieństw
 
 | Środowisko | Gdzie to włączyć |
 |---|---|
-| Shadow / Blade | w kliencie Shadow: menu urządzeń USB → zaznacz przejściówkę ramienia |
 | VirtualBox | Urządzenia → USB → wybierz urządzenie (plus Extension Pack) |
 | VMware | VM → Removable Devices → urządzenie → Connect |
 | Hyper-V | brak przekierowania USB — użyj trybu rozszerzonej sesji albo `usbipd-win` |
@@ -450,7 +455,7 @@ jedna ramka to jeden przebieg zamiast kilku. Na maszynie z ramieniem:
 
 ```bash
 pip install -e ".[bridge]"
-lerobot-mp-bridge --port COM11 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
+lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
 ```
 
 Na maszynie zdalnej wystarczy dowolny sterownik wirtualnego portu szeregowego
