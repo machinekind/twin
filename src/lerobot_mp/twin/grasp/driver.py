@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import perf_counter
-from typing import IO, TYPE_CHECKING, Any, Literal
+from typing import IO, TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -68,9 +68,9 @@ from .contract import (
 )
 from .gripper import GripperEstimator
 from .hover import Hover
-from .motion import ArmSession, Ended
+from .motion import GRIP_OPEN, ArmSession, Ended
 from .observer import GraspObserver
-from .rig import Rig
+from .rig import MODES, Rig, plain
 
 if TYPE_CHECKING:
     from .policy import GraspStudentPolicy
@@ -78,16 +78,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 Mode = Literal["dry", "sim", "shadow", "real"]
-MODES = ("dry", "sim", "shadow", "real")
 
 FRAME_END_S = 0.5                      # a frame older than this ends the episode at once
 SKIPS_END = 5                          # soft skips in a row that end an episode ...
 SKIPS_END_LAG = 10                     # ... or, when the last one is `lag`, this many (0.5 s)
 RATE_LIMITED_DEG = 0.5
 DRY_EFFORT_PERIOD_S = 1.0
-GRIP_OPEN = 100.0
-# The measured-side floor starts at the command floor's own margin, not at FLOOR_MEASURED_MIN (2 mm):
-# at full lateral speed the tool dips for 3 to 4 ticks while the raised floor brings the command back.
+MAX_SECONDS = 12.0                     # time cap of an episode, next to the tick cap
+# The measured-side floor starts at the command floor's own margin: at full lateral speed the
+# tool dips for 3 to 4 ticks while the raised floor brings the command back.
 MEASURED_FLOOR_START = FLOOR_MARGIN
 _BOX_CORNERS = np.array(list(itertools.product((-1.0, 1.0), repeat=3)))
 
@@ -163,6 +162,7 @@ class EpisodeReport:
     log: Path | None
     loop_gaps: int = 0                # ticks that started more than one period late
     jump_refused: int = 0             # of `ik_refused`: steps over IK_MAX_JUMP_DEG, which training took
+    effort_peak: dict[str, float] = field(default_factory=dict)     # per-joint peak |effort| in the episode
 
 
 class _Skip(Exception):
@@ -220,17 +220,6 @@ def _stats(values: list[float]) -> dict[str, float]:
             "p99": float(np.percentile(v, 99)), "max": float(np.max(v))}
 
 
-def _plain(value: Any) -> Any:
-    """JSON numbers only: a non-finite float becomes null."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {k: _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    return value
-
-
 def _same_hover(a: Hover, b: Hover) -> bool:
     return a is b or (np.array_equal(np.asarray(a.p), np.asarray(b.p)) and a.yaw == b.yaw
                       and a.joints == b.joints)
@@ -246,7 +235,7 @@ class GraspDriver:
                  jaw_stroke_s: float | None = None,
                  camera_latency_s: float | None = None,
                  success: Callable[[], bool] | None = None,
-                 max_ticks: int = MAX_TICKS, max_seconds: float = 12.0,
+                 max_ticks: int = MAX_TICKS,
                  log_dir: Path | None = None,
                  on_tick: Callable[[TickRecord], None] | None = None,
                  clock: Callable[[], float] = time.monotonic,
@@ -276,7 +265,6 @@ class GraspDriver:
                                  else float(camera_latency_s))
         self.success = success
         self.max_ticks = int(max_ticks)
-        self.max_seconds = float(max_seconds)
         self.log_dir = None if log_dir is None else Path(log_dir)
         self.on_tick = on_tick
         self.clock = clock
@@ -571,7 +559,8 @@ class GraspDriver:
             r.table_ticks = 0
 
     # ------------------------------------------------------------------ the episode
-    def _empty_report(self, ending: str, detail: str) -> EpisodeReport:
+    def empty_report(self, ending: str, detail: str) -> EpisodeReport:
+        """The report of an episode that never ran a tick."""
         return EpisodeReport(ending=ending, detail=detail, ticks=0, skipped=0, ik_refused=0,
                              collision_refused=0, rate_limited=0, attempts=0, box_hits=0, floor_hits=0,
                              floor_raised=0,
@@ -582,15 +571,15 @@ class GraspDriver:
     def episode(self, hover: Hover) -> EpisodeReport:
         """One episode from the hover, on the caller's thread, until an ending."""
         if self.mode == "dry":
-            return self._empty_report("dry", "dry mode moves nothing")
+            return self.empty_report("dry", "dry mode moves nothing")
         ready, self._ready = self._ready, None
         if ready is None or not _same_hover(ready, hover):
             self._hold("error")
-            return self._empty_report("error", "pre-positioning has not succeeded for this hover")
+            return self.empty_report("error", "pre-positioning has not succeeded for this hover")
         touch = self.rig.touch_tcp_z()
         if touch is None:
             self._hold("error")
-            return self._empty_report("error", "table not taught")
+            return self.empty_report("error", "table not taught")
 
         self._episodes += 1
         now = self.clock()
@@ -599,7 +588,7 @@ class GraspDriver:
         except Exception as exc:
             logger.exception("grasp episode: set-up failed")
             self._hold("error")
-            return self._empty_report("error", f"{type(exc).__name__}: {exc}"[:200])
+            return self.empty_report("error", f"{type(exc).__name__}: {exc}"[:200])
         r.target = {j: float(hover.joints[j]) for j in self.names}
         if self.grip is not None:
             r.target[self.grip] = GRIP_OPEN
@@ -620,7 +609,7 @@ class GraspDriver:
         """Guard, speed check and log; ("", "") when the ticks may run."""
         try:
             self.arm.check_arm()
-            self.arm.guard(lag_deg=3.0, lag_s=0.15)
+            self.arm.guard(lag_deg=3.0)
             slow = self.arm.slow_joints()
             if slow:
                 return "speed limited", slow
@@ -663,7 +652,7 @@ class GraspDriver:
             self.arm.check_arm()
             if r.cmd.state.ticks + r.skipped >= self.max_ticks:
                 raise Ended("tick cap")
-            if now - r.t0 > self.max_seconds:
+            if now - r.t0 > MAX_SECONDS:
                 raise Ended("time cap")
         except Ended:
             r.pending, r.pending_target = prev, None
@@ -763,7 +752,7 @@ class GraspDriver:
 
     def _emit(self, r: _Run, rec: TickRecord) -> None:
         if r.log is not None:
-            r.log.write(json.dumps(_plain(asdict(rec))) + "\n")
+            r.log.write(json.dumps(plain(asdict(rec))) + "\n")
         if self.on_tick is not None:
             try:
                 self.on_tick(rec)
@@ -792,7 +781,8 @@ class GraspDriver:
             no_effort_rule=list(self.arm.no_effort_rule), tick_ms=_stats(r.tick_ms),
             infer_ms=_stats(r.infer_ms), frame_age_ms=_stats(r.frame_age_ms),
             joint_age_ms=_stats(r.joint_age_ms), fb_age_ms=_stats(r.fb_age_ms),
-            log=r.log_path, loop_gaps=r.loop_gaps, jump_refused=r.jump_refused)
+            log=r.log_path, loop_gaps=r.loop_gaps, jump_refused=r.jump_refused,
+            effort_peak=self.arm.log_effort_peak("episode"))
         level = logging.INFO if ending in ("success", "lifted", "tick cap", "time cap") else logging.WARNING
         logger.log(level, "episode %d ended: %s%s; %d ticks (%d skipped), %d attempts, IK refused %d "
                    "(%d over %.0f deg), collision refused %d, lowest TCP %.1f mm", self._episodes, ending,

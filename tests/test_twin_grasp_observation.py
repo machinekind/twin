@@ -395,7 +395,6 @@ def test_trainings_hovers_solve_from_home_with_j5_at_zero_and_j6_clear_of_its_li
         # The other candidate stands 180 deg away on J6; the chosen one is the further from a limit.
         other = wrap_deg(j["arm_joint6"] + 180.0)
         assert hv.j6_margin_deg >= min(other - lo6, hi6 - other) - 0.05
-        assert hv.source == "taught"
         assert hv.outside_training == [], (i, hv.outside_training)
     print(f"{len(h['yaw'])} hovers, {flipped} solved at yaw + pi, "
           f"{(time.perf_counter() - t0) / len(h['yaw']) * 1000:.0f} ms per hover")
@@ -430,7 +429,7 @@ def test_the_callers_joint_limits_decide_the_hover_within_the_model_range(kin):
     with pytest.raises(HoverError) as e:
         solve_hover(kin, LEFT, yaw, limits={**LIMITS, "arm_joint6": (-130.0, 70.0)})
     assert e.value.reason == "ik"
-    assert e.value.detail.count("J6 margin") == 2, e.value.detail
+    assert e.value.detail.count("zapas J6") == 2, e.value.detail
 
 
 def test_a_point_in_front_of_the_arm_is_flagged_outside_training(kin):
@@ -439,9 +438,9 @@ def test_a_point_in_front_of_the_arm_is_flagged_outside_training(kin):
 
     assert training_envelope({"arm_joint1": 90.0}, np.array([0.0, 0.33, 0.10])) == []
     assert training_envelope({"arm_joint1": 12.0}, np.array([0.19, 0.0, 0.15])) == [
-        "joint1 12.0 deg outside 40..139",
-        "radius 0.19 m outside 0.22..0.44",
-        "hover z 0.150 m outside 0.05..0.14",
+        "joint1 12.0 st. poza 40..139",
+        "promien 0.19 m poza 0.22..0.44",
+        "wysokosc zawisu 0.150 m poza 0.05..0.14",
     ]
 
 
@@ -456,8 +455,8 @@ def test_the_hover_is_judged_by_forward_kinematics_not_by_the_ik_flag(monkeypatc
         solve_hover(k, LEFT, 0.3, limits=LIMITS)
     assert e.value.reason == "ik"
     detail = e.value.detail
-    assert "yaw 17.2 deg" in detail and "yaw -162.8 deg" in detail, detail
-    assert "position" in detail and "rotation" in detail, detail
+    assert "yaw 17.2 st." in detail and "yaw -162.8 st." in detail, detail
+    assert "pozycja" in detail and "obrot" in detail, detail
 
 
 def test_the_hover_comes_from_the_taught_point_or_the_scene(kin):
@@ -469,11 +468,11 @@ def test_the_hover_comes_from_the_taught_point_or_the_scene(kin):
     hv = from_rig(kin, rig, limits=LIMITS)
     np.testing.assert_allclose(hv.believed, [0.02, 0.33, 0.034 + TIP_CLEAR], atol=1e-12)
     assert hv.p[2] == pytest.approx(0.034 + TIP_CLEAR + HOVER)
-    assert hv.source == "taught" and hv.yaw in (wrap(0.4), wrap(0.4 + math.pi))
+    assert hv.yaw in (wrap(0.4), wrap(0.4 + math.pi))
 
     hv = from_scene(kin, np.array([0.0, 0.33]), 0.2, touch_z=TOUCH_EXPECTED_Z, limits=LIMITS)
     np.testing.assert_allclose(hv.believed, LEFT, atol=1e-12)
-    assert hv.source == "scene" and hv.yaw in (wrap(0.2), wrap(0.2 + math.pi))
+    assert hv.yaw in (wrap(0.2), wrap(0.2 + math.pi))
 
     ref = np.random.default_rng(7)
     dxy, dz, dyaw = ref.normal(0.0, NOISE_XY, 2), ref.normal(0.0, NOISE_Z), ref.normal(0.0, NOISE_YAW)

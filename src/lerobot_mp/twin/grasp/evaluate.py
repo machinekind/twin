@@ -210,11 +210,11 @@ def _free_joint(model: mujoco.MjModel, name: str) -> int:
     return jnt
 
 
-def cube_pose(twin: Twin, name: str = CUBE) -> tuple[np.ndarray, float]:
+def cube_pose(twin: Twin) -> tuple[np.ndarray, float]:
     """Centre (3,) and yaw of the cube in the base frame, as the scene holds it now."""
     with twin.lock:
         s = twin.scene
-        body = s.model.body(name).id
+        body = s.model.body(CUBE).id
         pos = s.data.xpos[body].copy()
         R = s.data.xmat[body].reshape(3, 3).copy()
         T = s.T_base2world.copy()
@@ -239,8 +239,7 @@ def _settle(twin: Twin, until: float) -> None:
             time.sleep(0.01)
 
 
-def place_cube(twin: Twin, xy: np.ndarray, yaw: float, *, name: str = CUBE,
-               settle_s: float = 0.2) -> np.ndarray:
+def place_cube(twin: Twin, xy: np.ndarray, yaw: float, *, settle_s: float = 0.2) -> np.ndarray:
     """Puts the cube on the table at `xy` (base frame) turned by `yaw`; returns the settled centre (3,).
 
     Writes the FULL free-joint state (position, orientation, zero velocity) under the twin's
@@ -250,8 +249,8 @@ def place_cube(twin: Twin, xy: np.ndarray, yaw: float, *, name: str = CUBE,
     with twin.lock:
         s = twin.scene
         m, d = s.model, s.data
-        jnt = _free_joint(m, name)
-        body = m.body(name).id
+        jnt = _free_joint(m, CUBE)
+        body = m.body(CUBE).id
         half_z = float(m.geom_size[int(m.body_geomadr[body]), 2])
         T = s.T_base2world
         p = T @ np.array([x, y, half_z, 1.0])
@@ -264,15 +263,15 @@ def place_cube(twin: Twin, xy: np.ndarray, yaw: float, *, name: str = CUBE,
         mujoco.mj_forward(m, d)
         t0 = float(d.time)
     _settle(twin, t0 + settle_s)
-    return cube_pose(twin, name)[0]
+    return cube_pose(twin)[0]
 
 
-def scene_success(twin: Twin, z0: float, *, name: str = CUBE) -> Callable[[], bool]:
+def scene_success(twin: Twin, z0: float) -> Callable[[], bool]:
     """Training's success read from the scene: both jaws touch the cube and it rose more than `LIFT`.
 
     The driver adds the closed jaw command (`g_cmd < CLOSE_BELOW`) before it calls this.
     """
-    sensors = (f"{name}_jaw0", f"{name}_jaw1")
+    sensors = (f"{CUBE}_jaw0", f"{CUBE}_jaw1")
 
     def success() -> bool:
         with twin.lock:
@@ -280,7 +279,7 @@ def scene_success(twin: Twin, z0: float, *, name: str = CUBE) -> Callable[[], bo
             touching = all(float(s.data.sensor(k).data[0]) > 0.0 for k in sensors)
             if not touching:
                 return False
-            pos = s.data.xpos[s.model.body(name).id].copy()
+            pos = s.data.xpos[s.model.body(CUBE).id].copy()
             T = s.T_base2world.copy()
         z = float((inverse(T) @ np.append(pos, 1.0))[2])
         return z - z0 > LIFT
@@ -519,7 +518,7 @@ def evaluate(twin: Twin, policy: policy_mod.GraspStudentPolicy, *, episodes: int
             refused_in_row = refused_in_row + 1 if why is not None else 0
             if why is not None:
                 detail = getattr(drv, "detail", "")
-                rep = drv._empty_report(why, f"pre-positioning: {detail}" if detail else "pre-positioning")
+                rep = drv.empty_report(why, f"pre-positioning: {detail}" if detail else "pre-positioning")
                 ok = False
             else:
                 centre = place_cube(twin, draw.xy, draw.yaw)
@@ -533,7 +532,7 @@ def evaluate(twin: Twin, policy: policy_mod.GraspStudentPolicy, *, episodes: int
                 info["cube_rise"] = float(end_centre[2] - centre[2])
             info.update(ending=rep.ending, detail=rep.detail, success=ok, ticks=rep.ticks,
                         attempts=rep.attempts, ik_refused=rep.ik_refused, jump_refused=rep.jump_refused,
-                        log=rep.log)
+                        effort_peak=rep.effort_peak, log=rep.log)
             reports.append((rep, ok))
             per_episode.append(info)
             if on_episode is not None:
@@ -590,8 +589,8 @@ def main_eval(a: argparse.Namespace) -> int:
         print(f"--stroke-s musi byc dodatnia liczba sekund, jest {stroke_arg}.", file=sys.stderr)
         return 2
 
-    path = policy_mod._find_for_cli(a)
-    policy = policy_mod._load_for_cli(path) if path is not None else None
+    path = policy_mod.find_for_cli(a)
+    policy = policy_mod.load_for_cli(path) if path is not None else None
     if policy is None:
         return 2
     site = load_site(a)

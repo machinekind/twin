@@ -347,7 +347,7 @@ def test_on_the_fake_a1x_bus_site_refusals_read_the_backend_and_a_dry_run_sends_
         drv = a.driver(segments((1, STILL)), mode="dry")
         assert drv.check() is None
         a.pump(0.2)                                       # joint samples for the listener
-        s = run.Session(twin=a.twin, driver=drv, policy=drv.policy, frames=drv.frames, rig=Rig.for_sim(),
+        s = run.Session(twin=a.twin, driver=drv, frames=drv.frames, rig=Rig.for_sim(),
                         mode="dry", camera=drv.camera, hover=a.hover, simulated=False)
         orig_close, closes = a.twin.close, []
 
@@ -772,7 +772,7 @@ def test_a_bare_enter_while_the_arm_moves_ends_the_series_with_1(during, monkeyp
     def episode(self, hover):
         episodes.append(hover)
         keys.stop.set()
-        return self._empty_report("tick cap", "")
+        return self.empty_report("tick cap", "")
 
     monkeypatch.setattr(GraspDriver, "preposition", preposition)
     monkeypatch.setattr(GraspDriver, "episode", episode)

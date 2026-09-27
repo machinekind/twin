@@ -96,6 +96,7 @@ GRIPPER_FREE_MOVES = (99.0, 100.0, 0.0, 100.0, 0.0, 100.0)
 GRIPPER_LOADED_MOVES = (0.0, 100.0)
 GRIPPER_SETTLE_S = 2.0                # after each command; the A1X stream needs 1.3 s for a full stroke
 PRE_MOVE_S = 0.5                      # logged before each command: the noise band of its effort
+GRIPPER_POLL_S = 0.001
 MIN_RATE_HZ = 150.0
 NOISE_SIGMAS = 3.0
 EFFORT_NOISE_MIN = 0.05               # backend effort units; a flat trace would give a zero band
@@ -116,7 +117,7 @@ JOG_SETTLE_S = 0.3
 JOG_POLL_S = 0.01
 #: Below this commanded TCP z the collision checker would refuse the touch pose itself.
 JOG_COLLISION_ABOVE_Z = 0.04
-JOG_GUARD_LAG_DEG, JOG_GUARD_LAG_S = 3.0, 0.15
+JOG_GUARD_LAG_DEG = 3.0
 MOVE_GUARD_LAG_DEG = 4.0
 GRIP_WAIT_S = 2.0
 START_Z_DEFAULT = 0.12
@@ -329,7 +330,7 @@ def _froze(t: np.ndarray, frozen: np.ndarray) -> bool:
 
 
 def log_gripper(twin: Twin, moves: Sequence[float], *, arm_joints: Mapping[str, float], settle_s: float = 2.0,
-                poll_s: float = 0.001, stop: threading.Event | None = None,
+                stop: threading.Event | None = None,
                 clock: Callable[[], float] = time.monotonic,
                 sleep: Callable[[float], None] = time.sleep) -> list[EffortLog]:
     """Commands each opening in turn (arm held at `arm_joints`) and samples the gripper state.
@@ -358,7 +359,7 @@ def log_gripper(twin: Twin, moves: Sequence[float], *, arm_joints: Mapping[str, 
                 rows.append((now, _nan(gs.effort), _nan(gs.streamed), _nan(gs.commanded), bool(gs.frozen)))
             if now >= t_end:
                 return True
-            sleep(poll_s)
+            sleep(GRIPPER_POLL_S)
 
     for target in moves:
         v = float(target)
@@ -640,7 +641,7 @@ def bench_gripper(a: argparse.Namespace, keys: Keys) -> int:
         why = session.check() or session.take()
         if why is not None:
             return _not_started(why, session.detail, keys)
-        session.guard(lag_deg=MOVE_GUARD_LAG_DEG, lag_s=JOG_GUARD_LAG_S)
+        session.guard(lag_deg=MOVE_GUARD_LAG_DEG)
         clock, sleep = session.clock, session.wait
         arm_joints = {k: float(twin.status.measured[k]) for k in twin.spec.arm_joints}
         print("Szczeki bez niczego miedzy nimi. Gdy szczeki stana, wpisz s i Enter (pomiar na oko); "
@@ -886,7 +887,7 @@ class Jog:
         why = _arm_lost(s)
         if why is not None:
             return why
-        s.guard(lag_deg=JOG_GUARD_LAG_DEG, lag_s=JOG_GUARD_LAG_S)
+        s.guard(lag_deg=JOG_GUARD_LAG_DEG)
         return None
 
     def _send(self, arm_deg: np.ndarray, grip: float) -> str | None:
@@ -1107,7 +1108,7 @@ def _explain_point(rig: Rig, kin: RobotKinematics, limits: Mapping[str, tuple[fl
             print(f"UWAGA: dotyk stolu {far * 1000:.0f} mm od punktu (najwyzej "
                   f"{TABLE_TOUCH_FAR * 1000:.0f}) - tryby odmowia (table touch far).", flush=True)
     try:
-        hover = solve_hover(kin, believed, yaw, limits=limits, source="taught")
+        hover = solve_hover(kin, believed, yaw, limits=limits)
     except HoverError as exc:
         print(f"Zawis nad punktem nie do osiagniecia: {exc}", flush=True)
         return
@@ -1239,8 +1240,7 @@ def bench_teach(a: argparse.Namespace, keys: Keys, what: Literal["table", "point
         x, y = (float(xy[0]), float(xy[1])) if xy else _default_xy(b.rig, what)
         yaw = math.radians(float(getattr(a, "yaw_deg", None) or 0.0))
         try:
-            hover = solve_hover(b.kin, np.array([x, y, start_z - HOVER]), yaw, limits=twin.joint_limits(),
-                                source="taught")
+            hover = solve_hover(b.kin, np.array([x, y, start_z - HOVER]), yaw, limits=twin.joint_limits())
         except HoverError as exc:
             return refuse(exc.reason, f"punkt startowy ({x:.3f}, {y:.3f}, {start_z:.3f}) m: {exc.detail}")
         print(f"Start: TCP ({x * 1000:.0f}, {y * 1000:.0f}, {start_z * 1000:.0f}) mm, narzedzie w dol, "
@@ -1281,14 +1281,15 @@ def _mad(image: np.ndarray, ref: np.ndarray) -> float:
     return float(np.mean(np.abs(image.astype(np.float32) - ref)))
 
 
-def measure_latency(session: ArmSession, frames: FrameSource, hover: Hover, *, steps: int = LATENCY_STEPS,
-                    step_deg: float = LATENCY_STEP_DEG) -> dict[str, Any]:
+def measure_latency(session: ArmSession, frames: FrameSource, hover: Hover) -> dict[str, Any]:
     """Steps of joint 6 by +step and -step at the hover; per step the actuation and the camera latency.
 
     `actuation_s`: from the target to the first fresh joint sample that moved more than 0.2 deg.
     `camera_s`: from that sample to the stamp of the first frame whose mean absolute difference
     from the still frames exceeds 4 sigma of theirs. Medians over the steps that saw both.
+    `effort_peak`: per-joint peak |effort| over the steps, while the guard armed by the caller runs.
     """
+    steps, step_deg = LATENCY_STEPS, LATENCY_STEP_DEG
     twin = session.twin
     clock, sleep = session.clock, session.wait
     arm = tuple(twin.spec.arm_joints)
@@ -1403,6 +1404,7 @@ def measure_latency(session: ArmSession, frames: FrameSource, hover: Hover, *, s
         # negative value; pairing then falls back to the frame's own stamp.
         "camera_s": max(0.0, float(np.median(cam))) if cam else None,
         "camera_raw_s": float(np.median(cam)) if cam else None,
+        "effort_peak": session.log_effort_peak("latency steps"),
     }
 
 
@@ -1410,8 +1412,8 @@ def _inference_p95_s(a: argparse.Namespace) -> float | None:
     """p95 of one policy call on this machine, with the twin and the camera running [s]; None on failure."""
     from . import policy as policy_mod
 
-    path = policy_mod._find_for_cli(a)
-    policy = policy_mod._load_for_cli(path) if path is not None else None
+    path = policy_mod.find_for_cli(a)
+    policy = policy_mod.load_for_cli(path) if path is not None else None
     if policy is None:
         return None
     t = policy.time()
@@ -1440,7 +1442,7 @@ def bench_latency(a: argparse.Namespace, keys: Keys) -> int:
     """Arm and camera latency at the hover, and the total a policy tick adds up to."""
     from . import policy as policy_mod
 
-    if policy_mod._find_for_cli(a) is None:
+    if policy_mod.find_for_cli(a) is None:
         return 2
     b = _open(a, moves=True)
     if isinstance(b, int):
@@ -1483,7 +1485,7 @@ def bench_latency(a: argparse.Namespace, keys: Keys) -> int:
             why, _sag = session.preposition(hover, PREPOSITION_SPEED_DEG_S)
         if why is not None:
             return _not_started(why, session.detail, keys)
-        session.guard(lag_deg=MOVE_GUARD_LAG_DEG, lag_s=JOG_GUARD_LAG_S)
+        session.guard(lag_deg=MOVE_GUARD_LAG_DEG)
         try:
             result = measure_latency(session, frames, hover)
         except CameraError as exc:
@@ -1504,6 +1506,8 @@ def bench_latency(a: argparse.Namespace, keys: Keys) -> int:
               f"inferencja p95 {infer * 1000:.0f} ms + ramie {actuation_s * 1000:.0f} ms = "
               f"{total * 1000:.0f} ms ({'w granicy' if total <= LATENCY_MAX_S else 'PONAD'} "
               f"{LATENCY_MAX_S * 1000:.0f} ms)", flush=True)
+        if result["effort_peak"]:
+            print(f"Szczyt |wysilku| przegubow w krokach J6: {result['effort_peak']}", flush=True)
         if b.may_write:
             rig = _update_rig(b.rig_path, "latency", values)
             print(f"Zapisano latency do {rig.path}.", flush=True)
@@ -1532,9 +1536,9 @@ def bench_dot(a: argparse.Namespace) -> int:
     """Records `wrist.dot_error_px`, the dot error the operator read from the dry run dump."""
     value = getattr(a, "error_px", None)
     if value is None:
-        print("Podaj --error-px V: odleglosc [px w obrazie 160x120] miedzy krzyzykiem (chwyt, w ktory wierzy "
-              "polityka) a srodkiem gornej sciany kostki na zrzucie z lerobot-twin grasp --mode dry "
-              f"(kolko ma promien {DOT_MAX_PX:g} px).", file=sys.stderr)
+        print("Podaj --error-px V: odleglosc [px w obrazie 160x120] miedzy malym kwadratem (gdzie model "
+              "kamery widzi srodek gornej sciany kostki) a prawdziwym srodkiem gornej sciany na zrzucie z "
+              f"lerobot-twin grasp --mode dry (najwiecej {DOT_MAX_PX:g} px).", file=sys.stderr)
         return 2
     value = float(value)
     if not (math.isfinite(value) and value >= 0.0):

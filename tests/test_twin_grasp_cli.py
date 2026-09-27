@@ -224,6 +224,10 @@ def test_the_config_file_is_accepted_before_and_after_a_grasp_command():
     ["grasp-eval", "--jaw", "slow"],
     ["grasp-model"],
     ["grasp-model", "download"],
+    ["grasp", "--episodes", "0"],
+    ["grasp", "--dump-every", "0"],
+    ["grasp-eval", "--episodes", "-1"],
+    ["grasp-model", "time", "--n", "0"],
 ])
 def test_a_malformed_grasp_command_line_exits_with_2_and_calls_nothing(argv, monkeypatch, capsys):
     calls: list = []

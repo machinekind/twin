@@ -146,7 +146,9 @@ lerobot-twin --config configs/local.yaml grasp-bench latency --backend a1x --por
 
 The arm goes to the hover and steps joint 6 by 3 degrees five times at full speed. Gate:
 `total_s` (camera + inference p95 + actuation) at most 150 ms (else `latency high`); at least
-three good steps (else nothing is written, exit 1). After this `show` lists nothing for shadow.
+three good steps (else nothing is written, exit 1). It also prints the joints' peak efforts over
+the steps (`Szczyt |wysilku| ...`, see [the effort limit](#the-effort-limit)). After this `show`
+lists nothing for shadow.
 
 **7.** [Shadow episodes](#shadow-ten-episodes), **8.** [the first real grasp](#first-real-grasp-three-attempts).
 
@@ -173,17 +175,20 @@ and `real` on a real backend refuse without:
 | `gripper.stroke_open_s_*`, `.free_effort_peak`, `.loaded_effort_peak`, `.separable`, `.suggested_threshold` | `grasp-bench gripper` | never; they inform the freeze decision |
 | `gripper.gap_mm` | `grasp-bench gripper --gap-mm` | never |
 | `gripper.freeze_threshold` | `grasp-bench gripper --set-freeze` (100 = off) | real |
-| `guard.effort_abs` | you (default 12.0, a guess) | never |
+| `guard.effort_abs` | you, from the logged peaks (default 12.0) | never |
 | `overrides.shadow_done` | you, a note after ten clean shadow episodes | real |
 | `overrides.table`, `.dot`, `.latency`, `.taught`, `.joint_offsets` | you, a note saying who and why | each lifts its limit |
 
 ### The effort limit
 
-`guard.effort_abs` (12.0, a guess) is the impact guard's per-joint effort limit on the real
-arm, next to its lag rule. Only the dry run logs efforts, at rest; efforts in motion are not
-logged yet. Keep it above the at-rest maximum. `impact effort <joint>` with no contact on the
-video means it is too tight. A joint above half its limit at rest gets only the lag rule for
-that move (`bez reguly wysilku: ...`).
+`guard.effort_abs` (default 12.0) is the impact guard's per-joint effort limit on the real
+arm, next to its lag rule. The dry run logs the efforts at rest (`arm efforts (dry)`). Each
+pre-positioning, each episode and the latency steps log the per-joint peak |effort| of the move
+(`arm effort peak (pre-positioning)`, `(episode)`, `(latency steps)`); `grasp-eval` keeps
+it per episode as `effort_peak`. Set the limit to about 1.5 times the largest peak in motion,
+never below the at-rest maximum. `impact effort <joint>` with no contact on the video means it
+is too tight. A joint above half its limit at rest gets only the lag rule for that move
+(`bez reguly wysilku: ...`).
 
 ## Running
 
@@ -196,9 +201,11 @@ that move (`bez reguly wysilku: ...`).
 | `shadow` | the real arm follows the policy, jaw held at 100, floor 10 mm above the cube's top | `--backend`, `--i-know`, the shadow keys |
 | `real` | the real arm, live jaw | `--backend`, `--i-know`, every key, `overrides.shadow_done` |
 
-`shadow` and `real` rehearse on the simulated arm with `--backend sim --i-know`. On a real
-backend the command prints the teaching ages and asks for Enter before the arm goes to the
-hover. `--floor`, `--gap` and `--jaw-stroke-s` are for the simulated arm only.
+On the simulated backend the cube is drawn from `--seed` (default from the clock, printed at
+start as `Symulacja: ziarno N`). `shadow` and `real` rehearse on the simulated arm with
+`--backend sim --i-know`. On a real backend the command prints the teaching ages and asks for
+Enter before the arm goes to the hover. `--floor`, `--gap` and `--jaw-stroke-s` are for the
+simulated arm only.
 
 An episode pre-positions at 20 degrees per second (the jaw opens at the hover), then runs at
 most 120 ticks or 12 s at up to 90 degrees per second. It prints `Epizod k/N: <ending>` and a
@@ -211,6 +218,8 @@ type `d` + Enter at `d + Enter = kolejny epizod ...`. Anything else, including a
 `lifted`, `tick cap`, `time cap` and `success` ends the series with exit code 1.
 
 Exit codes: 0 done, 1 failure (connect, camera, a guard ending on a real arm, Ctrl-C), 2 refusal.
+A STOP during pre-positioning or an episode exits 1, the same as Ctrl-C; a STOP at the
+`d + Enter` prompt ends the series with 0.
 
 ## Checklists
 
@@ -329,7 +338,6 @@ The slowed jaw fails every episode, so the retraining above is due before the fi
 - **No jaw position.** The gap is modelled from the streamed opening and stops only when the
   effort freeze fires, so the policy may reopen with the cube between the plates.
 - **No success detection on the real arm.** `lifted` is a convenience ending.
-- **Efforts in motion are not logged**, so `guard.effort_abs` stays a guess.
 - **The camera pose** (about 1 cm, 2 degrees; training jittered 3 mm, 0.7 degrees) and the
   intrinsics are not trusted; the dot check decides. Latency up to 150 ms meets a memoryless
   policy trained with an instant response.
