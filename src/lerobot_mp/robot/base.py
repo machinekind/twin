@@ -20,6 +20,26 @@ class RobotInfo:
     simulated: bool = True
 
 
+@dataclass(frozen=True)
+class GripperState:
+    """Read-only snapshot of the gripper as the backend streams and measures it (`gripper_state()`).
+
+    Openings are in application units, 0 = closed, 100 = open.
+    """
+
+    commanded: float | None        # last command that passed the backend's gate; None before the first
+    target: float | None           # where the stream is heading (differs from `commanded` after a freeze)
+    streamed: float | None         # opening really sent last; the best proxy for the jaw
+    position: float | None         # measured opening; None when the backend has no measurement
+    frozen: bool
+    effort: float | None           # backend units; None when the reading is missing, stale or frozen
+    t: float                       # backend clock at the reading (frame drain time on the A1X)
+    age_s: float | None            # backend clock now minus `t`; None when the backend has no feedback frames
+    rate: float | None             # units per second of the stream
+    force_threshold: float | None  # effort above which a closing jaw freezes; None = no such rule
+    measured: bool                 # whether `position` is a measurement
+
+
 class RobotBackend(ABC):
     """Minimalny interfejs: polacz, czytaj pozycje, wysylaj pozycje, rozlacz."""
 
@@ -114,6 +134,17 @@ class RobotBackend(ABC):
         None = not measured by this backend, or the reading is stale/frozen (callers then differentiate positions).
         """
         return None
+
+    def gripper_state(self) -> GripperState | None:
+        """Read-only gripper state; None when the backend does not expose one.
+
+        Must not raise and must not change anything: the grasp loop polls it every tick.
+        """
+        return None
+
+    def foreign_frames(self) -> int:
+        """Command frames of another sender seen on the link since connect; 0 when the backend cannot tell."""
+        return 0
 
     def step(self, dt: float) -> None:  # noqa: B027 - domyslnie nic nie robi
         """Krok symulacji. Prawdziwy robot ignoruje (rzeczywistosc liczy sie sama)."""
