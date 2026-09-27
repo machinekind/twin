@@ -377,7 +377,7 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
     app.twin._backend = None
 
 
-def test_status_line_says_the_gripper_is_not_drivable_over_xcan(app, monkeypatch):
+def test_status_line_says_the_gripper_is_disabled_when_not_drivable(app, monkeypatch):
     """A1X przez XCAN: chwytak nie dostaje 0x051, a panel bez sprzezenia pokazuje rozkaz - linia stanu to mowi."""
     from lerobot_mp.twin.runtime import RobotStatus
 
@@ -392,7 +392,7 @@ def test_status_line_says_the_gripper_is_not_drivable_over_xcan(app, monkeypatch
 
     monkeypatch.setattr(app.twin, "_backend", FakeA1X())
     monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
-    assert "chwytak: brak sterowania przez XCAN" in app._status_text()
+    assert "chwytak wylaczony" in app._status_text()
     FakeA1X.drivable = True
     assert "XCAN" not in app._status_text()
     monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, SO-101): steruje
@@ -401,7 +401,7 @@ def test_status_line_says_the_gripper_is_not_drivable_over_xcan(app, monkeypatch
 
 
 
-def test_status_line_says_the_gripper_over_xcan_is_a_trial(app, monkeypatch):
+def test_status_line_mentions_the_gripper_over_xcan(app, monkeypatch):
     """XCAN z proba chwytaka (a1x.gripper_over_xcan / A1X_GRIPPER_XCAN=1): zamiast odmowy "proba"."""
     from lerobot_mp.twin.runtime import RobotStatus
 
@@ -420,7 +420,7 @@ def test_status_line_says_the_gripper_over_xcan_is_a_trial(app, monkeypatch):
     monkeypatch.setattr(app.twin, "_backend", FakeA1X())
     monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
     text = app._status_text()
-    assert "chwytak przez XCAN: proba" in text and "brak sterowania" not in text
+    assert "chwytak przez XCAN" in text and "wylaczony" not in text
     FakeA1X.trial = False                                  # can0: ani odmowy, ani proby
     assert "XCAN" not in app._status_text()
     app.twin._backend = None

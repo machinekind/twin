@@ -547,7 +547,7 @@ def test_grab_without_a_drivable_gripper_is_refused(twin, kin, vol, relay, monke
         ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
         st = relay.wait_stream(ts, GRAB_END, 5.0)
         assert (st["state"], st.get("reason"), st.get("detail")) == ("rejected", "no gripper",
-                                                                      "xcan: 0x051 not deliverable")
+                                                                      "gripper disabled")
         g = relay.grip("close")
         gs = relay.wait_grip(g, {"rejected", "done", "hold"}, 5.0)
         assert (gs["state"], gs.get("reason")) == ("rejected", "no gripper")

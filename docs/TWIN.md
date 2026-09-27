@@ -446,7 +446,7 @@ dłoni ma stawy SO-101, a backend `a1x` odmawia wtedy startu.
 | `frozen_frames` | 50 | tyle identycznych ramek `0x052` z rzędu = telemetria zamrożona (ramię zwolnione FF 2) |
 | `deaf_err_deg` / `deaf_s` | 3,0 / 1,0 | rozkaz dalej od pomiaru niż `deaf_err_deg` przez `deaf_s` przy stojącym stawie (< 0,3°/s) = ramię głuche na `0x050` albo zablokowane → błąd i STOP |
 | `enable_on_connect` | `false` | sekwencja FF 1 → 5 → 6 zaraz po *Połącz*. Zostaw `false` i używaj przycisku w panelu, bo FF 5 na chwilę puszcza silniki |
-| `gripper_over_xcan` | `false` | chwytak przez XCAN (macOS): `true` wysyła rozkazy chwytaka zamiast odmowy (próba, niżej). To samo robi zmienna środowiskowa `A1X_GRIPPER_XCAN=1` |
+| `gripper_over_xcan` | `true` | chwytak przez XCAN (macOS) działa (zmierzone 2026-09-27, niżej); `false` = odmowa „no gripper”. Zmienna środowiskowa `A1X_GRIPPER_XCAN=1` wymusza `true` |
 
 **Zero stawów (`joint_offsets_deg`).** Na ramieniu z galaxeo J3 w spoczynku
 czyta ok. +1,49° — o tyle za własnym limitem 0°. To przesunięcie zera, nie błąd
@@ -588,15 +588,13 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   twierdziło, że chwytak ignoruje ramkę `0x051` z XCAN (10 bajtów idzie jako
   12, DLC 9). CAN FD nie ma ramki 10-bajtowej, więc SocketCAN na Linuksie też
   wysyła 12 bajtów. Różnią się najwyżej 2 bajty dopełnienia, więc to
-  twierdzenie jest niezweryfikowane (galaxeo PR z `--grip-test`). Domyślnie
-  panel pisze w linii stanu „chwytak: brak sterowania przez XCAN”, a okulary
-  dostają `no gripper`. Żeby spróbować:
-  1. sprawdź przejściówkę bez bliźniaka: `python -m galaxeo.xcan_usb --grip-test`
-     (panel zamknięty, bo jedną przejściówkę otwiera jeden proces);
-  2. włącz próbę: `a1x.gripper_over_xcan: true` w konfiguracji albo
-     `A1X_GRIPPER_XCAN=1 lerobot-twin ...`.
-  Wtedy rozkazy chwytaka idą, a linia stanu pisze „chwytak przez XCAN: próba”.
-  Bez sprzężenia panel pokazuje rozkaz, więc patrz na szczęki.
+  twierdzenie było niezweryfikowane, a 2026-09-27 pomiar je obalił:
+  `python -m galaxeo.xcan_usb --grip-test` (galaxeo PR 20) przesunął szczęki
+  o 85–116 stopni przez XCAN. Chwytak przez XCAN jest więc domyślnie włączony
+  (`a1x.gripper_over_xcan: true`); `false` przywraca odmowę („no gripper”).
+  Przejściówkę sprawdzisz tym samym testem przy zamkniętym panelu (jedną
+  przejściówkę otwiera jeden proces). Bez sprzężenia panel pokazuje rozkaz,
+  więc patrz na szczęki.
 
 ### Jednostki
 

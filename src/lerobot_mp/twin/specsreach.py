@@ -659,7 +659,7 @@ class SpecsReach:
 
     def gripper_drivable(self) -> bool:
         """False when the backend says it can't drive the gripper (A1X over macOS XCAN: the 10-byte
-        0x051 frame is not deliverable). A backend without `gripper_drivable` can."""
+        gripper is switched off in the config). A backend without `gripper_drivable` can."""
         fn = getattr(self.twin.backend, "gripper_drivable", None)
         if fn is None:
             return True
@@ -1760,7 +1760,7 @@ class SpecsReach:
         if not self.spec.gripper:
             raise _Rejected("no gripper")
         if not self.gripper_drivable():
-            raise _Rejected("no gripper", "xcan: 0x051 not deliverable")
+            raise _Rejected("no gripper", "gripper disabled")
 
     def _gate_trust(self, trusted: bool, session_of: str) -> None:
         with self._lock:

@@ -810,11 +810,9 @@ class TwinApp:
         if warns:
             parts.append(f"**Uwaga:** {'; '.join(warns)}")
         if st.connected and not self._gripper_drivable():
-            parts.append("**chwytak: brak sterowania przez XCAN** (ramka 0x051 nie dochodzi; chwytak tylko z Linuksa, "
-                         "SocketCAN) - panel pokazuje rozkaz, szczeki stoja")
+            parts.append("**chwytak wylaczony** (a1x.gripper_over_xcan: false) - rozkazy chwytaka odrzucane")
         elif st.connected and self._gripper_xcan_trial():
-            parts.append("**chwytak przez XCAN: proba** (a1x.gripper_over_xcan / A1X_GRIPPER_XCAN=1; bez sprzezenia "
-                         "panel pokazuje rozkaz - patrz na szczeki)")
+            parts.append("chwytak przez XCAN (zmierzone 2026-09-27); bez sprzezenia panel pokazuje rozkaz")
         if st.error:
             parts.append(f"**blad ramienia:** {st.error}")
         return " | ".join(parts)

@@ -551,14 +551,14 @@ class A1XArm(RobotBackend):
             return True
 
     def gripper_drivable(self) -> bool:
-        """Czy blizniak ma wysylac rozkazy chwytaka. Przez XCAN (macOS) domyslnie nie: galaxeo uwazalo,
-        ze chwytak ignoruje 0x051 z tej przejsciowki (12 bajtow na linii, DLC 9 - ale SocketCAN wysyla
-        dokladnie tyle samo, wiec to niezweryfikowane). `gripper_xcan_trial()` = XCAN z wlaczona proba."""
+        """Czy blizniak ma wysylac rozkazy chwytaka. Przez XCAN (macOS) tak, odkad zmierzono 2026-09-27,
+        ze 0x051 dochodzi (szczeki 85-116 stopni, `python -m galaxeo.xcan_usb --grip-test`); dawna odmowa
+        opierala sie na niesprawdzonym komentarzu. `a1x.gripper_over_xcan: false` przywraca odmowe."""
         return not self._on_xcan() or self._gripper_xcan_allowed()
 
     def gripper_xcan_trial(self) -> bool:
-        """XCAN i proba wlaczona (`a1x.gripper_over_xcan` albo A1X_GRIPPER_XCAN=1): rozkazy ida,
-        ale nikt jeszcze nie potwierdzil, ze szczeki ruszaja. Linia stanu panelu to mowi."""
+        """XCAN z wlaczonym chwytakiem (`a1x.gripper_over_xcan`, domyslnie, albo A1X_GRIPPER_XCAN=1):
+        rozkazy ida; bez sprzezenia panel pokazuje rozkaz, wiec linia stanu o tym przypomina."""
         return self._on_xcan() and self._gripper_xcan_allowed()
 
     def _on_xcan(self) -> bool:
