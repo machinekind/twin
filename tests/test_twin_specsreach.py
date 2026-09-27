@@ -98,6 +98,49 @@ class FakeRelay:
             ws.send(json.dumps(msg))
         return ts
 
+    def send(self, msg: dict) -> None:
+        with self.cond:
+            clients = list(self.clients)
+        for ws in clients:
+            ws.send(json.dumps(msg))
+
+    def follow(self, stream: int, seq: int, pos=None, *, active: bool = True, yaw: float | None = None,
+               ts: int | None = None, session: str = "s1") -> int:
+        """One sample of a follow stream (teleop): `stream` = ts of its first sample, `seq` from 0."""
+        ts = ts if ts is not None else stream + seq
+        msg = {"type": "follow", "ts": ts, "session": session, "trusted": True, "stream": stream, "seq": seq,
+               "active": active}
+        if active:
+            msg["pos"] = [round(float(v), 4) for v in pos]
+            msg["yaw"] = yaw
+        self.send(msg)
+        return ts
+
+    def grab_object(self, pos, *, size=None, yaw=None, label: str = "cup", depth: bool = True, age: float = 0.1,
+                    ts: int | None = None, session: str = "s1") -> int:
+        """A pinch on a detection in the grab zone."""
+        ts = ts if ts is not None else int(time.time() * 1000) + len(self.states)
+        obj = {"pos": [float(v) for v in pos], "surface": [float(v) for v in pos], "ray": [1.0, 0.0, 0.0],
+               "size": size, "yaw": yaw, "label": label, "id": 7}
+        self.send({"type": "grab", "ts": ts, "session": session, "trusted": True, "stream": ts,
+                   "policy": "topdown", "object": obj, "depthMeasured": depth, "age": age})
+        return ts
+
+    def stream_states(self, stream: int) -> list[dict]:
+        with self.cond:
+            return [s for s in self.states if s.get("stream") == stream]
+
+    def wait_stream(self, stream: int, states: set[str], timeout: float, reason: str | None = None) -> dict:
+        def found():
+            hit = [s for s in self.states if s.get("stream") == stream and s["state"] in states
+                   and (reason is None or s.get("reason") == reason)]
+            return hit[-1] if hit else None
+        with self.cond:
+            ok = self.cond.wait_for(found, timeout)
+            assert ok, f"brak stanu {states} strumienia {stream}: " \
+                       f"{[(s['state'], s.get('reason')) for s in self.states if s.get('stream') == stream]}"
+            return found()
+
     def grips_for(self, ts: int) -> list[str]:
         with self.cond:
             return [g["state"] for g in self.grips if g["ts"] == ts]

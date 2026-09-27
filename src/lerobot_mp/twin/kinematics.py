@@ -288,6 +288,29 @@ class RobotKinematics:
         _, q, e_pos, e_rot = best
         return IKSolution(self.from_q(q), float(e_pos), float(e_rot), bool(e_pos < tol))
 
+    def ik_step(
+        self,
+        position: np.ndarray,
+        rotation: np.ndarray | None = None,
+        seed: Mapping[str, float] | None = None,
+        *,
+        iters: int = 30,
+        rot_gain: float = 0.5,
+        tol: float = 1e-3,
+        damping: float = 0.02,
+    ) -> IKSolution:
+        """Jeden start z `seed` (bez restartow i bez `accept`) - do sledzenia punktu w kazdym takcie petli.
+
+        Cel przesuwa sie miedzy taktami o milimetry, wiec rozwiazanie z poprzedniego taktu
+        jest dobrym startem: `_solve` zbiega w kilku iteracjach (~0,8 ms razem z `config_clear`),
+        a pelne `ik` z osmioma startami to kilkadziesiat ms. Wynik zostaje blisko `seed` - bez
+        przeskoku na inna galaz lokcia, ktory moglby wybrac losowy start.
+        """
+        seed = dict(seed) if seed is not None else dict(self.spec.home)
+        q, e_pos, e_rot = self._solve(self.to_q(seed), np.asarray(position, float), rotation, rot_gain, iters,
+                                      damping, tol)
+        return IKSolution(self.from_q(q), float(e_pos), float(e_rot), bool(e_pos < tol))
+
     def _solve(
         self,
         q: np.ndarray,

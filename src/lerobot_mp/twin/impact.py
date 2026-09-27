@@ -162,5 +162,9 @@ class ImpactGuard:
             return dict(self._good[0][1])
         return dict(measured) if measured else None
 
+    def backoff_pose(self, t: float, measured: Mapping[str, float]) -> dict[str, float] | None:
+        """The pose `feed` would back off to after an impact at `t` (for a stall found outside `feed`)."""
+        return self._backoff(t, {j: float(measured[j]) for j in self.joints if j in measured})
+
     def good_samples(self) -> list[tuple[float, dict[str, float]]]:
         return [(ts, dict(p)) for ts, p in self._good]

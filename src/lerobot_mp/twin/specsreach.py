@@ -7,14 +7,15 @@
 
 The twin connects to the relay (`server.js` in the specs-lens repo) as `/twin`:
 
-* on connect it sends the overlay: the reach box (`kind: "volume"`) and a TCP sphere,
-  then the TCP sphere every 0.2 s, and a `target` sphere for an accepted target;
+* on connect it sends the overlay: the reach box and the grab zone (`kind: "volume"`, ids `reach` and
+  `grab`) and a TCP sphere, then the TCP sphere every 0.2 s, and a `target` sphere for an accepted target;
 * it receives `registration` (the glasses' session and whether it is trusted),
-  `target` (a hand point or an object centre, base frame, metres) and `gripper`
-  (a fist in the glasses: open or close the gripper);
-* it answers every target with `targetState`: accepted / rejected / moving / reached /
-  backoff / hold, and every gripper command with `gripperState`: accepted / rejected /
-  done / hold. `type` must be the first key: the relay reads it with a regex.
+  `target` (a hand point or an object centre, base frame, metres), `gripper` (open or close the
+  gripper), `follow` (a point streamed at 20 Hz in teleop: the arm follows it) and `grab` (take an
+  object from the table, top-down);
+* it answers every target, stream and grab with `targetState`: accepted / rejected / moving / reached /
+  backoff / hold, plus held / missed for a grab, and every gripper command with `gripperState`:
+  accepted / rejected / done / hold. `type` must be the first key: the relay reads it with a regex.
 
 The network thread only receives and queues targets and gripper commands. One worker
 thread does everything else: validation, IK, collisions, motion, backoff. The checks run
@@ -22,11 +23,12 @@ in this order, and their names are the `reason` sent back: not connected, stop, 
 not armed, untrusted, session, outside volume, no depth, stale, ik, jump, collision.
 
 A gripper command gets the arm checks only (not connected, stop, busy, not armed, plus
-`no gripper`). It does not interrupt a move: it waits in the queue and runs after the
+`no gripper`, also when the backend can't drive the gripper: `gripper_drivable()` False,
+the A1X over macOS XCAN). It does not interrupt a move: it waits in the queue and runs after the
 target, so "pinch, then a fist" closes the gripper at the point. It takes the arm, sets
-the gripper joint to open or closed, waits `grip_wait_s` for it to settle and releases
-the arm (`done`). The TCP sphere turns red with the label "closed" while the gripper's
-command is nearer closed than open, whoever set it.
+the gripper joint to open or closed, waits `grip_wait_s` (or the backend's `gripper_travel_s()`)
+for it to settle and releases the arm (`done`). The TCP sphere turns red with the label "closed"
+while the gripper's command is nearer closed than open, whoever set it.
 
 Motion is our own 50 Hz smoothstep ramp rather than `Twin.move`, because every tick must
 be interruptible: by a new target (continuing from the current command), an impact
@@ -35,12 +37,28 @@ as in `Twin.move`: `claim` with `gen`, engage, `set_target` as owner on every ti
 ramp clock pauses while the loop does. On arrival the arm is released but stays engaged,
 holding the target.
 
+A follow stream (`follow`, one `stream` id per entry into the box, `seq` from 0) is not a queue of
+targets: its start and end are worker items (`FollowStart` / `FollowStop`: the checks, the hold-off, taking
+the arm, the follower's own IK and collision checker, one `ImpactGuard` per stream, releasing), and the
+stepping is a tick listener on the twin's loop (`twin/follow.py`: a bounded tracker and one warm-started IK
+step per tick; all times from the loop's `TickSample.t`). The network thread only writes the newest sample
+into the stream's slot. A stream ends with `hold`: exit (`active: false`), timeout (no sample for 0.6 s; the
+arm is released 2 s after the last one), outside volume, ik / collision (1 s / 2 s of failed ticks; shorter
+failures pause the stream with a `hold` and it resumes), impact (then the backoff), retargeted (a new
+stream, target or grab), stop, preempted, mode, relay. A new stream starts only from a new stream id.
+The driver holds the arm for "worker" and "follow" (`_holders`) and releases it when neither needs it,
+so a gripper command during a stream runs without ending it.
+
+A grab (`policy: "topdown"`) is a worker item like a target: gate (grab zone, width, gripper), then
+open, hover, descend, close, lift, and `held` or `missed` (`held` with detail "assumed" when the backend
+does not measure the gripper, the A1X today). It never re-opens after `missed`.
+
 Modes: `dry` runs every check and shows the planned target without moving (accepted, then
 hold); `sim` moves only a simulated arm; `real` moves the real arm, only with `real_ok`,
-and waits `hold_off_s` after a hand target. While moving, the supervisor speed cap
-(`Twin.set_speed`) drops to ~1.5x the ramp speed + 5 deg/s, and to 15 deg/s during
-backoff; it is restored afterwards. In `real`, losing the relay stops the motion (hold).
-The glasses have no STOP: use Enter/Ctrl-C in the console or STOP in the panel.
+and waits `hold_off_s` after a hand target (and once at the start of a follow stream). While moving,
+the supervisor speed cap (`Twin.set_speed`) drops to ~1.5x the ramp speed + 5 deg/s (60 deg/s while
+following), and to 15 deg/s during backoff; it is restored afterwards. In `real`, losing the relay stops
+the motion (hold). The glasses have no STOP: use Enter/Ctrl-C in the console or STOP in the panel.
 """
 
 from __future__ import annotations
@@ -51,6 +69,7 @@ import math
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -60,17 +79,18 @@ import numpy as np
 
 from . import scene as sc
 from .collision import CollisionChecker
+from .follow import Follower, down_rotation
 from .impact import Impact, ImpactGuard
 from .kinematics import RobotKinematics
-from .reach import ReachVolume
+from .reach import ReachVolume, grab_zone, grab_zone_object
 from .runtime import Twin, smoothstep
 
 logger = logging.getLogger(__name__)
 
 Mode = Literal["dry", "sim", "real"]
 Source = Literal["hand", "object"]
-#: `targetState.state` values: a contract with the glasses.
-State = Literal["accepted", "rejected", "moving", "reached", "backoff", "hold"]
+#: `targetState.state` values: a contract with the glasses (held / missed: grab only).
+State = Literal["accepted", "rejected", "moving", "reached", "backoff", "hold", "held", "missed"]
 #: `gripper.action` and `gripperState.state` values: the same contract.
 GripAction = Literal["open", "close"]
 GripState = Literal["accepted", "rejected", "done", "hold"]
@@ -83,7 +103,11 @@ Cause = Literal["", "retarget", "impact", "preempt", "stop", "mode", "relay"]
 MODES: tuple[Mode, ...] = get_args(Mode)
 SOURCES: tuple[Source, ...] = get_args(Source)
 GRIP_ACTIONS: tuple[GripAction, ...] = get_args(GripAction)
+#: `grab.policy` values. Only the scripted top-down grasp for now; the field keeps the seam for others.
+GRAB_POLICIES = ("topdown",)
 OWNER = "specs"
+#: The A1X `tcp` site sits this far before the fingertips along the approach axis [m].
+TIP_AHEAD = 0.033
 
 # Overlay colours, RGB 0..1.
 TCP_COLOR = (1.0, 0.8, 0.1)
@@ -118,8 +142,90 @@ class GripCommand:
     t_rx: float = 0.0
 
 
+@dataclass
+class Grab(Target):
+    """A `grab` from the glasses: an object to take from the table (source "object")."""
+
+    stream: Any = None                # the glasses' id of the grab (= its ts), echoed in every targetState
+    policy: str = "topdown"
+    size: tuple[float, float] | None = None     # [width, height] m, or None
+    yaw: float | None = None                    # jaw closing axis in the base xy plane, rad; None = bearing
+    surface: np.ndarray | None = None           # the depth-measured point on the visible face (diagnostic)
+    ray: np.ndarray | None = None               # unit vector camera -> surface (diagnostic)
+    obj_id: Any = None
+
+
+@dataclass
+class FollowSample:
+    """One `follow` message, as received."""
+
+    stream: Any                       # ts of the stream's first active sample
+    seq: int
+    active: bool
+    pos: np.ndarray | None            # base frame, m; None when inactive
+    yaw: float | None
+    ts: Any
+    session: str
+    trusted: bool
+
+
+@dataclass(eq=False)
+class _Stream:
+    """A follow stream: written by the network thread (under `_follow_lock`), stepped by the tick listener."""
+
+    id: Any
+    sample: FollowSample              # the newest active sample (the slot)
+    last_seq: int
+    version: int = 0                  # bumped by each accepted sample
+    ended: bool = False
+    reason: str = ""
+    # Set by the worker at the start, then used only on the loop thread.
+    follower: Follower | None = None
+    guard: ImpactGuard | None = None
+    gen: int = 0
+    seen: int = -1
+    ts: Any = None                    # ts of the newest sample the listener has taken
+    t_rx: float | None = None         # loop time the listener first saw the newest sample
+    t_prev: float | None = None
+    setpoint: np.ndarray | None = None
+    yaw: float | None = None
+    fail: str = ""
+    fail_since: float = 0.0
+    stall_since: float | None = None
+    last_report: float = -math.inf
+    last_sig: tuple = ()
+
+
+@dataclass
+class FollowStart:
+    """Worker item: a new stream's first sample arrived."""
+
+    stream: _Stream
+
+
+@dataclass
+class FollowStop:
+    """Worker item: a running stream ended (already reported); remove the listener, back off, release."""
+
+    stream: _Stream
+    hit: Impact | None = None
+
+
+@dataclass
+class _FollowReport:
+    """A stream's `targetState`, queued in order and sent by the network thread (`tcp` filled in there)."""
+
+    state: State
+    reason: str | None
+    detail: str
+    pos: list[float] | None
+    stream: Any
+    ts: Any
+    t: float
+
+
 #: What the worker's queue holds.
-Item = Target | GripCommand
+Item = Target | GripCommand | FollowStart | FollowStop
 
 
 @dataclass(frozen=True, eq=False)
@@ -216,19 +322,87 @@ def parse_grip(msg: Mapping[str, Any], now: float) -> GripCommand | None:
     return GripCommand(action=action, ts=msg.get("ts"), t_rx=now)
 
 
-def down_rotation(spec, p: np.ndarray) -> np.ndarray:
-    """TCP rotation in the base frame: approach axis pointing down, jaws closing horizontally,
-    across the line from the base to `p`."""
-    a = np.asarray(spec.tcp_approach, float)
-    c = np.asarray(spec.tcp_closing, float)
-    local = np.column_stack([a, c, np.cross(a, c)])
+def _number(v: Any) -> float | None:
+    """A finite JSON number, else None (booleans are not numbers here)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return float(v)
 
-    bearing = math.atan2(float(p[1]), float(p[0]))
-    down = np.array([0.0, 0.0, -1.0])
-    side = np.array([-math.sin(bearing), math.cos(bearing), 0.0])
-    world = np.column_stack([down, side, np.cross(down, side)])
 
-    return world @ local.T
+def _vector(v: Any, n: int) -> np.ndarray | None:
+    try:
+        a = np.asarray(v, float).reshape(n)
+    except (TypeError, ValueError):
+        return None
+    return a if np.all(np.isfinite(a)) else None
+
+
+def parse_follow(msg: Mapping[str, Any]) -> FollowSample | None:
+    """Relay `follow` message -> `FollowSample`; None if it is malformed."""
+    stream = msg.get("stream")
+    if stream is None or isinstance(stream, bool) or not isinstance(stream, (int, float, str)):
+        return None
+    seq = msg.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, (int, float)) or seq != int(seq):
+        return None
+    active = msg.get("active")
+    if not isinstance(active, bool):
+        return None
+    pos = None
+    if active:
+        pos = _vector(msg.get("pos"), 3)
+        if pos is None:
+            return None
+    return FollowSample(stream=stream, seq=int(seq), active=active, pos=pos, yaw=_number(msg.get("yaw")),
+                        ts=msg.get("ts"), session=str(msg.get("session") or ""),
+                        trusted=msg.get("trusted") is True)
+
+
+def parse_grab(msg: Mapping[str, Any], now: float) -> Grab | None:
+    """Relay `grab` message -> `Grab`; None if it is malformed (or asks for a policy we don't have)."""
+    obj = msg.get("object")
+    if not isinstance(obj, Mapping):
+        return None
+    pos = _vector(obj.get("pos"), 3)
+    if pos is None:
+        return None
+    policy = msg.get("policy", "topdown")
+    if policy not in GRAB_POLICIES:
+        return None
+
+    size = None
+    raw = obj.get("size")
+    if raw is not None:
+        wh = _vector(raw, 2)
+        if wh is None or np.any(wh <= 0):
+            return None
+        size = (float(wh[0]), float(wh[1]))
+
+    age = msg.get("age")
+    if age is not None:
+        is_number = isinstance(age, (int, float)) and not isinstance(age, bool)
+        age = float(age) if is_number else math.nan
+
+    ts = msg.get("ts")
+    stream = msg.get("stream")
+    return Grab(
+        source="object",
+        pos=pos,
+        session=str(msg.get("session") or ""),
+        trusted=msg.get("trusted") is True,
+        ts=ts,
+        depth=msg.get("depthMeasured") is True,
+        label=str(obj.get("label") or ""),
+        t_rx=now,
+        age=age,
+        stream=stream if stream is not None else ts,
+        policy=str(policy),
+        size=size,
+        yaw=_number(obj.get("yaw")),
+        surface=_vector(obj.get("surface"), 3),
+        ray=_vector(obj.get("ray"), 3),
+        obj_id=obj.get("id"),
+    )
 
 
 def _check_mode(mode: str) -> None:
@@ -309,11 +483,47 @@ class SpecsReach:
     # dry mode logs joint efforts this often, to pick thresholds on the first real session.
     dry_effort_period_s = 1.0
 
+    # Follow streams. Speed of the commanded TCP point [m/s] (acceleration 4x that per s) unless given.
+    follow_speed_sim = 0.20
+    follow_speed_real = 0.10
+    follow_cap_deg_s = 60.0
+    # A stream may start within this distance outside the box (the glasses' smoothed cursor lags the
+    # entry), and ends when a sample is farther outside than `follow_outside_m`; in between it is clamped.
+    follow_margin_m = 0.02
+    follow_outside_m = 0.05
+    # No sample for this long ends the stream (the glasses send every 50 ms, less than half of it);
+    # the arm is released `follow_release_s` after the last sample.
+    follow_timeout_s = 0.6
+    follow_release_s = 2.0
+    # Failed ticks pause the stream (hold, then moving again); this long without a good tick ends it.
+    follow_ik_fail_s = 1.0
+    follow_collision_s = 2.0
+    # `moving` at most every `follow_report_s`, and at least every `follow_heartbeat_s`.
+    follow_report_s = 0.5
+    follow_heartbeat_s = 1.0
+    follow_tilt_deg = 15.0            # report the tool's tilt from straight down above this
+    # Real arm: a joint more than `follow_lag_deg` behind its command stops the tracker (the command
+    # must not run ahead of a stalled joint); stopped that way for `follow_stall_s` = an impact.
+    # The guard is tighter than for ramps, well before the A1X backend's "deaf" fault (3 deg for 1 s).
+    follow_lag_deg = 2.0
+    follow_stall_s = 0.3
+    follow_guard_lag_deg = 2.5
+    follow_guard_lag_s = 0.3
+    follow_guard_vel_still = 15.0
+
+    # Grab (top-down). Height when the glasses don't know the object's size, the tallest height used,
+    # grasp tip height limits, widest object the jaws take (80 % of its width must fit in 90 mm).
+    grab_default_h = 0.04
+    grab_max_h = 0.12
+    grab_tip_z = (0.012, 0.06)
+    grab_max_width = 0.09
+    grab_width_frac = 0.8
+
     def __init__(self, twin: Twin, *, relay_url: str, volume: ReachVolume | None = None, mode: Mode = "dry",
                  hover: float = 0.08, touch_dz: float = 0.01, speed_deg_s: float = 20.0,
                  backoff_speed_deg_s: float = 8.0, max_jump_deg: float = 150.0, grasp: bool = False,
                  allow_untrusted: bool = False, real_ok: bool = False, hold_off_s: float = 1.0,
-                 on_state: Callable[[dict], None] | None = None):
+                 follow_speed: float | None = None, on_state: Callable[[dict], None] | None = None):
         _check_mode(mode)
         self.twin = twin
         self.spec = twin.spec
@@ -330,6 +540,8 @@ class SpecsReach:
         self.grasp = bool(grasp)
         self.allow_untrusted = bool(allow_untrusted)
         self.hold_off_s = float(hold_off_s)
+        self.follow_speed = None if follow_speed is None else float(follow_speed)
+        self.grab_zone = grab_zone(self.spec)
         self.on_state = on_state
 
         self._stop = threading.Event()
@@ -374,6 +586,26 @@ class SpecsReach:
         # The command the target was validated from; `_recheck` compares against it.
         self._validated_from: Joints | None = None
 
+        # Who in the driver needs the arm ("worker", "follow"): released only when nobody does.
+        self._holders: set[str] = set()
+
+        # Follow streams: the one waiting for the worker and the running one, and the ids that ended (their
+        # samples are ignored). Reports go through `_outbox` in order; the network thread sends them.
+        self._follow_lock = threading.Lock()
+        self._pending: _Stream | None = None
+        self._stream: _Stream | None = None
+        self._ended: deque = deque(maxlen=64)
+        self._follow_stop = threading.Event()
+        self._follow_handle: int | None = None
+        self._follow_release_at: float | None = None
+        self._outbox: queue.SimpleQueue[_FollowReport] = queue.SimpleQueue()
+        self._last_follow: dict | None = None
+        self._last_grab: dict | None = None
+        # The follower's own IK and collision checker (built on the worker, then used on the loop thread).
+        self._f_checker: CollisionChecker | None = None
+        self._f_kin: RobotKinematics | None = None
+        self._f_version = -1
+
     def start(self) -> None:
         if self._net is not None:
             return
@@ -403,8 +635,45 @@ class SpecsReach:
         _check_mode(mode)
         changed = (mode, bool(real_ok)) != (self.mode, self.real_ok)
         self.mode, self.real_ok = mode, bool(real_ok)
-        if changed and self._phase == "moving":
+        if changed and (self._phase == "moving" or self._following()):
             self._interrupt("mode")
+
+    @property
+    def follow_v_max(self) -> float:
+        """Speed of the followed TCP point [m/s]: `follow_speed`, else by mode (slower on the real arm)."""
+        if self.follow_speed is not None:
+            return self.follow_speed
+        return self.follow_speed_real if self.mode == "real" else self.follow_speed_sim
+
+    def set_follow_speed(self, v: float | None) -> None:
+        """From the panel's slider; a running stream picks it up on its next tick."""
+        self.follow_speed = None if v is None else max(0.01, float(v))
+
+    def gripper_drivable(self) -> bool:
+        """False when the backend says it can't drive the gripper (A1X over macOS XCAN: the 10-byte
+        0x051 frame is not deliverable). A backend without `gripper_drivable` can."""
+        fn = getattr(self.twin.backend, "gripper_drivable", None)
+        if fn is None:
+            return True
+        try:
+            return bool(fn())
+        except Exception:
+            return True
+
+    def _grip_wait(self) -> float:
+        """How long a gripper command takes: the backend's `gripper_travel_s()`, else `grip_wait_s`."""
+        fn = getattr(self.twin.backend, "gripper_travel_s", None)
+        if fn is not None:
+            try:
+                v = float(fn())
+            except Exception:
+                v = 0.0
+            if math.isfinite(v) and v > 0:
+                return v
+        return self.grip_wait_s
+
+    def _following(self) -> bool:
+        return self._stream is not None or self._pending is not None
 
     @property
     def connected(self) -> bool:
@@ -422,6 +691,9 @@ class SpecsReach:
             "phase": self._phase,
             "last": self._last_state,
             "grip": self._last_grip,
+            "follow": self._last_follow,
+            "grab": self._last_grab,
+            "gripper_drivable": self.gripper_drivable(),
         }
 
     def _net_loop(self) -> None:
@@ -450,7 +722,10 @@ class SpecsReach:
     def _serve(self, ws) -> None:
         self._ws = ws
         try:
-            self._send({"type": "overlay", "objects": [self.volume.overlay_object(), self._tcp_object()]})
+            objects = [self.volume.overlay_object()]
+            if self.grab_zone is not None:
+                objects.append(grab_zone_object(self.grab_zone))
+            self._send({"type": "overlay", "objects": [*objects, self._tcp_object()]})
             self._pump(ws)
         except Exception as exc:
             if not self._stop.is_set():
@@ -458,7 +733,9 @@ class SpecsReach:
         finally:
             self._ws = None
             # A real arm doesn't keep moving without the relay: the glasses can no longer see its state.
-            if self.mode == "real" and self._phase == "moving" and not self._stop.is_set():
+            # (In dry and sim a stream ends by its timeout: no more samples.)
+            moving = self._phase == "moving" or self._following()
+            if self.mode == "real" and moving and not self._stop.is_set():
                 self._interrupt("relay")
             with suppress(Exception):
                 ws.close()
@@ -467,12 +744,16 @@ class SpecsReach:
         """Receives messages, sending the TCP sphere every `tcp_period_s` in between."""
         next_tcp = time.monotonic() + self.tcp_period_s
         while not self._stop.is_set():
+            wait = max(0.0, next_tcp - time.monotonic())
+            if self._following():
+                wait = min(wait, 0.05)                  # stream reports come from the loop thread
             try:
-                text = ws.recv(timeout=max(0.0, next_tcp - time.monotonic()))
+                text = ws.recv(timeout=wait)
             except TimeoutError:
                 text = None
             if text is not None:
                 self._on_message(text)
+            self._flush_follow_reports()
 
             now = time.monotonic()
             if now >= next_tcp:
@@ -536,6 +817,10 @@ class SpecsReach:
             self._on_target(msg, text)
         elif kind == "gripper":
             self._on_gripper(msg, text)
+        elif kind == "follow":
+            self._on_follow(msg, text)
+        elif kind == "grab":
+            self._on_grab(msg, text)
 
     def _on_registration(self, msg: dict) -> None:
         session = msg.get("session")
@@ -556,9 +841,55 @@ class SpecsReach:
         if t is None:
             logger.warning("Zepsuty cel z okularow: %.200s", text)
             return
+        self._queue_target(t)
+
+    def _on_grab(self, msg: dict, text: str | bytes) -> None:
+        g = parse_grab(msg, time.monotonic())
+        if g is None:
+            logger.warning("Zepsuty chwyt z okularow: %.200s", text)
+            return
+        logger.info("Chwyt z okularow: %s %s", g.label or "obiekt", np.round(g.pos, 3).tolist())
+        self._queue_target(g)
+
+    def _queue_target(self, t: Target) -> None:
+        # A target or a grab ends a follow stream (its stop is queued first) and interrupts a move;
+        # the worker continues from the current command.
+        self._end_streams("retargeted")
         self._queue.put(t)
-        # A new target interrupts the move; the worker continues from the current command.
         if self._phase == "moving":
+            self._interrupt("retarget")
+
+    def _on_follow(self, msg: dict, text: str | bytes) -> None:
+        """A stream sample: into its stream's slot; a new stream id queues its start (ending the old one)."""
+        s = parse_follow(msg)
+        if s is None:
+            logger.warning("Zepsuty punkt sledzenia z okularow: %.200s", text)
+            return
+        with self._follow_lock:
+            if s.stream in self._ended:
+                return
+            for st in (self._stream, self._pending):
+                if st is None or st.id != s.stream:
+                    continue
+                if s.seq <= st.last_seq:                # reordered or repeated (relay reconnect)
+                    return
+                st.last_seq = s.seq
+                if s.active:
+                    st.sample = s
+                    st.version += 1
+                else:
+                    self._end_stream(st, "exit", ts=s.ts)
+                return
+            if not s.active:
+                return                                  # the end of a stream we never saw start
+            for st in (self._stream, self._pending):
+                if st is not None:
+                    self._end_stream(st, "retargeted")
+            st = _Stream(id=s.stream, sample=s, last_seq=s.seq)
+            self._pending = st
+            self._queue.put(FollowStart(st))
+        # A new stream replaces a target in progress (not a gripper command: that one finishes first).
+        if self._current is not None and self._phase == "moving":
             self._interrupt("retarget")
 
     def _on_gripper(self, msg: dict, text: str | bytes) -> None:
@@ -574,6 +905,8 @@ class SpecsReach:
             return any(isinstance(item, Target) for item in self._queue.queue)
 
     def _interrupt(self, cause: Cause) -> None:
+        if cause in ("stop", "preempt", "mode", "relay"):
+            self._end_streams(self._lost_reason() if cause == "preempt" else cause)
         with self._lock:
             if not self._cancel.is_set():
                 self._cause = cause
@@ -602,14 +935,20 @@ class SpecsReach:
         msg["pos"] = _rounded(t.pos)
         with suppress(Exception):                       # diagnostic only
             msg["tcp"] = self._tcp_now(self._kin_worker)
+        grab = isinstance(t, Grab)
+        if grab:
+            msg["stream"] = t.stream
         msg["ts"] = t.ts
         msg["mode"] = self.mode
         self._last_state = msg
+        if grab:
+            self._last_grab = msg
 
-        log = logger.warning if state in ("rejected", "backoff") else logger.info
+        log = logger.warning if state in ("rejected", "backoff", "missed") else logger.info
         because = f" ({reason})" if reason else ""
         more = f" - {detail}" if detail else ""
-        log("Cel %s %s: %s%s%s", t.source, np.round(t.pos, 3).tolist(), state, because, more)
+        what = f"Chwyt {t.label or 'obiekt'}" if grab else f"Cel {t.source}"
+        log("%s %s: %s%s%s", what, np.round(t.pos, 3).tolist(), state, because, more)
 
         self._send(msg)
         if self.on_state is not None:
@@ -634,6 +973,82 @@ class SpecsReach:
         log("Chwytak %s: %s%s%s", cmd.action, state, because, more)
         self._send(msg)
 
+    # ------------------------------------------------------------------ follow streams: state and reports
+    def _emit_follow(self, st: _Stream, state: State, reason: str | None = None, detail: str = "", *,
+                     ts: Any = None) -> None:
+        """Queues a stream's `targetState`. Call with `_follow_lock` held: the order is the order of events."""
+        pos = _rounded(st.sample.pos) if st.sample.pos is not None else None
+        self._outbox.put(_FollowReport(state, reason, detail, pos, st.id, st.sample.ts if ts is None else ts,
+                                       time.monotonic()))
+
+    def _end_stream(self, st: _Stream, reason: str | None, detail: str = "", *, ts: Any = None,
+                    hit: Impact | None = None) -> bool:
+        """Ends a stream with `hold` (call with `_follow_lock` held). A running one also gets a `FollowStop`
+        for the worker. False if it had already ended."""
+        if st.ended:
+            return False
+        st.ended, st.reason = True, reason or ""
+        self._ended.append(st.id)
+        self._emit_follow(st, "hold", reason, detail, ts=ts)
+        self._follow_stop.set()                         # the listener, or the start's hold-off, stops
+        if st is self._pending:
+            self._pending = None
+        if st is self._stream:
+            self._queue.put(FollowStop(st, hit))
+        return True
+
+    def _end_streams(self, reason: str) -> None:
+        """Ends the running and the waiting stream (a target, STOP, a mode change...)."""
+        with self._follow_lock:
+            for st in (self._stream, self._pending):
+                if st is not None:
+                    self._end_stream(st, reason)
+
+    def _reject_stream(self, st: _Stream, reason: str, detail: str = "") -> None:
+        with self._follow_lock:
+            if st.ended:
+                return
+            st.ended, st.reason = True, reason
+            self._ended.append(st.id)
+            self._emit_follow(st, "rejected", reason, detail)
+            if st is self._pending:
+                self._pending = None
+
+    def _flush_follow_reports(self) -> None:
+        """Network thread: sends the queued stream reports (stale ones, from before a reconnect, are dropped)."""
+        while True:
+            try:
+                rep = self._outbox.get_nowait()
+            except queue.Empty:
+                return
+            if time.monotonic() - rep.t > 5.0:
+                continue
+            msg: dict[str, Any] = {"type": "targetState", "state": rep.state}
+            if rep.reason:
+                msg["reason"] = rep.reason
+            if rep.detail:
+                msg["detail"] = rep.detail
+            if rep.pos is not None:
+                msg["pos"] = rep.pos
+            with suppress(Exception):                   # diagnostic only
+                msg["tcp"] = self._tcp_now()
+            msg["stream"] = rep.stream
+            msg["ts"] = rep.ts
+            msg["mode"] = self.mode
+            self._last_state = self._last_follow = msg
+
+            if rep.state != "moving":
+                log = logger.warning if rep.state == "rejected" else logger.info
+                because = f" ({rep.reason})" if rep.reason else ""
+                more = f" - {rep.detail}" if rep.detail else ""
+                log("Sledzenie %s: %s%s%s", rep.stream, rep.state, because, more)
+            self._send(msg)
+            if self.on_state is not None:
+                try:
+                    self.on_state(msg)
+                except Exception:
+                    logger.exception("on_state rzucilo wyjatek")
+
     def _finish(self, t: Target, state: State, reason: str | None = None, detail: str = "") -> None:
         """Final state of a target: report it, fade the target sphere, release the arm."""
         self._report(t, state, reason, detail=detail)
@@ -656,6 +1071,7 @@ class SpecsReach:
     def _work_loop(self) -> None:
         next_effort_log = 0.0
         while not self._stop.is_set():
+            self._release_follow_when_due()
             try:
                 t = self._queue.get(timeout=0.2)
             except queue.Empty:
@@ -664,6 +1080,8 @@ class SpecsReach:
                     self._log_efforts("dry")
                 continue
             self._run(self._latest(t))
+        self._drop_follow()
+        self._holders.clear()
         self._release()
         self._restore_speed()
 
@@ -672,7 +1090,16 @@ class SpecsReach:
         its measured pose."""
         try:
             while item is not None and not self._stop.is_set():
-                item = self._execute_grip(item) if isinstance(item, GripCommand) else self._execute(item)
+                if isinstance(item, GripCommand):
+                    item = self._execute_grip(item)
+                elif isinstance(item, FollowStart):
+                    item = self._execute_follow_start(item)
+                elif isinstance(item, FollowStop):
+                    item = self._execute_follow_stop(item)
+                elif isinstance(item, Grab):
+                    item = self._execute_grab(item)
+                else:
+                    item = self._execute(item)
         except Exception as exc:
             logger.exception("Kierowca okularow: blad wykonania celu")
             self._hold_after_error(exc)
@@ -695,12 +1122,16 @@ class SpecsReach:
             self._report_grip(self._current_grip, "hold", "error", detail=f"{type(exc).__name__}: {exc}"[:200])
 
     def _latest(self, item: Item) -> Item:
-        """Takes the newest queued item; older unhandled ones are rejected as "busy"."""
+        """Takes the newest queued item; older unhandled ones are rejected as "busy". A stream's stop
+        is never skipped: it runs on the spot (the stream was already reported ended)."""
         while True:
             try:
                 newer = self._queue.get_nowait()
             except queue.Empty:
                 return item
+            if isinstance(newer, FollowStop):
+                self._execute_follow_stop(newer)
+                continue
             self._report_busy(item)
             item = newer
 
@@ -716,6 +1147,10 @@ class SpecsReach:
     def _report_busy(self, item: Item) -> None:
         if isinstance(item, GripCommand):
             self._report_grip(item, "rejected", "busy")
+        elif isinstance(item, FollowStart):
+            self._reject_stream(item.stream, "busy")
+        elif isinstance(item, FollowStop):
+            self._execute_follow_stop(item)
         else:
             self._report(item, "rejected", "busy")
 
@@ -723,12 +1158,12 @@ class SpecsReach:
         """One gripper command: the arm checks, then the gripper joint to open or closed. Returns the
         next item if a new target interrupted the settle wait."""
         self._current_grip = cmd
-        self._reset_cancel()
+        if self._stream is None:                        # a running stream's interrupts must not be lost
+            self._reset_cancel()
         self._phase = "moving"                          # so a new target interrupts the settle wait
         try:
             self._gate_arm()
-            if not self.spec.gripper:
-                raise _Rejected("no gripper")
+            self._gate_gripper()
         except _Abort as exc:
             self._report_grip(cmd, exc.state, exc.reason, detail=exc.detail)
             return None
@@ -742,7 +1177,7 @@ class SpecsReach:
         try:
             gen = self._take()
             self._command_arm({self.spec.gripper: value})
-            if self._cancel.wait(self.grip_wait_s):
+            if self._cancel.wait(self._grip_wait()):
                 return self._after_cancel_grip(cmd)
             self._check(gen)
         except _Abort as exc:
@@ -864,6 +1299,387 @@ class SpecsReach:
         self._finish(t, "hold", reason)
         return None
 
+    # ------------------------------------------------------------------ follow streams: worker items
+    def _execute_follow_start(self, item: FollowStart) -> Item | None:
+        """A new stream: the checks, the hold-off (real), taking the arm, the follower; then the tick
+        listener steps it. Nothing is returned: the stream runs on the loop thread."""
+        st = item.stream
+        with self._follow_lock:
+            if st.ended or st is not self._pending:
+                return None                             # replaced, or ended before we got to it
+            self._follow_stop.clear()
+            sample = st.sample
+        try:
+            self._gate_follow(sample)
+        except _Abort as exc:
+            self._reject_stream(st, exc.reason, exc.detail)
+            return None
+
+        if self.mode == "dry":
+            with self._follow_lock:
+                if not st.ended:
+                    self._emit_follow(st, "accepted")
+                    self._end_stream(st, None)          # dry: checks only, nothing moves
+            return None
+        if self.mode == "real" and self.hold_off_s > 0 and self._follow_stop.wait(self.hold_off_s):
+            return None                                 # ended meanwhile (exit, a target, STOP...)
+
+        try:
+            gen = self._take("follow")
+        except _Abort as exc:
+            self._reject_stream(st, exc.reason, exc.detail)
+            return None
+        try:
+            kin, checker = self._follow_tools()
+            follower = Follower(kin, checker, self.spec, limits=self.twin.joint_limits(),
+                                joints=self._command(), volume=self.volume, v_max=self.follow_v_max,
+                                ik_tol=self.ik_tol)
+            guard = ImpactGuard(self.arm)
+            self._tune_guard(guard, "normal")
+            if not self.twin.status.simulated:
+                guard.lag_deg = self.follow_guard_lag_deg
+                guard.lag_s = self.follow_guard_lag_s
+                guard.vel_still = self.follow_guard_vel_still
+        except Exception as exc:
+            logger.exception("Sledzenie: start nieudany")
+            with self._follow_lock:
+                self._end_stream(st, "error", f"{type(exc).__name__}: {exc}"[:200])
+            self._release("follow")
+            self._restore_speed()
+            return None
+        self._cap_speed(self.follow_cap_deg_s)
+
+        with self._follow_lock:
+            started = not st.ended and st is self._pending
+            if started:
+                st.follower, st.guard, st.gen = follower, guard, gen
+                self._pending, self._stream = None, st
+                self._emit_follow(st, "accepted")
+        if not started:
+            self._release("follow")
+            self._restore_speed()
+            return None
+        self._follow_handle = self.twin.add_tick_listener(self._on_follow_tick)
+        return None
+
+    def _gate_follow(self, s: FollowSample) -> None:
+        self._gate_arm()
+        self._gate_trust(s.trusted, s.session)
+        if s.pos is None or not self.volume.contains(s.pos, margin=-self.follow_margin_m):
+            raise _Rejected("outside volume")
+
+    def _execute_follow_stop(self, item: FollowStop) -> Item | None:
+        """A stream ended (already reported): the listener goes, an impact backs off, the arm is released
+        (after a timeout only `follow_release_s` after the last sample)."""
+        st = item.stream
+        if st is not self._stream:
+            return None
+        self._drop_follow()
+        if item.hit is not None:
+            self._follow_backoff(st, item.hit)
+        if st.reason == "timeout":
+            later = max(0.0, self.follow_release_s - self.follow_timeout_s)
+            self._follow_release_at = time.monotonic() + later
+            return None
+        self._release("follow")
+        self._restore_speed()
+        return None
+
+    def _drop_follow(self) -> None:
+        """No stream runs any more: the tick listener goes."""
+        handle, self._follow_handle = self._follow_handle, None
+        if handle is not None:
+            self.twin.remove_tick_listener(handle)
+        with self._follow_lock:
+            self._stream = None
+
+    def _release_follow_when_due(self) -> None:
+        at = self._follow_release_at
+        if at is None or time.monotonic() < at or self._stream is not None:
+            return
+        self._follow_release_at = None
+        self._release("follow")
+        self._restore_speed()
+
+    def _follow_backoff(self, st: _Stream, hit: Impact) -> None:
+        """After an impact while following: hold the measured pose, then back off slowly (as `_backoff`)."""
+        tw = self.twin
+        tw.hold_measured(dict(tw.status.measured) or None)
+        logger.warning("Sledzenie: uderzenie %s %s (%.1f) - wycofanie", hit.kind, hit.joint, hit.value)
+        pose = dict(hit.backoff_pose or {})
+        if not pose or tw.owner != OWNER:
+            return
+        self._reset_cancel()
+        self._cap_speed(self.backoff_cap_deg_s)
+        try:
+            arrived = self._retreat(pose, st.gen)
+        except _Abort as exc:
+            logger.warning("Sledzenie: wycofanie przerwane (%s)", exc.reason)
+            return
+        if not arrived and self._cancel_cause == "impact":
+            tw.hold_measured()                          # second impact: no further backoff
+            self._impact = None
+        self._reject_queued()
+
+    def _follow_tools(self) -> tuple[RobotKinematics, CollisionChecker]:
+        """The follower's own IK and collision checker (as `_tools`: the bench scene without extras).
+
+        Built on the worker when a stream starts, then used only by the tick listener: the worker's
+        own `_kin` / `_checker` are not thread-safe.
+        """
+        version = self.twin.version
+        if self._f_checker is None or self._f_version != version:
+            scene = sc.build(self.twin.workspace.scene_config())
+            self._f_checker = CollisionChecker(scene)
+            self._f_kin = RobotKinematics(self.spec, scene.model, sc.PREFIX)
+            self._f_version = version
+        assert self._f_kin is not None
+        return self._f_kin, self._f_checker
+
+    # ------------------------------------------------------------------ follow streams: the loop thread
+    def _on_follow_tick(self, sample) -> None:
+        """Runs on the twin's loop thread after each tick: one step of the running stream."""
+        st = self._stream
+        if st is None or st.ended or st.follower is None or self._follow_stop.is_set():
+            return
+        try:
+            self._follow_step(st, sample)
+        except Exception as exc:                        # a listener that raises is removed: end cleanly
+            logger.exception("Sledzenie: blad kroku")
+            with self._follow_lock:
+                self._end_stream(st, "error", f"{type(exc).__name__}: {exc}"[:200])
+
+    def _follow_step(self, st: _Stream, s) -> None:
+        f = st.follower
+        assert f is not None and st.guard is not None
+        t = float(s.t)
+        with self._follow_lock:
+            newest, version = st.sample, st.version
+        if version != st.seen:
+            st.seen, st.t_rx, st.ts = version, t, newest.ts
+            if not self.volume.contains(newest.pos, margin=-self.follow_outside_m):
+                self._end_follow(st, "outside volume", f"{self.follow_outside_m * 100:.0f} cm poza pudelkiem")
+                return
+            st.setpoint = f.setpoint(newest.pos)
+            if newest.yaw is not None:
+                st.yaw = newest.yaw
+        if st.t_rx is None:
+            st.t_rx = t
+        if t - st.t_rx > self.follow_timeout_s:
+            self._end_follow(st, "timeout", f"brak punktu od {t - st.t_rx:.1f} s")
+            return
+
+        hit = st.guard.feed(t, s.sent, s.measured, s.fresh, efforts=self._efforts(),
+                            velocities=self._velocities())
+        if hit is not None:
+            self._end_follow(st, "impact", f"{hit.kind} {hit.joint}", hit=hit)
+            return
+
+        advance = bool(s.sent)                          # the loop sent nothing (link frozen): don't run ahead
+        if not self.twin.status.simulated and s.sent:
+            lag = self._follow_lag(s)
+            if lag is None:
+                st.stall_since = None
+            else:
+                advance = False
+                st.stall_since = t if st.stall_since is None else st.stall_since
+                if t - st.stall_since >= self.follow_stall_s:
+                    joint, err = lag
+                    pose = st.guard.backoff_pose(t, s.measured)
+                    stall = Impact(t=t, joint=joint, kind="lag", value=err, backoff_pose=pose)
+                    self._end_follow(st, "impact", f"lag {joint}", hit=stall)
+                    return
+
+        dt = self.tick_s if st.t_prev is None else min(max(t - st.t_prev, 0.0), 2.5 * self.tick_s)
+        st.t_prev = t
+        f.v_max = self.follow_v_max
+        out = f.step(dt, st.setpoint if st.setpoint is not None else f.point, st.yaw, advance)
+        if out.joints is None:
+            if st.fail != out.fail:
+                st.fail, st.fail_since = out.fail, t
+            limit = self.follow_ik_fail_s if out.fail == "ik" else self.follow_collision_s
+            if t - st.fail_since >= limit:
+                self._end_follow(st, out.fail, out.detail)
+            else:
+                self._follow_report(st, t, "hold", out.fail, out.detail)
+            return
+        st.fail = ""
+
+        try:
+            self.twin.set_target(out.joints, owner=OWNER)
+        except RuntimeError:
+            self._end_follow(st, self._lost_reason())
+            return
+        tilt = math.degrees(out.tilt)
+        detail = f"tilt {tilt:.0f} deg" if tilt > self.follow_tilt_deg else ""
+        self._follow_report(st, t, "moving", None, detail)
+
+    def _follow_lag(self, s) -> tuple[str, float] | None:
+        """The arm joint farthest behind what was sent, if more than `follow_lag_deg`."""
+        worst: tuple[str, float] | None = None
+        for j in self.arm:
+            if j in s.sent and j in s.measured:
+                err = abs(float(s.sent[j]) - float(s.measured[j]))
+                if err > self.follow_lag_deg and (worst is None or err > worst[1]):
+                    worst = (j, err)
+        return worst
+
+    def _end_follow(self, st: _Stream, reason: str, detail: str = "", hit: Impact | None = None) -> None:
+        with self._follow_lock:
+            self._end_stream(st, reason, detail, ts=st.ts, hit=hit)
+
+    def _follow_report(self, st: _Stream, t: float, state: State, reason: str | None, detail: str) -> None:
+        """`moving` / a pause `hold` from the loop thread: on change, at most every `follow_report_s`;
+        `moving` again every `follow_heartbeat_s` (loop time)."""
+        sig = (state, reason, detail)
+        since = t - st.last_report
+        if since < self.follow_report_s:
+            return
+        if sig == st.last_sig and (state != "moving" or since < self.follow_heartbeat_s):
+            return
+        with self._follow_lock:
+            if st.ended:
+                return
+            self._emit_follow(st, state, reason, detail, ts=st.ts)
+        st.last_report, st.last_sig = t, sig
+
+    # ------------------------------------------------------------------ grab
+    def _execute_grab(self, g: Grab) -> Item | None:
+        """A grab: the checks, then open, hover, descend, close, lift, and `held` / `missed`.
+        Returns the next item if a new target interrupted it."""
+        self._current = g
+        self._reset_cancel()
+        self._phase = "moving"                          # validation takes time: a new target replaces it
+        if self._target_queued():
+            self._interrupt("retarget")
+
+        try:
+            legs = self._plan_grab(g)
+        except _Abort as exc:
+            self._report(g, exc.state, exc.reason, detail=exc.detail)
+            self._release()
+            return None
+
+        self._report(g, "accepted")
+        self._show_target(self._grab_points(g)[1])
+        if self.mode == "dry":
+            self._report(g, "hold")
+            return None
+        if self._cancel.is_set():
+            return self._after_cancel(g)
+
+        try:
+            gen = self._take()
+            self._recheck(legs)
+        except _Abort as exc:
+            self._report(g, exc.state, exc.reason, detail=exc.detail)
+            self._release()
+            return None
+
+        self._cap_speed(1.5 * self.speed + 5.0)
+        self._guard = ImpactGuard(self.arm)
+        try:
+            arrived = self._drive_grab(g, legs, gen)
+            if not arrived:
+                return self._after_cancel(g)
+            state, detail = self._verify_grab()
+        except _Abort as exc:
+            self._finish(g, exc.state, exc.reason, exc.detail)
+            return None
+        self._finish(g, state, detail=detail)           # stays engaged, holding the object up
+        return None
+
+    def _gate_grab(self, g: Grab) -> None:
+        self._gate_arm()
+        self._gate_trust(g.trusted, g.session)
+        if self._is_stale(g):
+            raise _Rejected("stale", f"wykrycie sprzed {g.age:.2f} s > {self.max_object_age_s:.1f} s")
+        if not g.depth:
+            raise _Rejected("no depth")
+        if self.grab_zone is None or not self.grab_zone.contains(g.pos):
+            raise _Rejected("outside grab zone")
+        if g.size is not None and g.size[0] * self.grab_width_frac > self.grab_max_width:
+            raise _Rejected("too wide", f"szerokosc {g.size[0] * 100:.0f} cm")
+        self._gate_gripper()
+
+    def _grab_points(self, g: Grab) -> tuple[np.ndarray, np.ndarray]:
+        """(grasp TCP point, hover point). The object stands on the table (z = 0): the tips go to half its
+        height, at most its centre, within `grab_tip_z`; the TCP is `TIP_AHEAD` above the tips."""
+        h = min(g.size[1], self.grab_max_h) if g.size is not None else self.grab_default_h
+        lo, hi = self.grab_tip_z
+        tip_z = float(np.clip(min(h / 2.0, float(g.pos[2])), lo, hi))
+        grasp = np.array([float(g.pos[0]), float(g.pos[1]), tip_z + TIP_AHEAD])
+        hover = grasp.copy()
+        hover[2] = min(grasp[2] + self.hover, float(self.volume.hi[2]) - self.hover_ceiling_gap)
+        return grasp, hover
+
+    def _plan_grab(self, g: Grab) -> list[_Leg]:
+        """Hover, descend and lift legs, each checked (IK tool-down, jumps, collisions)."""
+        self._gate_grab(g)
+        kin, checker = self._tools()
+        command = self._command()
+        self._validated_from = self._arm_joints(command)
+        prev = self._validated_from
+
+        grasp, hover = self._grab_points(g)
+        rotation = down_rotation(self.spec, grasp, g.yaw) if len(self.arm) >= 6 else None
+        above = self._solve(kin, _Waypoint(hover, "nad obiekt", rotation, check_down=True),
+                            seed={**command, **prev})
+        self._check_leg(checker, prev, above, "nad obiekt")
+        down = self._solve(kin, _Waypoint(grasp, "w dol", rotation, check_down=True),
+                           seed={**command, **above})
+        self._check_leg(checker, above, down, "w dol")
+
+        lift = dict(above)
+        lift[self.spec.gripper] = self.grip_closed
+        return [_Leg(above, self.speed, "normal", "hover"),
+                _Leg(down, self.speed * 0.5, "descend", "descend"),
+                _Leg(lift, self.speed * 0.5, "descend", "lift")]
+
+    def _drive_grab(self, g: Grab, legs: list[_Leg], gen: int) -> bool:
+        """Open, hover, descend, close, lift; `moving` with the leg as `detail`. False = interrupted."""
+        grip = self.spec.gripper
+        above, down, lift = legs
+        self._report(g, "moving", detail="open")
+        self._command_arm({grip: self.grip_open})
+        if self._cancel.wait(self._grip_wait()):
+            return False
+        self._check(gen)
+
+        for leg in (above, down):
+            self._report(g, "moving", detail=leg.what)
+            self._tune_guard(self._guard, leg.profile)
+            if not self._ramp(leg.goal, leg.speed, gen, profile=leg.profile):
+                return False
+
+        self._report(g, "moving", detail="close")
+        self._command_arm({grip: self.grip_closed})
+        if self._cancel.wait(self._grip_wait()):
+            return False
+        self._check(gen)
+
+        self._report(g, "moving", detail=lift.what)
+        self._tune_guard(self._guard, lift.profile)
+        return self._ramp(lift.goal, lift.speed, gen, profile=lift.profile)
+
+    def _verify_grab(self) -> tuple[State, str]:
+        """`held` if the measured jaws stand still wider than empty-closed (`spec.jaw`), else `missed`.
+        A backend that doesn't measure the gripper (the A1X today): `held`, detail "assumed"."""
+        measured_fn = getattr(self.twin.backend, "gripper_measured", None)
+        if measured_fn is not None and not measured_fn():
+            return "held", "assumed"
+        g = self.spec.gripper
+        k = self.spec.joints.index(g)
+        kin = self._kin_worker
+        closed = float(kin.to_q({g: self.grip_closed})[k])
+        first = float(kin.to_q(dict(self.twin.status.measured))[k])
+        self._stop.wait(0.1)
+        q = float(kin.to_q(dict(self.twin.status.measured))[k])
+        jaw = self.spec.jaw
+        if q - closed > jaw.margin and abs(q - first) < jaw.still:
+            return "held", ""
+        return "missed", f"szczeka {q - closed:.4f} od zamknietej"
+
     def _plan(self, t: Target) -> list[_Leg]:
         self._gate(t)
         return self._legs(t)
@@ -882,15 +1698,24 @@ class SpecsReach:
         if self.mode == "sim" and not tw.status.simulated:
             raise _Rejected("not armed")
 
+    def _gate_gripper(self) -> None:
+        if not self.spec.gripper:
+            raise _Rejected("no gripper")
+        if not self.gripper_drivable():
+            raise _Rejected("no gripper", "xcan: 0x051 not deliverable")
+
+    def _gate_trust(self, trusted: bool, session_of: str) -> None:
+        with self._lock:
+            session = self._session_any if self.allow_untrusted else self._session
+        if not (trusted or self.allow_untrusted) or session is None:
+            raise _Rejected("untrusted")
+        if session_of != session:
+            raise _Rejected("session")
+
     def _gate(self, t: Target) -> None:
         """The checks that need no kinematics, in the order listed in the module docstring."""
         self._gate_arm()
-        with self._lock:
-            session = self._session_any if self.allow_untrusted else self._session
-        if not (t.trusted or self.allow_untrusted) or session is None:
-            raise _Rejected("untrusted")
-        if t.session != session:
-            raise _Rejected("session")
+        self._gate_trust(t.trusted, t.session)
 
         if not self.volume.contains(t.pos):
             raise _Rejected("outside volume")
@@ -986,8 +1811,12 @@ class SpecsReach:
         p[2] = min(float(pos[2]) + self.hover, float(self.volume.hi[2]) - self.hover_ceiling_gap)
         return p
 
-    def _take(self) -> int:
-        """Takes the arm as `Twin.move` does: wait for homing, `claim` with `gen`, engage."""
+    def _take(self, who: str = "worker") -> int:
+        """Takes the arm as `Twin.move` does: wait for homing, `claim` with `gen`, engage. `who` in the
+        driver ("worker", "follow") holds it until `_release(who)`."""
+        if self._stream is None and self._follow_release_at is not None:
+            self._follow_release_at = None              # an ended stream's delayed release: taken over now
+            self._holders.discard("follow")
         tw = self.twin
         try:
             tw._wait_for_homing()
@@ -1000,11 +1829,16 @@ class SpecsReach:
         except RuntimeError:
             raise _Rejected("stop" if self._estopped() else "busy") from None
         if not tw.set_engaged(True, owner=OWNER):
-            self._release()
+            self._release(who)
             raise _Rejected("stop" if self._estopped() else "busy")
+        self._holders.add(who)
         return gen
 
-    def _release(self) -> None:
+    def _release(self, who: str = "worker") -> None:
+        """`who` no longer needs the arm; the twin gets it back when nobody in the driver does."""
+        self._holders.discard(who)
+        if self._holders:
+            return
         with suppress(Exception):
             self.twin.release(OWNER)
 
@@ -1026,7 +1860,7 @@ class SpecsReach:
 
     def _close_gripper(self, gen: int) -> None:
         self.twin.set_target({self.spec.gripper: self.grip_closed}, owner=OWNER)
-        if self._cancel.wait(self.grip_wait_s):
+        if self._cancel.wait(self._grip_wait()):
             return
         if self.twin.preempt_gen != gen:
             raise _Abort("hold", self._lost_reason())
@@ -1040,7 +1874,7 @@ class SpecsReach:
         self.twin.set_speed(min(panel_cap, float(deg_s)))
 
     def _restore_speed(self) -> None:
-        if not self._capped:
+        if not self._capped or self._holders:
             return
         self._capped = False
         try:

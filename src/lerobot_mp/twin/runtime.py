@@ -327,6 +327,9 @@ class Twin:
         #: z innych watkow ida pod ta blokada (inaczej krok nadpisywal swiezy `hold`).
         self._sup_lock = threading.RLock()
         self._target: dict[str, float] | None = None
+        #: Kto ostatni ustawil `_target` przez `set_target` - czesciowy cel tego samego wlasciciela
+        #: nakladamy na jego oczekujacy cel (`set_target`).
+        self._target_by: str | None = None
         self._engaged = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -508,6 +511,7 @@ class Twin:
     def _new_owner(self) -> None:
         """Ramie bierze nowy wlasciciel (pod `_own_lock`): stare powody i odciazenie chwytaka nieaktualne."""
         self._preempt_note = ""
+        self._target_by = None
         self._grip_floor = None
         self._warnings.pop("grip_eased", None)
 
@@ -842,13 +846,24 @@ class Twin:
 
     def set_target(self, joints: Mapping[str, float], owner: str | None = None) -> None:
         """Nowy cel. Z `owner` - tylko, jesli ten wlasciciel wciaz ma ramie (inaczej RuntimeError):
-        watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego."""
+        watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego.
+
+        Czesciowy cel (np. sam chwytak albo same stawy ramienia) nakladamy na OCZEKUJACY cel
+        tego samego wlasciciela, jesli taki jest, a dopiero bez niego na start rampy (ostatni
+        wyslany rozkaz). Inaczej sledzenie z okularow, ktore co takt podaje same stawy ramienia,
+        po jednym takcie zatrzymywalo rampe chwytaka w miejscu (rozkaz 94 zamiast 0), a suwak
+        drugiego stawu zatrzymywal pierwszy w polowie drogi.
+        """
         cmd = self._ramp_start(joints)
-        target = {**cmd, **{k: float(v) for k, v in joints.items()}}
+        given = {k: float(v) for k, v in joints.items()}
         with self._own_lock:
             if owner is not None and self._owner != owner:
                 raise RuntimeError(f"ramie odebrane ({self._refusal(owner)})")
-            self._target = target
+            pending = self._target
+            mine = owner is not None and self._target_by == owner
+            base = pending if pending is not None and mine else cmd
+            self._target = {**cmd, **base, **given}
+            self._target_by = owner
 
     def home(self) -> None:
         """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa.
