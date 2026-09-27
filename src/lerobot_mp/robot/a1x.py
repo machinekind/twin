@@ -472,6 +472,20 @@ class A1XArm(RobotBackend):
                 return None
             return {name: float(fb.eff[i]) for i, name in enumerate(self.arm)}
 
+    def gripper_effort(self) -> float | None:
+        """|effort| of the gripper group (frame 0x052, eff[6], raw A1X scale), or None without fresh feedback.
+        Readable even where 0x051 can't be sent (macOS XCAN): the load of jaws pressed against something."""
+        with self._lock:
+            fb = self._fresh_fb()
+            if fb is None:
+                return None
+            return abs(float(fb.eff[6]))
+
+    @property
+    def gripper_force(self) -> float:
+        """Gripper effort above rest that means contact (config `gripper_force`)."""
+        return float(self.acfg.gripper_force)
+
     def velocities(self) -> dict[str, float] | None:
         """deg/s from frame 0x052; arm joints only, no gripper."""
         with self._lock:

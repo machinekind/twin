@@ -482,7 +482,8 @@ def _specs(a: argparse.Namespace) -> int:
 
     drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=not a.trusted_only,
                      real_ok=a.mode == "real" and a.i_know, on_state=show, max_jump_deg=a.max_jump_deg,
-                     hold_off_s=a.hold_off, follow_speed=a.follow_speed)
+                     hold_off_s=a.hold_off, follow_speed=a.follow_speed,
+                     follow_floor_m=a.follow_floor)
     # From the home/zero pose every box point is a > 45 deg jump ("jump" refusal), so go above the centre first.
     if a.start_center:
         if not st.simulated:
@@ -684,6 +685,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--follow-speed", type=float, default=None,
                    help="sledzenie dloni (teleop): najwieksza predkosc punktu chwytaka w m/s, przyspieszenie 4x tyle "
                         "na sekunde (domyslnie 0.20 w sim, 0.10 w real)")
+    p.add_argument("--follow-floor", type=float, default=0.01,
+                   help="sledzenie dloni: punkt chwytaka co najmniej tyle metrow nad dnem pudelka (domyslnie 0.01)")
     p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")
     p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_specs)
