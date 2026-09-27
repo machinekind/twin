@@ -204,9 +204,9 @@ class Follower:
         p, v = self.tracker.propose(target, dt)
 
         rotation = self._rotation(p, yaw, dt) if self.full_rotation else None
-        sol = self.kin.ik_step(p, rotation, seed=self.joints, iters=self.iters, tol=self.ik_tol)
+        sol = self.kin.ik_track(p, rotation, seed=self.joints, iters=self.iters, tol=self.ik_tol)
         if not sol.ok and rotation is not None:
-            sol = self.kin.ik_step(p, None, seed=self.joints, iters=self.iters, tol=self.ik_tol)
+            sol = self.kin.ik_track(p, None, seed=self.joints, iters=self.iters, tol=self.ik_tol)
         if not sol.ok:
             self.tracker.halt()
             return Step(None, "ik", f"IK: blad {sol.pos_err * 1000:.1f} mm", self.tilt)

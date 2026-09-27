@@ -134,6 +134,42 @@ class AntPlacement:
 
 
 @dataclass
+class HandCamera:
+    """A camera riding the hand body (`RobotSpec.hand_body`), such as the A1X wrist camera.
+
+    `T_cam2hand` is in OpenCV axes (z forward, y down) relative to the hand body. The camera is
+    an ideal pinhole given by `fovy_deg`: square pixels, principal point at the image centre.
+    """
+
+    name: str                          # model name becomes PREFIX + name
+    T_cam2hand: np.ndarray
+    fovy_deg: float
+    width: int = 160
+    height: int = 120
+
+
+@dataclass(frozen=True)
+class HandCameraJitter:
+    """A small error of the hand camera's mount, applied to one render only."""
+
+    dpos: np.ndarray                   # (3,) m, added to the position in the hand frame
+    rotvec: np.ndarray                 # (3,) rad, applied as R_mj @ exp(rotvec) (camera frame)
+    dfovy_deg: float = 0.0
+
+
+@dataclass(frozen=True)
+class Light:
+    """A light given in full, for a scene that has to look like another one (the grasp student's
+    training scene). `pos` is above the table top like the short form's; `dir` is used as given."""
+
+    pos: tuple[float, float, float]
+    dir: tuple[float, float, float]
+    diffuse: float = 0.7
+    directional: bool = False
+    castshadow: bool = True
+
+
+@dataclass
 class SceneConfig:
     robot: RobotSpec
     table: Table = field(default_factory=Table)
@@ -153,10 +189,14 @@ class SceneConfig:
     ant: AntPlacement | None = None
     #: Tylko symulacja: mrowka udajaca prawdziwa (prefiks `antprawda/`, z tagami, na wlasnej polityce).
     ant_standin: AntPlacement | None = None
-    #: Oswietlenie: lista (pozycja swiatla nad blatem, jasnosc).
-    lights: list[tuple[tuple[float, float, float], float]] = field(
+    #: Oswietlenie: lista (pozycja swiatla nad blatem, jasnosc) albo `Light`.
+    lights: list[tuple[tuple[float, float, float], float] | Light] = field(
         default_factory=lambda: [((0.4, -0.6, 1.6), 0.55), ((-0.5, 0.3, 1.4), 0.35)]
     )
+    #: Headlight (ambient, diffuse, specular); None keeps the twin's own.
+    headlight: tuple[float, float, float] | None = None
+    #: Cameras on the hand; never in `cameras`, which holds only cameras fixed to the base.
+    hand_cameras: list[HandCamera] = field(default_factory=list)
 
 
 class Scene:
@@ -282,19 +322,79 @@ class Scene:
     def render(self, camera: str) -> np.ndarray:
         """Kadr RGB z kamery sceny w jej natywnej rozdzielczosci."""
         view = self.camera(camera)
-        key = (view.width, view.height)
-        r = self._renderers.get(key)
-        if r is None:
-            r = mujoco.Renderer(self.model, height=view.height, width=view.width)
-            self._renderers[key] = r
+        r = self._renderer(view.width, view.height)
         r.update_scene(self.data, camera=camera)
         return r.render().copy()
+
+    def _renderer(self, width: int, height: int) -> mujoco.Renderer:
+        key = (width, height)
+        r = self._renderers.get(key)
+        if r is None:
+            r = mujoco.Renderer(self.model, height=height, width=width)
+            self._renderers[key] = r
+        return r
 
     def camera(self, name: str) -> CameraView:
         for view in self.cfg.cameras:
             if view.name == name:
                 return view
         raise KeyError(f"brak kamery {name!r} w scenie")
+
+    def hand_camera(self, name: str) -> HandCamera:
+        for cam in self.cfg.hand_cameras:
+            if cam.name == name:
+                return cam
+        raise KeyError(f"brak kamery na dloni {name!r} w scenie")
+
+    def render_hand(self, name: str, jitter: HandCameraJitter | None = None,
+                    *, segmentation: bool = False) -> np.ndarray:
+        """RGB uint8 (H, W, 3) from a hand camera, at the camera's own size.
+
+        With `segmentation` the result is int32 (H, W) of geom ids, -1 where no geom is seen.
+        A `jitter` moves the camera for this one render; the model keeps its nominal mount.
+        The model is shared with the physics thread, whose `cam_xpos` can pick up the jittered
+        mount during that render; nothing in the loop reads it, but a reader of the camera's
+        pose there should take the model's nominal values.
+        """
+        cam = self.hand_camera(name)
+        r = self._renderer(cam.width, cam.height)
+        full = PREFIX + name
+        m = self.model
+        if jitter is None:
+            # `step` reruns only mj_kinematics after mj_step: the bodies move to the new joints,
+            # camera poses stay one substep behind (millimetres on a fast move).
+            mujoco.mj_camlight(m, self.data)
+            return self._read(r, full, segmentation)
+
+        c = m.camera(full).id
+        pos, quat, fovy = m.cam_pos[c].copy(), m.cam_quat[c].copy(), float(m.cam_fovy[c])
+        try:
+            m.cam_pos[c] = pos + np.asarray(jitter.dpos, float)
+            m.cam_quat[c] = _quat(_rotmat(quat) @ _exp_rotvec(jitter.rotvec))
+            m.cam_fovy[c] = fovy + float(jitter.dfovy_deg)
+            # The camera's world pose in `data` is not recomputed from the model by the render:
+            # without this a new cam_pos or cam_quat changes no pixel (measured: 10 cm of
+            # cam_pos, identical image).
+            mujoco.mj_camlight(m, self.data)
+            return self._read(r, full, segmentation)
+        finally:
+            m.cam_pos[c], m.cam_quat[c], m.cam_fovy[c] = pos, quat, fovy
+            mujoco.mj_camlight(m, self.data)
+
+    def _read(self, r: mujoco.Renderer, camera: str, segmentation: bool) -> np.ndarray:
+        if not segmentation:
+            r.update_scene(self.data, camera=camera)
+            return r.render().copy()
+        # The renderer is shared with RGB renders of the same size, so it must leave this mode.
+        r.enable_segmentation_rendering()
+        try:
+            r.update_scene(self.data, camera=camera)
+            seg = r.render()
+        finally:
+            r.disable_segmentation_rendering()
+        ids = seg[:, :, 0].astype(np.int32)
+        ids[seg[:, :, 1] != int(mujoco.mjtObj.mjOBJ_GEOM)] = -1
+        return ids
 
     def camera_pose(self, name: str) -> np.ndarray:
         """Poza kamery wzgledem podstawy w konwencji OpenCV, wyczytana z MODELU.
@@ -529,6 +629,26 @@ def _rotmat(quat) -> np.ndarray:
     return R.reshape(3, 3)
 
 
+def _exp_rotvec(rotvec) -> np.ndarray:
+    v = np.asarray(rotvec, float)
+    angle = float(np.linalg.norm(v))
+    if angle < 1e-15:
+        return np.eye(3)
+    k = v / angle
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+
+
+def _add_hand_camera(robot: mujoco.MjSpec, rspec: RobotSpec, hc: HandCamera) -> None:
+    T = np.asarray(hc.T_cam2hand, float)
+    cam = robot.body(rspec.hand_body).add_camera()
+    cam.name = hc.name
+    cam.pos = T[:3, 3]
+    cam.quat = _quat(T[:3, :3] @ CV_TO_MJ)
+    # MuJoCo reads fovy in degrees whatever the compiler's angle setting.
+    cam.fovy = float(hc.fovy_deg)
+
+
 def build(cfg: SceneConfig) -> Scene:
     """Kompiluje scene od zera."""
     t = cfg.table
@@ -544,8 +664,13 @@ def build(cfg: SceneConfig) -> Scene:
         setattr(spec.option, name, getattr(robot.option, name))
     spec.visual.headlight.ambient = [0.35, 0.35, 0.35]
     spec.visual.headlight.diffuse = [0.35, 0.35, 0.35]
-    width = max([v.width for v in cfg.cameras] + [640])
-    height = max([v.height for v in cfg.cameras] + [480])
+    if cfg.headlight is not None:
+        ambient, diffuse, specular = (float(v) for v in cfg.headlight)
+        spec.visual.headlight.ambient = [ambient] * 3
+        spec.visual.headlight.diffuse = [diffuse] * 3
+        spec.visual.headlight.specular = [specular] * 3
+    width = max([v.width for v in cfg.cameras] + [h.width for h in cfg.hand_cameras] + [640])
+    height = max([v.height for v in cfg.cameras] + [h.height for h in cfg.hand_cameras] + [480])
     spec.visual.global_.offwidth, spec.visual.global_.offheight = width, height
 
     world = spec.worldbody
@@ -560,9 +685,18 @@ def build(cfg: SceneConfig) -> Scene:
     tab.pos = [0.0, 0.0, top / 2]
     tab.rgba = list(t.rgba)
 
-    for k, (pos, strength) in enumerate(cfg.lights):
+    for k, item in enumerate(cfg.lights):
         light = world.add_light()
         light.name = f"light{k}"
+        if isinstance(item, Light):
+            light.pos = [item.pos[0], item.pos[1], top + item.pos[2]]
+            light.dir = np.asarray(item.dir, float) / np.linalg.norm(item.dir)
+            light.diffuse = [item.diffuse] * 3
+            light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL if item.directional \
+                else mujoco.mjtLightType.mjLIGHT_SPOT
+            light.castshadow = item.castshadow
+            continue
+        pos, strength = item
         light.pos = [pos[0], pos[1], top + pos[2]]
         light.dir = -np.asarray([pos[0], pos[1], pos[2]], float) / np.linalg.norm(pos)
         light.diffuse = [strength] * 3
@@ -576,6 +710,8 @@ def build(cfg: SceneConfig) -> Scene:
         if T_card is None:
             T_card = cfg.card.nominal(pinch_point(RobotKinematics(cfg.robot)), cfg.robot)
         _add_card(spec, robot, cfg.robot, cfg.card, T_card, cfg.card_collider)
+    for hc in cfg.hand_cameras:
+        _add_hand_camera(robot, cfg.robot, hc)
 
     c, s = np.cos(t.base_yaw), np.sin(t.base_yaw)
     R_base = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])

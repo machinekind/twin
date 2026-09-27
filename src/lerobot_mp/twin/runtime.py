@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -39,7 +40,7 @@ import numpy as np
 
 from ..control.safety import SafetyState, SafetySupervisor
 from ..robot import create_backend
-from ..robot.base import RobotBackend, RobotInfo
+from ..robot.base import GripperState, RobotBackend, RobotInfo
 from . import scene as sc
 from .cameras import CameraHub
 from .clock import Clock, VirtualClock, WallClock
@@ -56,6 +57,7 @@ class SceneBackend(RobotBackend):
         self.twin = twin
         self.info = RobotInfo(name="blizniak (MuJoCo)", description="symulacja z fizyka", simulated=True)
         self._connected = False
+        self._state_logged = False
 
     def connect(self) -> None:
         self._connected = True
@@ -95,6 +97,30 @@ class SceneBackend(RobotBackend):
         with self.twin.lock:
             s = self.twin.scene
             return s.kin.from_q(s.data.ctrl[s.act_ids])
+
+    def gripper_state(self) -> GripperState | None:
+        """The scene's jaw: the actuator ctrl is command, target and stream at once; the slide is measured.
+
+        Called from driver threads every tick, so it never raises: an error is logged once and gives None.
+        """
+        twin, grip = self.twin, self.twin._grip
+        if not self._connected or grip is None:
+            return None
+        try:
+            with twin.lock:
+                s = twin.scene
+                cmd = s.kin.from_q(s.data.ctrl[s.act_ids])[grip]
+                position = s.joints()[grip]
+                effort = float(s.data.actuator_force[s.model.actuator(sc.PREFIX + grip).id])
+            now = twin.clock.now()
+            return GripperState(commanded=cmd, target=cmd, streamed=cmd, position=position, frozen=False,
+                                effort=effort, t=now, age_s=0.0, rate=None, force_threshold=None,
+                                measured=True)
+        except Exception:
+            if not self._state_logged:
+                self._state_logged = True
+                logger.exception("gripper_state() of the scene failed")
+            return None
 
 
 @dataclass(frozen=True)
@@ -569,7 +595,8 @@ class Twin:
         except Exception:                                  # pragma: no cover - sprzatanie sterownika nie moze wysypac STOP-u
             logger.exception("Blad przy przerywaniu wlasciciela ramienia")
 
-    def hold_measured(self, measured: Mapping[str, float] | None = None) -> None:
+    def hold_measured(self, measured: Mapping[str, float] | None = None, *,
+                      gripper: float | None = None) -> None:
         """Cel := poza, w ktorej ramie stanie; rozkaz nadzoru i ograniczniki predkosci od nowa w niej.
 
         Jedna regula dla STOP-u, Domu, odebrania ramienia i stopu na kolizji (bez
@@ -584,13 +611,21 @@ class Twin:
         17-20 cm nad blatem wypadala po STOP-ie, Domu albo stopie polityki na rozjezdzie.
         Szczeka w trakcie zamykania NIE sciska - staje w zmierzonym miejscu (palec miedzy
         szczekami). Wyjatek: STOP od bledu chwytaka (`_grip_release`) - bez docisku.
+
+        `gripper` (0..100, clipped) replaces the gripper entry of the pose before the squeeze rule.
+        On a backend whose measured opening is its last command (A1X without jaw feedback) the
+        pose above lets a closing jaw finish its stroke; the streamed opening given here stops it.
         """
+        if gripper is not None and not math.isfinite(float(gripper)):
+            raise ValueError(f"chwytak nie jest liczba: {gripper}")
         sup = self._supervisor
         if sup is None:
             return
         if measured is None:
             measured = self._measured_now()
         measured = {k: float(v) for k, v in measured.items() if k in self._names}
+        if gripper is not None and self._grip is not None:
+            measured[self._grip] = min(max(float(gripper), 0.0), 100.0)
         if not measured:
             return
         with self._sup_lock:
@@ -880,7 +915,13 @@ class Twin:
         `owner`, inny wlasciciel, brak celu) na start rampy (ostatni wyslany rozkaz). Inaczej
         sledzenie z okularow, ktore co takt podaje same stawy ramienia, po jednym takcie
         zatrzymywalo rampe chwytaka w miejscu (rozkaz 94 zamiast 0).
-        """
+
+        A non-finite value raises ValueError and leaves the target as it was: nothing downstream
+        rejects NaN (measured on the fake A1X bus: J1 ran at 90 deg/s past its limits, the jaw past
+        closed)."""
+        bad = [k for k, v in joints.items() if not math.isfinite(float(v))]
+        if bad:
+            raise ValueError(f"cel nie jest liczba: {bad}")
         cmd = self._ramp_start(joints)
         given = {k: float(v) for k, v in joints.items()}
         with self._own_lock:
@@ -1036,6 +1077,25 @@ class Twin:
         with self._sup_lock:
             if self._supervisor is not None:
                 self._supervisor.set_speed_cap(self._speed_cap)
+
+    def speed_limits(self) -> dict[str, float]:
+        """Effective top speed per joint now [deg/s; gripper units/s], read only; {} when not connected.
+
+        The supervisor's limit (max_vel x velocity_scale, capped by `set_speed`) and, for arm
+        joints, the backend's own slew when it has one (A1X `max_step_deg_s`): each can lower
+        the speed a caller relies on without anything else showing it.
+        """
+        sup, b = self._supervisor, self._backend
+        if sup is None or b is None or not self.connected:
+            return {}
+        with self._sup_lock:
+            limits = {name: float(sup._max_vel(name)) for name in sup.names}
+        slew = getattr(getattr(b, "acfg", None), "max_step_deg_s", None)
+        if slew is not None:
+            for name in limits:
+                if name != self._grip:
+                    limits[name] = min(limits[name], float(slew))
+        return limits
 
     def _home_staged(self) -> None:
         """Dom etapami: grupy stawow z `spec.home_stages` po kolei, kazda po sprawdzeniu drogi w blizniaku.

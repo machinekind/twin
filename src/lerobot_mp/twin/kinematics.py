@@ -78,6 +78,23 @@ class IKSolution:
     ok: bool
 
 
+@dataclass
+class IKStep:
+    """One warm step of the training solver (`RobotKinematics.ik_step`), in app units."""
+
+    #: Every spec joint; the gripper is copied from the seed.
+    joints: dict[str, float]
+    #: TCP position [m] and rotation [rad] error at the RETURNED joints, never one update stale.
+    pos_err: float
+    rot_err: float
+    #: Largest arm joint change from the seed as given (before clipping) [deg].
+    jump_deg: float
+    #: Updates applied; 0 when the seed already met the tolerances.
+    iters: int
+    #: Training's `ok`: True only when the loop left through its tolerance test.
+    converged: bool
+
+
 class RobotKinematics:
     """Kinematyka jednego ramienia na skompilowanym modelu MuJoCo.
 
@@ -288,7 +305,7 @@ class RobotKinematics:
         _, q, e_pos, e_rot = best
         return IKSolution(self.from_q(q), float(e_pos), float(e_rot), bool(e_pos < tol))
 
-    def ik_step(
+    def ik_track(
         self,
         position: np.ndarray,
         rotation: np.ndarray | None = None,
@@ -310,6 +327,90 @@ class RobotKinematics:
         q, e_pos, e_rot = self._solve(self.to_q(seed), np.asarray(position, float), rotation, rot_gain, iters,
                                       damping, tol)
         return IKSolution(self.from_q(q), float(e_pos), float(e_rot), bool(e_pos < tol))
+
+    def ik_step(
+        self,
+        position: np.ndarray,
+        rotation: np.ndarray,
+        seed: Mapping[str, float],
+        *,
+        iters: int = 60,
+        damping: float = 0.05,
+        tol_pos: float = 1e-3,
+        tol_rot: float = 5e-3,
+        limits: Mapping[str, tuple[float, float]] | None = None,
+    ) -> IKStep:
+        """One warm start of the grasp training solver (galaxeo `a1x_control.Arm.ik`), transcribed.
+
+        6-D damped least squares, 0.3 rad step cap, no restarts, no randomness: the joints,
+        residual included, are the ones the grasp student was trained on. `ik` lands elsewhere
+        and takes about 40 ms.
+
+        `seed` must hold every arm joint (`to_q` would silently fill a missing one from home).
+        `limits` [app units], e.g. `Twin.joint_limits()`, narrow the MJCF ranges of the arm
+        joints, so a step the supervisor would clamp comes back not converged. Base frame.
+
+        The tolerance test runs before each update, as in training. When the loop runs out,
+        the errors are recomputed at the final joints, but `converged` stays False even if they
+        are inside the tolerances: training refuses that step, and taking it would move the
+        command away from what the policy saw.
+        """
+        missing = [name for name, arm in zip(self.spec.joints, self.arm) if arm and name not in seed]
+        if missing:
+            raise KeyError(f"brak stawow ramienia w seed: {', '.join(missing)}")
+        q_seed = self.to_q(seed)
+        lo, hi = self.lo.copy(), self.hi.copy()
+        if limits is not None:
+            for k, name in enumerate(self.spec.joints):
+                if self.arm[k] and name in limits:
+                    lo[k] = max(lo[k], np.radians(limits[name][0]))
+                    hi[k] = min(hi[k], np.radians(limits[name][1]))
+        q = np.clip(q_seed, lo, hi)
+
+        m, d = self.model, self.data
+        cols = self.dadr[self.arm]
+        jacp = np.zeros((3, m.nv))
+        jacr = np.zeros((3, m.nv))
+        want_quat = np.zeros(4)
+        cur_quat = np.zeros(4)
+        err_quat = np.zeros(4)
+        w = np.zeros(3)
+
+        self._apply(q)
+        base_R = d.xmat[self.base_id].reshape(3, 3).copy()
+        target = base_R @ np.asarray(position, float) + d.xpos[self.base_id]
+        mujoco.mju_mat2Quat(want_quat, (base_R @ np.asarray(rotation, float)).ravel())
+
+        def pose_error() -> np.ndarray:
+            self._apply(q)
+            mujoco.mju_mat2Quat(cur_quat, d.site_xmat[self.site_id])
+            mujoco.mju_negQuat(cur_quat, cur_quat)
+            mujoco.mju_mulQuat(err_quat, want_quat, cur_quat)
+            mujoco.mju_quat2Vel(w, err_quat, 1.0)
+            return target - d.site_xpos[self.site_id]
+
+        converged = False
+        updates = 0
+        for _ in range(iters):
+            e_p = pose_error()
+            if np.linalg.norm(e_p) < tol_pos and np.linalg.norm(w) < tol_rot:
+                converged = True
+                break
+            mujoco.mj_comPos(m, d)
+            mujoco.mj_jacSite(m, d, jacp, jacr, self.site_id)
+            J = np.vstack([jacp[:, cols], jacr[:, cols]])
+            dq = J.T @ np.linalg.solve(J @ J.T + damping**2 * np.eye(6), np.concatenate([e_p, w]))
+            step = min(1.0, 0.3 / (np.linalg.norm(dq) + 1e-9))
+            q[self.arm] = np.clip(q[self.arm] + step * dq, lo[self.arm], hi[self.arm])
+            updates += 1
+        if not converged:
+            e_p = pose_error()
+
+        joints = self.from_q(q)
+        if self.spec.gripper in seed:
+            joints[self.spec.gripper] = float(seed[self.spec.gripper])
+        jump = float(np.degrees(np.max(np.abs(q[self.arm] - q_seed[self.arm]))))
+        return IKStep(joints, float(np.linalg.norm(e_p)), float(np.linalg.norm(w)), jump, updates, converged)
 
     def _solve(
         self,
