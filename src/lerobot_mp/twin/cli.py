@@ -23,6 +23,15 @@
     lerobot-twin specs --mode real --i-know  # ... REAL arm (backend from the workspace)
     lerobot-twin specs --mode real --i-know --start-center  # ... first (after Enter) above the box centre
     lerobot-twin specs --mode sim --follow-speed 0.1        # ... teleop: the gripper follows the hand at 0.1 m/s
+    lerobot-twin grasp                       # A1X grasp student (wrist camera): dry run, nothing moves
+    lerobot-twin grasp --mode sim            # ... simulated arm grasps a cube in the scene
+    lerobot-twin grasp --mode shadow --backend a1x --i-know  # ... REAL arm, the fingers touch nothing
+    lerobot-twin grasp --mode real --backend a1x --i-know    # ... REAL arm grasps
+    lerobot-twin grasp-bench show            # per-rig file (workspace/grasp.json) and what each mode misses
+    lerobot-twin grasp-bench table --backend a1x --i-know --xy 0 0.30  # teach the table height by touch
+    lerobot-twin grasp-eval                  # 50 episodes in sim at the sim jaw speed
+    lerobot-twin grasp-eval --jaw measured   # ... with the jaw slowed to the measured stroke
+    lerobot-twin grasp-model fetch           # download the checkpoint over HTTPS and verify its sha256
 
 `--config` ustawia zmienna LEROBOT_MP_CONFIG, wiec plik widzi tez proces treningu
 uruchamiany z panelu.
@@ -614,6 +623,30 @@ def _specs(a: argparse.Namespace) -> int:
     return code
 
 
+def _grasp(a: argparse.Namespace) -> int:
+    from .grasp.run import main_grasp
+
+    return main_grasp(a)
+
+
+def _grasp_bench(a: argparse.Namespace) -> int:
+    from .grasp.bench import main_bench
+
+    return main_bench(a)
+
+
+def _grasp_eval(a: argparse.Namespace) -> int:
+    from .grasp.evaluate import main_eval
+
+    return main_eval(a)
+
+
+def _grasp_model(a: argparse.Namespace) -> int:
+    from .grasp.policy import main_model
+
+    return main_model(a)
+
+
 def _use_config(path: str) -> None:
     """Ustawia LEROBOT_MP_CONFIG (sciezka bezwzgledna) i od razu sprawdza plik.
 
@@ -774,6 +807,119 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")
     p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_specs)
+
+    checkpoint_help = ("plik modelu studenta chwytu (domyslnie $LEROBOT_GRASP_STUDENT, "
+                       "potem workspace/policies/grasp/student.pt)")
+    rig_help = "plik wartosci zmierzonych na stanowisku chwytu (domyslnie workspace/grasp.json)"
+    floor_help = "podloga polecenia: bench - z dotyku stolu na stanowisku; training - jak w treningu"
+
+    p = sub.add_parser("grasp", help="student chwytu z kamera na nadgarstku (A1X): dry, sim, shadow, real")
+    p.add_argument("--mode", choices=("dry", "sim", "shadow", "real"), default="dry",
+                   help="dry - nic sie nie rusza, sprawdzenia i zrzuty obrazow; sim - ramie w symulacji; "
+                        "shadow - polityka dziala, szczeki niczego nie dotykaja; real - prawdziwy chwyt")
+    p.add_argument("--backend", default=None,
+                   help="ramie: sim, a1x, ... (domyslnie sim w dry/sim; w shadow/real wymagane)")
+    p.add_argument("--port", default=None, help="port ramienia (domyslnie ze stanowiska)")
+    p.add_argument("--i-know", action="store_true",
+                   help="wymagane w --mode shadow/real: rozumiem, ze ramie sie ruszy")
+    p.add_argument("--checkpoint", default=None, help=checkpoint_help)
+    p.add_argument("--rig", default=None, help=rig_help)
+    p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
+    p.add_argument("--camera", default=None,
+                   help="zrodlo kamery na nadgarstku, gdy plik --rig go nie podaje")
+    p.add_argument("--episodes", type=int, default=1, help="ile epizodow (domyslnie 1)")
+    p.add_argument("--seed", type=int, default=0, help="ziarno losowania kostki w symulacji (domyslnie 0)")
+    p.add_argument("--outside-training", action="store_true",
+                   help="pozwol na punkt chwytu poza obszarem treningu (z ostrzezeniem)")
+    p.add_argument("--floor", choices=("bench", "training"), default="bench",
+                   help=floor_help + " (tylko --mode sim)")
+    p.add_argument("--gap", choices=("scene", "model"), default=None,
+                   help="rozwarcie szczek w obserwacji: scene - ze sceny (tylko --mode sim); "
+                        "model - z modelu szczek (domyslnie scene w --mode sim bez --jaw-stroke-s, "
+                        "inaczej model)")
+    p.add_argument("--jaw-stroke-s", type=float, default=None,
+                   help="tylko --mode sim: szczeki zwolnione do takiego czasu pelnego ruchu [s]")
+    p.add_argument("--dump-every", type=int, default=20,
+                   help="dry: zrzut obrazu co tyle taktow (domyslnie 20)")
+    p.add_argument("--seconds", type=float, default=None,
+                   help="dry: zakoncz po tylu sekundach (inaczej Enter albo Ctrl-C)")
+    p.add_argument("--object-height", type=float, default=None,
+                   help="dry: wysokosc obiektu [m] w zrzutach (domyslnie z pliku --rig, inaczej 0.030)")
+    p.set_defaults(fn=_grasp)
+
+    p = sub.add_parser("grasp-bench",
+                       help="pomiary do chwytu: szczeki, stol, punkt, opoznienie, kropka, plik --rig")
+    p.add_argument("action", choices=("gripper", "table", "point", "latency", "dot", "show"),
+                   help="gripper - czas ruchu i wysilek szczek; table - wysokosc stolu dotykiem; "
+                        "point - punkt chwytu dotykiem; latency - opoznienie ramienia i kamery; "
+                        "dot - blad kropki zmierzony przez operatora; "
+                        "show - plik --rig i czego brakuje trybom")
+    p.add_argument("--backend", default="sim",
+                   help="ramie (domyslnie sim; prawdziwe tylko z jawnym --backend)")
+    p.add_argument("--port", default=None, help="port ramienia (domyslnie ze stanowiska)")
+    p.add_argument("--i-know", action="store_true",
+                   help="wymagane na prawdziwym ramieniu, gdy narzedzie nim rusza")
+    p.add_argument("--rig", default=None, help=rig_help)
+    p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
+    p.add_argument("--checkpoint", default=None, help=checkpoint_help)
+    p.add_argument("--xy", nargs=2, type=float, default=None, metavar=("X", "Y"),
+                   help="punkt startowy nad stolem [m, uklad bazy ramienia] (domyslnie xy juz nauczonego "
+                        "punktu chwytu albo stolu, inaczej 0 0.33)")
+    p.add_argument("--yaw-deg", type=float, default=0.0,
+                   help="obrot narzedzia wokol pionu w punkcie startowym [st.] (domyslnie 0)")
+    p.add_argument("--start-z", type=float, default=0.12,
+                   help="wysokosc TCP w punkcie startowym [m] (domyslnie 0.12)")
+    p.add_argument("--gap-mm", action="extend", nargs="+", default=None, metavar="O:MM",
+                   help="gripper: rozwarcie zmierzone linijka przy otwarciu O (0..100) w mm; "
+                        "kilka punktow, np. --gap-mm 0:3 50:53 100:103 albo --gap-mm 0:3 --gap-mm 100:103")
+    p.add_argument("--set-freeze", type=float, default=None,
+                   help="gripper: zapisz prog zamrozenia szczek ustawiony w konfiguracji "
+                        "(a1x.gripper_force; 100 = wylaczony)")
+    p.add_argument("--error-px", type=float, default=None,
+                   help="dot: zmierzony blad kropki [px w obrazie 160x120]")
+    p.add_argument("--force", action="store_true",
+                   help="table: zapisz dotyk dalej niz 15 mm od oczekiwanych 33.9 mm "
+                        "(zapisuje tez wyjatek w pliku --rig)")
+    p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")
+    p.add_argument("--object-height", type=float, default=0.030,
+                   help="point: wysokosc obiektu [m] (domyslnie 0.030)")
+    p.add_argument("--camera", default=None,
+                   help="zrodlo kamery na nadgarstku, gdy plik --rig go nie podaje")
+    p.set_defaults(fn=_grasp_bench)
+
+    p = sub.add_parser("grasp-eval", help="ewaluacja studenta chwytu w symulacji (zawsze ramie sim)")
+    p.add_argument("--episodes", type=int, default=50, help="ile epizodow (domyslnie 50)")
+    p.add_argument("--seed", type=int, default=50000,
+                   help="ziarno losowania kostek (domyslnie 50000, jak ewaluacja w treningu)")
+    p.add_argument("--jaw", choices=("sim", "measured"), default="sim",
+                   help="sim - szczeki z predkoscia symulacji; "
+                        "measured - zwolnione do zmierzonego czasu ruchu")
+    p.add_argument("--stroke-s", type=float, default=None,
+                   help="measured: czas pelnego ruchu szczek [s] (domyslnie z pliku --rig, "
+                        "inaczej czas strumienia A1X)")
+    p.add_argument("--gap", choices=("scene", "model"), default=None,
+                   help="rozwarcie szczek w obserwacji (domyslnie scene przy --jaw sim, model przy measured)")
+    p.add_argument("--floor", choices=("bench", "training"), default="bench", help=floor_help)
+    p.add_argument("--jitter", action="store_true",
+                   help="w kazdym epizodzie losowo przesunieta kamera na nadgarstku (tylko obraz)")
+    p.add_argument("--checkpoint", default=None, help=checkpoint_help)
+    p.add_argument("--rig", default=None, help=rig_help)
+    p.add_argument("--out", default=None,
+                   help="plik wyniku JSON (domyslnie workspace/grasp/eval/<data>.json)")
+    p.add_argument("--workspace", default=None,
+                   help="plik stanowiska (domyslnie workspace/twin.json; backend z pliku jest pomijany)")
+    p.set_defaults(fn=_grasp_eval)
+
+    p = sub.add_parser("grasp-model", help="model studenta chwytu: pobierz, sprawdz, zmierz czas inferencji")
+    p.add_argument("action", choices=("fetch", "check", "time"),
+                   help="fetch - pobierz przez HTTPS, sprawdz sha256 i opis kamery; "
+                        "check - wczytaj i pokaz schemat; "
+                        "time - czas inferencji na CPU")
+    p.add_argument("--checkpoint", default=None,
+                   help="plik modelu; fetch zapisuje tutaj (domyslnie workspace/policies/grasp/student.pt), "
+                        "check i time szukaja jak grasp: ten plik, $LEROBOT_GRASP_STUDENT, sciezka domyslna")
+    p.add_argument("--n", type=int, default=200, help="time: ile wywolan (domyslnie 200)")
+    p.set_defaults(fn=_grasp_model)
     return ap
 
 

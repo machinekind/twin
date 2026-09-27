@@ -671,9 +671,8 @@ dotyczą tylko SO-101. Progi szczęk w metrach (`A1X.jaw`): 20 mm wysuwu to
 | pytanie | skąd wątpliwość | jak sprawdzić |
 |---|---|---|
 | ~~Czy chwytak słucha `0x051` przez XCAN (macOS)?~~ | **Tak**, zmierzone 2026-09-27 (`--grip-test`); domyślnie włączone (`a1x.gripper_over_xcan`, PR 18) | — |
-| ~~Czy grupa 7 ramki `0x052` to pozycja chwytaka?~~ | **Tak**, w rad jak `p_des` (2026-09-27, „Chwytak A1X: pomiar” wyżej) | — |
-| Docisk 0,04 rad przy zamknięciu i zapas przy otwarciu | końce ustawione z pomiaru ograniczników, nie sprawdzone jeszcze na stole | zamknij pusty: grupa 7 ok. +0,039, \|effort\| blisko spoczynku, szczęki się stykają; otwórz: ok. −1,95, effort blisko spoczynku |
-| Jednostka effort i próg `gripper_force` 1,2 | skala `/600` bez znanej jednostki; próg empiryczny, miażdżenie od ok. 6 | chwyt kostki 3 cm: cel ma zamarznąć przy kontakcie. Sprawdź też, czy effort chwytaka nie stoi na 0,00 (chwytak głuchy — tego backend nie wykrywa) |
+| ~~Czy grupa 7 ramki `0x052` to pozycja chwytaka?~~ | **Tak**, w rad jak `p_des` (2026-09-27, „Chwytak A1X: pomiar” wyżej) | Polityka [chwytu z kamery na nadgarstku](#chwyt-z-kamery-na-nadgarstku-a1x) grupy 7 nie używa: szczelinę szczęk liczy z otwarcia wysłanego w `0x051`, ograniczonego zmierzoną prędkością szczęk (`lerobot-twin grasp-bench gripper`) |
+| Jednostka effort i próg `gripper_force` 1,2 | skala `/600` bez znanej jednostki; próg empiryczny, miażdżenie od ok. 6 | chwyt kostki 3 cm: cel ma zamarznąć przy kontakcie. Sprawdź też, czy effort chwytaka nie stoi na 0,00 (chwytak głuchy — tego backend nie wykrywa). `lerobot-twin grasp-bench gripper` loguje effort chwytaka (co najmniej 150 próbek/s) przy pustym i obciążonym zamknięciu; polecenia chwytu na prawdziwym ramieniu wymagają zapisanej decyzji (`gripper.freeze_threshold`, 100 = zamrażanie wyłączone) |
 | Czy `kp` 20 nadąża przy 90°/s? | `kp` jest ignorowane (zmierzone przy małych skokach), szybkie ruchy nie były sprawdzane z bliźniakiem | Dom i fala: bez błędu rozjazdu (25° / 0,5 s), suwaki idą za ramieniem |
 | Próg „głuche albo zablokowane” | 3° przez 1 s przy stojącym stawie; staw oparty o przeszkodę też go wyzwoli | czy nie strzela przy spokojnej pracy; w razie potrzeby `deaf_err_deg` / `deaf_s` |
 | Zero J3 i chwytaka | +1,49° z ramienia galaxeo; zamknięty ogranicznik szczęk +0,039 rad (2026-09-27), ale czy płytki się przy nim stykają, nie sprawdzono | `joint_offsets_deg` wyżej; przy 0 szczęki mają się stykać |
@@ -1002,6 +1001,59 @@ odtwarza przejazd z samych serw (1,5 cm różnicy na 13 cm). **Na prawdziwej mr�
 są z `rollout_server.py` (tam „TODO validate”), a kopia odtwarza ruch tylko tak dobrze, jak model v2 odtwarza
 mrówkę v1 (inne uchwyty bioder) — rozjazd dociągają tagi.
 
+---
+
+## Chwyt z kamery na nadgarstku (A1X)
+
+Opublikowana polityka chwytu `student.pt` (`hvsr-robotics/a1x-wrist-grasp-sim`,
+uczona w symulacji galaxeo-manipulators) prowadzi ostatnie centymetry chwytu
+z góry: od punktu 6 cm nad zaproponowanym chwytem do uniesienia kostki. 20 razy
+na sekundę dostaje kadr kamery na nadgarstku 160×120 z czwartym kanałem
+(piksel, w który rzutuje się zakładany punkt chwytu) i 19 liczb: stawy,
+szczelinę szczęk, punkt chwytu względem TCP i księgowanie rozkazu. Zwraca krok
+TCP (do 8 mm), krok obrotu (do 5°) i cel chwytaka. Bliźniak prowadzi ją jako
+jeszcze jednego właściciela ruchu (`chwyt`), przez `Twin.set_target`, nadzór
+i backend `a1x`. Sprawdzona w symulacji bliźniaka, na symulowanej magistrali
+CAN i na nagraniach ze środowiska treningu. **Prawdziwym ramieniem jeszcze nie
+ruszała.** Opis po angielsku, z instrukcją na stanowisku krok po kroku:
+[GRASP.md](GRASP.md).
+
+- **Model:** `lerobot-twin grasp-model fetch` pobiera go do
+  `workspace/policies/grasp/student.pt` i sprawdza sha256. Żaden tryb nie
+  pobiera niczego sam.
+- **Tryby, w tej kolejności:** `dry` — nic nie rusza, polityka liczy akcje
+  z żywej kamery i stawów, a zrzuty kadrów z narysowanym punktem chwytu służą
+  do sprawdzenia kropki (do 8 px); `shadow` — prawdziwe ramię wykonuje ruchy
+  polityki z otwartą szczęką i podłogą 10 mm nad kostką; `real` — pełny chwyt.
+  `sim` robi to samo na symulowanym ramieniu z kostką w scenie. `shadow`
+  i `real` wymagają `--backend` i `--i-know`.
+- **Pomiary stanowiska** (`lerobot-twin grasp-bench`): effort i czas ruchu
+  szczęk, stół i punkt chwytu uczone dotykiem, źródło kamery, kropka,
+  opóźnienie. Trafiają do osobnego pliku `workspace/grasp.json`, bo starsze
+  wersje bliźniaka odrzucają `twin.json` z nieznanym kluczem. Bez nich
+  polecenie na prawdziwym ramieniu odmawia i podaje powód.
+- **Kostka po lewej stronie ramienia**, ok. 0,33 m od osi podstawy: trening
+  widział obiekt tylko tam. Stół w `workspace/twin.json` musi sięgać 8 cm poza
+  punkt chwytu z każdej strony.
+- **Jeden nadawca na CAN.** Przed poleceniem zamknij panel, `jog_a1x.py`, most
+  i sterownik ROS. Backend `a1x` zauważa obcą ramkę rozkazu: przed ruchem
+  polecenie odmawia (`busy`), w ruchu bliźniak robi STOP („inny nadawca na
+  laczu CAN”).
+- **STOP:** sam Enter zawsze zatrzymuje, Ctrl-C też. Na prawdziwym ramieniu
+  następny epizod rusza dopiero po wpisaniu `d` i Enter; Enter w ciągu 1 s od
+  końca epizodu to STOP.
+- **Ewaluacja w symulacji:** `lerobot-twin grasp-eval`, 50 epizodów. Od 70 %
+  wynik jest dobry. Poniżej 50 % przyczyną może być ścieżka obserwacji, fizyka
+  kontaktu albo render sceny bliźniaka.
+
+Kod: `twin/grasp/` (drzewo [niżej](#jak-to-jest-zbudowane)). Zmiany
+w istniejącym kodzie: `RobotKinematics.ik_step` (jeden ciepły krok IK jak
+w treningu), `gripper_state()` i licznik obcych ramek w backendzie `a1x`,
+`Twin.speed_limits()`, `Twin.hold_measured(gripper=...)`, odmowa celu NaN
+w `Twin.set_target` i kamera na dłoni w scenie (`HandCamera`).
+
+---
+
 ## Polecenia
 
 | | |
@@ -1019,6 +1071,10 @@ mrówkę v1 (inne uchwyty bioder) — rozjazd dociągają tagi.
 | `lerobot-twin policies` | zapisane polityki i ich wyniki |
 | `lerobot-twin workspace` | co wiadomo o stanowisku |
 | `lerobot-twin specs --mode dry` | cele z okularów Spectacles przez przekaźnik; `--mode sim`, `--mode real --i-know` — [Spectacles](#spectacles-pudełko-zasięgu-i-pinch) |
+| `lerobot-twin grasp --mode dry` | polityka chwytu z kamery na nadgarstku (A1X): `dry` bez ruchu, `sim` na symulowanym ramieniu, `shadow` i `real` z `--backend … --i-know` — [Chwyt z kamery na nadgarstku](#chwyt-z-kamery-na-nadgarstku-a1x) |
+| `lerobot-twin grasp-bench show` | pomiary stanowiska do chwytu: `gripper`, `table`, `point`, `dot`, `latency` zapisują `workspace/grasp.json`, `show` mówi, czego brakuje |
+| `lerobot-twin grasp-eval` | 50 epizodów chwytu w symulacji bliźniaka; `--jaw measured` ze szczęką spowolnioną do zmierzonej prędkości |
+| `lerobot-twin grasp-model fetch` | pobiera model chwytu i sprawdza sha256; `check` (schemat, statystyki), `time` (czas inferencji) |
 
 ```bash
 pytest -q                                          # całość, z renderem i GPU
@@ -1317,6 +1373,22 @@ src/lerobot_mp/twin/
 │   ├── randomize.py   dynamika zmierzona i zakresy randomizacji
 │   ├── sysid.py       identyfikacja dynamiki serw
 │   └── runner.py      polityka na żywym bliźniaku / ramieniu
+├── grasp/           chwyt z kamery na nadgarstku (A1X), opis: docs/GRASP.md
+│   ├── contract.py    stałe z treningu: kamera, kroki, pudełko, podłogi, sha256 modelu
+│   ├── rig.py         pomiary stanowiska: workspace/grasp.json i odmowy z nich
+│   ├── command.py     księgowanie rozkazu jak w treningu
+│   ├── keys.py        jedyny czytnik stdin: sam Enter to STOP, dalej tylko d + Enter
+│   ├── hover.py       punkt nad chwytem i koperta treningu
+│   ├── gripper.py     szczelina szczęk z modelu (A1X jej nie mierzy)
+│   ├── observer.py    obserwacja: 19 liczb
+│   ├── net.py         sieć bez torchvision (ResNet18 + głowa)
+│   ├── policy.py      model: sha256, wczytanie bez kodu, pobieranie, czas inferencji
+│   ├── camera.py      kamera na nadgarstku: kadr 160×120, piksel chwytu, źródła kadrów
+│   ├── motion.py      sesja ramienia: przejęcie, strażnik, dojazd nad chwyt, trzymanie
+│   ├── driver.py      pętla 20 Hz i zakończenia epizodu
+│   ├── run.py         lerobot-twin grasp: tryby dry, sim, shadow, real
+│   ├── evaluate.py    lerobot-twin grasp-eval: ewaluacja w symulacji
+│   └── bench.py       lerobot-twin grasp-bench: pomiary stanowiska
 └── ui/
     ├── app.py         panel (viser)
     ├── bridge.py      scena MuJoCo w przeglądarce (węzeł na ciało)

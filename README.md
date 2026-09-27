@@ -100,7 +100,9 @@ W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 8/8. Testy są wyłącznie integracyjne: łańcuchy przez kilka modułów
 i zachowania groźne dla sprzętu. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
 zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
-na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
+na symulowanej magistrali. Własnych polityk (`reach`, `lift`) dla A1X jeszcze
+nie ma; jest opublikowana polityka chwytu z kamery na nadgarstku, sprawdzona
+tylko w symulacji ([docs/GRASP.md](docs/GRASP.md)). **Na prawdziwym
 ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
 krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
 Decyzje i pułapki: [HANDOFF.md](HANDOFF.md).
@@ -314,6 +316,20 @@ Windows). Parametry (zero stawów, sprzężenie chwytaka, progi) są w sekcji
 ruchu; sekwencja włączenia FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
 **A1X nie ma hamulców** — przed pierwszą sesją przeczytaj
 [docs/TWIN.md](docs/TWIN.md#galaxea-a1x), „Galaxea A1X”.
+
+**Chwyt z kamery na nadgarstku.** Opublikowana polityka chwytu dla A1X
+(`student.pt`, uczona w symulacji galaxeo-manipulators) działa w bliźniaku jako
+osobny kierowca:
+
+```bash
+lerobot-twin grasp-model fetch       # pobiera model i sprawdza sha256
+lerobot-twin grasp --mode sim        # jeden epizod na symulowanym ramieniu z kostką
+lerobot-twin grasp-eval              # 50 epizodów w symulacji, skuteczność
+```
+
+Na prawdziwym ramieniu najpierw pomiary stanowiska (`lerobot-twin grasp-bench`),
+potem kolejno tryby `dry`, `shadow` i `real`. Instrukcja po angielsku:
+[docs/GRASP.md](docs/GRASP.md).
 
 ### Kamera IDS uEye
 
