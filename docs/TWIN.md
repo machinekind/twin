@@ -436,9 +436,9 @@ dłoni ma stawy SO-101, a backend `a1x` odmawia wtedy startu.
 | `gripper_open_pdes` | −2,0 | `p_des` chwytaka przy 100 (otwarty); bardziej ujemne = szerzej |
 | `gripper_closed_pdes` | 0,6 | `p_des` przy 0 (zamknięty) |
 | `gripper_fb_closed` / `gripper_fb_open` | brak | pozycja grupy 7 ramki `0x052` [rad] przy 0 i przy 100. Podaj obie albo żadną (różne od siebie). Bez nich panel pokazuje **rozkaz** chwytaka, nie pomiar (ostrzeżenie „sprzężenie niezmierzone”) |
-| `gripper_start` | 100,0 | co backend zgłasza jako chwytak przed pierwszym rozkazem, gdy sprzężenie niezmierzone |
+| `gripper_start` | 0,0 | co backend zgłasza jako chwytak przed pierwszym rozkazem, gdy sprzężenie niezmierzone. 0 = zamknięty, zgodnie z umową stanowiska „dom = szczęki zamknięte” (*Ustaw dom = tu*) |
 | `gripper_rate_pdes_s` | 2,0 | największa prędkość `p_des` chwytaka [1/s]; pełny skok 2,6 w 1,3 s |
-| `gripper_force` | 1,2 | \|effort\| grupy 7 przy zamykaniu, powyżej którego cel chwytaka zamarza (chwyta, nie miażdży); jednostka empiryczna, miażdżenie widziane od ok. 6 |
+| `gripper_force` | 1,2 | o tyle \|effort\| grupy 7 przy zamykaniu może przekroczyć spoczynek, zanim cel chwytaka zamarznie (chwyta, nie miażdży). Spoczynek to mediana \|effort\| z pierwszych 0,1 s każdego zamykania (w tym oknie cel nie zamarza); liczy się od nowa po każdym otwieraniu. Jednostka empiryczna, miażdżenie widziane od ok. 6 |
 | `joint_offsets_deg` | 6 × 0,0 | zero stawów ramienia [°]: odejmowane przy odczycie, dodawane przy wysyłce |
 | `stream_hz` | 200,0 | częstotliwość strumienia `0x050` / `0x051`; ramię odpowiada `0x052` co 5 ms |
 | `max_step_deg_s` | 90,0 | własny limit prędkości `p_des` backendu [°/s], druga warstwa pod nadzorem |
@@ -478,10 +478,12 @@ i uruchom skrypt: wynik to `gripper_fb_closed`. To samo przy 100 daje
 `gripper_fb_open`. Na Linuksie skrypt może czytać równolegle z panelem
 (czytających może być wielu, nadawca jeden). Na macOS przejściówkę trzyma panel,
 więc przed każdym odczytem daj *Rozłącz* — chwytak zostaje na ostatnim `p_des`.
-Po ponownym *Połącz* backend w pętli otwartej zgłasza chwytak jako 100
-(`gripper_start`). Pierwszy ruch suwaka startuje więc od otwarcia: zamknięte
-szczęki najpierw się otworzą. Sprawdź też kilka punktów pośrednich (np. 50).
-Zależność ma być liniowa, patrz otwarte pytania niżej.
+Po ponownym *Połącz* backend w pętli otwartej zgłasza chwytak jako 0
+(`gripper_start`, zamknięty), a to tylko zgadnięcie. Pierwsze otwieranie idzie
+więc od razu na cel (otwarte szczęki nie drgną), a zamykanie zawsze rampą.
+Przed *Rozłącz* i tak zamknij je suwakiem, żeby zgadnięcie się zgadzało.
+Sprawdź też kilka punktów pośrednich (np. 50). Zależność ma być liniowa, patrz
+otwarte pytania niżej.
 
 ### Pierwsza sesja krok po kroku
 
@@ -520,7 +522,14 @@ polityka, fala lub identyfikacja. W trakcie sekwencji backend strumieniuje
 potrzebuje.
 
 **2. Dom i wyłączenie.** *Dom* A1X to uniesiona poza z modelu
-(J2 57°, J3 −92°, J4 34°, szczęki na 60). Pierwszy Dom to więc duży ruch w górę.
+(J2 57°, J3 −92°, J4 34°, szczęki zamknięte). Pierwszy Dom to więc duży ruch w górę.
+*Ustaw dom = tu* zapisuje zmierzoną pozę ramienia i **zawsze chwytak 0
+(zamknięty)**: to umowa stanowiska, dom = szczęki zamknięte. Najpierw zamknij
+puste szczęki naprawdę. Bez zmierzonego sprzężenia bliźniak przyjmuje od tej
+chwili, że są zamknięte (panel, szczęki w 3D, następne „otwórz” jako rampa od 0).
+Jeśli chwytak był już sterowany w tej sesji, przycisk tylko zapisuje dom, a stan
+chwytaka zostaje (ostrzeżenie w logu „chwytak juz sterowany”): zamknij go suwakiem
+i kliknij jeszcze raz. W `sim` chwytak sceny zamyka się od razu.
 **Przed wyłączeniem zasilania złóż ramię** suwakami (J2 → 3°, J3 → −3°, reszta
 → 0) i podeprzyj je, bo A1X nie ma hamulców. Ostatnie 3° do ogranicznika to
 zapas limitów bliźniaka. *Rozłącz* nic nie zwalnia: ramię trzyma pozę, w której
@@ -563,9 +572,22 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   sprzężenia backend pracuje w pętli otwartej i panel pokazuje rozkaz. Strumień
   `0x051` rusza dopiero przy rozkazie różnym od zgłoszonej wartości (o > 0,5),
   więc *Połącz* niczego nie domyka. Przy zamykaniu cel zamarza, gdy |effort|
-  przekroczy `gripper_force` (1,2). Bez zmierzonego sprzężenia pierwszy ruch
-  chwytaka po *Połącz* zaczyna od `gripper_start` (otwarty), więc przedmiot
-  trzymany w szczękach wypadnie. Wcześniej go wyjmij albo przytrzymaj.
+  przekroczy spoczynek z pierwszych 0,1 s zamykania o `gripper_force` (1,2);
+  każdy rozkaz otwierania (albo równy celowi) zdejmuje zamrożenie. Spoczynek
+  mierzy się od nowa dopiero po otwarciu o 0,3 p_des od najciaśniejszego punktu
+  zamykania: po uchyleniu o kreskę szczęki dalej dociskają kostkę i docisk nie
+  może zostać nowym spoczynkiem (próg rósłby z każdym cyklem). Bez zmierzonego
+  sprzężenia stan szczęk po *Połącz* to `gripper_start` (zamknięty), założenie,
+  nie pomiar. Otwarte szczęki zamknij suwakiem przed *Rozłącz* i przed *Ustaw
+  dom = tu*. Dopóki stan jest tylko zgadnięty (`gripper_start` albo *Ustaw dom
+  = tu*), pierwsze otwieranie idzie od razu na cel (pusty, zamknięty chwytak nic
+  nie traci, otwarty nie drgnie, a przy złym zgadnięciu szczęki nie zatrzaskują
+  się w pierwszej ramce), zamykanie zawsze rampą.
+- **Chwytak przez XCAN (macOS) nie rusza.** Przejściówka wysyła 10-bajtową
+  ramkę `0x051` jako 12 bajtów, a chwytak ją ignoruje. Programowo się tego nie
+  naprawi: chwytak tylko z Linuksa (SocketCAN). Panel pisze w linii stanu
+  „chwytak: brak sterowania przez XCAN”, bo bez sprzężenia pokazuje rozkaz,
+  a szczęki stoją.
 
 ### Jednostki
 
@@ -582,7 +604,7 @@ dotyczą tylko SO-101. Progi szczęk w metrach (`A1X.jaw`): 20 mm wysuwu to
 
 | pytanie | skąd wątpliwość | jak sprawdzić |
 |---|---|---|
-| Czy chwytak słucha `0x051` przez XCAN (macOS)? | przejściówka wysyła tylko prawidłowe długości FD, więc 10 bajtów idzie jako 12 (DLC 9), a chwytak 12-bajtową ramkę ignorował (galaxeo `bus.py`). SocketCAN wysyła prawdziwe 10 | suwak chwytaka na macOS. Nie rusza? Chwytak tylko z Linuksa. Backend nie zgłasza tego błędem |
+| Czy chwytak słucha `0x051` przez XCAN (macOS)? | przejściówka wysyła tylko prawidłowe długości FD, więc 10 bajtów idzie jako 12 (DLC 9), a chwytak 12-bajtową ramkę ignorował (galaxeo `bus.py`). SocketCAN wysyła prawdziwe 10 | suwak chwytaka na macOS. Nie rusza? Chwytak tylko z Linuksa. Backend nie zgłasza tego błędem; panel przy porcie `xcan…` pisze „chwytak: brak sterowania przez XCAN” (`A1XArm.gripper_drivable`) |
 | Czy grupa 7 ramki `0x052` to pozycja chwytaka? | `PROTOCOL.md` („Group 7 is not the gripper position”) kontra liniowa zależność zmierzona w `so101_bridge.py` / `record_a1x.py` (57,1° na jednostkę `p_des`) | pomiar `gripper_fb_*` wyżej + punkt pośredni. Bez tego nie działa rozpoznawanie chwytu (`lift`, „w dłoni”) |
 | Jednostka effort i próg `gripper_force` 1,2 | skala `/600` bez znanej jednostki; próg empiryczny, miażdżenie od ok. 6 | chwyt kostki 3 cm: cel ma zamarznąć przy kontakcie. Sprawdź też, czy effort chwytaka nie stoi na 0,00 (chwytak głuchy — tego backend nie wykrywa) |
 | Czy `kp` 20 nadąża przy 90°/s? | `kp` jest ignorowane (zmierzone przy małych skokach), szybkie ruchy nie były sprawdzane z bliźniakiem | Dom i fala: bez błędu rozjazdu (25° / 0,5 s), suwaki idą za ramieniem |

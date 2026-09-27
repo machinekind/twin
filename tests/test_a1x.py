@@ -278,7 +278,7 @@ def test_limits_are_urdf_widened_to_the_start_pose():
 # --------------------------------------------------------------------- chwytak
 def test_gripper_0_100_maps_linearly_to_pdes_endpoints_in_a_ten_byte_frame():
     arm, bus, clock = connected()
-    for v, want in ((0.0, 0.6), (100.0, -2.0), (50.0, -0.7)):
+    for v, want in ((100.0, -2.0), (0.0, 0.6), (50.0, -0.7)):
         assert arm.send_joints({"gripper": v}) == {"gripper": v}
         run(arm, bus, clock, 1.5)
         data = bus.frames(P.GRIP_ID)[-1]
@@ -291,27 +291,124 @@ def test_gripper_0_100_maps_linearly_to_pdes_endpoints_in_a_ten_byte_frame():
     assert max(abs(b - a) for a, b in zip(ps, ps[1:])) <= 2.0 * STEP + 2 / P.POS_SCALE
 
 
+def grip_pdes(bus) -> list[float]:
+    return [struct.unpack_from(">h", d, 0)[0] / P.POS_SCALE for d in bus.frames(P.GRIP_ID)]
+
+
 def test_gripper_stream_starts_only_after_a_real_command():
     arm, bus, clock = connected()
     held = arm.read_joints()
-    assert held["gripper"] == 100.0                                              # gripper_start, bez sprzezenia
+    assert held["gripper"] == 0.0                                                # gripper_start = zamkniety, bez sprzezenia
+    assert not arm.gripper_known()
     arm.send_joints(held)                                                        # utrzymanie pozy po Polacz
     run(arm, bus, clock, 0.3)
     assert bus.frames(P.CMD_ID) and not bus.frames(P.GRIP_ID)
-    arm.send_joints({"gripper": 99.7})
+    arm.send_joints({"gripper": 0.3})
     run(arm, bus, clock, 0.1)
     assert not bus.frames(P.GRIP_ID)
-    arm.send_joints({"gripper": 90.0})
+    arm.send_joints({"gripper": 10.0})
     run(arm, bus, clock, 0.1)
-    first = struct.unpack_from(">h", bus.frames(P.GRIP_ID)[0], 0)[0] / P.POS_SCALE
-    assert first == pytest.approx(-2.0 + 2.0 * STEP, abs=2 / P.POS_SCALE)       # od zgloszonego otwarcia
+    first = grip_pdes(bus)[0]
+    # `gripper_start` to zgadniecie: otwieranie od razu na cel (otwarte szczeki nie drgna, zamkniete
+    # nie zatrzaskuja sie w pierwszej ramce na +0,6).
+    assert first == pytest.approx(arm._pdes(10.0), abs=2 / P.POS_SCALE)
+    assert arm.gripper_known()
+
+
+def test_first_open_after_assume_goes_to_the_target_at_once_close_stays_a_ramp():
+    """Zalozone "zamkniety" ("Ustaw dom = tu"): otwieranie startuje od celu (pusty chwytak nic nie traci,
+    a przy zlym zalozeniu pierwsza ramka nie zatrzaskuje szczek z +0,6). Tak samo bez zalozenia, od samego
+    `gripper_start`: po Polacz szczeki moga stac otwarte (A1X trzyma ostatnia poze miedzy sesjami)."""
+    arm, bus, clock = connected()
+    assert arm.assume_gripper(0.0) is True
+    assert arm.gripper_known() and arm.read_joints()["gripper"] == 0.0
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 0.1)
+    assert grip_pdes(bus)[0] == pytest.approx(-2.0, abs=2 / P.POS_SCALE)
+    assert set(grip_pdes(bus)) == {grip_pdes(bus)[0]}
+    # Zamykanie po nim to zwykla rampa.
+    arm.send_joints({"gripper": 0.0})
+    run(arm, bus, clock, 0.1)
+    ps = grip_pdes(bus)
+    assert max(b - a for a, b in zip(ps, ps[1:])) <= 2.0 * STEP + 2 / P.POS_SCALE
+    assert ps[-1] < 0.0
+
+    arm2, bus2, clock2 = connected()
+    assert arm2.assume_gripper(0.0)
+    arm2.send_joints({"gripper": 30.0})
+    run(arm2, bus2, clock2, 0.05)
+    assert grip_pdes(bus2)[0] == pytest.approx(arm2._pdes(30.0), abs=2 / P.POS_SCALE)
+
+    arm3, bus3, clock3 = connected()                                             # bez zalozenia, szczeki otwarte
+    bus3.q[6] = -2.0
+    arm3.send_joints({"gripper": 100.0})
+    run(arm3, bus3, clock3, 0.05)
+    ps3 = grip_pdes(bus3)
+    assert ps3[0] == pytest.approx(-2.0, abs=2 / P.POS_SCALE) and max(ps3) < -1.99   # zadnej ramki ku +0,6
+    assert bus3.q[6] == pytest.approx(-2.0)                                      # szczeki nie drgnely
+    arm3.send_joints({"gripper": 0.0})                                           # zamykanie: rampa
+    run(arm3, bus3, clock3, 0.1)
+    ps3 = grip_pdes(bus3)
+    assert max(b - a for a, b in zip(ps3, ps3[1:])) <= 2.0 * STEP + 2 / P.POS_SCALE
+
+
+def test_a_real_gripper_command_survives_a_link_dropout_and_the_next_one_ramps():
+    """`_g_cmd` z rozkazu, ktory naprawde poszedl, to nie zgadniecie: po przerwie lacza nastepny rozkaz
+    idzie rampa od niego (tylko samo `gripper_start` / zalozenie startuje od celu przy otwieraniu)."""
+    arm, bus, clock = connected()
+    arm.send_joints({"gripper": 40.0})
+    run(arm, bus, clock, 1.5)
+    bus.silent = True
+    run(arm, bus, clock, 0.3)
+    assert arm.link_silent and arm._g_target is None
+    bus.silent = False
+    run(arm, bus, clock, 0.3)
+    assert not arm.link_silent
+    n = len(bus.frames(P.GRIP_ID))
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 0.1)
+    ps = grip_pdes(bus)[n:]
+    assert ps[0] == pytest.approx(arm._pdes(40.0) - 2.0 * STEP, abs=2 / P.POS_SCALE)
+    assert max(a - b for a, b in zip(ps, ps[1:])) <= 2.0 * STEP + 2 / P.POS_SCALE
+
+
+def test_assume_gripper_only_before_the_stream_starts():
+    arm, bus, clock = connected(gripper_start=100.0)
+    assert arm.read_joints()["gripper"] == 100.0
+    assert arm.assume_gripper(0.0) is True
+    assert arm.read_joints()["gripper"] == 0.0
+    run(arm, bus, clock, 0.1)
+    assert not bus.frames(P.GRIP_ID)                                             # zalozenie niczego nie wysyla
+    arm.send_joints({"gripper": 40.0})
+    run(arm, bus, clock, 0.1)
+    assert bus.frames(P.GRIP_ID)
+    assert arm.assume_gripper(0.0) is False                                      # strumien jest prawda
+    assert arm.read_joints()["gripper"] == 40.0
+    # Chwytak z pomiarem niczego nie zaklada.
+    measured, _, _ = connected(gripper_fb_closed=0.1, gripper_fb_open=1.0)
+    assert measured.assume_gripper(0.0) is False
+
+
+def test_gripper_force_is_measured_from_the_rest_effort_of_each_close():
+    """Spoczynkowy effort grupy 7 bywa staly ~3 (> 1,2): staly prog zamrazal cel w pierwszym takcie
+    zamykania i od tej chwili chwytak juz nie sluchal. Prog liczy sie od spoczynku z pierwszych 0,1 s."""
+    arm, bus, clock = connected()
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 1.5)
+    bus.grip_effort = 3.0
+    arm.send_joints({"gripper": 0.0})
+    run(arm, bus, clock, 1.5)
+    assert grip_pdes(bus)[-1] == pytest.approx(0.6, abs=2 / P.POS_SCALE)
+    assert not arm._g_frozen
 
 
 def test_gripper_target_freezes_on_contact_but_send_joints_returns_the_command():
     arm, bus, clock = connected()
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 1.5)
     assert arm.send_joints({"gripper": 0.0}) == {"gripper": 0.0}
     run(arm, bus, clock, 0.4)
-    bus.grip_effort = 2.0                                                        # szczeki na kostce
+    bus.grip_effort = 3.0                                                        # szczeki na kostce (spoczynek 0)
     run(arm, bus, clock, 0.05)
     held = bus.frames(P.GRIP_ID)[-1]
     run(arm, bus, clock, 0.5)
@@ -325,6 +422,62 @@ def test_gripper_target_freezes_on_contact_but_send_joints_returns_the_command()
     arm.send_joints({"gripper": 100.0})                                          # otwieranie zdejmuje zamrozenie
     run(arm, bus, clock, 0.2)
     assert struct.unpack_from(">h", bus.frames(P.GRIP_ID)[-1], 0)[0] / P.POS_SCALE < p - 0.3
+    # ... i zamykanie znow jedzie (spoczynek mierzony od nowa).
+    bus.grip_effort = 0.0
+    low = grip_pdes(bus)[-1]
+    arm.send_joints({"gripper": 0.0})
+    run(arm, bus, clock, 0.5)
+    assert grip_pdes(bus)[-1] > low + 0.5
+
+
+def test_opening_a_little_after_contact_keeps_the_rest_so_the_clamp_does_not_ratchet():
+    """Uchylenie o kreske po kontakcie: szczeki dalej na kostce. Gdyby nastepne zamykanie mierzylo spoczynek
+    od nowa, bralby docisk (3) za spoczynek i prog rosl o `gripper_force` z kazdym cyklem."""
+    arm, bus, clock = connected()
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 1.5)
+    arm.send_joints({"gripper": 0.0})
+    run(arm, bus, clock, 0.4)
+    bus.grip_effort = 3.0                                                        # kostka (spoczynek 0)
+    run(arm, bus, clock, 0.1)
+    assert arm._g_frozen
+    p = grip_pdes(bus)[-1]
+    at = (p - 0.6) / (-2.0 - 0.6) * 100.0                                        # zamrozone p_des w 0..100
+    arm.send_joints({"gripper": at + 1.0})                                       # uchylenie o 1
+    run(arm, bus, clock, 0.2)
+    assert not arm._g_frozen and arm._g_rest == pytest.approx(0.0, abs=0.01)
+    ajar = grip_pdes(bus)[-1]
+    assert ajar < p
+    arm.send_joints({"gripper": 0.0})                                            # docisk dalej 3
+    run(arm, bus, clock, 0.5)
+    assert arm._g_frozen
+    assert max(grip_pdes(bus)[-100:]) <= ajar + 2.0 * STEP + 2 / P.POS_SCALE     # nie wiecej niz takt dalej
+
+
+def test_a_target_frozen_at_the_open_endpoint_is_released_by_an_equal_open_command():
+    """Cel zamrozony na krancu otwarcia (-2,0): ostre `want < target` nie przepuszczalo juz niczego,
+    a blizniak pokazywal kazdy rozkaz jako wykonany ("nie steruje, a blizniak mowi, ze ruszyl")."""
+    arm, bus, clock = connected()
+    arm.send_joints({"gripper": 100.0})
+    run(arm, bus, clock, 1.5)
+    arm._g_target, arm._g_frozen = arm._g_stream, True                           # jak po kontakcie na krancu
+    assert arm._g_target == pytest.approx(-2.0)
+    arm.send_joints({"gripper": 0.0})
+    run(arm, bus, clock, 0.2)
+    assert grip_pdes(bus)[-1] == pytest.approx(-2.0, abs=2 / P.POS_SCALE)        # zamrozony: zamykanie stoi
+    arm.send_joints({"gripper": 100.0})                                          # = cel: zdejmuje zamrozenie
+    assert not arm._g_frozen
+    arm.send_joints({"gripper": 0.0})
+    run(arm, bus, clock, 1.5)
+    assert grip_pdes(bus)[-1] == pytest.approx(0.6, abs=2 / P.POS_SCALE)
+
+
+def test_gripper_is_not_drivable_over_xcan_and_travel_time_covers_the_slew():
+    for port, ok in (("xcan", False), ("xcan:6", False), ("XCAN", False), ("can0", True), ("PCAN_USBBUS1", True)):
+        cfg = load_config(overrides={"robot": {"port": port}}, joints=A1X_JOINTS)
+        assert A1XArm(cfg, bus=FakeA1XBus(), threaded=False).gripper_drivable() is ok, port
+    arm, _, _ = make_arm()
+    assert arm.gripper_travel_s() == pytest.approx(2.6 / 2.0 + 0.2)
 
 
 # ------------------------------------------------------ wlaczenie i rozlaczenie

@@ -809,9 +809,20 @@ class TwinApp:
         warns = [str(w) for w in (getattr(st, "warnings", None) or [])]
         if warns:
             parts.append(f"**Uwaga:** {'; '.join(warns)}")
+        if st.connected and not self._gripper_drivable():
+            parts.append("**chwytak: brak sterowania przez XCAN** (ramka 0x051 nie dochodzi; chwytak tylko z Linuksa, "
+                         "SocketCAN) - panel pokazuje rozkaz, szczeki stoja")
         if st.error:
             parts.append(f"**blad ramienia:** {st.error}")
         return " | ".join(parts)
+
+    def _gripper_drivable(self) -> bool:
+        """Czy rozkaz chwytaka dochodzi do ramienia (A1X przez XCAN: nie). Backend bez tej metody: tak."""
+        fn = getattr(self.twin.backend, "gripper_drivable", None)
+        try:
+            return True if fn is None else bool(fn())
+        except Exception:                          # pragma: no cover - linia stanu nie moze wysypac panelu
+            return True
 
     # ------------------------------------------------------------ przewodnik
     def _guide_snapshot(self) -> gd.GuideSnapshot:
@@ -941,7 +952,9 @@ class TwinApp:
                                              hint="Zmierzona poza, dokladnie ta, staje sie domem tego stanowiska "
                                                   "(zapis w twin.json); limity poszerzaja sie, zeby ja objac. Zrob "
                                                   "to w pozie, w ktorej ramie naprawde spoczywa (zlozone na "
-                                                  "podstawie). Niczym nie rusza.")
+                                                  "podstawie). Chwytak domu = ZAMKNIETY: najpierw zamknij szczeki "
+                                                  "(puste) naprawde, bo A1X bez pomiaru chwytaka przyjmuje od tej "
+                                                  "chwili, ze sa zamkniete. Niczym nie rusza.")
             top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
             self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
                                           hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "

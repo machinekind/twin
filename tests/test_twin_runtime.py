@@ -65,9 +65,10 @@ class FakeArm(RobotBackend):
         self._last_read = dict(self.pos)
         self.glitch: list[dict[str, float]] = []
         self.grip_ticks: tuple[float, float, float] | None = None
-        #: Jak A1X bez `gripper_fb_*`: `joints()` oddaje rozkaz, a przed nim domyslne "otwarty".
+        #: Jak A1X bez `gripper_fb_*`: `joints()` oddaje rozkaz, a przed nim zgadywanke (`start`).
         self.grip_measured = True
         self._grip_cmd: float | None = None     # jak A1X: rozkaz rowny zglaszanemu nic nie ustala
+        self._grip_sent = False                 # jak A1X `_g_target`: strumien chwytaka ruszyl
         self._on = False
 
     def connect(self):
@@ -107,8 +108,8 @@ class FakeArm(RobotBackend):
                 lo, hi = max(lo, self.cfg.joint(k).min), min(hi, self.cfg.joint(k).max)
             out[k] = min(max(v, lo), hi)
         self.sent.append(out)
-        if "gripper" in out and (self._grip_cmd is not None or abs(out["gripper"] - self.pos["gripper"]) > 0.5):
-            self._grip_cmd = out["gripper"]
+        if "gripper" in out and (self._grip_sent or abs(out["gripper"] - self.pos["gripper"]) > 0.5):
+            self._grip_cmd, self._grip_sent = out["gripper"], True
         for k, v in out.items():
             self.goal[k] = v
             if self.vmax is None:
@@ -166,6 +167,14 @@ class FakeArm(RobotBackend):
 
     def gripper_known(self):
         return self.grip_measured or self._grip_cmd is not None
+
+    def assume_gripper(self, v):
+        """Jak `A1XArm.assume_gripper`: tylko bez pomiaru i zanim strumien chwytaka ruszyl."""
+        if self.grip_measured or self._grip_sent:
+            return False
+        self._grip_cmd = v
+        self.pos["gripper"] = self.goal["gripper"] = self._last_read["gripper"] = float(v)
+        return True
 
 
 @pytest.fixture
@@ -705,6 +714,76 @@ def test_a_target_equal_to_the_gripper_guess_does_not_make_the_position_known(tw
     grips = [s["gripper"] for s in arm.sent[n:] if "gripper" in s]
     assert grips and max(grips) == pytest.approx(0.0)
     assert twin._gripper_known()
+
+
+# ------------------------------------------------------ Ustaw dom = tu: chwytak zamkniety
+@pytest.fixture
+def home_twin(tmp_path):
+    tw = Twin(Workspace(path=tmp_path / "twin.json"))
+    try:
+        yield tw
+    finally:
+        tw.close()
+
+
+def test_set_home_here_closes_the_unmeasured_gripper_and_the_next_open_ramps_from_zero(home_twin, monkeypatch):
+    """Dom = szczeki zamkniete. A1X bez pomiaru zglaszal zgadywanke "otwarty" (100), `set_home_here`
+    zapisywal ja do domu, a Dom otwieral szczeki na koncu. Teraz dom ma chwytak 0, backend dostaje
+    zalozenie, nadzor rusza od 0: nastepne "otworz" to rampa 0 -> 100 bez drgniecia w druga strone."""
+    twin = home_twin
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    arm.grip_measured = False
+    connect_fake(twin, monkeypatch, arm)
+    run(twin, 0.2)
+    assert arm.sent == []                                                  # Polacz niczym nie rusza
+    home = twin.set_home_here()
+    assert home["gripper"] == 0.0
+    assert Workspace.load(twin.workspace.path).home["gripper"] == 0.0
+    assert twin._supervisor.home["gripper"] == 0.0
+    assert twin._supervisor.command["gripper"] == 0.0
+    assert twin._latest["gripper"] == 0.0 and twin._gripper_known()
+    run(twin, 0.2)
+    assert arm.sent == []                                                  # przycisk niczym nie rusza
+    assert twin.status.measured["gripper"] == 0.0 and twin.status.command["gripper"] == 0.0
+    twin.claim("panel")
+    twin.set_engaged(True, owner="panel")
+    twin.set_target({"gripper": 100.0}, owner="panel")
+    run(twin, 0.6)
+    grips = [x["gripper"] for x in arm.sent if "gripper" in x]
+    assert grips[0] < 10.0                                                 # rampa od 0, nie skok
+    assert all(b >= a for a, b in zip(grips, grips[1:])) and max(grips) <= 100.0
+    assert grips[-1] == pytest.approx(100.0)
+
+
+def test_set_home_here_after_the_gripper_was_commanded_keeps_its_state(home_twin, monkeypatch, caplog):
+    """Strumien chwytaka juz ruszyl: prawda jest ostatni rozkaz. Przestawienie nadzoru na 0 zamknelo
+    by szczeki takt po kliknieciu przycisku, ktory ma tylko zapisac dom."""
+    twin = home_twin
+    arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
+    arm.grip_measured = False
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("panel")
+    twin.set_engaged(True, owner="panel")
+    twin.set_target({"gripper": 50.0}, owner="panel")
+    run(twin, 0.5)
+    assert arm.sent[-1]["gripper"] == pytest.approx(50.0)
+    n = len(arm.sent)
+    with caplog.at_level("WARNING"):
+        home = twin.set_home_here()
+    assert "chwytak juz sterowany" in caplog.text
+    assert home["gripper"] == 0.0 and twin.workspace.home["gripper"] == 0.0
+    assert twin._supervisor.command["gripper"] == pytest.approx(50.0)
+    run(twin, 0.4)
+    assert [x["gripper"] for x in arm.sent[n:]] == pytest.approx([50.0] * (len(arm.sent) - n))
+
+
+def test_set_home_here_with_a_measured_gripper_only_records_it_closed(home_twin, monkeypatch):
+    twin = home_twin
+    arm = FakeArm(start={"gripper": 40.0})
+    connect_fake(twin, monkeypatch, arm)
+    assert twin.set_home_here()["gripper"] == 0.0
+    assert twin._supervisor.command["gripper"] == pytest.approx(40.0)     # pomiar jest prawda
+    assert twin._supervisor.home["gripper"] == 0.0
 
 
 def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():

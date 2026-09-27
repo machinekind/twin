@@ -11,7 +11,12 @@ Jednostki: jak w calej aplikacji - stawy ramienia w stopniach, chwytak 0..100
 * staw: ``rad = radians(st. + a1x.joint_offsets_deg[i])`` (przesuniecie zera, J3 ~ +1,49 st.),
 * chwytak: p_des liniowo ``closed + v/100 * (open - closed)`` (bardziej dodatnie = ciasniej);
   pomiar z grupy 7 ramki 0x052 przez dwa punkty `gripper_fb_closed/open`, gdy zmierzone,
-  inaczej petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`).
+  inaczej petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`). Przed pierwszym
+  rozkazem petla otwarta zglasza `gripper_start` (0 = zamkniety), a "Ustaw dom = tu" blizniaka
+  potwierdza to przez `assume_gripper(0)` - umowa stanowiska: dom = szczeki zamkniete. Dopoki
+  rozwarcie jest tylko zgadniete, pierwsze otwieranie idzie od razu na cel, zamykanie rampa.
+* Chwytak przez XCAN (macOS) nie rusza: przejsciowka wysyla 10-bajtowa 0x051 jako 12 bajtow,
+  a chwytak ja ignoruje (galaxeo `bus.py`). Tylko SocketCAN (Linux) - `gripper_drivable()`.
 
 Zasady bezpieczenstwa (galaxeo docs/SAFETY.md, docs/PROTOCOL.md):
 
@@ -55,6 +60,14 @@ SETTLE_S = 0.4
 FB_PERIOD_S = 0.005
 #: Czas miedzy kodami sekwencji wlaczenia [s] - caly czas strumien p_des = pomiar.
 ENABLE_STEP_S = 0.3
+#: Spoczynkowy |effort| chwytaka: mediana z tylu taktow strumienia na poczatku kazdego zamykania
+#: (0,1 s przy 200 Hz); w tym oknie cel nie zamarza. Kontakt = |effort| > spoczynek + `gripper_force`.
+GRIP_REST_STEPS = 20
+#: Otwarcie [p_des] od najciasniejszego punktu zamykania, po ktorym nastepne zamykanie mierzy
+#: spoczynek od nowa. Mniejsze uchylenie (szczeki dalej na kostce) zostawia stary spoczynek.
+GRIP_REOPEN_PDES = 0.3
+#: Zapas na czas pelnego skoku chwytaka [s] (`gripper_travel_s`).
+GRIP_TRAVEL_MARGIN_S = 0.2
 
 INSTALL_HINT = 'pip install -e ".[a1x]"  (pakiet galaxeo z repozytorium galaxeo-manipulators)'
 
@@ -126,7 +139,11 @@ class A1XArm(RobotBackend):
         self._g_target: float | None = None          # cel p_des chwytaka; None = 0x051 nie idzie
         self._g_stream: float | None = None
         self._g_frozen = False                       # kontakt przy zamykaniu - cel stoi
-        self._g_cmd: float | None = None             # ostatni rozkaz chwytaka [0..100]
+        self._g_cmd: float | None = None             # ostatni rozkaz chwytaka [0..100] albo `assume_gripper`
+        self._g_assumed = False                      # `_g_cmd` z `assume_gripper`, strumien jeszcze nie ruszyl
+        self._g_rest_eff: list[float] = []           # |effort| z poczatku zamykania (spoczynek)
+        self._g_rest: float | None = None            # ich mediana; None = zamykanie nie trwa albo okno zbiera
+        self._g_hi: float | None = None              # najciasniejszy p_des tego zamykania (odniesienie otwarcia)
         self._goal: dict[str, float] = {}            # ostatnie cele w jednostkach aplikacji
         self._pinned = False                         # sekwencja wlaczenia: p_des = pomiar
         self._last_io: float | None = None
@@ -144,7 +161,7 @@ class A1XArm(RobotBackend):
         return a.gripper_closed_pdes + v / 100.0 * (a.gripper_open_pdes - a.gripper_closed_pdes)
 
     def _grip_app(self) -> float:
-        """Chwytak w 0..100: pomiar przez dwa punkty albo (bez nich) ostatni rozkaz."""
+        """Chwytak w 0..100: pomiar przez dwa punkty albo (bez nich) ostatni rozkaz / zalozenie."""
         a = self.acfg
         if a.gripper_fb_closed is not None and a.gripper_fb_open is not None and self._fb is not None:
             span = a.gripper_fb_open - a.gripper_fb_closed
@@ -301,6 +318,7 @@ class A1XArm(RobotBackend):
                 self._p_target = self._p_stream = None
                 self._g_target = self._g_stream = None
                 self._g_frozen = False
+                self._g_rest_eff, self._g_rest, self._g_hi = [], None, None
                 self._deaf_since, self._deaf = {}, ""
                 return
             if self._pinned:
@@ -317,12 +335,34 @@ class A1XArm(RobotBackend):
                 if self._g_stream is None:
                     self._g_stream = self._pdes(self._grip_app())
                 closing = self._g_target > self._g_stream
-                if closing and abs(self._fb.eff[6]) > self.acfg.gripper_force:
+                if closing:
+                    self._g_hi = self._g_stream if self._g_hi is None else max(self._g_hi, self._g_stream)
+                if self._g_target < self._g_stream:
+                    # Otwieranie: spoczynek mierzy sie od nowa dopiero, gdy szczeki odeszly o GRIP_REOPEN_PDES
+                    # od najciasniejszego punktu zamykania. Po uchyleniu o jedna kreske suwaka szczeki dalej
+                    # dociskaja kostke, a nowy "spoczynek" bylby dociskiem - prog rosl z kazdym cyklem.
+                    # Cel osiagniety (albo zamrozony) spoczynku nie zeruje - inaczej suwak zamykany malymi
+                    # krokami tez bralby docisk za spoczynek.
+                    hi = self._g_hi
+                    if self._g_rest is None or hi is None or self._g_stream < hi - GRIP_REOPEN_PDES:
+                        self._g_rest_eff, self._g_rest, self._g_hi = [], None, None
+                elif closing and self._g_rest is None:
+                    # Poczatek zamykania: spoczynkowy effort grupy 7 (nieznany, bywa staly ~3) z pierwszych
+                    # taktow. Staly prog 1,2 zamrazal cel juz w pierwszym takcie i chwytak przestawal sluchac.
+                    self._g_rest_eff.append(abs(self._fb.eff[6]))
+                    if len(self._g_rest_eff) >= GRIP_REST_STEPS:
+                        e = sorted(self._g_rest_eff)
+                        self._g_rest = e[len(e) // 2]
+                elif closing and self._grip_contact():
                     # Kontakt: cel staje tam, gdzie strumien - chwyta, nie miazdzy.
                     self._g_target, self._g_frozen = self._g_stream, True
                 step = self.acfg.gripper_rate_pdes_s * dt
                 self._g_stream += max(-step, min(step, self._g_target - self._g_stream))
                 self._send(self.P.GRIP_ID, self.P.encode_gripper(self._g_stream, self.acfg.gripper_kp, self.acfg.kd))
+
+    def _grip_contact(self) -> bool:
+        """|effort| chwytaka ponad spoczynek zmierzony na poczatku tego zamykania o wiecej niz `gripper_force`."""
+        return self._g_rest is not None and abs(self._fb.eff[6]) > self._g_rest + self.acfg.gripper_force
 
     def _send(self, can_id: int, data: bytes, fd: bool = True) -> None:
         self._bus.send(can_id, data, fd=fd)
@@ -387,17 +427,29 @@ class A1XArm(RobotBackend):
                 v = min(max(float(targets[GRIPPER]), jc.min, 0.0), jc.max, 100.0)
                 reported = self._grip_app()
                 if self._g_target is not None or abs(v - reported) > GRIP_START_DELTA:
-                    if self._g_cmd is None:
-                        logger.info("A1X chwytak: pierwszy rozkaz %.0f (zglaszane %.0f, bez pomiaru) -> p_des %.2f",
-                                    v, reported, self._pdes(v))
                     want = self._pdes(v)
                     if self._g_target is None:
+                        logger.info("A1X chwytak: pierwszy rozkaz %.0f (zglaszane %.0f%s) -> p_des %.2f", v, reported,
+                                    "" if self.gripper_measured() else ", bez pomiaru", want)
                         # Pierwszy rozkaz: strumien od ZGLOSZONEGO rozwarcia, nie od celu.
-                        self._g_target, self._g_stream = want, self._pdes(reported)
-                    elif want < self._g_target:             # otwieranie zawsze przechodzi
+                        stream = self._pdes(reported)
+                        if self._g_assumed or (self._g_cmd is None and not self.gripper_measured()):
+                            # Rozwarcie tylko zgadniete: `assume_gripper` ("Ustaw dom = tu": zamkniete)
+                            # albo sam `gripper_start` po Polacz (A1X trzyma ostatnia poze miedzy sesjami,
+                            # szczeki moga byc otwarte). Start od bardziej otwartego z {zgadniete, cel}:
+                            # otwieranie idzie od razu na cel (pusty, zamkniety chwytak nic nie traci,
+                            # otwarty nie drgnie), a przy zlym zgadnieciu pierwsza ramka nie zatrzaskuje
+                            # szczek (+0,6 z kp 25, bez progu sily - ten dziala tylko przy zamykaniu).
+                            # `_g_cmd` z rozkazu, ktory naprawde poszedl, przezywa przerwe lacza i dalej
+                            # jest rampa od niego.
+                            stream = min(stream, want)
+                        self._g_target, self._g_stream, self._g_assumed = want, stream, False
+                    elif want <= self._g_target:
+                        # Otwieranie (albo ten sam cel) zawsze przechodzi i zdejmuje zamrozenie. Z ostrym `<`
+                        # cel zamrozony na krancu otwarcia (-2,0) nie dawal sie juz niczym ruszyc.
                         self._g_target, self._g_frozen = want, False
                     elif not self._g_frozen:
-                        if abs(self._fb.eff[6]) > self.acfg.gripper_force and self._g_stream is not None:
+                        if self._grip_contact() and self._g_stream is not None:
                             self._g_target, self._g_frozen = self._g_stream, True
                         else:
                             self._g_target = want
@@ -466,14 +518,48 @@ class A1XArm(RobotBackend):
         return None
 
     def gripper_known(self) -> bool:
-        """Czy pozycja chwytaka jest znana: pomiar albo rozkaz, ktory NAPRAWDE poszedl w 0x051.
-        Cel rowny zglaszanemu domyslnemu (`GRIP_START_DELTA`) nic nie wysyla i niczego nie ustala."""
+        """Czy pozycja chwytaka jest znana: pomiar, rozkaz, ktory NAPRAWDE poszedl w 0x051, albo
+        `assume_gripper`. Cel rowny zglaszanemu domyslnemu (`GRIP_START_DELTA`) nic nie wysyla
+        i niczego nie ustala."""
         with self._lock:
             return self.gripper_measured() or self._g_cmd is not None
 
+    def assume_gripper(self, v: float) -> bool:
+        """Operator potwierdza rozwarcie chwytaka bez pomiaru ("Ustaw dom = tu": szczeki zamkniete = 0).
+
+        Tylko dopoki strumien 0x051 nie ruszyl: potem prawda jest ostatni rozkaz, ktory naprawde poszedl,
+        a zalozenie jest odrzucane (False, ostrzezenie w logu). Po udanym `gripper_known()` jest True,
+        wiec nastepne rozkazy ida rampa od zalozenia; pierwszy strumien startuje od bardziej otwartego
+        z {zalozenie, cel} (`send_joints`, tak samo jak od samego `gripper_start`). Chwytak z pomiarem
+        niczego nie zaklada (False).
+        """
+        with self._lock:
+            if self.gripper_measured():
+                return False
+            if self._g_target is not None:
+                logger.warning("A1X chwytak juz sterowany (p_des %.2f) - zalozenie %.0f odrzucone", self._g_target, v)
+                return False
+            self._g_cmd = min(max(float(v), 0.0), 100.0)
+            self._g_assumed = True
+            logger.info("A1X chwytak: zalozone rozwarcie %.0f (bez pomiaru)", self._g_cmd)
+            return True
+
+    def gripper_drivable(self) -> bool:
+        """Czy rozkaz chwytaka dojdzie do ramienia. Nie przez XCAN (macOS): przejsciowka wysyla tylko
+        prawidlowe dlugosci CAN FD, wiec 10-bajtowa 0x051 idzie jako 12 bajtow, a chwytak ja ignoruje
+        (galaxeo `bus.py`). Nie da sie tego naprawic programowo; chwytak tylko przez SocketCAN."""
+        return not str(self.iface or "").lower().startswith("xcan")
+
+    def gripper_travel_s(self) -> float:
+        """Czas pelnego skoku chwytaka [s]: |open - closed| / `gripper_rate_pdes_s` + zapas (1,5 s przy
+        domyslnych). Tyle czekac po rozkazie, zeby szczeki naprawde doszly (1,2 s bylo za malo na 1,3 s)."""
+        a = self.acfg
+        return abs(a.gripper_open_pdes - a.gripper_closed_pdes) / a.gripper_rate_pdes_s + GRIP_TRAVEL_MARGIN_S
+
     def gripper_measured(self) -> bool:
         """Czy chwytak ma pomiar (dwa punkty `gripper_fb_*`). Bez nich `joints()` zglasza ostatni
-        rozkaz, a przed pierwszym - `gripper_start`, ktore nie musi zgadzac sie ze szczekami."""
+        rozkaz, a przed pierwszym - `gripper_start` (albo `assume_gripper`), ktore nie musi zgadzac
+        sie ze szczekami."""
         a = self.acfg
         return a.gripper_fb_closed is not None and a.gripper_fb_open is not None
 

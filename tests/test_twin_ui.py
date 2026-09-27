@@ -377,6 +377,29 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
     app.twin._backend = None
 
 
+def test_status_line_says_the_gripper_is_not_drivable_over_xcan(app, monkeypatch):
+    """A1X przez XCAN: chwytak nie dostaje 0x051, a panel bez sprzezenia pokazuje rozkaz - linia stanu to mowi."""
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    class FakeA1X:
+        drivable = False
+
+        def gripper_drivable(self):
+            return FakeA1X.drivable
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(app.twin, "_backend", FakeA1X())
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    assert "chwytak: brak sterowania przez XCAN" in app._status_text()
+    FakeA1X.drivable = True
+    assert "XCAN" not in app._status_text()
+    monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, SO-101): steruje
+    assert "XCAN" not in app._status_text()
+    app.twin._backend = None
+
+
 def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app):
     specs = app.specs
     specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nothing listens; the driver keeps retrying

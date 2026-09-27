@@ -887,6 +887,13 @@ class Twin:
         ani przycietej do limitow - przyciecie o 3 st. trzymalo ramie kilka cm nad podstawa.
         Limity stawow poszerzaja sie tak, zeby dom w nich lezal (`_widen_limits_for_home`);
         rozkaz do pozy, w ktorej ramie samo stoi, nie dociska go do stopu.
+
+        Chwytak: umowa stanowiska - dom = szczeki ZAMKNIETE (0), niezaleznie od tego, co zglasza
+        backend. Operator zamyka je przed klikiem (podpowiedz przycisku). Bez pomiaru chwytaka (A1X
+        bez `gripper_fb_*`) zglaszane rozwarcie bylo zgadywanka (`gripper_start`) i trafialo do domu
+        jako "otwarty" - Dom otwieral szczeki na koncu. Tu backend dostaje zalozenie "zamkniety"
+        (`_assume_gripper_closed`), wiec panel, szczeki 3D i nastepne "otworz" (rampa 0 -> 100) zgadzaja sie
+        z ramieniem. Sim: chwytak sceny zamyka sie od razu.
         """
         if not self.connected or self._supervisor is None:
             raise RuntimeError("ramie nie jest polaczone")
@@ -896,14 +903,56 @@ class Twin:
         home = {}
         for name in self._names:
             v = float(measured.get(name, self.spec.home.get(name, 0.0)))
-            home[name] = min(max(v, 0.0), 100.0) if name == self._grip else v
+            home[name] = 0.0 if name == self._grip else v
         self.workspace.home = home
         self.workspace.save()
         with self._sup_lock:
             self._widen_limits_for_home(self._supervisor.cfg, home)
             self._supervisor.home = dict(home)
+            if self._grip is not None:
+                self._assume_gripper_closed()
         logger.info("Dom stanowiska = tu: %s", ", ".join(f"{k}={v:.1f}" for k, v in home.items()))
         return home
+
+    def _assume_gripper_closed(self) -> bool:
+        """Chwytak ramienia = zamkniety (0) wedlug "Ustaw dom = tu"; True, gdy blizniak przyjal to za stan.
+
+        Wolane pod `_sup_lock`. Backend bez pomiaru chwytaka: najpierw `assume_gripper(0)` - odmawia, gdy
+        strumien chwytaka juz ruszyl (prawda jest ostatni rozkaz). Dopiero po zgodzie nadzor, ostatni pomiar,
+        ostatni rozkaz i czekajacy cel dostaja chwytak 0, w tej kolejnosci: nadzor przestawiony przed
+        backendem wysylal 0 przy zglaszanym "otwarty" i strumien zamykal szczeki; bez przestawienia nastepne
+        "zamknij" szlo rampa od starego 100 i szczeki najpierw drgaly w strone otwarcia. Po odmowie nic nie
+        rusza szczekami: przycisk tylko zapisuje dom. Sim: chwytak sceny (poza i serwo) zamyka sie od razu.
+        Backend z pomiarem (Feetech): pomiar jest prawda, dom zapisany, stan bez zmian (False).
+        """
+        b, g = self._backend, self._grip
+        if b is None or g is None:
+            return False
+        if b.info.simulated:
+            with self.lock:
+                s = self.scene
+                s.kin.write_qpos(s.data.qpos, s.kin.to_q({**s.joints(), g: 0.0}))
+                s.command({**s.kin.from_q(s.data.ctrl[s.act_ids]), g: 0.0})
+                mujoco.mj_forward(s.model, s.data)
+        elif _gripper_measured(b):
+            return False
+        else:
+            assume = getattr(b, "assume_gripper", None)
+            if assume is None or not assume(0.0):
+                logger.warning("chwytak juz sterowany: zamknij go suwakiem, potem Dom = tu (dom zapisany z "
+                               "chwytakiem 0, stan chwytaka w blizniaku bez zmian)")
+                return False
+        self._supervisor.reseed({g: 0.0})
+        self._latest[g] = 0.0
+        ls = self._ls
+        if ls is not None:
+            ls.measured = {**ls.measured, g: 0.0}
+            if g in ls.last_sent:
+                ls.last_sent = {**ls.last_sent, g: 0.0}
+        with self._own_lock:
+            if self._target is not None and g in self._target:
+                self._target = {**self._target, g: 0.0}         # czekajacy cel nie otwiera ich z powrotem
+        return True
 
     def _widen_limits_for_home(self, cfg, home: Mapping[str, float]) -> None:
         """Limity konfiguracji (i bazowe, z ktorych korzysta backend) obejmuja poze domowa."""

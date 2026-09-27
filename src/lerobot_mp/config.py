@@ -390,10 +390,12 @@ class A1XConfig:
     gripper_fb_closed: float | None = None
     gripper_fb_open: float | None = None
     #: Co backend zglasza jako chwytak przed pierwszym rozkazem, gdy sprzezenie niezmierzone.
-    gripper_start: float = 100.0
+    #: 0 = zamkniety: umowa stanowiska (dom = szczeki zamkniete, "Ustaw dom = tu" to potwierdza).
+    gripper_start: float = 0.0
     #: Slew p_des chwytaka [jednostki p_des / s]; pelny skok 2,6 to 1,3 s.
     gripper_rate_pdes_s: float = 2.0
-    #: |effort| grupy 7 powyzej tego progu przy zamykaniu = kontakt: cel zamarza (chwyta, nie miazdzy).
+    #: |effort| grupy 7 o tyle ponad spoczynek (mediana z pierwszych 0,1 s zamykania) = kontakt:
+    #: cel zamarza (chwyta, nie miazdzy).
     gripper_force: float = 1.2
     #: Przesuniecie zera stawow ramienia [st.]: odjete przy odczycie, dodane przy wysylce
     #: (J3 czyta ok. +1,49 st. w spoczynku - zmierz swoje).
