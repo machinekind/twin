@@ -143,9 +143,9 @@ a1x:
   gripper_closed_pdes: 0.6   # p_des przy 0 (zamkniety)
   gripper_fb_closed: null    # grupa 7 z 0x052 [rad] przy 0 i przy 100 - zmierz; null = panel
   gripper_fb_open: null      #   pokazuje rozkaz chwytaka, nie pomiar
-  gripper_start: 100.0       # co zglaszac jako chwytak przed pierwszym rozkazem (bez sprzezenia)
+  gripper_start: 0.0         # co zglaszac jako chwytak przed pierwszym rozkazem (bez sprzezenia); 0 = zamkniety
   gripper_rate_pdes_s: 2.0   # slew p_des chwytaka [1/s]
-  gripper_force: 1.2         # |effort| przy zamykaniu powyzej = kontakt, cel zamarza
+  gripper_force: 1.2         # |effort| przy zamykaniu ponad spoczynek (pierwsze 0,1 s) = kontakt, cel zamarza
   joint_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # zero stawow [st.]: odjete przy odczycie (J3 ~ +1.49)
   stream_hz: 200.0           # strumien 0x050/0x051 [Hz]
   max_step_deg_s: 90.0       # wlasny limit predkosci backendu (pod nadzorem blizniaka)
