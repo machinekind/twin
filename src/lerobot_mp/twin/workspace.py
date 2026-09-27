@@ -51,7 +51,7 @@ def default_path() -> Path:
 #: side along base y and the window wall (glTF +x) behind the reach box (base +x). glTF y-up maps to
 #: z-up as (x, y, z) -> (x, -z, y), then `yaw_deg` about z, then `offset`.
 ROOM_GLB = "assets/rooms/pokoj.glb"
-ROOM_OFFSET = (-0.695, -0.97, -0.743)
+ROOM_OFFSET = (1.86, -1.02, -0.76)   # the foam-mat desk by the softbox: centre glTF (-1.41, 0.76, -1.02) -> base (0.45, 0, 0)
 ROOM_YAW_DEG = 0.0
 
 

@@ -123,10 +123,10 @@ położenie jedną linią), `lerobot-twin workspace --room assets/rooms/pokoj.gl
 stanowisku (pole `room`: `glb` względem korzenia repozytorium albo bezwzględnie, `offset` [m, układ
 podstawy], `yaw_deg`, `hide_table`, `hide_floor`), `--no-room` usuwa. Z pokojem panel nie rysuje
 podłogi-siatki ani stołu sceny (`hide_floor`, `hide_table`; w pliku da się je wyłączyć) — ramię,
-pudełko zasięgu, kamery, mrówka i obiekty zostają. Domyślnie ciemne biurko pod oknem z
-`pokoj.glb` (blat na y = 0,743, x 0,72…1,57, z −1,79…−0,15 w glTF) ląduje na stole bliźniaka:
+pudełko zasięgu, kamery, mrówka i obiekty zostają. Domyślnie biurko z czarną matą piankową (przy softboksie) z
+`pokoj.glb` (blat na y = 0,76, x −2,15…−0,67, z −1,76…−0,28 w glTF) ląduje na stole bliźniaka:
 blat na z = 0, środek na środku stołu (x 0,45, y 0), dłuższy bok wzdłuż y, ściana z oknem za
-pudełkiem zasięgu (+x) — `offset` (−0,695, −0,97, −0,743), obrót 0°. Dopasowanie: *Ramię >
+pudełkiem zasięgu (+x) — `offset` (1,86, −1,02, −0,76), obrót 0°. Dopasowanie: *Ramię >
 Stanowisko (stół)*, suwaki *Pokój: przesunięcie x/y/z* i *Pokój: obrót* (na żywo, zapis w
 stanowisku). Pokój jest względem podstawy, więc idzie za nią po zmianie stołu. Klient visera
 nie ma dekodera meshopt ani Draco: skompresowany plik (np. eksport „web”) najpierw rozpakuj
