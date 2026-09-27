@@ -812,9 +812,20 @@ class TwinApp:
         if st.connected and not self._gripper_drivable():
             parts.append("**chwytak: brak sterowania przez XCAN** (ramka 0x051 nie dochodzi; chwytak tylko z Linuksa, "
                          "SocketCAN) - panel pokazuje rozkaz, szczeki stoja")
+        elif st.connected and self._gripper_xcan_trial():
+            parts.append("**chwytak przez XCAN: proba** (a1x.gripper_over_xcan / A1X_GRIPPER_XCAN=1; bez sprzezenia "
+                         "panel pokazuje rozkaz - patrz na szczeki)")
         if st.error:
             parts.append(f"**blad ramienia:** {st.error}")
         return " | ".join(parts)
+
+    def _gripper_xcan_trial(self) -> bool:
+        """A1X przez XCAN z wlaczona proba chwytaka. Backend bez tej metody: nie."""
+        fn = getattr(self.twin.backend, "gripper_xcan_trial", None)
+        try:
+            return False if fn is None else bool(fn())
+        except Exception:                          # pragma: no cover - linia stanu nie moze wysypac panelu
+            return False
 
     def _gripper_drivable(self) -> bool:
         """Czy rozkaz chwytaka dochodzi do ramienia (A1X przez XCAN: nie). Backend bez tej metody: tak."""
