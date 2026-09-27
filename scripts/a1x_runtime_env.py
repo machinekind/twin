@@ -23,7 +23,8 @@ from lerobot_mp.twin.workspace import Workspace
 
 
 class RuntimeLiftEnv:
-    def __init__(self, task, *, view=False, cube_yaw_mode="canonical", pose_corruption: PoseCorruption | None = None):
+    def __init__(self, task, *, view=False, cube_yaw_mode="canonical", pose_corruption: PoseCorruption | None = None,
+                 cube_height_error_bound_m=0.0):
         if task.name != "lift" or task.n_joints != 7 or task.control_hz != 20 or task.timestep != .005:
             raise ValueError("This adapter supports only A1X lift at 20 Hz / 5 ms physics")
         self.task = task
@@ -40,7 +41,8 @@ class RuntimeLiftEnv:
         self.transform = np.linalg.inv(self.scene.T_base2world)
         self.action = np.zeros(7, np.float32)
         self.policy = SimpleNamespace(task=task, meta=PolicyMeta(task=asdict(task), robot="a1x", hidden=[],
-            obs_dim=task.obs_dim, act_dim=7, randomization=asdict(self.rand), cube_yaw_mode=cube_yaw_mode), act=self._act)
+            obs_dim=task.obs_dim, act_dim=7, randomization=asdict(self.rand), cube_yaw_mode=cube_yaw_mode,
+            cube_height_error_bound_m=cube_height_error_bound_m), act=self._act)
         self.runner = self.monitor = None
         self.t = 0
 

@@ -196,6 +196,7 @@ def main():
         conditions=batch, configuration=config, teacher_intervention=False, simulation_only=True,
         path='PolicyRunner -> Twin -> SafetySupervisor -> SceneBackend', max_seconds=args.seconds,
         cube_yaw_mode=policy.meta.cube_yaw_mode, gripper_decoder=policy.meta.gripper_decoder,
+        cube_height_error_bound_m=policy.meta.cube_height_error_bound_m,
         versions={name: importlib.metadata.version(name) for name in ('torch', 'mujoco', 'numpy')},
         git_head=subprocess.check_output(['git', '-c', f'safe.directory={ROOT}', 'rev-parse', 'HEAD'],
                                          cwd=ROOT, text=True).strip(),
@@ -208,7 +209,8 @@ def main():
     try:
         for condition in batch:
             env = RuntimeLiftEnv(policy.task, cube_yaw_mode=policy.meta.cube_yaw_mode,
-                                 pose_corruption=PoseCorruption(**condition['corruption']))
+                                 pose_corruption=PoseCorruption(**condition['corruption']),
+                                 cube_height_error_bound_m=policy.meta.cube_height_error_bound_m)
             try:
                 for seed in seeds:
                     path = args.out / f"{condition['id']}-seed-{seed}.jsonl"

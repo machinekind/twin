@@ -184,6 +184,7 @@ def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seco
     meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
                       robot="a1x", randomization=demos.randomization, features=features,
                       gripper_residual=gripper_residual,
+                      cube_height_error_bound_m=init.meta.cube_height_error_bound_m if init is not None else 0.0,
                       notes="Behavior cloning of scripted simulation lifts; not RL or physical validation")
     policy = Policy(meta).to(device)
     x, y, vx, vy = [torch.as_tensor(a, device=device) for a in

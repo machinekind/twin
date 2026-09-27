@@ -9,7 +9,7 @@
   "bias_frame": "arm base; rotation changes position about base origin and object orientation",
   "noise": "Independent Gaussian position and rotation-vector components, with separate seeded streams; resample once per delivered observation timestamp",
   "delay": "Latest captured pose at or before now-delay; log effective age and startup warmup; no interpolation",
-  "translation_mm": [0,2,5,10,20],
+  "translation_mm": [0,1,2,5,10,20],
   "rotation_deg": [0,0.5,1,2,5],
   "directions": ["+x","-x","+y","-y","+z","-z"],
   "position_noise_std_mm": [0,1,2,5],

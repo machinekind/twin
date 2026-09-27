@@ -173,27 +173,33 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **correct premature completion under pose uncertainty,
-then re-evaluate frozen candidate 027 through the guarded runtime before fitting**.
+Current next action: **screen fresh training-only cases for residual approach/grasp
+clearance failures and test observation-only teacher recovery before fitting**.
 Nominal development is 19/20; the first fixed held-out nominal qualification is
 **20/20**, with true holds of 2.005-2.055 s, zero guard rejections, prohibited
-contacts or numerical faults. The first 320-case development corruption sweep
-is complete: 2 mm persistent translation gives 1-20/20 by direction; 0.5 degree
-persistent rotation gives 0-19/20. The dominant failure is premature success
-(51 shortened true holds), followed by 18 collision-guard rejections; all actual
-prohibited contacts and numerical failures remain zero. No nonzero tolerance
-across all tested directions is demonstrated. The true two-second criterion is
-unchanged. Robustness holdout 52000-52019 remains untouched; new robustness
-training is assigned 53000-53999. The actual two-camera pipeline is unvalidated.
+contacts or numerical faults for reference 027. Preferred development candidate
+028 now fixes all 51 premature completions in the 320-case calibration sweep,
+without regressions or any actor retraining. Its fixed 5 mm height-error allowance
+is saved with the policy and used by the actual completion check; the true 60 mm
+lift, two-second hold and collision criteria are unchanged. The remaining 18
+failures are collision-guard rejections, with zero actual prohibited contacts or
+numerical faults. The additional +/-1 mm sweep gives 19/20 in every axis direction;
+the +/-0.5 degree rotational sweep gives 18-19/20. These are separate-factor
+development tolerances, not combined or physical validation. +2 mm Y remains
+17/20. Robustness holdout 52000-52019 remains untouched; new robustness training
+is assigned 53000-53999. The actual two-camera pipeline is unvalidated.
 
-Keep the successful checkpoint and its action/observation conventions fixed:
-`workspace/validation/baselines/lift-imitation-027/policy.pt`, SHA256 `22d79622`,
-`cube_yaw_mode=continuous`, `gripper_decoder=a1x-templates-v1`. Its actor and
-normalizer are identical to 024/026; the decoder selects the nearest supported
+Keep both the original reference 027 (`22d79622`) and preferred development 028
+(`851b34fe`) under `workspace/validation/baselines/lift-imitation-0xx/policy.pt`.
+Both use `cube_yaw_mode=continuous`, `gripper_decoder=a1x-templates-v1`;
+028 adds `cube_height_error_bound_m=0.005`. Their actor and normalizer are identical
+to 024/026; the decoder selects the nearest supported
 gripper action using the learned output and measured jaw, with no teacher phase
 logic or intervention. Preserve all earlier baselines, including 024/026 at
 17/20 with zero development guard rejections and their training regression.
-The remaining 027 development failure is 50009 (approach guard rejection).
+The remaining nominal development failure is 50009 (approach/grasp guard rejection).
+028 also passes 20/20 nominal held-out regression with true holds 2.155-2.240 s
+and zero rejections/contacts/faults; this reused set is not fresh qualification.
 The 51000-51019 set has now been used once for qualification: future reuse is
 regression evidence, never fresh held-out proof. Keep it excluded from training.
 Do not aggregate original and replacement variants of a training episode or
@@ -215,10 +221,17 @@ The earlier attempt 001 is retained after a stop-message-format mismatch.
 A counterfactual audit also shows an information limit: the same policy input
 can describe distinct true horizontal object positions with opposite persistent
 calibration offsets. Do not train truth-informed correction labels that the
-policy cannot reproduce from its observations. First test a fixed, explicit
-height-uncertainty bound in the real completion check (no access to injected
-bias or true pose), then target residual clearance/grasp failures on training
-cases. Preserve all checkpoints and keep the robustness holdout reserved.
+policy cannot reproduce from its observations. The fixed-bound completion
+correction is now validated in development (`perception-development-004/005`,
+`height-bound-comparison-001`, 66 focused tests). It recovered 51 cases with
+identical policy inputs/actions until the former stop; 42,926 corrected frames
+and 18,662 boundary-check frames are audited. Five failure traces queried against
+the observation-only teacher support targeting premature closing and grasp
+misalignment next (`perception-clearance-audit-001`). Do not assume early closure
+explains every failure, and do not fit these development traces. Use fresh cases
+from 53000-53999 and preserve yaw/decoder/completion conventions; the current
+imitation runner still rejects incompatible yaw/decoder datasets. Preserve all
+checkpoints and keep the robustness holdout reserved.
 
 Historical candidate 022 reached **17/20 autonomous guarded
 lifts**, with one guard rejection and zero actual prohibited contacts/numerical
@@ -866,6 +879,8 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Explicit learned-output gripper decoding raises nominal development success | `gripper-template-audit-001`: all 33,397 labels match three supported commands; paired probe and saved 027: 19/20 versus 17/20, one rejection, zero actual contacts; compatibility and controller checks pass | Freeze 027 before first held-out use; no teacher intervention, new fitting, guard relaxation or deadline change |
 | 2026-09-27 | Frozen 027 passes first nominal held-out qualification | `lift-heldout-027-audit.json`: 20/20, true holds 2.005-2.055 s, zero rejections/contacts/faults; frozen source/checkpoint hashes verified | Begin separate perception-robustness stage with persistent translation/rotation bias, noise and delay; tolerance and physical validation remain pending |
 | 2026-09-27 | Persistent calibration-error evaluation exposes premature completion | `perception-development-002`: 320 development trials in 425.11 s; 51 early completions and 18 guarded rejections, zero actual prohibited contacts/numerical faults; 42,021 input frames audited; 73 focused tests pass | Test a fixed uncertainty-aware completion bound before more fitting; no nonzero all-direction tolerance demonstrated at 2 mm / 0.5 degree; robustness holdout remains unused |
+| 2026-09-27 | Saved completion uncertainty bound removes all early completions | 028 preserves actor tensors; paired sweep recovers 51 failures with no regressions, true holds 2.050-2.325 s, zero actual contacts; nominal holdout regression 20/20; 66 focused tests pass | Preferred development candidate frozen as `851b34fe`; target remaining clearance/grasp failures without discarding saved runtime contracts |
+| 2026-09-27 | Initial nonzero calibration tolerance measured in development | +/-1 mm translation: 19/20 in every signed axis; +/-0.5 degree rotation: 18-19/20; separate factors, 20 starts each; +2 mm Y remains 17/20; all contacts/numerical faults zero | Screen fresh training-only starts and test observable teacher recovery; combined-error testing and fresh robustness holdout remain pending |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

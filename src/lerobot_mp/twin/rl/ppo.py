@@ -124,6 +124,7 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
                       randomization=_rand_dict(rand), robot=spec.name)
     if init is not None:
         meta.hidden = list(init.meta.hidden)
+        meta.cube_height_error_bound_m = init.meta.cube_height_error_bound_m
         meta.notes = f"douczana z polityki z {init.meta.created} ({init.meta.steps / 1e6:.0f} mln krokow)"
     ac = ActorCritic(meta, cfg.init_std).to(device)
     warmup = 0

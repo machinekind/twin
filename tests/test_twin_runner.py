@@ -81,6 +81,55 @@ def test_success_hold_uses_elapsed_time_and_restarts_after_loss(twin, monkeypatc
     assert runner.status.stopped_because == "zadanie wykonane"
 
 # ------------------------------------------------------------ rozjazd = kolizja
+def test_lift_completion_uses_saved_height_bound_and_restarts_timer(twin, monkeypatch, tmp_path):
+    connect_fake(twin, monkeypatch, FakeArm())
+    task = tk.make_task("lift", end_on_success=40)
+    policy = constant_policy(task)
+    policy.meta.cube_height_error_bound_m = .005
+    policy = Policy.load(policy.save(tmp_path / 'bounded.pt'))
+    state = {'lift': task.lift_height + .004}
+    runner = PolicyRunner(twin, policy, episode_limit=False,
+        cube_provider=lambda: (np.array([.2,0,task.cube_half+state['lift']]), np.eye(3), 'kamery'))
+    monkeypatch.setattr(runner, '_jaw_holding', lambda q: True)
+    runner.start(threaded=False)
+    # Above the nominal lift threshold, but below its conservative lower bound.
+    for tick in range(50):
+        assert runner.step_once(tick*.05)
+        assert runner.status.success_streak == 0 and runner.status.success_hold_s == 0
+    state['lift'] = task.lift_height + .006
+    for tick in range(20):
+        assert runner.step_once(2.5+tick*.05)
+    state['lift'] = task.lift_height + .004
+    assert runner.step_once(3.5)
+    assert runner.status.success_streak == 0 and runner.status.success_hold_s == 0
+    state['lift'] = task.lift_height + .006
+    for tick in range(40):
+        assert runner.step_once(3.55+tick*.05)
+    assert not runner.step_once(5.55)
+    assert runner.status.stopped_because == 'zadanie wykonane'
+
+
+@pytest.mark.parametrize('bound,task_name', [(-.001,'lift'), (float('nan'),'lift'),
+    (float('inf'),'lift'), (.005,'reach'), (.005,'pickplace')])
+def test_invalid_saved_height_bound_is_rejected(bound, task_name):
+    task = tk.make_task(task_name)
+    with pytest.raises(ValueError, match='height error bound'):
+        PolicyMeta(task=asdict(task), hidden=[8], obs_dim=task.obs_dim, act_dim=task.act_dim,
+                   cube_height_error_bound_m=bound)
+
+
+def test_legacy_height_bound_default_preserves_actor_and_task(tmp_path):
+    policy = constant_policy(tk.make_task('lift'))
+    path = policy.save(tmp_path/'legacy.pt')
+    blob = torch.load(path, weights_only=False)
+    del blob['meta']['cube_height_error_bound_m']
+    torch.save(blob,path)
+    restored = Policy.load(path)
+    assert restored.meta.cube_height_error_bound_m == 0 and restored.task == policy.task
+    for name,value in policy.state_dict().items():
+        torch.testing.assert_close(value,restored.state_dict()[name],atol=0,rtol=0)
+
+
 def test_physical_policy_refuses_command_only_gripper_state(twin, monkeypatch):
     arm = FakeArm()
     arm.gripper_measured = lambda: False

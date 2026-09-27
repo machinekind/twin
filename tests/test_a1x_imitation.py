@@ -207,7 +207,8 @@ def test_refinement_restores_actor_freezes_statistics_and_does_not_mutate_source
     torch.manual_seed(17)
     task = make_task("lift", A1X)
     initial = Policy(PolicyMeta(task=asdict(task), hidden=[32, 32], obs_dim=task.obs_dim, act_dim=7,
-                               robot="a1x", randomization=asdict(Randomization.none())))
+                               robot="a1x", randomization=asdict(Randomization.none()),
+                               cube_height_error_bound_m=.005))
     initial.norm.update(torch.randn(50, task.obs_dim) * 2 + .2)
     before = {k: v.clone() for k, v in initial.state_dict().items()}
     rng = np.random.default_rng(7)
@@ -218,6 +219,7 @@ def test_refinement_restores_actor_freezes_statistics_and_does_not_mutate_source
     assert result["initialized"] and result["initial_validation"]["loss"] == pytest.approx(.02, abs=1e-6)
     assert result["selected_validation"]["loss"] < .0001
     assert learned.meta.hidden == [32, 32] and learned.critic_state is None
+    assert learned.meta.cube_height_error_bound_m == initial.meta.cube_height_error_bound_m == .005
     for key, value in before.items():
         torch.testing.assert_close(initial.state_dict()[key], value, atol=0, rtol=0)
         if key.startswith("norm."):

@@ -59,6 +59,13 @@ class Normalizer(nn.Module):
         return torch.clamp((x - self.mean) / torch.sqrt(self.var + 1e-8), -self.clip, self.clip)
 
 
+def validate_cube_height_error_bound(value, task_name: str) -> float:
+    value = float(value)
+    if not np.isfinite(value) or value < 0 or (value and task_name != "lift"):
+        raise ValueError("Cube height error bound must be finite, nonnegative and used only for lift")
+    return value
+
+
 @dataclass
 class PolicyMeta:
     task: dict[str, Any]
@@ -84,6 +91,14 @@ class PolicyMeta:
     cube_yaw_mode: str = "canonical"
     #: Optional finite gripper action set; the actor chooses via nearest output.
     gripper_decoder: str = "identity"
+    #: Declared upper bound on perceived cube-height overestimation, in metres.
+    #: PolicyRunner uses a lower height bound for completion; actor inputs/actions
+    #: and the true task criterion are unchanged. Zero preserves legacy behavior.
+    cube_height_error_bound_m: float = 0.0
+
+    def __post_init__(self):
+        self.cube_height_error_bound_m = validate_cube_height_error_bound(
+            self.cube_height_error_bound_m, self.task.get("name", "reach"))
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,

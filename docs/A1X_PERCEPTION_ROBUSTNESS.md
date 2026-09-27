@@ -1,13 +1,17 @@
 # A1X perception robustness protocol
 
-Status: active development measurements, simulation only; no nonzero tolerance
-across all tested calibration-error directions demonstrated yet.
+Status: simulation development only. Candidate 028 now demonstrates 1 mm
+translation and 0.5 degree rotation tolerance in separate signed-axis tests;
+combined errors and the reserved robustness holdout remain untested.
 The user explicitly requires persistent camera-to-arm translation and rotation
-errors as well as pose noise and delay. Frozen candidate 027 has now passed
+errors as well as pose noise and delay. Frozen reference candidate 027 passed
 nominal qualification: 19/20 development and 20/20 first held-out lifts, full
 true two-second holds and zero prohibited contacts. Use its preserved checkpoint
-(`workspace/validation/baselines/lift-imitation-027/policy.pt`, SHA256 `22d79622`),
-continuous cube yaw and explicit `a1x-templates-v1` gripper decoder. The separate
+(`workspace/validation/baselines/lift-imitation-027/policy.pt`, SHA256 `22d79622`).
+Preferred development candidate 028 (`baselines/lift-imitation-028/policy.pt`
+under the same validation directory, SHA256 `851b34fe`) preserves its actor,
+normalizer, continuous cube yaw and `a1x-templates-v1` decoder; it adds a saved
+5 mm height-error allowance in the actual completion check. The separate
 robustness holdout is reserved at seeds 52000-52019; training uses 53000-53999.
 Development remains 50000-50019. The previously
 used nominal held-out set is now regression evidence, never fresh qualification.
@@ -50,7 +54,7 @@ exploration ranges, not measured camera errors or promised operating limits.
 
 | Factor | Magnitudes | Direction / interpretation |
 |---|---|---|
-| Persistent translation | 0, 2, 5, 10, 20 mm | Separate positive and negative base X/Y/Z offsets |
+| Persistent translation | 0, 1, 2, 5, 10, 20 mm | Separate positive and negative base X/Y/Z offsets; 1 mm added after the initial 2 mm failure |
 | Persistent rotation | 0, 0.5, 1, 2, 5 degrees | Separate positive and negative rotations about base X/Y/Z |
 | Position noise | 0, 1, 2, 5 mm standard deviation | Independent zero-mean samples; log per-axis convention |
 | Orientation noise | 0, 0.5, 1, 2 degrees standard deviation | Independent rotation-vector noise; log per-axis convention |
@@ -187,3 +191,75 @@ two-second hold and collision guards. Then generate training-only corrections
 for the residual approach/grasp rejections, after confirming the teacher can
 make its decisions from the supplied observations. Do not broaden fitting or
 spend the reserved robustness holdout before this diagnostic correction.
+
+## Fixed-bound completion correction, 2026-09-27
+
+`PolicyMeta.cube_height_error_bound_m` is stored in the checkpoint and consumed
+by the ordinary `PolicyRunner`. For candidate 028 it is fixed at 0.005 m for
+every condition: an estimated lift must exceed **65 mm** before its full
+two-second completion timer starts. The independent success criterion remains
+true lift above **60 mm**, bilateral contact for **2 s**, and zero prohibited
+contacts/faults. The controller never receives the injected bias or true pose.
+The allowance changes neither observations nor learned actions. It is a declared
+experimental bound, not a measured camera accuracy or a 5 mm grasp tolerance.
+
+Legacy checkpoints default to zero allowance; a fresh 20-case control using 027
+reproduces its saved outcomes, holds, joint states and commands exactly
+(`perception-development-003`). Nonfinite/negative bounds and use outside lift
+are rejected. The configured bound is retained by refinement metadata; the bare
+CPU evaluator explicitly reports that it does not apply runtime completion logic.
+No PPO run or policy fitting was performed in this correction.
+
+`perception-development-004` repeats all 320 conditions/cases from the initial
+sweep with frozen 028 in 393.42 s. All **51 premature completions become true
+successes, with no regressions**. The same 18 collision-guard rejections remain,
+with zero prohibited contacts and numerical failures. The paired audit verifies
+all 42,021 common input/action frames are identical up to the original stop,
+then audits all 42,926 candidate frames. Successful true holds span 2.050-2.325 s.
+
+| Condition | Reference 027 | Fixed-bound 028 |
+|---|---:|---:|
+| Zero error | 19/20 | 19/20 |
+| +2 mm Z translation | 1/20 | 19/20 |
+| +0.5 / -0.5 degree X rotation | 15/20 each | 19/20 each |
+| -0.5 degree Y rotation | 0/20 | 19/20 |
+| Position jitter, 1 mm per-axis SD | 13/20 | 19/20 |
+| +2 mm Y translation | 17/20 | 17/20 |
+| -0.5 degree Z rotation | 18/20 | 18/20 |
+
+All other conditions retain their previous counts. In this finite sample, the
+maximum positive supplied-height error is below 5 mm in every condition (largest
+3.75 mm for -Y rotation). Gaussian jitter is unbounded in principle; these samples
+do not establish an absolute noise bound. The true scorer remains authoritative.
+
+`lift-heldout-regression-028.json` verifies **20/20** on the original nominal
+holdout through the standalone actual controller, true holds 2.155-2.240 s,
+zero guard rejections/contacts/numerical faults. This is regression evidence from
+a reused set, not fresh qualification. The 52000-52019 robustness holdout is unused.
+
+The targeted boundary check `perception-development-005` adds 140 development
+trials (zero and +/-1 mm X/Y/Z) in 181.60 s: **19/20 in every condition**, zero
+premature completions/contacts/numerical faults. Its 18,662 input frames are
+audited, and its zero cases exactly repeat 028's prior zero cases.
+The measured development tolerance is therefore **1 mm translation** and
+**0.5 degree rotation**, each tested separately along all six signed axes.
+The +2 mm Y result fails the 18/20 criterion. Do not infer combined, oblique-axis,
+larger-angle, intermediate-magnitude, held-out or physical tolerance.
+
+The frozen `baselines/lift-imitation-028/baseline.json` is the post-evaluation
+selection record; its `report.json` preserves the earlier packaging snapshot.
+The bundle includes policy, metadata, source archive, reports, paired audit and
+reproduction scripts with hashes. Earlier baselines remain preserved. The curves
+and counts are in `height-bound-comparison-001/{comparison,tolerance}.{png,pdf,csv}`.
+Validation: **66 focused tests passed**; three PPO training cases were excluded.
+
+Next correction target: approach/grasp clearance, not maintenance of an otherwise
+successful lift. `perception-clearance-audit-001` queries the existing teacher on
+five failing traces without executing or fitting them. There are no teacher-query
+failures. Start 50009 closes during 34-36 frames where the observation-only teacher
+would still approach with open jaws; 50015 has 13 such frames. Other residual
+failures occur while both teacher and learner select closing, so early closure
+does not explain every rejection. Screen fresh training-only starts near these
+conditions and test teacher recoveries before collecting labels. Preserve the
+continuous-yaw, decoder and completion contracts during any later bounded fit;
+current imitation refinement still rejects unsupported yaw/decoder combinations.

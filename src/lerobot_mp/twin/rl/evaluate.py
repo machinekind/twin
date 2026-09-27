@@ -69,6 +69,8 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
            "fold_yaw": rand.fold_yaw,
            "cube_yaw_mode": cube_yaw_mode,
            "gripper_decoder": getattr(policy.meta, "gripper_decoder", "identity"),
+           "cube_height_error_bound_m": policy.meta.cube_height_error_bound_m,
+           "runtime_height_bound_applied": False,  # Bare physics, not PolicyRunner qualification.
            "randomized": rand.randomized, "centre": rand.centre.source}
     key = "final_distance_mm" if task.name == "reach" else "final_height_mm"
     out[key] = float(np.median(final) * 1000)

@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import task as tk
-from .policy import Policy
+from .policy import Policy, validate_cube_height_error_bound
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,8 @@ class PolicyRunner:
         self.twin = twin
         self.policy = policy
         self.task = policy.task
+        self.cube_height_error_bound_m = validate_cube_height_error_bound(
+            getattr(policy.meta, "cube_height_error_bound_m", 0.0), self.task.name)
         self._cube_yaw = tk.cube_yaw_tracker(getattr(policy.meta, "cube_yaw_mode", "canonical"),
             task=self.task, robot=spec.name, fold=bool(policy.meta.randomization.get("fold_yaw", False)))
         # Wlasna kinematyka (wlasne MjData): ta ze sceny liczy tez panel (IK uchwytu)
@@ -399,7 +401,8 @@ class PolicyRunner:
                 if holding and st.success_streak > 0 and q[self.g] < self._streak_grip - self.grip_creep:
                     holding = False
                 st.success = (self._cube is not None and self._cube_fresh() and holding
-                              and self._cube[2] - self.task.cube_half > self.task.lift_height)
+                              and self._cube[2] - self.task.cube_half
+                              > self.task.lift_height + self.cube_height_error_bound_m)
                 if st.success and st.success_streak == 0:
                     self._streak_grip = float(q[self.g])
             st.success_streak = st.success_streak + 1 if st.success else 0
