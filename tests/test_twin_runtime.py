@@ -15,6 +15,7 @@ pytest.importorskip("mujoco")
 
 from lerobot_mp.robot.base import RobotBackend, RobotInfo  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
+from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.robots import SO101  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -179,7 +180,9 @@ class FakeArm(RobotBackend):
 
 @pytest.fixture
 def twin():
-    tw = Twin(Workspace())
+    # Petla bez watku na zegarze wirtualnym: `step(dt)` go przesuwa (`connect(threaded=False)` bez
+    # `clock` tez by go zalozyl - tu jawnie, jak w testach kierowcy okularow).
+    tw = Twin(Workspace(), clock=VirtualClock(t0=0.0))
     try:
         yield tw
     finally:
@@ -299,7 +302,9 @@ def test_servo_fault_triggers_estop_and_preempts_the_owner(twin, monkeypatch):
     assert twin.safety_state.value == "ESTOP"
     assert "przeciazenie" in twin.status.error
     assert twin.owner is None
-    time.sleep(0.1)                                        # wywolanie zwrotne z watku petli idzie osobno
+    deadline = time.monotonic() + 2.0                      # wywolanie zwrotne z watku petli idzie osobno
+    while not called and time.monotonic() < deadline:
+        time.sleep(0.002)
     assert called == [True]
 
 
