@@ -129,6 +129,22 @@ def test_advance_waits_for_a_members_computation_before_returning():
     th.join(1.0)
 
 
+def test_a_member_woken_by_a_message_finishes_before_time_moves():
+    clock = VirtualClock(t0=0.0)
+    q: queue.Queue = queue.Queue()
+
+    def worker():
+        clock.get(q, 100.0)
+        time.sleep(0.03)                                        # planning the target
+        return clock.now()                                      # the moment it acts on it
+    th, out = spawn(clock, worker)
+    parked(clock)
+    clock.put(q, "target")
+    clock.advance(0.02)
+    th.join(1.0)
+    assert out == [0.0]
+
+
 def test_a_member_that_does_not_park_in_time_is_counted_late():
     clock = VirtualClock(settle_s=0.05)
     ev = threading.Event()

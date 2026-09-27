@@ -218,17 +218,25 @@ class VirtualClock:
         return all(m in self._waiters for m in self._members)
 
     def advance(self, dt: float) -> None:
-        """Moves time by `dt` and returns once the threads it woke have parked again."""
+        """Moves time by `dt` and returns once the threads it woke have parked again.
+
+        It first lets a member that something else woke (a message from the network thread) finish at the
+        current time, so the moment it reads for its next deadline doesn't depend on thread scheduling."""
         if dt < 0:
             raise ValueError(f"VirtualClock.advance: dt {dt} < 0")
         with self._cond:
             self._advancer = threading.get_ident()
+            self._barrier()
             self._t += float(dt)
             self._cond.notify_all()
-            if not self._cond.wait_for(self._settled, timeout=self.settle_s):
-                self.late += 1
-                woken = [f"{i} woken" for i, (d, ready) in self._waiters.items() if d <= self._t or ready()]
-                running = [f"{m} running" for m in self._members if m not in self._waiters]
-                busy = woken + running
-                logger.warning("VirtualClock t=%.3f: threads not parked after %.1f s real: %s",
-                               self._t, self.settle_s, ", ".join(busy) or "?")
+            self._barrier()
+
+    def _barrier(self) -> None:
+        """The caller holds `_cond`."""
+        if self._cond.wait_for(self._settled, timeout=self.settle_s):
+            return
+        self.late += 1
+        woken = [f"{i} woken" for i, (d, ready) in self._waiters.items() if d <= self._t or ready()]
+        running = [f"{m} running" for m in self._members if m not in self._waiters]
+        logger.warning("VirtualClock t=%.3f: threads not parked after %.1f s real: %s",
+                       self._t, self.settle_s, ", ".join(woken + running) or "?")
