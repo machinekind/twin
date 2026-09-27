@@ -11,7 +11,10 @@ Two triggers:
 * **Lag** (the main one on hardware): the command keeps moving but the joint does not - |command - measured|
   > `lag_deg` for `lag_s` while the joint is nearly still (|velocity| < `vel_still`). A normal ramp has the
   command just ahead of the measurement with the joint moving, so it does not trigger. Must fire well before
-  the A1X backend's own "deaf" error (3 deg for 1 s).
+  the A1X backend's own "deaf" error (3 deg for 1 s). Optional `moving_deg`: a joint starts being timed only
+  while its command has moved more than `moving_deg` within the last `moving_s`, so a loaded servo's
+  steady-state error under a still command is not a stall; once timed, it stays timed until it catches up
+  or moves (a joint stuck at a wall trips even after the command stops for it).
 * **Effort**: |effort| above an absolute threshold (`effort_abs`, per joint or one for all) for `effort_n`
   consecutive samples. A1X: raw scale of CAN frame 0x052 (threshold 20 is a guess); sim: 0.8 * actuator
   forcerange.
@@ -52,6 +55,8 @@ class ImpactGuard:
         backoff_s: float = 0.4,
         keep_s: float = 3.0,
         min_backoff_deg: float = 3.0,
+        moving_deg: float | None = None,
+        moving_s: float = 0.3,
     ):
         self.joints = list(joints)
         self.lag_deg = float(lag_deg)
@@ -67,6 +72,8 @@ class ImpactGuard:
         self.backoff_s = float(backoff_s)
         self.keep_s = float(keep_s)
         self.min_backoff_deg = float(min_backoff_deg)
+        self.moving_deg = None if moving_deg is None else float(moving_deg)
+        self.moving_s = float(moving_s)
         self.reset()
 
     def reset(self) -> None:
@@ -74,6 +81,7 @@ class ImpactGuard:
         self._lag_since: dict[str, float] = {}
         self._effort_count: dict[str, int] = {}
         self._prev: tuple[float, dict[str, float]] | None = None
+        self._sent: deque[tuple[float, dict[str, float]]] = deque()
 
     def _velocity(self, t: float, measured: dict[str, float],
                   velocities: Mapping[str, float] | None) -> dict[str, float]:
@@ -110,6 +118,7 @@ class ImpactGuard:
             return None
         vel = self._velocity(t, m, velocities)
         self._prev = (t, m)
+        moving = self._command_moving(t, sent)
 
         hit: tuple[str, str, float] | None = None
         suspicious = False
@@ -119,7 +128,8 @@ class ImpactGuard:
                 continue
             err = abs(float(sent[j]) - m[j])
             v = vel.get(j)
-            if err > self.lag_deg and v is not None and abs(v) < self.vel_still:
+            if (err > self.lag_deg and v is not None and abs(v) < self.vel_still
+                    and (j in self._lag_since or moving is None or j in moving)):
                 suspicious = True
                 t0 = self._lag_since.setdefault(j, t)
                 if t - t0 >= self.lag_s and hit is None:
@@ -151,6 +161,18 @@ class ImpactGuard:
             self._good.popleft()
         return None
 
+    def _command_moving(self, t: float, sent: Mapping[str, float]) -> set[str] | None:
+        """Joints whose command moved more than `moving_deg` within the last `moving_s` (this sample
+        included); None when the rule is off."""
+        if self.moving_deg is None:
+            return None
+        now = {j: float(sent[j]) for j in self.joints if j in sent}
+        self._sent.append((t, now))
+        while self._sent and self._sent[0][0] < t - self.moving_s:
+            self._sent.popleft()
+        return {j for j, v in now.items()
+                if any(j in old and abs(v - old[j]) > self.moving_deg for _, old in self._sent)}
+
     def _backoff(self, t: float, measured: dict[str, float]) -> dict[str, float] | None:
         for ts, pose in reversed(self._good):
             if ts > t - self.backoff_s:
@@ -169,7 +191,8 @@ class ImpactGuard:
     @property
     def lagging(self) -> list[str]:
         """Joints the lag rule is timing after the last fed sample: more than `lag_deg` behind the command
-        while nearly still. They trigger `lag` once that lasts `lag_s`."""
+        while nearly still (with `moving_deg`: caught so while the command moved). They trigger `lag` once
+        that lasts `lag_s`."""
         return list(self._lag_since)
 
     def good_samples(self) -> list[tuple[float, dict[str, float]]]:

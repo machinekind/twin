@@ -88,7 +88,7 @@ import numpy as np
 from . import scene as sc
 from .clock import Clock, WallClock
 from .collision import CollisionChecker
-from .follow import Follower, down_rotation
+from .follow import Follower, down_rotation, jaw_yaw, nearest_yaw, wrap
 from .impact import Impact, ImpactGuard
 from .kinematics import RobotKinematics
 from .reach import ReachVolume, grab_zone, grab_zone_object
@@ -202,6 +202,7 @@ class _Stream:
     fail_since: float = 0.0
     last_report: float = -math.inf
     last_sig: tuple = ()
+    last_yaw_log: float = -math.inf
     grip_rest: float | None = None    # the gripper's |effort| when the stream started (None = not yet)
     grip_over: int = 0                # consecutive ticks above rest + gripper_force
 
@@ -527,11 +528,16 @@ class SpecsReach:
     # Real arm: the stream's guard is tighter than for ramps, well before the A1X backend's "deaf" fault
     # (3 deg for 1 s). A joint its lag rule is timing (more than `follow_guard_lag_deg` behind, nearly
     # still) stops the follower, point and rotation: the command must not run ahead of a stalled joint.
-    # Stalled for `follow_guard_lag_s` = the guard's `lag` impact. A plain lag under load (the servo's
-    # steady-state error of 1-2 deg) or a joint still moving does not stop it.
+    # Stalled for `follow_guard_lag_s` = the guard's `lag` impact. A joint still moving does not stop it,
+    # and neither does a lag under a still command: the rule starts timing a joint only while its command
+    # moved more than `follow_guard_moving_deg` within `follow_guard_moving_s` (2026-09-27: a loaded
+    # servo sits 1-3 deg off its command at rest, and with the hand held still that stopped the wrist).
     follow_guard_lag_deg = 2.5
     follow_guard_lag_s = 0.3
     follow_guard_vel_still = 15.0
+    follow_guard_moving_deg = 0.2
+    follow_guard_moving_s = 0.3
+    follow_yaw_log_s = 1.0            # real arm diagnostics: yaw asked / commanded / measured in the log
     # After a stream: how long to wait for the status to show the frozen command.
     freeze_wait_s = 0.2
 
@@ -1408,6 +1414,8 @@ class SpecsReach:
                 guard.lag_deg = self.follow_guard_lag_deg
                 guard.lag_s = self.follow_guard_lag_s
                 guard.vel_still = self.follow_guard_vel_still
+                guard.moving_deg = self.follow_guard_moving_deg
+                guard.moving_s = self.follow_guard_moving_s
         except Exception as exc:
             logger.exception("Sledzenie: start nieudany")
             with self._follow_lock:
@@ -1586,7 +1594,8 @@ class SpecsReach:
             return
 
         advance = bool(s.sent)                          # the loop sent nothing (link frozen): don't run ahead
-        if not self.twin.status.simulated and st.guard.lagging:
+        lagging = st.guard.lagging
+        if not self.twin.status.simulated and lagging:
             advance = False                             # a stalled joint: wait for it, or the guard's impact
 
         dt = self.tick_s if st.t_prev is None else min(max(t - st.t_prev, 0.0), 2.5 * self.tick_s)
@@ -1601,7 +1610,8 @@ class SpecsReach:
                 self._end_follow(st, out.fail, out.detail)
             else:
                 # A pause, not a hold: `hold` always ends a stream (the glasses then stop sending).
-                self._follow_report(st, t, "moving", None, f"paused: {out.fail}")
+                self._follow_report(st, t, "moving", None,
+                                    self._join_detail(f"paused: {out.fail}", self._yaw_detail(st, s.measured)))
             return
         st.fail = ""
 
@@ -1612,7 +1622,45 @@ class SpecsReach:
             return
         tilt = math.degrees(out.tilt)
         detail = f"tilt {tilt:.0f} deg" if tilt > self.follow_tilt_deg else ""
-        self._follow_report(st, t, "moving", None, detail)
+        self._follow_report(st, t, "moving", None, self._join_detail(detail, self._yaw_detail(st, s.measured)))
+        if t - st.last_yaw_log >= self.follow_yaw_log_s:
+            st.last_yaw_log = t
+            self._log_yaw(st, s.measured, advance, lagging)
+
+    @staticmethod
+    def _join_detail(*parts: str) -> str:
+        return ", ".join(p for p in parts if p)
+
+    def _yaws(self, st: _Stream, measured) -> tuple[float, float, float | None] | None:
+        """(asked, commanded, measured) jaw yaw in degrees, the latter two on the asked one's side of the
+        symmetric jaws; None when the glasses sent no yaw. Measured is None when not all arm joints are."""
+        f = st.follower
+        if st.yaw is None or f is None or not f.full_rotation:
+            return None
+        asked = wrap(float(st.yaw))
+        cmd = nearest_yaw(jaw_yaw(f.kin, self.spec, f.joints), asked)
+        meas = None
+        m = dict(measured or {})
+        if all(k in m for k in f.arm):
+            meas = math.degrees(nearest_yaw(jaw_yaw(f.kin, self.spec, m), asked))
+        return math.degrees(asked), math.degrees(cmd), meas
+
+    def _yaw_detail(self, st: _Stream, measured) -> str:
+        """`yaw asked/achieved deg` (achieved = measured, else commanded), or "" without a yaw."""
+        y = self._yaws(st, measured)
+        if y is None:
+            return ""
+        asked, cmd, meas = y
+        return f"yaw {asked:.0f}/{cmd if meas is None else meas:.0f} deg"
+
+    def _log_yaw(self, st: _Stream, measured, advance: bool, lagging: list[str]) -> None:
+        y = self._yaws(st, measured)
+        if y is None:
+            return
+        asked, cmd, meas = y
+        m = "?" if meas is None else f"{meas:.1f}"
+        stop = "" if advance else f", stoi ({', '.join(lagging) or 'brak wyslanego rozkazu'})"
+        logger.info("Sledzenie %s: yaw zadany %.1f, rozkaz %.1f, zmierzony %s st.%s", st.id, asked, cmd, m, stop)
 
     def _gripper_load(self, st: _Stream, t: float, measured) -> Impact | None:
         """The gripper's load during a stream: an `Impact` when its |effort| stays above the stream's rest

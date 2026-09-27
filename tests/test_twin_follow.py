@@ -261,6 +261,24 @@ def test_one_second_of_identical_samples_stays_moving(bench):
     assert sum(k[0] == "moving" for k in bench.states()) >= 2          # the 1 s heartbeat
 
 
+def test_turning_the_hand_at_a_still_point_turns_the_jaws_and_reports_the_yaw(bench):
+    c = bench.vol.center
+    seq = bench.stream([c] * 10)
+    assert all("yaw" not in (d or "") for _, d in bench.details()), bench.details()   # no yaw sent yet
+    closing = bench.kin.tcp(bench.twin.status.measured)[:3, :3] @ np.asarray(bench.spec.tcp_closing, float)
+    yaw = float(np.arctan2(closing[1], closing[0])) + np.radians(40.0)
+    bench.stream([c] * 50, seq0=seq, yaw=yaw)                          # 2.5 s: at 1 rad/s the turn takes 0.7 s
+    closing = bench.kin.tcp(bench.twin.status.measured)[:3, :3] @ np.asarray(bench.spec.tcp_closing, float)
+    got = nearest_yaw(float(np.arctan2(closing[1], closing[0])), yaw)
+    assert abs(np.degrees(got - yaw)) < 3.0, np.degrees(got - yaw)
+    assert bench.near(c)
+    details = [d for k, d in bench.details() if k == "moving" and d and "yaw" in d]
+    assert details, bench.details()
+    asked, achieved = (float(v) for v in details[-1].split("yaw ")[1].split(" deg")[0].split("/"))
+    assert asked == pytest.approx(np.degrees(np.arctan2(np.sin(yaw), np.cos(yaw))), abs=0.6)
+    assert abs(achieved - asked) <= 3.0, details[-1]
+
+
 def test_far_entry_point_is_a_ramp(bench):
     c = bench.vol.center
     far = c + np.array([0.1, 0.25, -0.08])
