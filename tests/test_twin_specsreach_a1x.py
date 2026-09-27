@@ -364,3 +364,111 @@ def test_fist_close_then_open_then_close_drives_0x051_and_done_waits_for_the_sle
     assert max(b - a for a, b in zip(ps, ps[1:])) <= 2.0 * STEP + lsb   # the backend's slew
     assert rig.twin.status.command["gripper"] == pytest.approx(0.0)
     assert rig.twin.safety_state.value != "estop"
+
+
+# ------------------------------------------------------------------ follow streams (teleop) on the A1X
+STREAM = 2_000_000
+FOLLOW_PERIOD = 0.05                                            # the glasses send every 50 ms
+
+
+def stream_states(rig: Rig, stream: int = STREAM) -> list[tuple[str, str | None, str | None]]:
+    return [(s["state"], s.get("reason"), s.get("detail")) for s in rig.relay.stream_states(stream)]
+
+
+def send_stream(rig: Rig, points, seq0: int = 0, stream: int = STREAM, until=None) -> int:
+    """Samples every 50 ms, ticking the loop in between; stops early when `until()`. Returns the next seq."""
+    seq = seq0
+    for p in points:
+        rig.relay.follow(stream, seq, p)
+        seq += 1
+        if rig.pump(FOLLOW_PERIOD, until):
+            break
+    return seq
+
+
+def test_follow_stream_moves_the_real_arm_with_bounded_0x050_steps(rig):
+    d = rig.connect_driver()
+    assert d.follow_v_max == pytest.approx(0.10)                   # the real arm follows slower
+    c = rig.vol.center
+    n = len(rig.bus.tx)
+    line = [c + np.array([0.0, -0.08 + 0.16 * i / 59, -0.02]) for i in range(60)]
+    seq = send_stream(rig, line)
+    seq = send_stream(rig, [line[-1]] * 20, seq0=seq)
+    kinds = stream_states(rig)
+    assert kinds[0][0] == "accepted" and all(k[0] in ("accepted", "moving") for k in kinds), kinds
+    frames = rig.cmd_frames(n)
+    assert len(frames) > 100
+    # One 0x050 frame never steps more than one loop tick of the follower's 60 deg/s cap (plus rounding),
+    # whatever the backend does between loop ticks.
+    step = max(max(abs(a - b) for a, b in zip(f, g)) for f, g in zip(frames, frames[1:]))
+    assert step <= 60.0 * DT + 2 * LSB_DEG, step
+    tcp = rig.kin.tcp(rig.twin.status.measured)[:3, 3]
+    assert np.linalg.norm(tcp - line[-1]) < 0.015
+    assert not rig.faults and rig.twin.safety_state.value != "estop"
+    rig.relay.follow(STREAM, seq, active=False)
+    assert rig.pump(2.0, lambda: rig.twin.owner is None)
+    assert stream_states(rig)[-1][:2] == ("hold", "exit")
+
+
+def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(rig):
+    d = rig.connect_driver()
+    trip: dict = {}
+    real_hold_now = d._hold_now
+
+    def spy():
+        trip.setdefault("grips", rig.relay.grips_for(g))
+        trip.setdefault("tx", len(rig.bus.tx))
+        trip.setdefault("q", rig.bus.pdes_deg(next(dd for i, dd, _ in reversed(rig.bus.tx) if i == P.CMD_ID)))
+        real_hold_now()
+    d._hold_now = spy
+    real_backoff = d._follow_backoff
+
+    def backoff_spy(st, hit):
+        trip["hit"] = hit
+        return real_backoff(st, hit)
+    d._follow_backoff = backoff_spy
+    c = rig.vol.center
+    far = c + np.array([0.0, 0.15, -0.02])                          # J1 turns towards +y
+    seq = send_stream(rig, [far] * 6)
+    # A gripper command keeps the worker in its settle wait while the arm hits the wall: the hold must not
+    # wait for the worker.
+    g = rig.relay.grip("close")
+    seq = send_stream(rig, [far] * 4, seq0=seq)
+    assert rig.relay.grips_for(g) == ["accepted"]
+    assert stream_states(rig)[-1][0] == "moving", stream_states(rig)
+    # J1 gets stuck 2 deg further along its direction of travel.
+    q = rig.bus.q[0]
+    sign = 1.0 if rig.bus.p_des[0] >= q else -1.0
+    wall = q + sign * np.radians(2.0)
+    rig.bus.wall = (0, wall, sign)
+
+    def ended():
+        return any(k[0] == "hold" for k in stream_states(rig))
+    send_stream(rig, [far] * 60, seq0=seq, until=ended)
+    rig.pump(0.3)
+    kinds = stream_states(rig)
+    assert kinds[-1][:2] == ("hold", "impact"), kinds
+    assert "tx" in trip and trip["grips"] == ["accepted"], trip       # the worker was busy at the impact
+    tick = int(round(DT / STEP))
+    window = rig.cmd_frames(trip["tx"])[: int(round(0.3 / STEP))]
+    # From one loop tick after the impact on, the J1 command never goes further towards the wall...
+    j1_at = trip["q"][0]
+    after = [f[0] for f in window[tick:]]
+    assert after and max(sign * (v - j1_at) for v in after) <= 2 * LSB_DEG, (j1_at, after[:10])
+    # ... and it stops pushing: from three loop ticks on (the backend slews p_des at 90 deg/s) the command
+    # holds J1 where it stands at the wall, while the worker still waits for the gripper.
+    near = [f[0] for f in window[3 * tick:]]
+    assert near and max(sign * (v - np.degrees(wall)) for v in near) < 0.5, (np.degrees(wall), near[:10])
+    # The backoff: the arm ends at the guard's backoff pose, J1 away from the wall, and is released.
+    assert rig.pump(8.0, lambda: rig.twin.owner is None)
+    rig.bus.wall = None
+    pose = trip["hit"].backoff_pose
+    measured = rig.twin.status.measured
+    assert pose and max(abs(measured[k] - pose[k]) for k in ARM) < 1.0, (measured, pose)
+    j1 = np.degrees(rig.bus.q[0])
+    assert sign * (np.degrees(wall) - j1) > 1.0, (np.degrees(wall), j1)
+    assert not any("gluche" in f for f in rig.faults), rig.faults
+    rig.pump(1.0)
+    assert not any("gluche" in f for f in rig.faults), rig.faults
+    assert rig.twin.safety_state.value != "estop"
+    assert d._stream is None and d._follow_handle is None

@@ -23,7 +23,7 @@ from websockets.sync.server import serve  # noqa: E402
 
 from lerobot_mp.twin import runtime as rt  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
-from lerobot_mp.twin.reach import ReachVolume  # noqa: E402
+from lerobot_mp.twin.reach import GRAB_ZONES, ReachVolume  # noqa: E402
 from lerobot_mp.twin.scene import Box  # noqa: E402
 from lerobot_mp.twin.specsreach import SpecsReach  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -89,7 +89,7 @@ class FakeRelay:
         return ts
 
     def grip(self, action: str, *, ts: int | None = None) -> int:
-        """A fist in the glasses."""
+        """A gripper command from the glasses (a left-hand pinch)."""
         ts = ts if ts is not None else int(time.time() * 1000) + len(self.grips)
         msg = {"type": "gripper", "action": action, "session": self.session, "ts": ts}
         with self.cond:
@@ -97,6 +97,49 @@ class FakeRelay:
         for ws in clients:
             ws.send(json.dumps(msg))
         return ts
+
+    def send(self, msg: dict) -> None:
+        with self.cond:
+            clients = list(self.clients)
+        for ws in clients:
+            ws.send(json.dumps(msg))
+
+    def follow(self, stream: int, seq: int, pos=None, *, active: bool = True, yaw: float | None = None,
+               ts: int | None = None, session: str = "s1") -> int:
+        """One sample of a follow stream (teleop): `stream` = ts of its first sample, `seq` from 0."""
+        ts = ts if ts is not None else stream + seq
+        msg = {"type": "follow", "ts": ts, "session": session, "trusted": True, "stream": stream, "seq": seq,
+               "active": active}
+        if active:
+            msg["pos"] = [round(float(v), 4) for v in pos]
+            msg["yaw"] = yaw
+        self.send(msg)
+        return ts
+
+    def grab_object(self, pos, *, size=None, yaw=None, label: str = "cup", depth: bool = True, age: float = 0.1,
+                    ts: int | None = None, session: str = "s1") -> int:
+        """A pinch on a detection in the grab zone."""
+        ts = ts if ts is not None else int(time.time() * 1000) + len(self.states)
+        obj = {"pos": [float(v) for v in pos], "surface": [float(v) for v in pos], "ray": [1.0, 0.0, 0.0],
+               "size": size, "yaw": yaw, "label": label, "id": 7}
+        self.send({"type": "grab", "ts": ts, "session": session, "trusted": True, "stream": ts,
+                   "policy": "topdown", "object": obj, "depthMeasured": depth, "age": age})
+        return ts
+
+    def stream_states(self, stream: int) -> list[dict]:
+        with self.cond:
+            return [s for s in self.states if s.get("stream") == stream]
+
+    def wait_stream(self, stream: int, states: set[str], timeout: float, reason: str | None = None) -> dict:
+        def found():
+            hit = [s for s in self.states if s.get("stream") == stream and s["state"] in states
+                   and (reason is None or s.get("reason") == reason)]
+            return hit[-1] if hit else None
+        with self.cond:
+            ok = self.cond.wait_for(found, timeout)
+            assert ok, f"brak stanu {states} strumienia {stream}: " \
+                       f"{[(s['state'], s.get('reason')) for s in self.states if s.get('stream') == stream]}"
+            return found()
 
     def grips_for(self, ts: int) -> list[str]:
         with self.cond:
@@ -191,9 +234,16 @@ def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
     try:
         first = relay.overlays[0]
         kinds = {o["id"]: o["kind"] for o in first["objects"]}
-        assert kinds == {"reach": "volume", "tcp": "sphere"}
+        assert kinds == {"reach": "volume", "grab": "volume", "tcp": "sphere"}
         vol_obj = next(o for o in first["objects"] if o["id"] == "reach")
         assert vol_obj["alpha"] == pytest.approx(0.35)
+        # The grab zone, drawn faintly by the glasses: marks inside it can be grabbed.
+        grab = next(o for o in first["objects"] if o["id"] == "grab")
+        lo, hi = (np.array(v) for v in GRAB_ZONES["a1x"])
+        assert grab["label"] == "grab" and grab["alpha"] == pytest.approx(0.12)
+        assert grab["pos"] == pytest.approx((lo + hi) / 2, abs=1e-4)
+        assert grab["size"] == pytest.approx(hi - lo, abs=1e-4)
+        assert len(grab["color"]) == 3
         p = vol.center + np.array([0.05, 0.08, -0.05])
         ts = relay.target(p)
         relay.wait_state(ts, {"moving", "rejected"}, 5.0)
@@ -410,6 +460,119 @@ def test_start_center_goes_above_the_volume_centre_in_stages(twin, kin, vol, rel
     assert twin.owner is None and twin._speed_cap is None
 
 
+# ------------------------------------------------------------------ grab (select mode)
+GRAB_AT = (0.30, -0.05)
+GRAB_END = {"held", "missed", "rejected", "hold", "backoff"}
+
+
+def grab_log(relay, ts) -> list[tuple[str, str | None, str | None]]:
+    return [(s["state"], s.get("reason"), s.get("detail")) for s in relay.stream_states(ts)]
+
+
+def test_grab_of_a_cube_on_the_table_opens_hovers_descends_closes_lifts_and_holds_it(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    h = 0.015
+    twin.configure(objects=[Box("cube", (h, h, h), GRAB_AT, rgba=(0.85, 0.25, 0.2, 1.0))])
+    d = driver(twin, relay)
+    try:
+        ts = relay.grab_object([*GRAB_AT, h], size=[2 * h, 2 * h])
+        st = relay.wait_stream(ts, GRAB_END, 40.0)
+        log = grab_log(relay, ts)
+        assert st["state"] == "held", log
+        assert log[0][0] == "accepted"
+        legs = [detail for state, _, detail in log if state == "moving"]
+        assert legs == ["open", "hover", "descend", "close", "lift"], log
+        assert st["stream"] == ts and st["ts"] == ts and list(st)[0] == "type" and st["mode"] == "sim"
+        # Lifted back to the hover point (tips at h: TCP h + 0.033, hover 8 cm above), jaws closed on the cube.
+        hover = np.array([*GRAB_AT, h + 0.033 + 0.08])
+        assert np.linalg.norm(tcp(kin, twin) - hover) < 0.012
+        assert twin.status.command["gripper"] < 5.0
+        with twin.lock:
+            cube_z = float(twin.scene.data.body("cube").xpos[2])
+        assert cube_z > h + 0.03, cube_z                     # it came up with the gripper
+        assert d.status()["grab"]["state"] == "held"
+        assert twin.owner is None                            # released, holding the object up
+    finally:
+        d.stop()
+        twin.configure(objects=None)
+
+
+def test_grab_closing_on_nothing_is_missed_and_does_not_reopen(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay)
+    try:
+        ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
+        st = relay.wait_stream(ts, GRAB_END, 40.0)
+        log = grab_log(relay, ts)
+        assert st["state"] == "missed", log
+        assert [detail for state, _, detail in log if state == "moving"] == ["open", "hover", "descend", "close",
+                                                                             "lift"]
+        time.sleep(0.5)
+        assert twin.status.command["gripper"] < 5.0            # never re-opens after `missed`
+    finally:
+        d.stop()
+
+
+@pytest.mark.parametrize("case", ["outside grab zone", "too wide", "no depth", "stale"])
+def test_grab_refusals(twin, kin, vol, relay, case):
+    ready(twin, kin, vol)
+    d = driver(twin, relay)
+    try:
+        before = dict(twin.status.measured)
+        if case == "outside grab zone":
+            ts = relay.grab_object([0.45, 0.0, 0.015], size=[0.03, 0.03])           # in the reach box, not the zone
+        elif case == "too wide":
+            ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.15, 0.05])            # 80 % of 15 cm > 9 cm
+        elif case == "no depth":
+            ts = relay.grab_object([*GRAB_AT, 0.015], depth=False)
+        else:
+            ts = relay.grab_object([*GRAB_AT, 0.015], age=0.9)
+        st = relay.wait_stream(ts, GRAB_END, 5.0)
+        assert (st["state"], st.get("reason")) == ("rejected", case), grab_log(relay, ts)
+        if case == "too wide":
+            assert "15 cm" in st["detail"]
+        time.sleep(0.3)
+        after = twin.status.measured
+        assert max(abs(after[k] - before[k]) for k in twin.status.measured) < 0.5
+    finally:
+        d.stop()
+
+
+def test_grab_without_a_drivable_gripper_is_refused(twin, kin, vol, relay, monkeypatch):
+    ready(twin, kin, vol)
+    monkeypatch.setattr(twin.backend, "gripper_drivable", lambda: False, raising=False)
+    d = driver(twin, relay)
+    try:
+        assert d.status()["gripper_drivable"] is False
+        ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
+        st = relay.wait_stream(ts, GRAB_END, 5.0)
+        assert (st["state"], st.get("reason"), st.get("detail")) == ("rejected", "no gripper",
+                                                                      "xcan: 0x051 not deliverable")
+        g = relay.grip("close")
+        gs = relay.wait_grip(g, {"rejected", "done", "hold"}, 5.0)
+        assert (gs["state"], gs.get("reason")) == ("rejected", "no gripper")
+    finally:
+        d.stop()
+
+
+def test_grab_in_dry_mode_accepts_then_holds_and_nothing_moves(twin, kin, vol, relay):
+    ready(twin, kin, vol)
+    d = driver(twin, relay, mode="dry")
+    try:
+        before = dict(twin.status.measured)
+        grip = twin.status.command["gripper"]
+        ts = relay.grab_object([*GRAB_AT, 0.015], size=[0.03, 0.03])
+        st = relay.wait_stream(ts, GRAB_END, 5.0)
+        assert [(s, r) for s, r, _ in grab_log(relay, ts)] == [("accepted", None), ("hold", None)], st
+        time.sleep(0.5)
+        after = twin.status.measured
+        assert max(abs(after[k] - before[k]) for k in before) < 0.5
+        assert twin.status.command["gripper"] == pytest.approx(grip)
+        assert twin.owner is None
+    finally:
+        d.stop()
+
+
 def _dist_to_box(p, lo, hi) -> float:
     return float(np.linalg.norm(p - np.clip(p, lo, hi)))
 
@@ -585,7 +748,7 @@ def test_cli_specs_help():
     out = subprocess.run([sys.executable, "-m", "lerobot_mp.twin.cli", "specs", "--help"], capture_output=True,
                          text=True, env=_env(), timeout=60)
     assert out.returncode == 0, out.stderr
-    for flag in ("--relay", "--mode", "--grasp", "--trusted-only", "--i-know", "--seconds"):
+    for flag in ("--relay", "--mode", "--grasp", "--trusted-only", "--i-know", "--seconds", "--follow-speed"):
         assert flag in out.stdout
 
 

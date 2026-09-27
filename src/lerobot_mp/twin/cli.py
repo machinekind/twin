@@ -20,6 +20,7 @@
     lerobot-twin specs --mode sim            # ... simulated arm moves to the pointed target
     lerobot-twin specs --mode real --i-know  # ... REAL arm (backend from the workspace)
     lerobot-twin specs --mode real --i-know --start-center  # ... first (after Enter) above the box centre
+    lerobot-twin specs --mode sim --follow-speed 0.1        # ... teleop: the gripper follows the hand at 0.1 m/s
 
 `--config` ustawia zmienna LEROBOT_MP_CONFIG, wiec plik widzi tez proces treningu
 uruchamiany z panelu.
@@ -481,7 +482,7 @@ def _specs(a: argparse.Namespace) -> int:
 
     drv = SpecsReach(twin, relay_url=a.relay, mode=a.mode, grasp=a.grasp, allow_untrusted=not a.trusted_only,
                      real_ok=a.mode == "real" and a.i_know, on_state=show, max_jump_deg=a.max_jump_deg,
-                     hold_off_s=a.hold_off)
+                     hold_off_s=a.hold_off, follow_speed=a.follow_speed)
     # From the home/zero pose every box point is a > 45 deg jump ("jump" refusal), so go above the centre first.
     if a.start_center:
         if not st.simulated:
@@ -680,6 +681,9 @@ def parser() -> argparse.ArgumentParser:
                    help="w --mode real: ile sekund odczekac po przyjeciu celu z reki, zanim ramie ruszy (domyslnie 1; 0 = od razu)")
     p.add_argument("--start-center", action="store_true",
                    help="przed startem etapami (10 st./s, straznik uderzen) nad srodek pudelka; w real po Enter")
+    p.add_argument("--follow-speed", type=float, default=None,
+                   help="sledzenie dloni (teleop): najwieksza predkosc punktu chwytaka w m/s, przyspieszenie 4x tyle "
+                        "na sekunde (domyslnie 0.20 w sim, 0.10 w real)")
     p.add_argument("--seconds", type=float, default=None, help="zakoncz po tylu sekundach (testy)")
     p.add_argument("--workspace", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_specs)

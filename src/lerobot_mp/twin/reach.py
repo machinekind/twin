@@ -3,6 +3,8 @@
     vol = ReachVolume.from_workspace(ws)               # or ReachVolume.from_spec(get_spec("a1x"))
     vol.contains(p)                                    # p in metres, base frame
     overlay = vol.overlay_object()                     # "volume" object for the glasses overlay
+    zone = grab_zone(spec)                             # where `grab` takes objects from (None: no zone)
+    zone_overlay = grab_zone_object(zone)              # "volume" object `grab` for the glasses
 
 Single source of truth: the twin sends the box to the glasses as an overlay object, the glasses draw it and
 highlight the hand cursor, and the twin still re-checks every target (box, IK, collisions) before moving.
@@ -10,6 +12,14 @@ highlight the hand cursor, and the twin still re-checks every target (box, IK, c
 The default boxes are verified by `tests/test_twin_reach.py`: at every point of a 4x4x3 grid (corners
 included) IK lands within 3 mm and the pose does not collide with an empty table. The box floor is at most
 5 cm above the table - table height is calibrated too, so the fingers must not go lower.
+
+The grab zone is a second box, where a `grab` from the glasses may take an object from the table
+(top-down grasp). It reaches below the table top (a detection on the table has its centre a few cm above
+it, and depth noise may put it lower) and only as high and as far as the tool can still point straight
+down. `tests/test_twin_reach.py` checks that at every point of a 5x5 grid over its footprint IK points the
+tool down (tilt < 0.26 rad) without collision, at the lowest grasp height (TCP 0.045 m) and at the hover
+heights above it (0.125 and the highest, 0.173 m). The twin sends the zone to the glasses on connect as
+the overlay object `grab`: the glasses draw it and highlight the detections inside it.
 """
 
 from __future__ import annotations
@@ -34,6 +44,14 @@ DEFAULTS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]
 # hits the shoulder in the low corners near the base), and the sides use part of the lateral reach.
 NEAR_BASE = 0.04  # m
 SIDE_FRACTION = 0.6
+
+# Grab zone (lo, hi), base frame [m]. A1X: x up to 0.40, not 0.42 - at (0.42, +-0.25) with the TCP at the
+# highest hover (0.173 m) the tool cannot point down (tilt 0.31 rad > 0.26). Other arms: no zone (no grab).
+GRAB_ZONES: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "a1x": ((0.20, -0.25, -0.03), (0.40, 0.25, 0.18)),
+}
+GRAB_COLOR = (1.0, 0.55, 0.1)
+GRAB_ALPHA = 0.12
 
 
 @dataclass
@@ -117,3 +135,24 @@ class ReachVolume:
         """Box from `Workspace.reach`, falling back to the arm default."""
         data = getattr(ws, "reach", None)
         return cls.from_dict(data) if data else cls.from_spec(ws.spec())
+
+
+def grab_zone(spec: RobotSpec) -> ReachVolume | None:
+    """Where a `grab` may take an object from (`GRAB_ZONES`); None for an arm without one."""
+    if spec.name not in GRAB_ZONES:
+        return None
+    lo, hi = GRAB_ZONES[spec.name]
+    return ReachVolume(np.array(lo), np.array(hi))
+
+
+def grab_zone_object(zone: ReachVolume, alpha: float = GRAB_ALPHA) -> dict[str, Any]:
+    """Overlay object of kind `volume`, id `grab`: the grab zone for the glasses (drawn faintly)."""
+    return {
+        "id": "grab",
+        "kind": "volume",
+        "pos": [round(float(v), 4) for v in zone.center],
+        "size": [round(float(v), 4) for v in zone.size],
+        "color": list(GRAB_COLOR),
+        "alpha": float(alpha),
+        "label": "grab",
+    }

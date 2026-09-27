@@ -14,9 +14,13 @@ tested in simulation, with a fake relay and a fake CAN bus.
 - The glasses send a point in the arm's base frame. The point is either a hand
   pinch inside the reach box or the centre of an object the glasses detected.
 - The twin checks the point and, if every check passes, moves the arm there.
-- The glasses also send a gripper command (a fist: open or close). The twin
+- The glasses also send a gripper command (open or close). The twin
   runs the arm checks and sets the gripper joint. See
   [The gripper](#the-gripper).
+- In teleop the glasses stream a point at 20 Hz and the gripper follows it
+  (`follow`). See [Follow streams](#follow-streams-teleop).
+- In select mode a pinch on a detected object inside the grab zone takes it
+  from the table from above (`grab`). See [Grab](#grab-select-mode).
 - The twin does all of this with its own code:
   - `twin/reach.py`: the reach box.
   - `twin/kinematics.py`: IK (inverse kinematics: joint angles for a tool
@@ -25,7 +29,9 @@ tested in simulation, with a fake relay and a fake CAN bus.
   - `twin/impact.py`: the impact guard.
   - `twin/specsreach.py`: the checks, the ramp, the trim, the backoff, the
     speed caps, arm ownership, STOP, the three modes, consent for the real
-    arm and the relay protocol.
+    arm, follow streams, the grab and the relay protocol.
+  - `twin/follow.py`: the follower (a bounded tracker and one IK step per
+    loop tick).
   - `twin/ui/specs_panel.py`: the panel folder.
 - The `galaxeo` package (repository galaxeo-manipulators) is used only by the
   `a1x` backend, for the CAN protocol and the CAN link (`galaxeo.protocol`,
@@ -47,6 +53,15 @@ table top at z = 0, x forward, y to the arm's left, z up, metres.
 **Reach box.** From `DEFAULTS` in `twin/reach.py`. For the A1X gripper it is
 x 0.20 to 0.50 m, y −0.30 to 0.30 m, z 0.05 to 0.30 m. A `reach` key in
 `workspace/twin.json` (`{"lo": [x, y, z], "hi": [x, y, z]}`) replaces it.
+The twin sends exactly one reach box; the glasses gate follow on it.
+
+**Grab zone.** From `GRAB_ZONES` in `twin/reach.py`, A1X only: x 0.20 to
+0.40 m, y −0.25 to 0.25 m, z −0.03 to 0.18 m. It reaches below the table top
+(depth noise can put a detection there). It ends at x 0.40, not 0.42: at
+(0.42, ±0.25) with the TCP at the highest hover (0.173 m) the tool tilts
+0.31 rad from straight down. `tests/test_twin_reach.py` checks that every point
+of a 5 x 5 grid over the zone solves with the tool pointing down (tilt under
+0.26 rad) and without collision, at TCP heights 0.045, 0.125 and 0.173 m.
 
 **What the collision check sees.** The checker builds its own MuJoCo scene
 from the workspace: the floor, the table and the arm. It does not see task
@@ -66,7 +81,7 @@ would both send commands and the arm would follow neither.
 ```bash
 lerobot-twin specs [--relay URL] [--mode dry|sim|real] [--i-know] [--start-center]
                    [--backend NAME] [--port PORT] [--trusted-only] [--max-jump-deg DEG] [--hold-off S]
-                   [--grasp] [--workspace FILE] [--seconds S] [--config FILE]
+                   [--grasp] [--follow-speed M_S] [--workspace FILE] [--seconds S] [--config FILE]
 ```
 
 | flag | what it does |
@@ -80,7 +95,8 @@ lerobot-twin specs [--relay URL] [--mode dry|sim|real] [--i-know] [--start-cente
 | `--trusted-only` | Accept targets only from a trusted glasses registration. Without it, any registration is enough. |
 | `--max-jump-deg DEG` | Refuse a target (`jump`) when any joint would turn more than this on one leg. Default 150. A leg is always driven as one move; it is never cut into pieces. |
 | `--hold-off S` | Seconds to wait after accepting a hand target in `real` mode before the arm moves. Default 1; 0 means at once. |
-| `--grasp` | Object targets: go down, close the gripper and come back up. Without it the arm only stops above the object. |
+| `--grasp` | Object targets: go down, close the gripper and come back up. Without it the arm only stops above the object. A `grab` message does not need it. |
+| `--follow-speed M_S` | Follow streams: the fastest the followed TCP point moves, in m/s; its acceleration is 4 times that per second. Default 0.20 in `sim` (and `dry`), 0.10 in `real`. |
 | `--workspace FILE` | The workspace file. Default `workspace/twin.json`. |
 | `--seconds S` | Stop after S seconds (used by tests). |
 | `--config FILE` | YAML config such as `configs/local.yaml` (A1X joint offsets and gripper settings). Also accepted before the command: `lerobot-twin --config FILE specs ...`. |
@@ -127,9 +143,17 @@ SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
    - **Okulary moga ruszac prawdziwym ramieniem**: the consent box for `real`.
    - **Polacz z okularami**: start the driver and connect to the relay.
    - **Rozlacz okulary**: stop the driver. A move in progress holds the
-     measured pose. It also clears the consent box.
+     measured pose; a running follow stream stops where its command is. It
+     also clears the consent box.
+   - **Sledzenie dloni [m/s]**: the follow speed, as `--follow-speed`. 0 (the
+     default) means by mode: 0.20 in simulation, 0.10 on the real arm. A
+     running stream picks a change up on its next tick.
    - The status line: `Okulary: polaczone, tryb dry, sesja: <id>`, then the
-     last target, for example `ostatni cel [35, 0, 17] cm: reached`.
+     last target, for example `ostatni cel [35, 0, 17] cm: reached`, the last
+     gripper command, the last follow stream (`sledzenie <id>: moving - paused:
+     collision, 0.20 m/s`) and the last grab (`chwyt: held - assumed`). When the
+     backend cannot drive the gripper it adds `chwytak: brak sterowania przez
+     XCAN` (the A1X over macOS XCAN, see [The gripper](#the-gripper)).
 
 The panel differs from the command in three ways. It has no
 `--start-center`: move the arm near the box first with the panel. It does not
@@ -312,6 +336,7 @@ Other ways a backoff ends:
 | `not arrived` | a joint did not reach the goal 3 s after the ramp ended |
 | `impact ...` | a second trip during a backoff, or a backoff that could not run |
 | `error` | an exception in the driver (`detail` has it) |
+| `exit`, `timeout`, `outside volume`, `ik`, `collision`, `impact` | follow streams only; see [Follow streams](#follow-streams-teleop) |
 
 After `reached` the driver releases the arm, which keeps holding the target.
 
@@ -324,30 +349,38 @@ After `reached` the driver releases the arm, which keeps holding the target.
 | `moving` | a leg started |
 | `reached` | the arm is at the target |
 | `backoff` | the impact guard tripped and the arm backed off |
-| `hold` | the arm stopped where it is |
+| `hold` | the arm stopped where it is; for a stream always its end |
+| `held` | grab only: the gripper closed on the object and lifted it |
+| `missed` | grab only: the gripper closed on nothing |
 
 Usual order: `accepted`, `moving` (once per leg), then `reached`, `backoff` or
-`hold`. In `dry`: `accepted`, `hold`. After `accepted` a target can still get
+`hold`; a grab ends with `held`, `missed`, `backoff` or `hold`; a stream
+sends `moving` while it runs and ends with `hold`. In `dry`: `accepted`, `hold`. After `accepted` a target can still get
 `rejected` (`busy` or `stop`) if the arm could not be taken.
 
 ### The gripper
 
-A fist in the glasses sends `gripper` with `action` `close` or `open`. The
-network thread queues it like a target, but it does not interrupt a move: it
-runs after the target the arm is on, so "pinch, then a fist while the arm
-moves" closes the gripper at the point. (The glasses also hold a fist made
-during a move until the target is `reached`, so the twin normally sees the
-command only once the arm is there.)
+A gripper command from the glasses (a left-hand pinch) sends `gripper` with
+`action` `close` or `open`. The network thread queues it like a target, but it
+does not interrupt a move: it runs after the target the arm is on, so "pinch a
+point, then a left-hand pinch while the arm moves" closes the gripper at the
+point. (The glasses also hold a gripper command made during a move until the
+target is `reached`, so the twin normally sees the command only once the arm
+is there.)
 
 The worker runs the arm checks only: `not connected`, `stop`, `busy`,
-`not armed`, plus `no gripper` for an arm without one. There is no trust or
+`not armed`, plus `no gripper` for an arm without one or a backend that cannot
+drive it: `gripper_drivable()` False, with `detail` `xcan: 0x051 not
+deliverable` (the A1X over macOS XCAN sends the 10-byte `0x051` frame as 12
+bytes, which the gripper ignores; only Linux SocketCAN drives it). There is no trust or
 session check and no reach box: a gripper command has no point. Then:
 
 1. `accepted`. In `dry` it then sends `hold` and stops there.
 2. It takes the arm as owner `specs` (else `rejected` with `busy` or `stop`),
    sets the gripper joint to `SpecsReach.grip_closed` (0) or `grip_open` (100)
-   through `Twin.set_target`, and waits `grip_wait_s` (1.2 s) for it to
-   settle. The gripper joint is not under the impact guard; the backend's own
+   through `Twin.set_target`, and waits for it to settle: the backend's
+   `gripper_travel_s()` when it has one (A1X: 1.5 s), else `grip_wait_s`
+   (1.2 s). The gripper joint is not under the impact guard; the backend's own
    limits apply.
 3. `done`. The arm is released and keeps holding the gripper.
 
@@ -388,6 +421,130 @@ says `chwytak: brak sterowania przez XCAN` when the port is `xcan...`
 A full A1X gripper stroke takes 1.3 s (2.6 `p_des` at 2.0 per second);
 `A1XArm.gripper_travel_s()` gives it with a 0.2 s margin (1.5 s), longer than
 `grip_wait_s`.
+
+The glasses do not track the gripper themselves: they take their belief from the
+TCP sphere (label `closed` present means closed), so the toggle sends `open` when
+the twin shows closed and `close` otherwise.
+
+A gripper command during a follow stream runs without ending the stream: the
+driver holds the arm for the worker and for the follower and releases it only
+when neither needs it. The follower sends arm joints only, and
+`Twin.set_target` lays a partial target from the same owner over that owner's
+pending target, so the gripper keeps its goal.
+
+### Follow streams (teleop)
+
+In teleop the glasses send `follow` every 50 ms (20 Hz) while the aim point is
+in the reach box, changed or not. One entry into the box is one stream: its
+id `stream` is the `ts` of its first sample and `seq` counts from 0. The final
+`active: false` carries the next `seq`. The twin times a stream out after 0.6 s
+without a sample; the invariant is **Lens period 50 ms < twin timeout / 2**, so
+one lost sample never ends a stream.
+
+A stream is not a queue of targets. The network thread writes only the newest
+sample into the stream's slot. A sample with a `seq` at or below the last one
+seen is ignored (reordered or repeated). A sample of a new stream id ends the
+running stream (`hold`, `retargeted`) and starts the new one.
+
+**Start.** The worker runs `not connected`, `stop`, `busy`, `not armed`,
+`untrusted`, `session` and `outside volume` (the first sample may be up to 2 cm
+outside the box: the glasses' smoothed cursor lags the entry). A failed check
+answers `rejected` with that reason. In `real` the hold-off (`--hold-off`)
+runs once per stream. Then the driver takes the arm, caps the supervisor at
+60 degrees per second and answers `accepted` once. In `dry`: `accepted`, then
+`hold` with no reason; nothing moves.
+
+**Stepping.** Every loop tick (50 Hz, on the loop thread, all times from the
+loop's clock):
+
+- The received point is clamped to the box and to at least 1 cm above its
+  floor (tool down, the tips are then at least 27 mm above the table). A
+  sample more than 5 cm outside the box ends the stream (`outside volume`).
+- The commanded TCP point starts at the forward kinematics of the arm's
+  command and moves towards the point with its speed bounded by
+  `--follow-speed` and its acceleration by 4 times that per second, slowing
+  down to stop on it. A far entry point is therefore a ramp.
+- The tool points down with the jaws closing along `yaw` (sent by the glasses,
+  else across the line from the base), turning at most 1 rad/s. Best effort:
+  the follower never refuses on tilt; `detail` says `tilt 21 deg` when the
+  tool ends more than 15 degrees from straight down.
+- One warm-started IK step (`RobotKinematics.ik_step`, within 3 mm), joints
+  clipped to the limits, no joint step above 5 degrees per tick, and the
+  collision check. A failed tick sends nothing and the tracker stops where
+  it is.
+- Real arm: the stream's impact guard uses the lag rule with 2.5 degrees for
+  0.3 s while the joint moves slower than 15 degrees per second (tighter than
+  for a target, well before the A1X backend's 3 degrees for 1 s). While a joint
+  meets that rule the follower stops, point and rotation, so the command does
+  not run ahead of a stalled joint; 0.3 s of it is an impact (`impact`, detail
+  `lag arm_joint1`). The servo's steady-state error under load (1 to 2
+  degrees) or a joint that is still moving does not stop it.
+
+**Pauses are not holds.** A failed tick (IK or collision) pauses the stream:
+the twin keeps answering `moving` with `detail` `paused: ik` or `paused:
+collision`, and the arm resumes as soon as a step is clear again. `hold`
+always ends a stream: after 1 s of IK failures (`ik`) or 2 s of collision
+(`collision`).
+
+**Reports.** `accepted` once; `moving` on a change of its `detail`, at most
+every 0.5 s (2 Hz), and at least every 1 s; then one final `hold` (or
+`rejected`). Every `targetState` of a stream carries `stream` and the `ts` of
+the sample it answers.
+
+**End.** A stream ends with `hold` and one of these reasons:
+
+| reason | when |
+|---|---|
+| `exit` | `active: false`: the aim point left the box |
+| `timeout` | no sample for 0.6 s; the arm is released 2 s after the last sample |
+| `outside volume` | a sample more than 5 cm outside the box |
+| `ik` | 1 s of IK failures |
+| `collision` | 2 s of collision |
+| `impact` | the impact guard tripped (effort, or lag: a stalled joint); the arm holds its measured pose at once and backs off as after a target (`detail` gives the rule and joint) |
+| `retargeted` | a new stream id, a `target` or a `grab` arrived; the new one runs |
+| `stop`, `preempted`, `mode`, `relay` | as for a target |
+
+When a stream ends the arm stops where its command is (the arm joints of its
+target are set to the supervisor's current command, `Twin.hold_command`), so a
+target or grab that follows is checked from a pose that no longer moves. The
+same happens when the driver stops (**Rozlacz okulary**) during a stream.
+
+**Re-arm rule.** After any final `hold` or `rejected`, samples of that stream
+are ignored. The glasses stop sending and start a new stream (a new id) only
+after the aim point leaves the box and enters it again.
+
+### Grab (select mode)
+
+A pinch on a detected object inside the grab zone sends `grab` (`policy`
+`topdown`, the only policy for now). The worker handles it like a target: a
+newer target, grab or stream replaces it, and it ends a running stream.
+
+**Checks**, in order: `not connected`, `stop`, `busy`, `not armed`,
+`untrusted`, `session`, `stale` (the detection is older than 0.5 s), `no depth`,
+`outside grab zone`, `too wide` (80 % of the object's width does not fit in the
+90 mm jaws), `no gripper` (including `xcan: 0x051 not deliverable`); then the
+legs are planned as for an object target: `ik` (tool down within 0.26 rad),
+`jump`, `collision`.
+
+**Geometry.** The object stands on the table (z = 0). Its height is
+`size[1]` (at most 0.12 m), or 0.04 m when the glasses do not know it. The
+fingertips go to half its height, at most to its centre, between 0.012 and
+0.06 m; the TCP is 0.033 m above the tips. The hover point is 8 cm above that,
+at most 3 cm below the top of the reach box; with the tip limit the highest
+hover is 0.173 m, inside the tested grab zone. The jaws
+close along the object's `yaw` when given, else across the line from the base.
+
+**Legs**, each reported as `moving` with the leg as `detail`: `open` (gripper to
+100, then the settle wait), `hover` (tool down above the object), `descend`
+(half speed, the tighter guard), `close` (gripper to 0, the settle wait),
+`lift` (back to the hover pose with the gripper closed, half speed).
+
+**Result.** `held` or `missed`. A backend that measures the gripper: `held`
+when the jaws stand still wider than empty-closed (`spec.jaw`), else `missed`
+(`detail` gives the opening). The A1X measures nothing: always `held` with
+`detail` `assumed`. The gripper never re-opens after `missed`. An impact
+during a leg backs off as for a target (`backoff`). In `dry`: `accepted`, then
+`hold`.
 
 ## 4. Modes and consent
 
@@ -464,15 +621,21 @@ with a regular expression. Positions are in the base frame, in metres.
 |---|---|---|---|
 | `registration` | relay to twin | `session`, `trusted` (the driver reads only these two) | when the registration changes; the relay also sends its last one when the twin connects |
 | `target` | glasses to twin | `source` (`hand` or `object`), `pos` `[x,y,z]`, `session`, `ts`, `trusted`; for objects also `depthMeasured`, `age` (seconds since the detection was seen), `label` | on a pinch |
-| `targetState` | twin to glasses | `state`, `reason`, `detail` (both optional), `pos` (the target), `tcp` (tool position now), `ts` (the target's, echoed), `mode` | for every target, at each state |
-| `gripper` | glasses to twin | `action` (`open` or `close`), `session` (not checked), `ts` | on a fist |
+| `targetState` | twin to glasses | `state`, `reason`, `detail` (both optional), `pos` (the target), `tcp` (tool position now), `stream` (streams and grabs only), `ts` (the target's, echoed), `mode` (`dry`, `sim` or `real`) | for every target, stream and grab, at each state |
+| `follow` | glasses to twin | `ts`, `session`, `trusted`, `stream` (the `ts` of its first sample), `seq` (from 0), `active`; while active also `pos` `[x,y,z]` and `yaw` (rad or `null`) | every 50 ms while the aim point is in the box (teleop); one `active: false` at the end |
+| `grab` | glasses to twin | `ts`, `session`, `trusted`, `stream` (= `ts`), `policy` (`topdown`), `object` {`pos`, `surface`, `ray`, `size` `[w,h]` or `null`, `yaw` or `null`, `label`, `id`}, `depthMeasured`, `age` | on a pinch on a mark in the grab zone (select mode) |
+| `gripper` | glasses to twin | `action` (`open` or `close`), `session` (not checked), `ts` | on a gripper command from the glasses (a left-hand pinch) |
 | `gripperState` | twin to glasses | `action`, `state` (`accepted`, `rejected`, `done`, `hold`), `reason`, `detail` (both optional), `ts` (the command's, echoed), `mode` | for every gripper command, at each state |
 | `overlay` object `volume` | twin to glasses | `id: "reach"`, `pos` (centre), `size`, `color`, `alpha` 0.35, `label` | once on connect |
+| `overlay` object `volume` `grab` | twin to glasses | `id: "grab"`, `kind: "volume"`, `pos` (centre), `size`, `color` (orange), `alpha` 0.12, `label: "grab"` | once on connect, for an arm with a grab zone |
 | `overlay` object `sphere` `tcp` | twin to glasses | `id: "tcp"`, `pos`, `size` `[0.02]`, `color` (red with `label: "closed"` while the gripper is commanded closed) | on connect, then every 0.2 s |
 | `overlay` object `sphere` `target` | twin to glasses | `id: "target"`, `pos` (hand point, or the point above the object), `size` `[0.025]`, green | on `accepted`; removed with `"remove": ["target"]` 2 s after the final state |
 
 The glasses match a `targetState` to their target and a `gripperState` to their
-gripper command by `ts`. Other message types are ignored. For the full relay protocol see the specs-lens README, section
+gripper command by `ts`; a `targetState` with `stream` belongs to a stream or a
+grab. `mode` in `targetState` is the twin's mode; the glasses' own mode is
+called `lensMode` (`teleop` or `select`) on the wire, and the twin does not
+read it. Other message types are ignored. For the full relay protocol see the specs-lens README, section
 "Messages".
 
 ## 7. Troubleshooting
@@ -493,11 +656,13 @@ gripper command by `ts`. Other message types are ignored. For the full relay pro
 | `backoff` during calm moves | The effort thresholds are too tight. See [the effort log](#5-the-effort-log-in-dry-mode). |
 | The gripper command is `done` but the jaws do not move | On macOS over XCAN the gripper frame never arrives (the panel says `chwytak: brak sterowania przez XCAN`). Drive the gripper from Linux (SocketCAN). |
 | The jaws are open but the twin shows them closed | The twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
+| Follow ends with `timeout` every few seconds | Samples arrive less often than every 0.3 s: a slow relay or network, or glasses too old to send `follow` at 20 Hz. |
+| `rejected` `no gripper`, `detail` `xcan: 0x051 not deliverable` | The A1X is on macOS XCAN, which cannot send the gripper frame. Use Linux SocketCAN (`can0`) for the gripper; follow still works. |
 
 ## 8. Tests
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_twin_specsreach.py tests/test_twin_specsreach_a1x.py \
+.venv/bin/python -m pytest -q tests/test_twin_follow.py tests/test_twin_specsreach.py tests/test_twin_specsreach_a1x.py \
     tests/test_twin_specsreach_so101.py tests/test_twin_reach.py tests/test_twin_impact.py tests/test_twin_ui.py
 pytest -q                     # the whole suite
 pytest -q -m "not render"     # a machine without OpenGL
@@ -508,17 +673,26 @@ pytest -q -m "not render"     # a machine without OpenGL
   `outside volume`, `session`, `no depth`, `stale` and `untrusted`, object
   targets above and down with grasp, `dry`, retargeting, session trust,
   `--start-center` in stages, impacts on a wall from effort and from lag, STOP
-  mid-move, `moved`, relay loss, mode change, a worker exception, and the CLI
-  (help, `--i-know`, a run in sim).
+  mid-move, `moved`, relay loss, mode change, a worker exception, the CLI
+  (help, `--i-know`, a run in sim), and the grab: `held` with the legs in
+  order, `outside grab zone`, `too wide`, `missed`, `dry`.
+- `tests/test_twin_follow.py`: follow streams on the simulated A1X, with the
+  loop ticked by the test (`connect(threaded=False)`): a line at 20 Hz within
+  3 cm, identical samples, the far entry ramp, `exit`, `outside volume`, a wall
+  (pause, then resume; 2 s ends the stream), a gripper command mid-stream,
+  a target or grab ending a stream, `timeout`, reordered samples, a new stream
+  id, `dry`, a mode change, the driver stopping mid-stream (the arm stays where
+  its command is) and an error in a stream's end (the worker lives on).
 - `tests/test_twin_specsreach_a1x.py`: the real `a1x` backend on a fake CAN
   bus (`FakeA1XBus`). Consent (`not armed`), an effort spike and backoff, a
   stall at a wall tripping the guard before the backend fault, STOP, relay
-  loss, and `--start-center` stalling near the end. Skipped without the
-  `galaxeo` package.
+  loss, `--start-center` stalling near the end, the per-frame `0x050` step of a
+  follow stream, and a stream into a wall ending in `impact` and a backoff
+  without a backend fault. Skipped without the `galaxeo` package.
 - `tests/test_twin_specsreach_so101.py`: the SO-101 in simulation, moves
   without false trips and a wall tripping the lag rule.
-- `tests/test_twin_reach.py` and `tests/test_twin_impact.py`: the reach box
-  and the impact guard on their own.
+- `tests/test_twin_reach.py` and `tests/test_twin_impact.py`: the reach box,
+  the grab zone grid and the impact guard on their own.
 - `tests/test_twin_ui.py`: a mode change stops a move; **Rozlacz okulary**
   clears the consent box.
 
