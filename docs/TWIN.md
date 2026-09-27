@@ -913,16 +913,18 @@ pytest -q -n auto --dist loadfile                  # równolegle, plik na jednym
 Testy kierowcy okularów, domu A1X i `Twin.move` jadą na zegarze wirtualnym
 (`twin/clock.py`): bliźniak bez wątku pętli (`connect(threaded=False)`),
 `VirtualClock` przesuwa `step(dt)`, a kierowca i `move` czytają ten sam zegar
-(`Twin.clock`). Rampy, dojazd, chwytak, wstrzymanie i łaska cofania liczą się
+(`Twin.clock`). Rampy, dojazd, chwytak, wstrzymanie, łaska cofania, limit ciszy
+strumienia i oczekiwania chwytu liczą się
 w sekundach symulowanych: dziesięć sekund ruchu to ułamek sekundy procesora,
 a czasy powtarzają się co do taktu. Przekaźnik, websocket i wątek sieci
 kierowcy zostają prawdziwe. Stanowisko testowe: `tests/twinbench.py`
 (`Bench.pump(until=..., sim_s=..., max_sim_s=10.0, dt=0.02)`). W aplikacji
 wszystko jedzie na `WallClock` jak dotąd.
 
-Zmierzone na obciążonym Macu (10 rdzeni): testy okularów (`test_twin_specsreach*.py`
-i `test_twin_reach.py`) ok. 9 s, z czego ok. 4 s to CLI w podprocesie (przed
-zegarem ok. 130 s); całość około minuty, z `-n auto --dist loadfile` krócej.
+Zmierzone na Macu (10 rdzeni): testy okularów (`test_twin_follow.py`,
+`test_twin_specsreach*.py` i `test_twin_reach.py`, 79 testów) ok. 17 s, z czego
+ok. 4 s to CLI w podprocesie, a ok. 5 s planowanie pudełka zasięgu (przed zegarem
+ok. 300 s); całość nieco ponad minutę, z `-n auto --dist loadfile` krócej.
 Resztę zjada głównie planowanie fali kalibracyjnej w `tests/test_twin_calib.py`
 (ok. 35 s procesora, nie czekania). `--dist loadfile` trzyma plik na jednym
 procesie, więc bliźniak o zasięgu modułu powstaje raz na plik; xdist nie jest

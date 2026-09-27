@@ -694,20 +694,25 @@ The driver tests run on a virtual clock (`twin/clock.py`), not in wall time.
 The twin has no loop thread (`connect(threaded=False)`); a `VirtualClock`
 moves only when the test steps the loop, and the driver reads the same clock
 (`SpecsReach.clock` defaults to `Twin.clock`). Ramps, arrival, the gripper
-wait, the hold-off and the backoff grace all run in simulated seconds, so ten
+wait, the hold-off, the backoff grace, a stream's timeout and the grab's waits
+all run in simulated seconds, so ten
 seconds of motion cost a fraction of a second and the timings repeat to the
 tick. The relay, the websocket and the driver's network thread stay real.
 `tests/twinbench.py` holds the bench: the fake relay and `Bench.pump(until=...,
 sim_s=..., max_sim_s=10.0, dt=0.02)`, which steps the loop until a condition
 holds. A test that needs the driver to have received a message waits for it in
-real time with the clock stopped (`Bench.target`, `Bench.grip`), then pumps.
+real time with the clock stopped (`Bench.target`, `Bench.grip`, `Bench.follow`,
+`Bench.grab_object`), then pumps. Stream reports are flushed after every tick,
+so `Bench.stream_states` sees them on the tick they happened.
 In the app the twin and the driver run on `WallClock` (`time.monotonic`, real
 sleeps), as before.
 
-Measured on a loaded 10-core Mac: the three files `test_twin_specsreach.py`,
-`test_twin_specsreach_a1x.py` and `test_twin_reach.py` take ~9 s, of which
-~4 s is the CLI run in a subprocess (they took ~130 s in wall time before the
-clock). The whole suite takes about a minute, less with `-n auto --dist loadfile`.
+Measured on a 10-core Mac: the four files `test_twin_follow.py`,
+`test_twin_specsreach.py`, `test_twin_specsreach_a1x.py` and `test_twin_reach.py`
+(79 tests) take ~17 s, of which ~4 s is the CLI run in a subprocess and ~5 s the
+reach-box planning in `test_twin_reach.py` (they took ~300 s in wall time before
+the clock). The whole suite takes a bit over a minute, less with
+`-n auto --dist loadfile`.
 Most of what is left is CPU-bound calibration planning in
 `tests/test_twin_calib.py` (~35 s). `--dist loadfile` keeps each file on one
 worker, so module-scoped twins are built once per file; the relay binds port
@@ -722,7 +727,8 @@ worker, so module-scoped twins are built once per file; the relay binds port
   (help, `--i-know`, a run in sim), and the grab: `held` with the legs in
   order, `outside grab zone`, `too wide`, `missed`, `dry`.
 - `tests/test_twin_follow.py`: follow streams on the simulated A1X, with the
-  loop ticked by the test (`connect(threaded=False)`): a line at 20 Hz within
+  loop ticked by the test on the virtual clock (`FollowBench`, a `twinbench.Bench`;
+  samples every 50 ms of that clock): a line at 20 Hz within
   3 cm, identical samples, the far entry ramp, `exit`, `outside volume`, a wall
   (pause, then resume; 2 s ends the stream), a gripper command mid-stream,
   a target or grab ending a stream, `timeout`, reordered samples, a new stream
