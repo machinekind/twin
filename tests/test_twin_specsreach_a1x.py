@@ -104,9 +104,11 @@ class Rig(Bench):
         return [self.bus.pdes_deg(d) for i, d, _ in self.bus.tx[since:] if i == P.CMD_ID]
 
     def close(self) -> None:
-        super().close()                                  # stops the drivers: their waits end on `clock.set`
-        self.twin.close()
-        self.clock.close()
+        try:
+            super().close()                              # stops the drivers: their waits end on `clock.set`
+        finally:
+            self.twin.close()
+            self.clock.close()
 
 
 @pytest.fixture

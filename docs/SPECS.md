@@ -707,7 +707,7 @@ sleeps), as before.
 Measured on a loaded 10-core Mac: the three files `test_twin_specsreach.py`,
 `test_twin_specsreach_a1x.py` and `test_twin_reach.py` take ~9 s, of which
 ~4 s is the CLI run in a subprocess (they took ~130 s in wall time before the
-clock). The whole suite takes ~65 s, or ~45 s with `-n auto --dist loadfile`.
+clock). The whole suite takes about a minute, less with `-n auto --dist loadfile`.
 Most of what is left is CPU-bound calibration planning in
 `tests/test_twin_calib.py` (~35 s). `--dist loadfile` keeps each file on one
 worker, so module-scoped twins are built once per file; the relay binds port

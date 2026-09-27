@@ -107,6 +107,23 @@ def test_close_releases_every_waiter():
     assert clock.wait(ev, 5.0) is False                         # closed: no wait blocks any more
 
 
+def test_a_closed_clock_naps_before_returning_empty_handed():
+    """A worker loop still running after a mis-ordered teardown polls a closed clock, it does not spin."""
+    clock = VirtualClock()
+    clock.close()
+    q: queue.Queue = queue.Queue()
+    t0 = time.monotonic()
+    for _ in range(4):
+        with pytest.raises(queue.Empty):
+            clock.get(q, 1.0)
+        assert clock.wait(threading.Event(), 1.0) is False
+    assert time.monotonic() - t0 >= 8 * clock.closed_nap_s * 0.9
+    q.put(1)
+    ev = threading.Event()
+    ev.set()
+    assert clock.get(q, 1.0) == 1 and clock.wait(ev, 1.0) is True  # something there: returned as usual
+
+
 def test_advance_waits_for_a_members_computation_before_returning():
     clock = VirtualClock()
     ev = threading.Event()

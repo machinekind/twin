@@ -35,6 +35,10 @@ T = TypeVar("T")
 class Clock(Protocol):
     """What the twin and the driver need from time."""
 
+    #: True for a clock that moves only when a test advances it (code that also waits in real time,
+    #: like the driver's network thread, then polls it in short slices).
+    virtual: bool
+
     def now(self) -> float: ...
 
     def sleep(self, secs: float) -> None: ...
@@ -62,6 +66,8 @@ class Clock(Protocol):
 
 class WallClock:
     """Real time: `time.monotonic`, `time.sleep`, `Event.wait`, `Queue.get`."""
+
+    virtual = False
 
     def now(self) -> float:
         return time.monotonic()
@@ -93,11 +99,17 @@ class VirtualClock:
     is parked in a new one. A barrier that times out is logged and counted in `late`: the thread
     then runs a tick late, so tests assert timings with a tolerance of a few ticks.
 
-    `close()` releases every waiter at once (test teardown).
+    `close()` releases every waiter at once (test teardown). After it, `wait` returns False and `get`
+    raises `queue.Empty` without blocking, but only after `closed_nap_s` of real time, so a worker loop
+    that is still running polls slowly instead of spinning.
     """
+
+    virtual = True
 
     #: Real poll inside a wait: bounds the latency of an `Event.set()` that bypassed `set()`.
     poll_s = 0.005
+    #: Real pause before a wait on a closed clock returns empty-handed (a loop over it must not spin hot).
+    closed_nap_s = 0.005
 
     def __init__(self, t0: float = 100.0, *, settle_s: float = 10.0):
         self._t = float(t0)
@@ -124,12 +136,16 @@ class VirtualClock:
     def wait(self, event: threading.Event, timeout: float | None) -> bool:
         with self._cond:
             deadline = math.inf if timeout is None else self._t + max(0.0, float(timeout))
-            if event.is_set() or self._t >= deadline or self._closed:
+            if not self._closed:
+                if event.is_set() or self._t >= deadline:
+                    return event.is_set()
+                with self._parked(deadline, event.is_set):
+                    while not event.is_set() and self._t < deadline and not self._closed:
+                        self._cond.wait(self.poll_s)
                 return event.is_set()
-            with self._parked(deadline, event.is_set):
-                while not event.is_set() and self._t < deadline and not self._closed:
-                    self._cond.wait(self.poll_s)
-            return event.is_set()
+        if not event.is_set():
+            time.sleep(self.closed_nap_s)                       # closed: a real pause, outside the lock
+        return event.is_set()
 
     def get(self, q: queue.Queue[T], timeout: float) -> T:
         with self._cond:
@@ -142,16 +158,19 @@ class VirtualClock:
             try:
                 return q.get_nowait()
             except queue.Empty:
-                if self._t >= deadline or self._closed:
+                if self._t >= deadline:
                     raise
-            with self._parked(deadline, ready):
-                while True:
-                    try:
-                        return q.get_nowait()
-                    except queue.Empty:
-                        if self._t >= deadline or self._closed or self._wakeups != wakeups:
-                            raise
-                    self._cond.wait(self.poll_s)
+            if not self._closed:
+                with self._parked(deadline, ready):
+                    while True:
+                        try:
+                            return q.get_nowait()
+                        except queue.Empty:
+                            if self._t >= deadline or self._closed or self._wakeups != wakeups:
+                                raise
+                        self._cond.wait(self.poll_s)
+        time.sleep(self.closed_nap_s)                           # closed: a real pause, outside the lock
+        raise queue.Empty
 
     @contextmanager
     def _parked(self, deadline: float, ready: Callable[[], bool]) -> Iterator[None]:
@@ -182,6 +201,11 @@ class VirtualClock:
             self._cond.notify_all()
 
     def close(self) -> None:
+        """Releases every waiter (test teardown).
+
+        Close the clock last: stop the drivers first (`SpecsReach.stop` ends their waits via `set`), then
+        the twin, then the clock. Closed first, it makes every wait return at once, and a worker that has
+        not yet seen its stop flag loops on `get` with only `closed_nap_s` of sleep per round."""
         with self._cond:
             self._closed = True
             self._wakeups += 1

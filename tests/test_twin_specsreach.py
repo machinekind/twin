@@ -39,6 +39,7 @@ def clock():
     c = VirtualClock()
     yield c
     c.close()
+    assert c.late == 0, f"VirtualClock: {c.late} barrier(s) timed out in this module (see the warning in the log)"
 
 
 @pytest.fixture(scope="module")

@@ -63,9 +63,11 @@ the motion (hold). The glasses have no STOP: use Enter/Ctrl-C in the console or 
 
 Every wait for time goes through the twin's clock (`Twin.clock`): ramp ticks, arrival, the gripper
 wait, the hold-off, the backoff grace, a stream's timeout and release, the grab's waits, the worker's
-idle wake-ups, the reconnect back-off and the TCP sphere's cadence. In the app that is the wall clock.
-Tests step the twin on a `VirtualClock`, so the driver and the loop share one simulated time axis; the
-network thread stays real, receiving in short slices (`recv_slice_s`).
+idle wake-ups, the reconnect back-off and the TCP sphere's cadence. In the app that is the wall clock,
+and the network thread's `recv` waits until the next TCP sphere is due (0.05 s at most while following),
+as before. Tests step the twin on a `VirtualClock`, so the driver and the loop share one simulated time
+axis; the network thread stays real and, on a virtual clock only, receives in short slices
+(`recv_slice_s`) so it notices a sphere fall due in simulated time.
 """
 
 from __future__ import annotations
@@ -458,8 +460,8 @@ class SpecsReach:
     tcp_period_s = 0.2
     target_linger_s = 2.0
     reconnect_s = 2.0
-    # The network thread's `recv` waits in real time; in slices this long it notices the TCP sphere is due
-    # on the driver's clock (which runs faster than real time in tests).
+    # On a virtual clock (tests) the network thread's `recv`, which waits in real time, returns at least this
+    # often, to notice the TCP sphere fall due on the driver's clock. The wall clock needs no slices.
     recv_slice_s = 0.02
 
     ik_tol = 0.003                    # m
@@ -781,13 +783,14 @@ class SpecsReach:
     def _pump(self, ws) -> None:
         """Receives messages, sending the TCP sphere every `tcp_period_s` of the driver's clock in between."""
         clock = self.clock
+        slice_s = self.recv_slice_s if getattr(clock, "virtual", False) else math.inf
         next_tcp = clock.now() + self.tcp_period_s
         while not self._stop.is_set():
             wait = max(0.0, next_tcp - clock.now())
             if self._following():
                 wait = min(wait, 0.05)                  # stream reports come from the loop thread
             try:
-                text = ws.recv(timeout=min(wait, self.recv_slice_s))
+                text = ws.recv(timeout=min(wait, slice_s))
             except TimeoutError:
                 text = None
             if text is not None:

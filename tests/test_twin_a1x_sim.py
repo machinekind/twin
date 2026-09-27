@@ -65,6 +65,7 @@ def test_a1x_home_goes_in_stages_elbow_first_and_stops_on_a_collision(monkeypatc
     finally:
         tw.disconnect()
         bench.clock.close()
+    bench.assert_on_time()
 
 
 def test_a1x_sim_starts_closed_and_set_home_here_closes_the_scene_gripper(tmp_path):

@@ -208,6 +208,8 @@ class Bench:
         self.handled: list[dict] = []
         self.drivers: list[SpecsReach] = []
         self._lock = threading.Lock()
+        # Barrier timeouts before this bench (a module-scoped clock outlives many benches).
+        self._late0 = self.clock.late
 
     @classmethod
     def sim(cls, robot: str = "a1x", relay: FakeRelay | None = None, *, t0: float = 100.0) -> Bench:
@@ -264,12 +266,16 @@ class Bench:
             time.sleep(0.0005)
 
     def call(self, fn: Callable[[], object], *, max_sim_s: float = 30.0):
-        """Runs a blocking driver call (`start_center`) in a thread while pumping; returns its result."""
+        """Runs a blocking call (`start_center`, `Twin.move`) in a thread while pumping; returns its result.
+
+        The thread is a clock member for the call, so each `advance` waits until it is back in a clock wait
+        and the call's steps land on the same ticks whatever the thread scheduling."""
         out: dict = {}
 
         def run():
             try:
-                out["result"] = fn()
+                with self.clock.member():
+                    out["result"] = fn()
             except BaseException as exc:                            # noqa: BLE001 - re-raised below
                 out["error"] = exc
         th = threading.Thread(target=run, name="bench-call", daemon=True)
@@ -478,8 +484,19 @@ class Bench:
         assert found is not None
         return found
 
+    def assert_on_time(self) -> None:
+        """Fails if a clock barrier timed out during this bench (a thread ran a tick late: see `VirtualClock`)."""
+        late = self.clock.late - self._late0
+        assert late == 0, (f"VirtualClock: {late} barrier(s) timed out after {self.clock.settle_s:.0f} s real - "
+                           f"a thread did not park in time (see the VirtualClock warning in the log)")
+
     def close(self) -> None:
-        """Stops the drivers (the twin and its clock belong to whoever made them)."""
+        """Stops the drivers, then fails if a clock barrier timed out (`assert_on_time`).
+
+        The twin and its clock belong to whoever made them; close them after this, in that order. The drivers
+        go first: their waits end on `clock.set`, while a clock closed before them releases every wait at once
+        and the worker loops poll it until they see the stop flag."""
         for d in self.drivers:
             d.stop()
         self.drivers.clear()
+        self.assert_on_time()

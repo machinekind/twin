@@ -922,7 +922,7 @@ wszystko jedzie na `WallClock` jak dotąd.
 
 Zmierzone na obciążonym Macu (10 rdzeni): testy okularów (`test_twin_specsreach*.py`
 i `test_twin_reach.py`) ok. 9 s, z czego ok. 4 s to CLI w podprocesie (przed
-zegarem ok. 130 s); całość ok. 65 s, z `-n auto --dist loadfile` ok. 45 s.
+zegarem ok. 130 s); całość około minuty, z `-n auto --dist loadfile` krócej.
 Resztę zjada głównie planowanie fali kalibracyjnej w `tests/test_twin_calib.py`
 (ok. 35 s procesora, nie czekania). `--dist loadfile` trzyma plik na jednym
 procesie, więc bliźniak o zasięgu modułu powstaje raz na plik; xdist nie jest

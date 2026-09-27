@@ -188,6 +188,12 @@ def twin():
         yield tw
     finally:
         tw.close()
+    assert_on_time(tw)
+
+
+def assert_on_time(tw) -> None:
+    """Zadna bariera zegara nie przekroczyla czasu (watek spozniony o takt psuje pozniejsze asercje)."""
+    assert tw.clock.late == 0, f"VirtualClock: {tw.clock.late} barier(y) po czasie - watek nie zaparkowal (ostrzezenie w logu)"
 
 
 def connect_fake(twin, monkeypatch, arm: FakeArm, **kw):
@@ -625,6 +631,7 @@ def test_move_raises_when_the_arm_stops_short_of_the_command(monkeypatch):
             move_stepped(tw, {"shoulder_pan": 80.0}, duration=0.5, settle=0.2)
     finally:
         tw.close()
+    assert_on_time(tw)
 
 
 # ------------------------------------------------------------ runda 3: sprzeglo z wlascicielem
@@ -829,6 +836,7 @@ def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():
         tw.home()
     finally:
         tw.close()
+    assert_on_time(tw)
 
 
 def test_a_partial_target_of_the_same_owner_merges_over_its_pending_target(twin, monkeypatch):

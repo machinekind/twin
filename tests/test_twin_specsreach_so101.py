@@ -34,9 +34,11 @@ def relay():
 def bench(relay):
     b = Bench.sim("so101", relay)
     yield b
-    b.close()
-    b.twin.close()
-    b.clock.close()
+    try:
+        b.close()
+    finally:
+        b.twin.close()
+        b.clock.close()
 
 
 def centred_driver(bench: Bench) -> SpecsReach:
