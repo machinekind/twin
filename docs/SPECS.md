@@ -154,6 +154,8 @@ SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
      collision, 0.20 m/s`) and the last grab (`chwyt: held - assumed`). When the
      backend cannot drive the gripper it adds `chwytak: brak sterowania przez
      XCAN` (the A1X over macOS XCAN, see [The gripper](#the-gripper)).
+     With the XCAN override on, the panel's main status line says
+     `chwytak przez XCAN: proba` instead.
 
 The panel differs from the command in three ways. It has no
 `--start-center`: move the arm near the box first with the panel. It does not
@@ -371,8 +373,8 @@ is there.)
 The worker runs the arm checks only: `not connected`, `stop`, `busy`,
 `not armed`, plus `no gripper` for an arm without one or a backend that cannot
 drive it: `gripper_drivable()` False, with `detail` `xcan: 0x051 not
-deliverable` (the A1X over macOS XCAN sends the 10-byte `0x051` frame as 12
-bytes, which the gripper ignores; only Linux SocketCAN drives it). There is no trust or
+deliverable`. That is the A1X over macOS XCAN without the override: see
+[The gripper](#the-gripper). There is no trust or
 session check and no reach box: a gripper command has no point. Then:
 
 1. `accepted`. In `dry` it then sends `hold` and stops there.
@@ -411,12 +413,20 @@ gripper was already commanded in this session, the button only stores the home
 and leaves the gripper's state alone (log: `chwytak juz sterowany`): close it
 with the slider and press the button again.
 
-**macOS XCAN cannot drive the gripper.** The adapter sends the 10-byte `0x051`
-frame as 12 bytes, and the gripper ignores it. The arm joints work; the gripper
-only moves over Linux SocketCAN. Without feedback the twin cannot notice: the
-panel, the 3D jaws and the TCP sphere show the command. The panel's status line
-says `chwytak: brak sterowania przez XCAN` when the port is `xcan...`
-(`A1XArm.gripper_drivable()`).
+**macOS XCAN: the gripper is refused by default; you can try it.** galaxeo
+said the gripper ignores the XCAN `0x051` frame: the 10-byte payload goes out
+as 12 bytes (DLC 9). CAN FD has no 10-byte frame, so Linux SocketCAN also
+sends 12 bytes. Only the 2 padding bytes can differ, so the claim is
+unverified, and on 2026-09-27 it was disproved on the bench: `python -m
+galaxeo.xcan_usb --grip-test` moved the jaws 85 to 116 degrees over XCAN.
+So the gripper is driven over XCAN by default (`a1x.gripper_over_xcan: true`);
+`false` restores the refusal (`rejected` `no gripper`, `detail` `gripper
+disabled`). To re-check the adapter, run the grip test with the panel closed
+(one process per adapter); it prints `RESULT:`.
+
+Over XCAN the status line says `chwytak przez XCAN` and reminds you that
+proba`. Without feedback the twin cannot notice whether the jaws move: the
+panel, the 3D jaws and the TCP sphere show the command, so watch the jaws.
 
 A full A1X gripper stroke takes 1.3 s (2.6 `p_des` at 2.0 per second);
 `A1XArm.gripper_travel_s()` gives it with a 0.2 s margin (1.5 s), longer than
@@ -522,7 +532,7 @@ newer target, grab or stream replaces it, and it ends a running stream.
 **Checks**, in order: `not connected`, `stop`, `busy`, `not armed`,
 `untrusted`, `session`, `stale` (the detection is older than 0.5 s), `no depth`,
 `outside grab zone`, `too wide` (80 % of the object's width does not fit in the
-90 mm jaws), `no gripper` (including `xcan: 0x051 not deliverable`); then the
+90 mm jaws), `no gripper` (including `gripper disabled`); then the
 legs are planned as for an object target: `ik` (tool down within 0.26 rad),
 `jump`, `collision`.
 
@@ -654,10 +664,10 @@ read it. Other message types are ignored. For the full relay protocol see the sp
 | After a relay restart nothing is accepted | The twin reconnects by itself within 2 s, but the new relay has no registration yet. Look at the markers until "registration OK". |
 | `hold` with `relay` | The relay connection dropped during a real move. Check the network, then pinch again. |
 | `backoff` during calm moves | The effort thresholds are too tight. See [the effort log](#5-the-effort-log-in-dry-mode). |
-| The gripper command is `done` but the jaws do not move | On macOS over XCAN the gripper frame never arrives (the panel says `chwytak: brak sterowania przez XCAN`). Drive the gripper from Linux (SocketCAN). |
+| The gripper command is `done` but the jaws do not move | Over XCAN with the override on (`chwytak przez XCAN: proba`), the frame may not arrive. Run `python -m galaxeo.xcan_usb --grip-test` with the panel closed, or drive the gripper from Linux (SocketCAN). Also check the 0x054 gripper fault bit (galaxeo docs/PROTOCOL.md): only a power cycle clears it. |
 | The jaws are open but the twin shows them closed | The twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then. Move it open: the first open goes straight to the open target, so open jaws do not move. Then close it with the slider (a ramp, with the contact stop) so the jaws really close, and press *Ustaw dom = tu*. |
 | Follow ends with `timeout` every few seconds | Samples arrive less often than every 0.3 s: a slow relay or network, or glasses too old to send `follow` at 20 Hz. |
-| `rejected` `no gripper`, `detail` `xcan: 0x051 not deliverable` | The A1X is on macOS XCAN, which cannot send the gripper frame. Use Linux SocketCAN (`can0`) for the gripper; follow still works. |
+| `rejected` `no gripper` | `a1x.gripper_over_xcan: false` in the config (the old XCAN refusal). Set it to `true` (the default since 2026-09-27) or use Linux SocketCAN (`can0`). Follow still works. |
 
 ## 8. Tests
 

@@ -446,6 +446,7 @@ dłoni ma stawy SO-101, a backend `a1x` odmawia wtedy startu.
 | `frozen_frames` | 50 | tyle identycznych ramek `0x052` z rzędu = telemetria zamrożona (ramię zwolnione FF 2) |
 | `deaf_err_deg` / `deaf_s` | 3,0 / 1,0 | rozkaz dalej od pomiaru niż `deaf_err_deg` przez `deaf_s` przy stojącym stawie (< 0,3°/s) = ramię głuche na `0x050` albo zablokowane → błąd i STOP |
 | `enable_on_connect` | `false` | sekwencja FF 1 → 5 → 6 zaraz po *Połącz*. Zostaw `false` i używaj przycisku w panelu, bo FF 5 na chwilę puszcza silniki |
+| `gripper_over_xcan` | `true` | chwytak przez XCAN (macOS) działa (zmierzone 2026-09-27, niżej); `false` = odmowa „no gripper”. Zmienna środowiskowa `A1X_GRIPPER_XCAN=1` wymusza `true` |
 
 **Zero stawów (`joint_offsets_deg`).** Na ramieniu z galaxeo J3 w spoczynku
 czyta ok. +1,49° — o tyle za własnym limitem 0°. To przesunięcie zera, nie błąd
@@ -583,11 +584,17 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   = tu*), pierwsze otwieranie idzie od razu na cel (pusty, zamknięty chwytak nic
   nie traci, otwarty nie drgnie, a przy złym zgadnięciu szczęki nie zatrzaskują
   się w pierwszej ramce), zamykanie zawsze rampą.
-- **Chwytak przez XCAN (macOS) nie rusza.** Przejściówka wysyła 10-bajtową
-  ramkę `0x051` jako 12 bajtów, a chwytak ją ignoruje. Programowo się tego nie
-  naprawi: chwytak tylko z Linuksa (SocketCAN). Panel pisze w linii stanu
-  „chwytak: brak sterowania przez XCAN”, bo bez sprzężenia pokazuje rozkaz,
-  a szczęki stoją.
+- **Chwytak przez XCAN (macOS): domyślnie odmowa, można spróbować.** galaxeo
+  twierdziło, że chwytak ignoruje ramkę `0x051` z XCAN (10 bajtów idzie jako
+  12, DLC 9). CAN FD nie ma ramki 10-bajtowej, więc SocketCAN na Linuksie też
+  wysyła 12 bajtów. Różnią się najwyżej 2 bajty dopełnienia, więc to
+  twierdzenie było niezweryfikowane, a 2026-09-27 pomiar je obalił:
+  `python -m galaxeo.xcan_usb --grip-test` (galaxeo PR 20) przesunął szczęki
+  o 85–116 stopni przez XCAN. Chwytak przez XCAN jest więc domyślnie włączony
+  (`a1x.gripper_over_xcan: true`); `false` przywraca odmowę („no gripper”).
+  Przejściówkę sprawdzisz tym samym testem przy zamkniętym panelu (jedną
+  przejściówkę otwiera jeden proces). Bez sprzężenia panel pokazuje rozkaz,
+  więc patrz na szczęki.
 
 ### Jednostki
 

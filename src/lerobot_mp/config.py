@@ -414,6 +414,10 @@ class A1XConfig:
     #: Sekwencja wlaczenia FF 1 -> 5 -> 6 zaraz po polaczeniu. Domyslnie NIE: zasilone od nowa
     #: ramie slucha od razu, a FF 5 na chwile puszcza silniki. W panelu jest na to przycisk.
     enable_on_connect: bool = False
+    #: Chwytak przez XCAN (macOS): domyslnie TAK. Zmierzone 2026-09-27 (`python -m galaxeo.xcan_usb
+    #: --grip-test`): 0x051 dochodzi, szczeki przeszly 85-116 stopni. Dawna odmowa opierala sie na
+    #: niesprawdzonym komentarzu. False = odmowa ("no gripper"); env A1X_GRIPPER_XCAN=1 wymusza True.
+    gripper_over_xcan: bool = True
 
     def __post_init__(self) -> None:
         if self.kp <= 0 or self.gripper_kp <= 0:

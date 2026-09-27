@@ -15,8 +15,10 @@ Jednostki: jak w calej aplikacji - stawy ramienia w stopniach, chwytak 0..100
   rozkazem petla otwarta zglasza `gripper_start` (0 = zamkniety), a "Ustaw dom = tu" blizniaka
   potwierdza to przez `assume_gripper(0)` - umowa stanowiska: dom = szczeki zamkniete. Dopoki
   rozwarcie jest tylko zgadniete, pierwsze otwieranie idzie od razu na cel, zamykanie rampa.
-* Chwytak przez XCAN (macOS) nie rusza: przejsciowka wysyla 10-bajtowa 0x051 jako 12 bajtow,
-  a chwytak ja ignoruje (galaxeo `bus.py`). Tylko SocketCAN (Linux) - `gripper_drivable()`.
+* Chwytak przez XCAN (macOS) domyslnie odmawia (`gripper_drivable()` False): galaxeo `bus.py`
+  twierdzilo, ze chwytak ignoruje 0x051 z XCAN. To niezweryfikowane (galaxeo PR "XCAN gripper",
+  `python -m galaxeo.xcan_usb --grip-test`); `a1x.gripper_over_xcan` albo env A1X_GRIPPER_XCAN=1
+  wlacza probe.
 
 Zasady bezpieczenstwa (galaxeo docs/SAFETY.md, docs/PROTOCOL.md):
 
@@ -37,12 +39,16 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 from typing import Any, Callable
 
 from ..config import GRIPPER, AppConfig
 from .base import RobotBackend, RobotInfo
+
+#: A1X_GRIPPER_XCAN=1 (albo true / yes / tak) = to samo co `a1x.gripper_over_xcan: true`.
+GRIPPER_XCAN_ENV = "A1X_GRIPPER_XCAN"
 
 logger = logging.getLogger(__name__)
 
@@ -545,10 +551,22 @@ class A1XArm(RobotBackend):
             return True
 
     def gripper_drivable(self) -> bool:
-        """Czy rozkaz chwytaka dojdzie do ramienia. Nie przez XCAN (macOS): przejsciowka wysyla tylko
-        prawidlowe dlugosci CAN FD, wiec 10-bajtowa 0x051 idzie jako 12 bajtow, a chwytak ja ignoruje
-        (galaxeo `bus.py`). Nie da sie tego naprawic programowo; chwytak tylko przez SocketCAN."""
-        return not str(self.iface or "").lower().startswith("xcan")
+        """Czy blizniak ma wysylac rozkazy chwytaka. Przez XCAN (macOS) tak, odkad zmierzono 2026-09-27,
+        ze 0x051 dochodzi (szczeki 85-116 stopni, `python -m galaxeo.xcan_usb --grip-test`); dawna odmowa
+        opierala sie na niesprawdzonym komentarzu. `a1x.gripper_over_xcan: false` przywraca odmowe."""
+        return not self._on_xcan() or self._gripper_xcan_allowed()
+
+    def gripper_xcan_trial(self) -> bool:
+        """XCAN z wlaczonym chwytakiem (`a1x.gripper_over_xcan`, domyslnie, albo A1X_GRIPPER_XCAN=1):
+        rozkazy ida; bez sprzezenia panel pokazuje rozkaz, wiec linia stanu o tym przypomina."""
+        return self._on_xcan() and self._gripper_xcan_allowed()
+
+    def _on_xcan(self) -> bool:
+        return str(self.iface or "").lower().startswith("xcan")
+
+    def _gripper_xcan_allowed(self) -> bool:
+        env = os.environ.get(GRIPPER_XCAN_ENV, "").strip().lower() in ("1", "true", "yes", "tak")
+        return bool(self.acfg.gripper_over_xcan) or env
 
     def gripper_travel_s(self) -> float:
         """Czas pelnego skoku chwytaka [s]: |open - closed| / `gripper_rate_pdes_s` + zapas (1,5 s przy

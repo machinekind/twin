@@ -154,6 +154,7 @@ a1x:
   deaf_err_deg: 3.0          # rozkaz-pomiar tyle st. przez deaf_s przy stojacym stawie
   deaf_s: 1.0                #   = ramie gluche (Wlacz silniki A1X) albo zablokowane -> STOP
   enable_on_connect: false   # FF 1->5->6 po polaczeniu; domyslnie nie (FF 5 na chwile puszcza silniki)
+  gripper_over_xcan: true    # chwytak przez XCAN (macOS) dziala (zmierzone 2026-09-27); false = odmowa "no gripper"
 
 ui:
   show: true

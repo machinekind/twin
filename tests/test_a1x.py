@@ -472,15 +472,43 @@ def test_a_target_frozen_at_the_open_endpoint_is_released_by_an_equal_open_comma
     assert grip_pdes(bus)[-1] == pytest.approx(0.6, abs=2 / P.POS_SCALE)
 
 
-def test_gripper_is_not_drivable_over_xcan_and_travel_time_covers_the_slew():
-    for port, ok in (("xcan", False), ("xcan:6", False), ("XCAN", False), ("can0", True), ("PCAN_USBBUS1", True)):
+def test_gripper_is_drivable_over_xcan_by_default_and_travel_time_covers_the_slew(monkeypatch):
+    """Measured 2026-09-27: XCAN delivers 0x051. Every port drives the gripper unless the config says no."""
+    monkeypatch.delenv("A1X_GRIPPER_XCAN", raising=False)
+    for port, xcan in (("xcan", True), ("xcan:6", True), ("XCAN", True), ("can0", False), ("PCAN_USBBUS1", False)):
         cfg = load_config(overrides={"robot": {"port": port}}, joints=A1X_JOINTS)
-        assert A1XArm(cfg, bus=FakeA1XBus(), threaded=False).gripper_drivable() is ok, port
+        arm = A1XArm(cfg, bus=FakeA1XBus(), threaded=False)
+        assert arm.gripper_drivable() is True and arm.gripper_xcan_trial() is xcan, port
+        off = A1XArm(load_config(overrides={"robot": {"port": port}, "a1x": {"gripper_over_xcan": False}},
+                                joints=A1X_JOINTS), bus=FakeA1XBus(), threaded=False)
+        assert off.gripper_drivable() is (not xcan), port
     arm, _, _ = make_arm()
     assert arm.gripper_travel_s() == pytest.approx(2.6 / 2.0 + 0.2)
 
 
 # ------------------------------------------------------ wlaczenie i rozlaczenie
+
+def test_gripper_over_xcan_follows_the_config_flag_or_the_env_var(monkeypatch):
+    """a1x.gripper_over_xcan (default true) / A1X_GRIPPER_XCAN=1: XCAN drives the gripper; other ports don't care."""
+    monkeypatch.delenv("A1X_GRIPPER_XCAN", raising=False)
+
+    def arm(port, flag=False):
+        cfg = load_config(overrides={"robot": {"port": port}, "a1x": {"gripper_over_xcan": flag}}, joints=A1X_JOINTS)
+        return A1XArm(cfg, bus=FakeA1XBus(), threaded=False)
+
+    assert load_config(joints=A1X_JOINTS).a1x.gripper_over_xcan is True
+    for port in ("xcan", "xcan:6"):
+        a = arm(port, flag=True)
+        assert a.gripper_drivable() and a.gripper_xcan_trial(), port
+    a = arm("can0", flag=True)
+    assert a.gripper_drivable() and not a.gripper_xcan_trial()
+    x = arm("xcan", flag=False)
+    for value, on in (("1", True), ("true", True), ("TAK", True), ("0", False), ("", False), ("no", False)):
+        monkeypatch.setenv("A1X_GRIPPER_XCAN", value)
+        assert x.gripper_drivable() is on and x.gripper_xcan_trial() is on, value
+    monkeypatch.setenv("A1X_GRIPPER_XCAN", "1")
+    assert not arm("can0", flag=False).gripper_xcan_trial()
+
 def test_enable_sequence_streams_before_between_and_after_each_code():
     arm, bus, clock = connected()
     measured = [math.degrees(x) for x in P.decode_feedback(bus.rx[-1].data if bus.rx else
