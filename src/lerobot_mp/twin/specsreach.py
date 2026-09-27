@@ -1770,7 +1770,8 @@ class SpecsReach:
 
     def _verify_grab(self) -> tuple[State, str]:
         """`held` if the measured jaws stand still wider than empty-closed (`spec.jaw`), else `missed`.
-        A backend that doesn't measure the gripper (the A1X today): `held`, detail "assumed"."""
+        A backend that doesn't measure the gripper (an A1X with `gripper_fb_*` unset): `held`, detail
+        "assumed"."""
         measured_fn = getattr(self.twin.backend, "gripper_measured", None)
         if measured_fn is not None and not measured_fn():
             return "held", "assumed"
