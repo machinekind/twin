@@ -480,18 +480,28 @@ loop's clock):
 - The tool points down with the jaws closing along `yaw` (sent by the glasses,
   else across the line from the base), turning at most 1 rad/s. Best effort:
   the follower never refuses on tilt; `detail` says `tilt 21 deg` when the
-  tool ends more than 15 degrees from straight down.
+  tool ends more than 15 degrees from straight down. Once the glasses have
+  sent a yaw, `detail` also says `yaw 37/12 deg`: asked / achieved (the
+  measured jaws, on the asked side of the symmetric pair), and the twin's log
+  gives asked, commanded and measured yaw once a second, plus the joints the
+  follower is stopped for.
 - One warm-started IK step (`RobotKinematics.ik_step`, within 3 mm), joints
   clipped to the limits, no joint step above 5 degrees per tick, and the
   collision check. A failed tick sends nothing and the tracker stops where
   it is.
 - Real arm: the stream's impact guard uses the lag rule with 2.5 degrees for
   0.3 s while the joint moves slower than 15 degrees per second (tighter than
-  for a target, well before the A1X backend's 3 degrees for 1 s). While a joint
-  meets that rule the follower stops, point and rotation, so the command does
-  not run ahead of a stalled joint; 0.3 s of it is an impact (`impact`, detail
-  `lag arm_joint1`). The servo's steady-state error under load (1 to 2
-  degrees) or a joint that is still moving does not stop it.
+  for a target, well before the A1X backend's 3 degrees for 1 s). The rule
+  starts timing a joint only while its command has moved more than 0.2
+  degrees in the last 0.3 s; once timed, the joint stays timed until it
+  catches up or moves, even if its command stops. While a joint is timed the
+  follower stops, point and rotation, so the command does not run ahead of a
+  stalled joint; 0.3 s of it is an impact (`impact`, detail `lag
+  arm_joint1`). A joint that is still moving does not stop it, and neither
+  does the servo's steady-state error under a still command (1 to 3 degrees
+  under load: before 2026-09-27 an error above 2.5 degrees with the hand held
+  still ended the stream in `impact`, and one around 2.5 degrees kept pausing
+  the follower, so turning the hand at a still point turned the jaws slowly).
 - Gripper load (backends that read the gripper's effort: the A1X, frame
   0x052 `eff[6]`, also on macOS XCAN where the gripper can't be commanded):
   the effort is sampled on the stream's first tick (its rest). Above rest +
@@ -508,7 +518,8 @@ always ends a stream: after 1 s of IK failures (`ik`) or 2 s of collision
 
 **Reports.** `accepted` once; `moving` on a change of its `detail`, at most
 every 0.5 s (2 Hz), and at least every 1 s; then one final `hold` (or
-`rejected`). Every `targetState` of a stream carries `stream` and the `ts` of
+`rejected`). The `moving` detail joins its parts with `, `: `paused: ik` or
+`paused: collision` first, else `tilt 21 deg`, then `yaw 37/12 deg`. Every `targetState` of a stream carries `stream` and the `ts` of
 the sample it answers.
 
 **End.** A stream ends with `hold` and one of these reasons:

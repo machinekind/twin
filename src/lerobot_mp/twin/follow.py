@@ -91,6 +91,12 @@ def rotate_toward(R: np.ndarray, target: np.ndarray, max_angle: float) -> np.nda
     return turn.reshape(3, 3) @ R
 
 
+def jaw_yaw(kin: RobotKinematics, spec, joints: Mapping[str, float]) -> float:
+    """Angle of the jaws' closing axis in the base xy plane for `joints`, rad (the `yaw` convention)."""
+    closing = kin.tcp(joints)[:3, :3] @ np.asarray(spec.tcp_closing, float)
+    return math.atan2(float(closing[1]), float(closing[0]))
+
+
 def tilt_of(approach: np.ndarray) -> float:
     """Angle between the approach axis and straight down, rad."""
     return float(np.arccos(np.clip(-float(approach[2]), -1.0, 1.0)))
@@ -224,10 +230,8 @@ class Follower:
 
     def _rotation(self, p: np.ndarray, yaw: float | None, dt: float) -> np.ndarray:
         """Rotation to ask IK for: from the tool's current one towards tool-down at `yaw`, rate limited."""
-        T = self.kin.tcp(self.joints)
-        R = T[:3, :3]
-        closing = R @ np.asarray(self.spec.tcp_closing, float)
-        current = math.atan2(float(closing[1]), float(closing[0]))
+        R = self.kin.tcp(self.joints)[:3, :3]
+        current = jaw_yaw(self.kin, self.spec, self.joints)
         if yaw is None:
             yaw = math.atan2(float(p[1]), float(p[0])) + math.pi / 2
         want = down_rotation(self.spec, p, nearest_yaw(float(yaw), current))

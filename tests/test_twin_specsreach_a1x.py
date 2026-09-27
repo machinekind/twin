@@ -7,6 +7,7 @@ The relay is the fake from `test_twin_specsreach.py`.
 
 from __future__ import annotations
 
+import math
 import struct
 import threading
 import time
@@ -35,11 +36,28 @@ DT = 0.02                                      # twin loop period (4 bus ticks)
 
 
 class WallBus(FakeA1XBus):
-    """Fake bus with a wall: joint `wall[0]` can't be commanded past `wall[1]` [rad] in direction `wall[2]`."""
+    """Fake bus with a wall: joint `wall[0]` can't be commanded past `wall[1]` [rad] in direction `wall[2]`.
+    `bias` [rad per joint index]: the joint settles this far off its command (a loaded servo's
+    steady-state error), plus a slow wobble of `jitter` [rad] (a 0.25 s sine, a few deg/s: the joint stays nearly still)."""
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.wall: tuple[int, float, float] | None = None       # (joint index, limit, direction sign)
+        self.bias: dict[int, float] = {}
+        self.jitter = 0.0
+
+    def tick(self, dt: float = STEP, n: int = 1) -> None:
+        if not self.bias or self.p_des is None:
+            super().tick(dt, n)
+            return
+        want = list(self.p_des)
+        try:
+            for _ in range(n):
+                noise = self.jitter * math.sin(2 * math.pi * self._n * STEP / 0.25)
+                self.p_des = [v + self.bias[j] + noise if j in self.bias else v for j, v in enumerate(want)]
+                super().tick(dt)
+        finally:
+            self.p_des = want
 
     def send(self, can_id: int, data: bytes, *, fd: bool = True) -> None:
         super().send(can_id, data, fd=fd)
@@ -518,3 +536,44 @@ def test_follow_stream_with_the_gripper_loaded_ends_in_impact_and_stops_advancin
     assert d._stream is None and d._follow_handle is None
     # No gripper frame went out.
     assert not any(i == P.GRIP_ID for i, _, _ in rig.bus.tx)
+
+
+@pytest.mark.parametrize("bias_deg,jitter_deg", [(2.7, 0.0), (2.4, 0.3)])
+def test_follow_at_rest_with_a_steady_state_error_still_turns_the_wrist(rig, bias_deg, jitter_deg):
+    """2026-09-27 13:17, real A1X: the point followed the hand but the yaw never changed. A loaded joint
+    sits 1-3 deg off its command at rest; the follower must neither stop for it nor call it an impact,
+    whether the error stays above the lag threshold (2.7 deg) or crosses it with noise (2.4 +- 0.3)."""
+    d = rig.connect_driver()
+    c = rig.vol.center + np.array([0.0, 0.0, -0.02])
+    seq = 0
+    for _ in range(20):                                             # settle at the point, default yaw
+        rig.relay.follow(STREAM, seq, c)
+        seq += 1
+        rig.pump(FOLLOW_PERIOD)
+    rig.bus.bias = {1: np.radians(bias_deg)}                        # arm_joint2 sags under load
+    rig.bus.jitter = np.radians(jitter_deg)
+    for _ in range(20):
+        rig.relay.follow(STREAM, seq, c)
+        seq += 1
+        rig.pump(FOLLOW_PERIOD)
+    assert stream_states(rig)[-1][0] == "moving", stream_states(rig)
+    st = d._stream
+    assert st is not None
+    j6 = rig.twin.status.command["arm_joint6"]
+    closing = rig.kin.tcp(rig.twin.status.command)[:3, :3] @ np.asarray(rig.twin.spec.tcp_closing, float)
+    yaw = float(np.arctan2(closing[1], closing[0])) + np.radians(40.0)
+    t0 = time.monotonic()
+    turned = None
+    while time.monotonic() - t0 < 3.0:
+        rig.relay.follow(STREAM, seq, c, yaw=yaw)
+        seq += 1
+        rig.pump(FOLLOW_PERIOD)
+        if abs(rig.twin.status.command["arm_joint6"] - j6) > 30.0:
+            turned = time.monotonic() - t0
+            break
+    kinds = stream_states(rig)
+    assert turned is not None, (j6, rig.twin.status.command["arm_joint6"], kinds[-3:])
+    assert all(k[0] in ("accepted", "moving") for k in kinds), kinds
+    assert any(k[2] and "yaw" in k[2] for k in kinds), kinds
+    rig.relay.follow(STREAM, seq, active=False)
+    assert rig.pump(2.0, lambda: rig.twin.owner is None)

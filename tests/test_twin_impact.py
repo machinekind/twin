@@ -200,3 +200,31 @@ def test_lagging_names_only_a_still_joint_past_the_lag_threshold():
         if hit is None and t > t0 + DT:
             assert guard.lagging == ["arm_joint1"]
     assert hit is not None and hit.kind == "lag" and 0.3 <= t - t0 <= 0.3 + 3 * DT
+
+
+def test_with_moving_deg_a_steady_error_under_a_still_command_is_never_timed():
+    g = ImpactGuard(J, lag_deg=2.5, lag_s=0.3, moving_deg=0.2, moving_s=0.3)
+    t = 0.0
+    for _ in range(100):                                  # 2 s at rest, arm_joint2 sagging 2.7 deg
+        t += DT
+        assert g.feed(t, pose(10.0), pose(10.0, arm_joint2=-2.7), True, velocities={}) is None
+        assert g.lagging == []
+    # Without the rule the same samples are a stall.
+    g = ImpactGuard(J, lag_deg=2.5, lag_s=0.3)
+    hits = [g.feed(DT * (i + 1), pose(10.0), pose(10.0, arm_joint2=-2.7), True, velocities={})
+            for i in range(20)]
+    assert any(h is not None and h.joint == "arm_joint2" for h in hits)
+
+
+def test_with_moving_deg_a_joint_caught_while_the_command_moves_stays_timed_after_it_stops():
+    g = ImpactGuard(J, lag_deg=2.5, lag_s=0.3, moving_deg=0.2, moving_s=0.3)
+    t, cmd = 0.0, 0.0
+    hit = None
+    for i in range(40):                                   # the command ramps at 30 deg/s, then stops at
+        t += DT                                           # 3 deg (the follower stops for the lagging
+        cmd = min(cmd + 30.0 * DT, 3.0)                   # joint); the joint is stuck at 0
+        hit = g.feed(t, pose(cmd), pose(0.0), True, velocities={})
+        if hit is not None:
+            break
+    assert hit is not None and hit.joint == "arm_joint1" and hit.kind == "lag"
+    assert 0.3 <= t <= 0.5, t                             # timed from ~0.1 s, when the error passed 2.5
