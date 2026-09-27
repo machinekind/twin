@@ -204,6 +204,30 @@ def test_follower_holds_on_collision_without_moving_its_point():
     assert back.joints is not None
 
 
+def test_follower_not_advancing_keeps_its_joints_rotation_included():
+    """`advance=False` (a stalled joint on the real arm): the point and the rotation wait, the wrist does not
+    run on towards tool-down."""
+    b_spec = rt.Twin(Workspace(robot="a1x")).spec
+    kin = RobotKinematics(b_spec)
+    vol = ReachVolume.from_spec(b_spec)
+    tilted = kin.ik(vol.center, seed=b_spec.home, tol=0.003)          # position only: the tool is tilted
+    assert tilted.ok
+
+    class Clear:
+        def config_clear(self, joints):
+            return None
+
+    f = Follower(kin, Clear(), b_spec, limits=b_spec.limits, joints=tilted.joints, volume=vol)
+    start = dict(f.joints)
+    target = f.setpoint(vol.center + [0.05, 0.0, 0.0])
+    for _ in range(20):
+        out = f.step(DT, target, 0.0, advance=False)
+        assert out.joints == start
+    assert np.allclose(f.point, kin.tcp(start)[:3, 3]) and not np.any(f.tracker.v)
+    moved = f.step(DT, target, 0.0)
+    assert moved.joints is not None and moved.joints != start
+
+
 def test_a_line_at_20_hz_is_followed_within_3_cm_with_bounded_joint_steps(bench):
     c = bench.vol.center
     line = [c + np.array([0.0, -0.1 + 0.2 * i / 59, -0.02]) for i in range(60)]
@@ -444,6 +468,52 @@ def test_dry_mode_accepts_then_holds_and_nothing_moves(relay):
         assert b.asked == [] and b.twin.owner is None
     finally:
         b.close()
+
+
+def test_an_error_in_a_stop_queued_behind_a_gripper_command_holds_and_the_worker_lives_on(bench):
+    """A stream's stop found behind a queued gripper command runs inside `_run`'s error handling: an error
+    there (here in the freeze) holds the arm, the overtaken command is rejected, the worker lives on."""
+    d = bench.driver
+    c = bench.vol.center
+    seq = bench.stream([c] * 10)
+    g1 = bench.relay.grip("close")                      # the worker sits in its settle wait
+    assert bench.pump(1.0, lambda: bench.relay.grips_for(g1) == ["accepted"]), bench.relay.grips_for(g1)
+    g2 = bench.relay.grip("open")                       # queued, then the stream's stop behind it
+    bench.relay.follow(STREAM, seq, active=False)
+    bench.wait(STREAM, {"hold"}, 2.0, reason="exit")
+
+    def boom():
+        raise RuntimeError("test")
+    d._freeze = boom
+    assert bench.pump(4.0, lambda: bench.relay.grips_for(g2) != []), bench.relay.grips_for(g2)
+    assert bench.relay.grips_for(g1) == ["accepted", "done"]
+    assert bench.relay.grips_for(g2) == ["rejected"]
+    assert bench.pump(1.0, lambda: bench.twin.owner is None)
+    assert d._worker is not None and d._worker.is_alive()
+    assert d._phase == "idle" and d._stream is None and not d._holders
+    del d._freeze
+    ts = bench.relay.target(c + np.array([0.0, 0.05, 0.0]))
+    assert bench.pump(6.0, lambda: "reached" in bench.relay.states_for(ts)), bench.relay.states_for(ts)
+
+
+def test_stop_mid_stream_freezes_the_arm_where_its_command_is(bench):
+    """The panel's "Rozlacz okulary" (`SpecsReach.stop`) while a stream runs: the arm stops where its
+    command is, it does not finish its way to the follower's last target."""
+    c = bench.vol.center
+    far = c + np.array([0.1, 0.25, -0.08])
+    bench.twin.set_speed(10.0)                           # a slow panel cap: the command lags the follower
+    bench.stream([far] * 8)                              # mid-ramp
+    assert bench.states()[-1][0] in ("accepted", "moving") and bench.twin.owner == "specs", bench.states()
+    before = dict(bench.twin.status.command)
+    asked = bench.asked[-1]
+    lead = max(abs(asked[k] - before[k]) for k in bench.arm)
+    bench.driver.stop()
+    bench.pump(1.0)
+    after = bench.twin.status.command
+    moved = max(abs(after[k] - before[k]) for k in bench.arm)
+    assert lead > 5.0, lead
+    assert moved <= 10.0 * DT + 1e-6, (moved, lead)                 # one tick at the cap
+    assert bench.twin.owner is None and bench.driver._stream is None
 
 
 def test_mode_change_ends_the_stream(bench):

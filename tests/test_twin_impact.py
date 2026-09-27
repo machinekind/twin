@@ -175,3 +175,28 @@ def test_the_guard_is_deterministic():
     a, b = run(), run()
     assert a == b and a is not None
     assert a.t == pytest.approx(b.t)
+
+
+def test_lagging_names_only_a_still_joint_past_the_lag_threshold():
+    """The follower's stall rule: a steady error under load (below `lag_deg`) or a joint still moving is not
+    lagging; a still joint past `lag_deg` is, and trips `lag` after `lag_s`."""
+    guard = ImpactGuard(J, lag_deg=2.5, lag_s=0.3, vel_still=15.0)
+    t = 0.0
+    for _ in range(50):                                 # 2 deg behind, still: the servo's steady-state error
+        t += DT
+        assert guard.feed(t, pose(12.0), pose(10.0), True) is None
+        assert guard.lagging == []
+    meas = 10.0
+    for _ in range(10):                                 # 4 deg behind but moving at 25 deg/s
+        t += DT
+        meas += 25.0 * DT
+        assert guard.feed(t, pose(meas + 4.0), pose(meas), True) is None
+        assert guard.lagging == []
+    hit = None
+    t0 = t
+    while hit is None and t < t0 + 1.0:                 # stuck 3 deg behind a command that no longer moves
+        t += DT
+        hit = guard.feed(t, pose(meas + 3.0), pose(meas), True)
+        if hit is None and t > t0 + DT:
+            assert guard.lagging == ["arm_joint1"]
+    assert hit is not None and hit.kind == "lag" and 0.3 <= t - t0 <= 0.3 + 3 * DT

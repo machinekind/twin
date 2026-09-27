@@ -190,12 +190,12 @@ class Follower:
         self.tracker.halt()
 
     def step(self, dt: float, target: np.ndarray, yaw: float | None, advance: bool = True) -> Step:
-        """One tick towards `target` (already a `setpoint`). `advance=False` keeps the point where it is."""
-        if advance:
-            p, v = self.tracker.propose(target, dt)
-        else:
+        """One tick towards `target` (already a `setpoint`). `advance=False` keeps the joints where they are:
+        the point and the rotation (a stalled joint must not see the wrist run on towards tool-down)."""
+        if not advance:
             self.tracker.halt()
-            p, v = self.tracker.p.copy(), np.zeros(3)
+            return Step(dict(self.joints), tilt=self.tilt)
+        p, v = self.tracker.propose(target, dt)
 
         rotation = self._rotation(p, yaw, dt) if self.full_rotation else None
         sol = self.kin.ik_step(p, rotation, seed=self.joints, iters=self.iters, tol=self.ik_tol)

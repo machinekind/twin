@@ -25,7 +25,7 @@ not armed, untrusted, session, outside volume, no depth, stale, ik, jump, collis
 A gripper command gets the arm checks only (not connected, stop, busy, not armed, plus
 `no gripper`, also when the backend can't drive the gripper: `gripper_drivable()` False,
 the A1X over macOS XCAN). It does not interrupt a move: it waits in the queue and runs after the
-target, so "pinch, then a fist" closes the gripper at the point. It takes the arm, sets
+target, so "pinch a point, then a left-hand pinch" closes the gripper at the point. It takes the arm, sets
 the gripper joint to open or closed, waits `grip_wait_s` (or the backend's `gripper_travel_s()`)
 for it to settle and releases the arm (`done`). The TCP sphere turns red with the label "closed"
 while the gripper's command is nearer closed than open, whoever set it.
@@ -136,7 +136,7 @@ class Target:
 
 @dataclass
 class GripCommand:
-    """A gripper command from the glasses (a fist), as received."""
+    """A gripper command from the glasses (a left-hand pinch), as received."""
 
     action: GripAction
     ts: Any                           # the glasses' clock: echoed back
@@ -192,7 +192,6 @@ class _Stream:
     yaw: float | None = None
     fail: str = ""
     fail_since: float = 0.0
-    stall_since: float | None = None
     last_report: float = -math.inf
     last_sig: tuple = ()
 
@@ -210,6 +209,8 @@ class FollowStop:
 
     stream: _Stream
     hit: Impact | None = None
+    #: Set by `_latest`: the item this stop overtook in the queue; it runs after the stop.
+    then: Item | None = None
 
 
 @dataclass
@@ -504,11 +505,11 @@ class SpecsReach:
     follow_report_s = 0.5
     follow_heartbeat_s = 1.0
     follow_tilt_deg = 15.0            # report the tool's tilt from straight down above this
-    # Real arm: a joint more than `follow_lag_deg` behind its command stops the tracker (the command
-    # must not run ahead of a stalled joint); stopped that way for `follow_stall_s` = an impact.
-    # The guard is tighter than for ramps, well before the A1X backend's "deaf" fault (3 deg for 1 s).
-    follow_lag_deg = 2.0
-    follow_stall_s = 0.3
+    # Real arm: the stream's guard is tighter than for ramps, well before the A1X backend's "deaf" fault
+    # (3 deg for 1 s). A joint its lag rule is timing (more than `follow_guard_lag_deg` behind, nearly
+    # still) stops the follower, point and rotation: the command must not run ahead of a stalled joint.
+    # Stalled for `follow_guard_lag_s` = the guard's `lag` impact. A plain lag under load (the servo's
+    # steady-state error of 1-2 deg) or a joint still moving does not stop it.
     follow_guard_lag_deg = 2.5
     follow_guard_lag_s = 0.3
     follow_guard_vel_still = 15.0
@@ -622,7 +623,8 @@ class SpecsReach:
         self._worker.start()
 
     def stop(self) -> None:
-        """Stops both threads. A moving arm holds its measured pose and is released."""
+        """Stops both threads. A moving arm holds its measured pose, a running stream stops where its
+        command is (the worker's exit), and the arm is released."""
         self._stop.set()
         self._interrupt("stop")
 
@@ -903,7 +905,8 @@ class SpecsReach:
         if cmd is None:
             logger.warning("Zepsuty rozkaz chwytaka z okularow: %.200s", text)
             return
-        # No interrupt: a fist during a move closes the gripper once the arm is at the point.
+        # No interrupt: a gripper command from the glasses (a left-hand pinch) during a move closes the
+        # gripper once the arm is at the point.
         self._queue.put(cmd)
 
     def _target_queued(self) -> bool:
@@ -1086,7 +1089,12 @@ class SpecsReach:
                     self._log_efforts("dry")
                 continue
             self._run(self._latest(t))
+        # `stop()`: a running stream's `FollowStop` is left in the queue, so the arm stops here, where its
+        # command is, before it is released (else it would finish its way to the follower's last target).
+        running = self._stream is not None
         self._drop_follow()
+        if running:
+            self._freeze()
         self._holders.clear()
         self._release()
         self._restore_speed()
@@ -1094,8 +1102,10 @@ class SpecsReach:
     def _run(self, item: Item | None) -> None:
         """Runs a target or gripper command and any that replace it. An error leaves the arm holding
         its measured pose."""
+        running = item
         try:
             while item is not None and not self._stop.is_set():
+                running = item
                 if isinstance(item, GripCommand):
                     item = self._execute_grip(item)
                 elif isinstance(item, FollowStart):
@@ -1109,6 +1119,12 @@ class SpecsReach:
         except Exception as exc:
             logger.exception("Kierowca okularow: blad wykonania celu")
             self._hold_after_error(exc)
+            if isinstance(running, FollowStop):         # e.g. in its backoff: the stream's hold goes too
+                self._drop_follow()
+                self._follow_release_at = None
+                self._holders.discard("follow")
+                if running.then is not None:
+                    self._report_busy(running.then)
         finally:
             self._current = None
             self._current_grip = None
@@ -1129,26 +1145,36 @@ class SpecsReach:
 
     def _latest(self, item: Item) -> Item:
         """Takes the newest queued item; older unhandled ones are rejected as "busy". A stream's stop
-        is never skipped: it runs on the spot (the stream was already reported ended)."""
+        is never skipped: it is returned to run first (in `_run`, so an error in its backoff holds the
+        arm like any other), and the item it overtook runs after it (`FollowStop.then`)."""
+        if isinstance(item, FollowStop):
+            return item
         while True:
             try:
                 newer = self._queue.get_nowait()
             except queue.Empty:
                 return item
             if isinstance(newer, FollowStop):
-                self._execute_follow_stop(newer)
-                continue
+                newer.then = item
+                return newer
             self._report_busy(item)
             item = newer
 
     def _reject_queued(self) -> None:
-        """Rejects every queued item as "busy", so the glasses ask the user to point again."""
+        """Rejects every queued item as "busy", so the glasses ask the user to point again. A stream's
+        stop is not an answer to the glasses: it goes back to the queue and runs later."""
+        stops: list[FollowStop] = []
         while True:
             try:
                 item = self._queue.get_nowait()
             except queue.Empty:
-                return
-            self._report_busy(item)
+                break
+            if isinstance(item, FollowStop):
+                stops.append(item)
+            else:
+                self._report_busy(item)
+        for stop in stops:
+            self._queue.put(stop)
 
     def _report_busy(self, item: Item) -> None:
         if isinstance(item, GripCommand):
@@ -1156,7 +1182,7 @@ class SpecsReach:
         elif isinstance(item, FollowStart):
             self._reject_stream(item.stream, "busy")
         elif isinstance(item, FollowStop):
-            self._execute_follow_stop(item)
+            self._queue.put(item)                       # never rejected: it runs from the queue
         else:
             self._report(item, "rejected", "busy")
 
@@ -1375,10 +1401,15 @@ class SpecsReach:
 
     def _execute_follow_stop(self, item: FollowStop) -> Item | None:
         """A stream ended (already reported): the listener goes, an impact backs off, the arm is released
-        (after a timeout only `follow_release_s` after the last sample)."""
+        (after a timeout only `follow_release_s` after the last sample). Returns the item the stop
+        overtook in the queue, if any."""
+        self._stop_stream(item)
+        return None if item.then is None else self._latest(item.then)
+
+    def _stop_stream(self, item: FollowStop) -> None:
         st = item.stream
         if st is not self._stream:
-            return None
+            return
         self._drop_follow()
         if item.hit is not None:
             self._follow_backoff(st, item.hit)
@@ -1387,10 +1418,9 @@ class SpecsReach:
         if st.reason == "timeout":
             later = max(0.0, self.follow_release_s - self.follow_timeout_s)
             self._follow_release_at = time.monotonic() + later
-            return None
+            return
         self._release("follow")
         self._restore_speed()
-        return None
 
     def _drop_follow(self) -> None:
         """No stream runs any more: the tick listener goes (and a step running right now finishes first,
@@ -1513,20 +1543,8 @@ class SpecsReach:
             return
 
         advance = bool(s.sent)                          # the loop sent nothing (link frozen): don't run ahead
-        if not self.twin.status.simulated and s.sent:
-            lag = self._follow_lag(s)
-            if lag is None:
-                st.stall_since = None
-            else:
-                advance = False
-                st.stall_since = t if st.stall_since is None else st.stall_since
-                if t - st.stall_since >= self.follow_stall_s:
-                    joint, err = lag
-                    pose = st.guard.backoff_pose(t, s.measured)
-                    stall = Impact(t=t, joint=joint, kind="lag", value=err, backoff_pose=pose)
-                    self._hold_now()
-                    self._end_follow(st, "impact", f"lag {joint}", hit=stall)
-                    return
+        if not self.twin.status.simulated and st.guard.lagging:
+            advance = False                             # a stalled joint: wait for it, or the guard's impact
 
         dt = self.tick_s if st.t_prev is None else min(max(t - st.t_prev, 0.0), 2.5 * self.tick_s)
         st.t_prev = t
@@ -1563,16 +1581,6 @@ class SpecsReach:
             self.twin.hold_measured()
         except Exception:
             logger.exception("Sledzenie: hold_measured po uderzeniu")
-
-    def _follow_lag(self, s) -> tuple[str, float] | None:
-        """The arm joint farthest behind what was sent, if more than `follow_lag_deg`."""
-        worst: tuple[str, float] | None = None
-        for j in self.arm:
-            if j in s.sent and j in s.measured:
-                err = abs(float(s.sent[j]) - float(s.measured[j]))
-                if err > self.follow_lag_deg and (worst is None or err > worst[1]):
-                    worst = (j, err)
-        return worst
 
     def _end_follow(self, st: _Stream, reason: str, detail: str = "", hit: Impact | None = None) -> None:
         with self._follow_lock:

@@ -143,7 +143,8 @@ SPECS_RELAY=ws://192.168.1.105:8080/twin lerobot-twin ui --port 8765
    - **Okulary moga ruszac prawdziwym ramieniem**: the consent box for `real`.
    - **Polacz z okularami**: start the driver and connect to the relay.
    - **Rozlacz okulary**: stop the driver. A move in progress holds the
-     measured pose. It also clears the consent box.
+     measured pose; a running follow stream stops where its command is. It
+     also clears the consent box.
    - **Sledzenie dloni [m/s]**: the follow speed, as `--follow-speed`. 0 (the
      default) means by mode: 0.20 in simulation, 0.10 on the real arm. A
      running stream picks a change up on its next tick.
@@ -359,12 +360,13 @@ sends `moving` while it runs and ends with `hold`. In `dry`: `accepted`, `hold`.
 
 ### The gripper
 
-A fist in the glasses sends `gripper` with `action` `close` or `open`. The
-network thread queues it like a target, but it does not interrupt a move: it
-runs after the target the arm is on, so "pinch, then a fist while the arm
-moves" closes the gripper at the point. (The glasses also hold a fist made
-during a move until the target is `reached`, so the twin normally sees the
-command only once the arm is there.)
+A gripper command from the glasses (a left-hand pinch) sends `gripper` with
+`action` `close` or `open`. The network thread queues it like a target, but it
+does not interrupt a move: it runs after the target the arm is on, so "pinch a
+point, then a left-hand pinch while the arm moves" closes the gripper at the
+point. (The glasses also hold a gripper command made during a move until the
+target is `reached`, so the twin normally sees the command only once the arm
+is there.)
 
 The worker runs the arm checks only: `not connected`, `stop`, `busy`,
 `not armed`, plus `no gripper` for an arm without one or a backend that cannot
@@ -470,8 +472,13 @@ loop's clock):
   clipped to the limits, no joint step above 5 degrees per tick, and the
   collision check. A failed tick sends nothing and the tracker stops where
   it is.
-- Real arm: the tracker stops advancing while any arm joint is more than 2
-  degrees behind what was sent. Stopped that way for 0.3 s is an impact.
+- Real arm: the stream's impact guard uses the lag rule with 2.5 degrees for
+  0.3 s while the joint moves slower than 15 degrees per second (tighter than
+  for a target, well before the A1X backend's 3 degrees for 1 s). While a joint
+  meets that rule the follower stops, point and rotation, so the command does
+  not run ahead of a stalled joint; 0.3 s of it is an impact (`impact`, detail
+  `lag arm_joint1`). The servo's steady-state error under load (1 to 2
+  degrees) or a joint that is still moving does not stop it.
 
 **Pauses are not holds.** A failed tick (IK or collision) pauses the stream:
 the twin keeps answering `moving` with `detail` `paused: ik` or `paused:
@@ -493,13 +500,14 @@ the sample it answers.
 | `outside volume` | a sample more than 5 cm outside the box |
 | `ik` | 1 s of IK failures |
 | `collision` | 2 s of collision |
-| `impact` | the impact guard tripped or a joint stalled (real arm); the arm holds its measured pose at once and backs off as after a target (`detail` gives the rule and joint) |
+| `impact` | the impact guard tripped (effort, or lag: a stalled joint); the arm holds its measured pose at once and backs off as after a target (`detail` gives the rule and joint) |
 | `retargeted` | a new stream id, a `target` or a `grab` arrived; the new one runs |
 | `stop`, `preempted`, `mode`, `relay` | as for a target |
 
 When a stream ends the arm stops where its command is (the arm joints of its
 target are set to the supervisor's current command, `Twin.hold_command`), so a
-target or grab that follows is checked from a pose that no longer moves.
+target or grab that follows is checked from a pose that no longer moves. The
+same happens when the driver stops (**Rozlacz okulary**) during a stream.
 
 **Re-arm rule.** After any final `hold` or `rejected`, samples of that stream
 are ignored. The glasses stop sending and start a new stream (a new id) only
@@ -616,7 +624,7 @@ with a regular expression. Positions are in the base frame, in metres.
 | `targetState` | twin to glasses | `state`, `reason`, `detail` (both optional), `pos` (the target), `tcp` (tool position now), `stream` (streams and grabs only), `ts` (the target's, echoed), `mode` (`dry`, `sim` or `real`) | for every target, stream and grab, at each state |
 | `follow` | glasses to twin | `ts`, `session`, `trusted`, `stream` (the `ts` of its first sample), `seq` (from 0), `active`; while active also `pos` `[x,y,z]` and `yaw` (rad or `null`) | every 50 ms while the aim point is in the box (teleop); one `active: false` at the end |
 | `grab` | glasses to twin | `ts`, `session`, `trusted`, `stream` (= `ts`), `policy` (`topdown`), `object` {`pos`, `surface`, `ray`, `size` `[w,h]` or `null`, `yaw` or `null`, `label`, `id`}, `depthMeasured`, `age` | on a pinch on a mark in the grab zone (select mode) |
-| `gripper` | glasses to twin | `action` (`open` or `close`), `session` (not checked), `ts` | on a fist |
+| `gripper` | glasses to twin | `action` (`open` or `close`), `session` (not checked), `ts` | on a gripper command from the glasses (a left-hand pinch) |
 | `gripperState` | twin to glasses | `action`, `state` (`accepted`, `rejected`, `done`, `hold`), `reason`, `detail` (both optional), `ts` (the command's, echoed), `mode` | for every gripper command, at each state |
 | `overlay` object `volume` | twin to glasses | `id: "reach"`, `pos` (centre), `size`, `color`, `alpha` 0.35, `label` | once on connect |
 | `overlay` object `volume` `grab` | twin to glasses | `id: "grab"`, `kind: "volume"`, `pos` (centre), `size`, `color` (orange), `alpha` 0.12, `label: "grab"` | once on connect, for an arm with a grab zone |
@@ -673,7 +681,8 @@ pytest -q -m "not render"     # a machine without OpenGL
   3 cm, identical samples, the far entry ramp, `exit`, `outside volume`, a wall
   (pause, then resume; 2 s ends the stream), a gripper command mid-stream,
   a target or grab ending a stream, `timeout`, reordered samples, a new stream
-  id, `dry` and a mode change.
+  id, `dry`, a mode change, the driver stopping mid-stream (the arm stays where
+  its command is) and an error in a stream's end (the worker lives on).
 - `tests/test_twin_specsreach_a1x.py`: the real `a1x` backend on a fake CAN
   bus (`FakeA1XBus`). Consent (`not armed`), an effort spike and backoff, a
   stall at a wall tripping the guard before the backend fault, STOP, relay

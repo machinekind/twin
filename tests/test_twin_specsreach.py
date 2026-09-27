@@ -89,7 +89,7 @@ class FakeRelay:
         return ts
 
     def grip(self, action: str, *, ts: int | None = None) -> int:
-        """A fist in the glasses."""
+        """A gripper command from the glasses (a left-hand pinch)."""
         ts = ts if ts is not None else int(time.time() * 1000) + len(self.grips)
         msg = {"type": "gripper", "action": action, "session": self.session, "ts": ts}
         with self.cond:
