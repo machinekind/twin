@@ -22,7 +22,8 @@ from lerobot_mp.twin import antwalk as aw  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
 from lerobot_mp.twin.ant import (DEMO_MOUNT, LEG_POSES, Ant, add_demo_ant, demo_layout, rest_height,  # noqa: E402
                                  square_layout)
-from lerobot_mp.twin.antdrive import DEADMAN, AntDrive  # noqa: E402
+from lerobot_mp.twin.antdrive import (DEADMAN, FINE_HIP_AMP, FINE_STEPS, POSE_RAMP_STEPS, RAMP_STEPS,  # noqa: E402
+                                      AntDrive, wave_actions)
 from lerobot_mp.twin.antmirror import AntMirror, StandInServos, mirror_pose_error  # noqa: E402
 from lerobot_mp.twin.scene import STANDIN_PREFIX as STANDIN  # noqa: E402
 from lerobot_mp.twin.kinematics import pose  # noqa: E402
@@ -99,6 +100,116 @@ def test_wsad_walks_four_ways_with_one_policy_and_turns_in_place():
         assert turned > 60.0, turned                        # obrot w lewo (otwarta petla z robot_route.py)
     finally:
         tw.close()
+
+
+class FakeAnt:
+    """Mrowka bez fizyki: pamieta rozkazy, stawy = ostatni rozkaz, poza = stoi prosto (do testow przejsc)."""
+
+    kind = "sim"
+
+    def __init__(self, start: np.ndarray):
+        self.cmds: list[np.ndarray] = []
+        self.q = aw.action_to_ctrl(start)
+        self.t = 0.0
+
+    def now(self) -> float:
+        return self.t
+
+    def ready(self) -> str:
+        return ""
+
+    def startup(self) -> None:
+        pass
+
+    def command(self, a: np.ndarray) -> None:
+        self.cmds.append(np.array(a, float))
+        self.q = aw.action_to_ctrl(a)
+
+    def advance(self) -> None:
+        self.t += aw.DT
+
+    def joints(self):
+        return self.q.copy(), np.zeros(8)
+
+    def truth(self) -> np.ndarray:
+        return np.eye(4)
+
+    def close(self) -> None:
+        pass
+
+
+def fake_drive():
+    pol = aw.load_policy()
+    io = FakeAnt(aw.start_action(pol.cfg))
+    drive = AntDrive(None, lambda: None, io=io, policy=pol, camera="prawda")
+    pad = Pad(drive)
+    pad.hold("", 1.5)                                      # rampa 20 krokow do pozy startowej
+    assert drive.status.mode == "stoi" and np.allclose(io.cmds[-1], drive.start_pose)
+    io.cmds.clear()
+    return drive, io, pad
+
+
+def cycle_steps(cmds, cycle) -> int:
+    return sum(any(np.allclose(c, row) for row in cycle) for c in cmds)
+
+
+def test_a_turn_tap_completes_one_cycle_and_a_fine_turn_half_of_it():
+    """robot_teleop_v2.py: tapniecie Q = dokladnie jeden cykl obrotu (20 krokow), Z = FINE_STEPS krokow z biodrami
+    o amplitudzie FINE_HIP_AMP; zmiana trybu w trakcie czeka na granice cyklu, spacja przerywa od razu."""
+    drive, io, pad = fake_drive()
+    pad.hold("q", 0.2)                                     # tapniecie: 4 takty
+    pad.hold("", 2.0)
+    full = drive.cycles["obrot_lewo"]
+    assert cycle_steps(io.cmds, full) == len(full) == 20
+    assert drive.status.mode == "stoi" and np.allclose(io.cmds[-1], drive.start_pose)
+    io.cmds.clear()
+    pad.hold("z", 0.1)                                     # maly obrot: pol cyklu
+    pad.hold("", 1.5)
+    fine = drive.cycles["obrot_lewo_maly"]
+    assert cycle_steps(io.cmds, fine) == FINE_STEPS == 10
+    assert max(abs(c[0::2]).max() for c in io.cmds) == pytest.approx(FINE_HIP_AMP, abs=1e-6)
+    io.cmds.clear()
+    pad.hold("e", 1.7)                                     # trzymany: rampa 0,5 s, potem cykle leca dalej...
+    pad.hold("", 2.0)
+    right = drive.cycles["obrot_prawo"]
+    assert cycle_steps(io.cmds, right) == 2 * len(right)   # ...puszczony w drugim cyklu konczy go
+    io.cmds.clear()
+    pad.hold("q", 0.8)                                     # rampa 0,5 s + 6 krokow cyklu...
+    drive.keys("!")                                        # ...spacja w pulpicie: stop natychmiast
+    pad.hold("", 1.0)
+    assert 0 < cycle_steps(io.cmds, full) < len(full)
+
+
+def test_pose_keys_ramp_in_and_hold_then_walking_goes_through_the_start_pose():
+    drive, io, pad = fake_drive()
+    pad.hold("f", 0.1)                                     # klawisz pozy: raz, przy pojawieniu sie
+    pad.hold("", 1.0)
+    assert np.allclose(io.cmds[-1], aw.FLAT_POSE) and drive.status.mode == "stoi"
+    assert drive.status.direction == "plasko"
+    assert len([c for c in io.cmds if not np.allclose(c, aw.FLAT_POSE)]) == POSE_RAMP_STEPS - 1
+    io.cmds.clear()
+    n_ramp = max(RAMP_STEPS, POSE_RAMP_STEPS)
+    pad.hold("w", n_ramp * aw.DT)                          # z pozy plasko do jazdy: rampa przez poze startowa
+    ramp = io.cmds[:n_ramp]
+    assert np.allclose(ramp[-1], drive.start_pose) and not np.allclose(ramp[0], drive.start_pose)
+    pad.hold("w", 1.0)
+    assert drive.status.mode == "jazda"
+    pad.hold("wt", 0.1)                                    # poza w trakcie jazdy: przerywa ruch, W trzymany nie wznawia
+    pad.hold("wt", 1.0)
+    assert drive.status.mode == "stoi" and np.allclose(io.cmds[-1], aw.TIPTOE_POSE)
+    pad.hold("", 0.2)
+    pad.hold("w", 1.0)                                     # po puszczeniu i ponownym wcisnieciu - jedzie
+    assert drive.status.mode == "jazda"
+    pad.hold("n", 0.1)                                     # machanie noga w gore: kostka ponad +1, konczy w postawie
+    pad.hold("", 4.0)
+    assert max(c[3] for c in io.cmds) == pytest.approx(1.5) and np.allclose(io.cmds[-1], aw.SETTLE_POSE)
+    assert len(wave_actions(2, 3, "gora", aw.SETTLE_POSE, aw.SETTLE_POSE)) == 10 + 48 + 5 + 10
+    pad.hold("1", 0.1)                                     # noga 1 prosto, reszta zostaje w postawie
+    pad.hold("", 1.0)
+    assert np.allclose(io.cmds[-1], [0, 1.0, 0, -0.25, 0, -0.25, 0, -0.25])
+    drive.stop("STOP")                                     # STOP w pozie: trzyma ja (bez ruchu), klawisze ignorowane
+    pad.hold("w", 1.0)
+    assert np.allclose(io.cmds[-1], [0, 1.0, 0, -0.25, 0, -0.25, 0, -0.25]) and drive.status.mode == "STOP"
 
 
 def test_deadman_stop_and_the_arm_untouched():
@@ -237,6 +348,9 @@ def test_pad_forwards_keys_and_reports_state():
         req = urllib.request.Request(base + "/keys", data=b"k=wdx", method="POST")
         urllib.request.urlopen(req, timeout=2).read()
         assert d.got == ["wd"]                             # tylko klawisze pulpitu
+        req = urllib.request.Request(base + "/keys", data=b"k=zf!", method="POST")
+        urllib.request.urlopen(req, timeout=2).read()
+        assert d.got[-1] == "zf!"                          # maly obrot, poza, stop natychmiast (spacja)
         st = json.loads(urllib.request.urlopen(base + "/state", timeout=2).read())
         assert st == {"text": "jazda - przod", "level": "ok"}
         page = urllib.request.urlopen(base + "/", timeout=2).read().decode()

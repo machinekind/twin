@@ -8,12 +8,24 @@
 Prawdziwa mrowka jezdzi na wlasnej polityce - realant-rl `robot_teleop.py` po jej stronie - i blizniak jej
 niczego nie wysyla (rozkazy z dwoch miejsc naraz sie gryzly). Blizniak ma jej kopie w fizyce, napedzana
 odczytami serw i dociagana tagami (`antmirror`). W demo tej prawdziwej mrowki nie ma, wiec udaje ja druga
-mrowka w scenie (`scene.STANDIN_PREFIX`), a ten modul to jej `robot_teleop.py`, przeniesiony wiernie (20a6d0d):
+mrowka w scenie (`scene.STANDIN_PREFIX`), a ten modul to jej `robot_teleop_v2.py`, przeniesiony wiernie (6d4d9c6):
 
 **WSAD nie zmienia polityki.** Mrowka jest symetryczna co 90 st., wiec chod w bok albo w tyl to ta sama
 polityka "do przodu" z przemianowanymi nogami (adresowanie serw, `antwalk.DIRECTIONS`) i z obserwacja
-obrocona o ten sam kat - polityka widzi "swoj" przod w kierunku jazdy. Q / E = obrot w miejscu (otwarta petla,
-skalibrowana na robocie). Dwa klawisze naraz - pierwszy. Przejscia, regulator wysokosci, czuwak jak w oryginale.
+obrocona o ten sam kat - polityka widzi "swoj" przod w kierunku jazdy. Dwa klawisze ruchu naraz - pierwszy.
+Przejscia, regulator wysokosci, czuwak jak w oryginale.
+
+**Obroty koncza cykl.** Q / E = obrot w miejscu (otwarta petla, cykl 1 s; robot: ok. 72 st. w lewo / 80 w prawo
+na cykl), Z / C = maly obrot (ta sama petla z biodrami o amplitudzie `FINE_HIP_AMP`, tapniecie = pol cyklu,
+`FINE_STEPS`, w symulacji ok. 13 st.). Zmiana trybu w trakcie obrotu czeka na koniec cyklu (`_pending_mode`),
+wiec tapniecie daje zawsze ten sam kat; stop z pulpitu (`STOP_KEY`, spacja) i STOP panelu przerywaja od razu.
+Ze stania albo z obrotu do jazdy mrowka przechodzi przez poze startowa (rampa, o ile juz w niej nie stoi).
+
+**Pozy** (`POSES`, jednorazowe): 0 = poza startowa polityki, V = postawa (osiadanie z robot_route.py), F = plasko
+(nogi poziomo), T = na palcach (nogi w dol), H / 1-4 = jedna noga prosto (H = przednia lewa; 1-4 = tylna prawa,
+przednia prawa, przednia lewa, tylna lewa), B / N = machanie przednia prawa noga w bok / w gore (raz, potem
+postawa). Poza wjezdza rampa `POSE_RAMP_STEPS` i jest trzymana do nastepnego klawisza; klawisze ruchu trzymane
+w chwili pozy sa ignorowane do puszczenia. Plasko i na palcach to pozy z kroku "Poziom z blatu" (`ant.level_mount`).
 
 Kierunki (`frame`): "widok" (domyslnie) - W = od patrzacego w glab widoku 3D panelu, S = do niego, A / D = w lewo /
 w prawo ekranu; przy wcisnieciu wybierany jest ten z czterech kierunkow mrowki, ktory lezy najblizej
@@ -23,8 +35,9 @@ w prawo ekranu; przy wcisnieciu wybierany jest ten z czterech kierunkow mrowki, 
 Poza w obserwacji polityki (`camera`): "nominal" (domyslnie, jak `robot_teleop.py` - idealny przejazd, mrowka
 nie ma kamery), "prawda" (z fizyki) albo "tagi" (kamery stanowiska - tryb `live` z robot_policy.py).
 
-Bezpieczenstwo: klawisze to czuwak - brak odswiezenia przez `DEADMAN` = puszczone; STOP (`stop`) trzyma poze
-startowa i ignoruje klawisze do `clear`; przewrocona (os z mrowki > 50 st. od pionu) = STOP.
+Bezpieczenstwo: klawisze to czuwak - brak odswiezenia przez `DEADMAN` = puszczone; STOP (`stop`) przerywa
+jazde i obrot od razu (rampa do pozy startowej), trzymana poza zostaje, klawisze ignorowane do `clear`;
+przewrocona (os z mrowki > 50 st. od pionu) = STOP.
 """
 
 from __future__ import annotations
@@ -33,7 +46,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -41,8 +54,22 @@ from . import antwalk as aw
 from .ant import Ant, locate
 from .scene import STANDIN_PREFIX
 
-#: Klawisz -> tryb: W S A D - ta sama polityka w czterech kierunkach, Q E - obrot w miejscu (robot_teleop.py).
-KEYS = {"w": "przod", "s": "tyl", "a": "lewo", "d": "prawo", "q": "obrot_lewo", "e": "obrot_prawo"}
+#: Klawisz ruchu (trzymany) -> tryb: W S A D - ta sama polityka w czterech kierunkach, Q E - obrot w miejscu,
+#: Z C - maly obrot (robot_teleop_v2.py).
+KEYS = {"w": "przod", "s": "tyl", "a": "lewo", "d": "prawo", "q": "obrot_lewo", "e": "obrot_prawo",
+        "z": "obrot_lewo_maly", "c": "obrot_prawo_maly"}
+#: Klawisz pozy (jednorazowy, robot_teleop_v2.py) -> poza; H = przednia lewa noga (3) prosto.
+POSES = {"0": "start", "v": "postawa", "f": "plasko", "t": "palce", "h": "noga_3", "1": "noga_1", "2": "noga_2",
+         "3": "noga_3", "4": "noga_4", "b": "machanie_bok", "n": "machanie_gora"}
+#: Znak z pulpitu: stop natychmiast (spacja) - takze w polowie cyklu obrotu.
+STOP_KEY = "!"
+#: Maly obrot (Z / C): amplituda bioder i kroki na tapniecie (pol cyklu; robot_teleop_v2.py --fine_hip_amp, --fine_steps).
+FINE_HIP_AMP, FINE_STEPS = 0.2, 10
+#: Kroki rampy do pozy z klawisza (robot_teleop_v2.py POSE_RAMP_STEPS).
+POSE_RAMP_STEPS = 10
+#: Machanie noga (robot_route.wave_actions): noga, powtorzenia, kroki na okres, amplituda biodra, kostka w gorze, rampa.
+WAVE_LEG, WAVE_COUNT, WAVE_PERIOD_STEPS, WAVE_HIP_AMP, WAVE_ANKLE_HIGH, WAVE_RAMP_STEPS = 2, 3, 16, 0.8, 1.5, 10
+_KEEP = object()                                  # brak odlozonej zmiany trybu
 #: Bez odswiezenia klawiszy przez tyle sekund = puszczone (pulpit sle stan co 0,1 s; robot_teleop.py: 0,5 s).
 DEADMAN = 0.4
 #: Poza z kamer starsza niz tyle sekund = brak pozy: polityka nie rusza z miejsca.
@@ -142,6 +169,32 @@ class AntStatus:
     height: str = ""
 
 
+def wave_actions(leg: int, count: int, style: str, last_pose: np.ndarray, settle_pose: np.ndarray) -> list[np.ndarray]:
+    """robot_route.wave_actions: stanie na trzech nogach, jedna w gorze macha, potem w dol do postawy.
+
+    `style` "gora": kostka od poziomu w gore do `WAVE_ANKLE_HIGH` (ponad +1 - tylko robot, symulacja obcina);
+    inaczej biodro w bok. Rampy: do postawy z uniesiona noga, po machaniu z powrotem, na koniec do `settle_pose`.
+    """
+    hip, ankle = 2 * (leg - 1), 2 * (leg - 1) + 1
+    settle = np.asarray(settle_pose, float)
+    stance = settle.copy()
+    stance[ankle] = 1.0
+    last = np.asarray(last_pose, float)
+    out = [last + (stance - last) * i / WAVE_RAMP_STEPS for i in range(1, WAVE_RAMP_STEPS + 1)]
+    for k in range(count * WAVE_PERIOD_STEPS):
+        pose = stance.copy()
+        phase = 2 * np.pi * k / WAVE_PERIOD_STEPS
+        if style == "gora":
+            pose[ankle] = 1.0 + (WAVE_ANKLE_HIGH - 1.0) * (1 - np.cos(phase)) / 2   # poziomo -> w gore -> poziomo
+        else:
+            pose[hip] = WAVE_HIP_AMP * np.sin(phase)
+        out.append(pose)
+    half = WAVE_RAMP_STEPS // 2
+    out += [out[-1] + (stance - out[-1]) * i / half for i in range(1, half + 1)]
+    out += [stance + (settle - stance) * i / WAVE_RAMP_STEPS for i in range(1, WAVE_RAMP_STEPS + 1)]
+    return out
+
+
 def nominal_pose(psi: float, theta: float, p0: np.ndarray, v: float, t: float, z: float = NOMINAL_Z) -> np.ndarray:
     """Poza "kamery nominalnej" (robot_policy.py --camera nominal): jazda prosto kursem `psi` z predkoscia
     z treningu, korpus poziomo na wysokosci z treningu - tak widzi siebie polityka w idealnym przejezdzie."""
@@ -154,9 +207,11 @@ def nominal_pose(psi: float, theta: float, p0: np.ndarray, v: float, t: float, z
 class AntDrive:
     """Jedna petla mrowki: klawisze, polityka, przejscia, regulator wysokosci, STOP.
 
-    Przejscia jak `robot_teleop.Teleop.set_mode`: stoi -> jazda od razu z pozy startowej; jazda -> inny kierunek:
-    restart obserwatora z nowym przypisaniem nog, bez rampy; obrot -> jazda, cokolwiek -> obrot albo stop: rampa
-    przez poze startowa. `tick` = jeden krok 50 ms.
+    Przejscia jak `robot_teleop_v2.Teleop.set_mode`: stoi / obrot -> jazda: rampa do pozy startowej (o ile mrowka
+    juz w niej nie stoi); jazda -> inny kierunek: restart obserwatora z nowym przypisaniem nog, bez rampy;
+    cokolwiek -> obrot albo stop: rampa przez poze startowa; obrot konczy najpierw swoj cykl (chyba ze stop
+    wymuszony). Klawisz pozy (`POSES`) przerywa ruch i wjezdza rampa do pozy, trzymanej potem jako "stanie".
+    `tick` = jeden krok 50 ms.
     """
 
     def __init__(self, twin, get_ant: Callable[[], Ant | None], io=None, policy: aw.WalkPolicy | None = None,
@@ -180,11 +235,23 @@ class AntDrive:
         self.height = aw.HeightHold(enabled=hold_height)
         self.status = AntStatus()
         self.start_pose = aw.start_action(self.policy.cfg)
-        self.cycles = {"obrot_lewo": aw.turn_cycle(1.0), "obrot_prawo": aw.turn_cycle(-1.0)}
+        self.cycles = {"obrot_lewo": aw.turn_cycle(1.0), "obrot_prawo": aw.turn_cycle(-1.0),
+                       "obrot_lewo_maly": aw.turn_cycle(1.0, hip_amp=FINE_HIP_AMP),
+                       "obrot_prawo_maly": aw.turn_cycle(-1.0, hip_amp=FINE_HIP_AMP)}
+        n_cycle = len(self.cycles["obrot_lewo"])
+        #: Kroki, po ktorych obrot moze zmienic tryb: pelny cykl, maly obrot - `FINE_STEPS`.
+        self._quantum = {"obrot_lewo": n_cycle, "obrot_prawo": n_cycle,
+                         "obrot_lewo_maly": FINE_STEPS, "obrot_prawo_maly": FINE_STEPS}
+        self._pending_mode: Any = _KEEP
         self._lock = threading.Lock()
         self._keys, self._keys_t = "", -1e9
+        self._held_poses = ""                          # klawisze poz trzymane w pulpicie (brzeg = zagraj raz)
+        self._play: str | None = None                  # poza do zagrania w najblizszym takcie
+        self._force = False                            # stop natychmiast (spacja w pulpicie)
+        self._mute = ""                                # klawisze ruchu ignorowane do puszczenia (po klawiszu pozy)
         self._stopped = ""
         self._last_cmd = self.start_pose.copy()
+        self._idle: tuple[np.ndarray, str] = (self.start_pose.copy(), "start")   # poza trzymana bez rozkazu
         self._queue: deque[np.ndarray] = deque()
         self._mode: str | None = None                 # None = stoi, kierunek z DIRECTIONS albo obrot_*
         self._pending_reset = False
@@ -200,14 +267,26 @@ class AntDrive:
 
     # ---------------------------------------------------------------- wejscia
     def keys(self, pressed: str) -> None:
-        """Stan klawiszy z pulpitu (np. "w", "wd", "") - czuwak: trzeba go odswiezac co < `DEADMAN`."""
-        order = "".join(k for k in str(pressed).lower() if k in KEYS)
+        """Stan klawiszy z pulpitu (np. "w", "wd", "") - czuwak: trzeba go odswiezac co < `DEADMAN`.
+
+        Klawisze ruchu (`KEYS`) sa stanem; klawisz pozy (`POSES`) gra raz przy wcisnieciu; `STOP_KEY` = stop natychmiast.
+        """
+        text = str(pressed).lower()
+        order = "".join(k for k in text if k in KEYS)
+        poses = "".join(k for k in text if k in POSES)
         with self._lock:
+            new = [k for k in poses if k not in self._held_poses]
+            self._held_poses = poses
+            if new:
+                self._play = POSES[new[0]]
+            if STOP_KEY in text:
+                self._force = True
             self._keys, self._keys_t = order, self.clock()
 
     def stop(self, reason: str = "STOP") -> None:
         with self._lock:
             self._stopped = reason or "STOP"
+            self._play = None
 
     def clear(self) -> None:
         with self._lock:
@@ -303,22 +382,31 @@ class AntDrive:
         self._measure(now)
         with self._lock:
             keys = self._keys if wall - self._keys_t < DEADMAN else ""
+            self._mute = "".join(k for k in self._mute if k in keys)      # puszczony klawisz znow dziala
+            keys = "".join(k for k in keys if k not in self._mute)
             stopped = self._stopped
+            play, self._play = self._play, None
+            force, self._force = self._force, False
         if self._pose is not None:
             tilt = float(np.degrees(np.arccos(np.clip(self._pose[1][2, 2], -1, 1))))
             if tilt > FALL_TILT_DEG and not stopped:
                 self.stop(f"mrowka przewrocona ({tilt:.0f} st. od pionu)")
                 stopped = self._stopped
+        if play is not None and not stopped:
+            self._play_pose(play)
+            with self._lock:
+                self._mute = self._keys                               # trzymany ruch nie wznawia sie sam
+            keys, force = "", True
         want = None if stopped else self._resolve(keys[:1])
         if want in aw.DIRECTIONS and self.camera == "tagi" and not self._pose_fresh(now):
             self.status.note = "brak pozy mrowki z kamer - polityka bez niej jest slepa; stoi"
             want = None
-        self._set_mode(want)
+        self._set_mode(want, force=force or bool(stopped))
         self._step(now)
         st = self.status
         st.mode = ("STOP" if stopped else "przejscie" if self._queue else "stoi" if self._mode is None else
                    "obrot" if self._mode in self.cycles else "jazda")
-        st.direction = self._mode or ""
+        st.direction = self._mode or ("" if self._idle[1] == "start" else self._idle[1])
         st.keys = keys
         st.pose_age = None if self._pose is None else now - self._pose[0]
         if stopped:
@@ -360,25 +448,58 @@ class AntDrive:
         frm = self._last_cmd
         self._queue.extend(frm + (np.asarray(target, float) - frm) * i / n for i in range(1, n + 1))
 
-    def _set_mode(self, mode: str | None) -> None:
-        """Zadany tryb -> nowy tryb z przejsciami w kolejce (robot_teleop.Teleop.set_mode)."""
+    def _set_mode(self, mode: str | None, force: bool = False) -> None:
+        """Zadany tryb -> nowy tryb z przejsciami w kolejce (robot_teleop_v2.Teleop.set_mode).
+
+        Obrot konczy najpierw swoj cykl (obrot w trakcie rampy: pelny cykl; maly obrot: `FINE_STEPS`), chyba ze
+        `force` - wtedy zmiana od razu.
+        """
         if mode == self._mode:
+            self._pending_mode = _KEEP
             return
+        quantum = self._quantum.get(self._mode, 1)
+        if self._mode in self.cycles and not force and (self._queue or self._turn_i == 0
+                                                        or self._turn_i % quantum != 0):
+            self._pending_mode = mode                     # `_step` zmieni tryb na granicy cyklu
+            return
+        self._pending_mode = _KEEP
         walking = self._mode in aw.DIRECTIONS
         if mode in aw.DIRECTIONS:
-            if not walking and self._mode is not None:    # z obrotu: przez poze startowa
-                self._enqueue_ramp(self.start_pose)
+            if not walking and not np.allclose(self._last_cmd, self.start_pose, atol=1e-6):
+                self._enqueue_ramp(self.start_pose, max(RAMP_STEPS, POSE_RAMP_STEPS))   # ze stania / obrotu: przez start
             self._jidx, self._pending_reset = aw.leg_index(mode), True
         elif mode in self.cycles:
-            self._enqueue_ramp(self.start_pose)
+            self._enqueue_ramp(self.start_pose)           # najpierw stanie, obrot z niego
             self._turn_i = 0
         else:
             self._queue.clear()
             self._enqueue_ramp(self.start_pose)
+            self._idle = (self.start_pose.copy(), "start")
         self._mode = mode
 
+    def _play_pose(self, name: str) -> None:
+        """Klawisz pozy (robot_teleop_v2.Teleop.play): przerwij ruch, rampa do pozy i trzymaj ja; machanie gra raz
+        i konczy w postawie."""
+        self._set_mode(None, force=True)
+        self._queue.clear()
+        last = self._last_cmd
+        if name.startswith("machanie"):
+            self._queue.extend(wave_actions(WAVE_LEG, WAVE_COUNT, name.split("_")[1], last, aw.SETTLE_POSE))
+            target = aw.SETTLE_POSE.copy()
+        else:
+            if name.startswith("noga_"):
+                leg = int(name.split("_")[1])
+                target = np.array(last, float)
+                target[2 * (leg - 1)], target[2 * (leg - 1) + 1] = 0.0, 1.0
+            else:
+                target = {"start": self.start_pose, "postawa": aw.SETTLE_POSE, "plasko": aw.FLAT_POSE,
+                          "palce": aw.TIPTOE_POSE}[name].copy()
+            self._enqueue_ramp(target, POSE_RAMP_STEPS)
+        self._idle = (target, name)
+
     def _apply(self, cmd: np.ndarray) -> None:
-        self._last_cmd = np.clip(np.asarray(cmd, float), -1, 1)
+        # Kostki ponad +1 (za poziom) tylko na robocie, do machania noga; symulacja obcina (`action_to_ctrl`).
+        self._last_cmd = np.clip(np.asarray(cmd, float), -1, [1.0, aw.ANKLE_ACTION_MAX] * 4)
         self.io.command(self._last_cmd)
 
     def _step(self, now: float) -> None:
@@ -417,8 +538,10 @@ class AntDrive:
             cycle = self.cycles[self._mode]
             self._apply(cycle[self._turn_i % len(cycle)])
             self._turn_i += 1
+            if self._turn_i % self._quantum[self._mode] == 0 and self._pending_mode is not _KEEP:
+                self._set_mode(self._pending_mode)        # granica cyklu: odlozona zmiana trybu
         else:
-            self._apply(self.start_pose)
+            self._apply(self._idle[0])
 
     def _feed_nominal(self, now: float, theta: float) -> None:
         p0, t0 = self._nominal

@@ -3,12 +3,15 @@
     pad = AntPad(drive, port=8091).start()              # http://<host>:8091/ - osobna karta albo ramka w panelu
     pad.html_embed()                                    # ramka do `gui.add_html` w panelu viser
 
-Viser nie podaje zdarzen klawiatury, wiec klawisze zbiera strona pulpitu: W S A D (przod, tyl, lewo, prawo -
-wzgledem widoku 3D albo mrowki, `AntDrive.frame`), Q E (obrot w miejscu), spacja - stop. Kamera 3D visera tez
-jezdzi na WASD QE: pulpit przechwytuje te klawisze wczesniej (faza przechwytywania na window) i ich nie oddaje -
-kamere przesuwaja wtedy strzalki i mysz. Strona wysyla stan wcisnietych klawiszy co 0,1 s, dopoki ktorys jest
-wcisniety, i od razu po puszczeniu; petla mrowki traktuje go jak czuwak (`antdrive.DEADMAN`) - zamkniete okno,
-zerwana siec albo uspiona karta = mrowka staje. Utrata fokusu (Alt+Tab) puszcza wszystkie klawisze.
+Viser nie podaje zdarzen klawiatury, wiec klawisze zbiera strona pulpitu (robot_teleop_v2.py): W S A D (przod,
+tyl, lewo, prawo - wzgledem widoku 3D albo mrowki, `AntDrive.frame`), Q E (obrot w miejscu), Z C (maly obrot),
+0 V F T (pozy: start, postawa, plasko, na palcach), H 1-4 (noga prosto), B N (machanie), spacja - stop natychmiast
+(`antdrive.STOP_KEY`). Kamera 3D visera tez jezdzi na WASD QE: pulpit przechwytuje te klawisze wczesniej (faza
+przechwytywania na window) i ich nie oddaje - kamere przesuwaja wtedy strzalki i mysz. Strona wysyla stan
+wcisnietych klawiszy co 0,1 s, dopoki ktorys jest wcisniety, i od razu po puszczeniu; petla mrowki traktuje go jak
+czuwak (`antdrive.DEADMAN`) - zamkniete okno, zerwana siec albo uspiona karta = mrowka staje. Klawisz pozy jest
+w stanie jak kazdy inny - petla gra poze raz, przy jego pojawieniu sie. Utrata fokusu (Alt+Tab) puszcza wszystkie
+klawisze.
 
 Ramka w panelu (`html_embed`) jest z tego samego zrodla co panel (srcdoc), wiec slucha klawiszy calego panelu
 (poza polami tekstowymi) i pyta ten serwer o adres z nazwy hosta panelu - dziala takze przy panelu zdalnym.
@@ -23,11 +26,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-#: Klawisze, ktore pulpit przepuszcza (reszta ignorowana).
-PAD_KEYS = "wsadqe"
+#: Klawisze, ktore pulpit przepuszcza (reszta ignorowana): ruch, pozy i "!" = stop natychmiast (spacja).
+PAD_KEYS = "wsadqezc0vfth1234bn!"
 
 _SCRIPT = r"""
-const CODES = {KeyW: "w", KeyS: "s", KeyA: "a", KeyD: "d", KeyQ: "q", KeyE: "e"};   // event.code: kazdy uklad klawiatury
+const CODES = {KeyW: "w", KeyS: "s", KeyA: "a", KeyD: "d", KeyQ: "q", KeyE: "e", KeyZ: "z", KeyC: "c",   // event.code: kazdy uklad
+               Digit0: "0", KeyV: "v", KeyF: "f", KeyT: "t", KeyH: "h", Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4",
+               KeyB: "b", KeyN: "n"};
 const held = [];                                     // kolejnosc wcisniecia - pierwszy wygrywa
 let url = null, timer = null;
 function base() {
@@ -44,11 +49,14 @@ function send() {
 function press(k) { if (!held.includes(k)) { held.push(k); send(); } if (!timer) timer = setInterval(send, 100); }
 function release(k) { const i = held.indexOf(k); if (i >= 0) held.splice(i, 1); send(); if (!held.length && timer) { clearInterval(timer); timer = null; } }
 function releaseAll() { held.length = 0; send(); if (timer) { clearInterval(timer); timer = null; } }
+// Spacja / przycisk stop: puszcza wszystko i wysyla "!" - stop natychmiast, takze w polowie cyklu obrotu.
+function stopNow() { held.length = 0; fetch(base() + "/keys", {method: "POST", mode: "no-cors", body: "k=!"}).catch(() => {}); paint();
+  if (timer) { clearInterval(timer); timer = null; } }
 function typing(e) { const t = e.target; return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable); }
 // Faza przechwytywania na window: przed kamera 3D visera (slucha WASD QE na document) - klawisze mrowki jej nie ruszaja,
 // strzalki zostaja dla kamery.
 function onDown(e) { if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.code === "Space") { releaseAll(); e.preventDefault(); e.stopImmediatePropagation(); return; }
+  if (e.code === "Space") { stopNow(); e.preventDefault(); e.stopImmediatePropagation(); return; }
   const k = CODES[e.code]; if (!k) return; e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat || !held.includes(k)) press(k); }
 function onUp(e) { const k = CODES[e.code]; if (!k) return; e.stopImmediatePropagation(); release(k); }
 function attach(win) {
@@ -66,7 +74,7 @@ document.querySelectorAll("button[data-k]").forEach(b => {
   b.addEventListener("pointerdown", e => { e.preventDefault(); b.setPointerCapture(e.pointerId); press(k); });
   b.addEventListener("pointerup", () => release(k)); b.addEventListener("pointercancel", () => release(k));
 });
-document.getElementById("stop").addEventListener("click", releaseAll);
+document.getElementById("stop").addEventListener("click", stopNow);
 function paint() { document.querySelectorAll("button[data-k]").forEach(b => b.classList.toggle("on", held.includes(b.dataset.k))); }
 async function poll() {
   try { const r = await fetch(base() + "/state"); const s = await r.json();
@@ -83,15 +91,19 @@ _PAGE = """<!doctype html><html lang="pl"><head><meta charset="utf-8"><title>Mro
 @media (prefers-color-scheme:dark){:root{--bg:#1b1f27;--fg:#e8ecf2;--btn:#2b313c;--on:#4a90e2}}
 body{margin:0;padding:8px;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;user-select:none}
 .pad{display:grid;grid-template-columns:repeat(3,56px);gap:6px;justify-content:center;margin:4px 0 8px}
+.poses{display:grid;grid-template-columns:repeat(4,56px);gap:6px;justify-content:center;margin:0 0 8px}
 button{height:48px;border:0;border-radius:8px;background:var(--btn);color:var(--fg);font-size:18px;font-weight:600;touch-action:none}
-button.on{background:var(--on);color:#fff}#stop{grid-column:1/4;height:36px;font-size:14px;background:var(--bad);color:#fff}
+.poses button{height:40px;font-size:12px;font-weight:500}
+button.on{background:var(--on);color:#fff}#stop{height:48px;font-size:13px;background:var(--bad);color:#fff}
 #st{text-align:center;min-height:2.6em;font-size:13px}.ok{color:var(--ok)}.bad{color:var(--bad)}.mid{color:var(--mid)}
 small{display:block;text-align:center;opacity:.7}
 </style></head><body>
 <div class="pad"><button data-k="q">Q</button><button data-k="w">W</button><button data-k="e">E</button>
 <button data-k="a">A</button><button data-k="s">S</button><button data-k="d">D</button>
-<button id="stop">stop (spacja)</button></div>
-<div id="st">...</div><small>W S A D: od siebie, do siebie, w lewo, w prawo (ta sama polityka); Q E: obrot. Trzymaj klawisz. Kamera: strzalki i mysz.</small>
+<button data-k="z">Z</button><button id="stop">stop (spacja)</button><button data-k="c">C</button></div>
+<div class="poses"><button data-k="0">0 start</button><button data-k="v">V postawa</button><button data-k="f">F plasko</button><button data-k="t">T palce</button></div>
+<div id="st">...</div><small>W S A D: od siebie, do siebie, w lewo, w prawo (ta sama polityka); Q E: obrot (tapniecie = cykl), Z C: maly obrot.
+0 V F T: pozy; H 1-4: noga prosto; B N: machanie. Trzymaj klawisz ruchu. Kamera: strzalki i mysz.</small>
 <script>__SCRIPT__</script></body></html>"""
 
 
