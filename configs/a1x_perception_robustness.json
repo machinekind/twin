@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "simulation_only": true,
+  "baseline_policy_sha256": "22d796227530e8775c1843300054768d454a5fcf5c21268e7a9416de88530a43",
+  "development_seeds": [50000,50001,50002,50003,50004,50005,50006,50007,50008,50009,50010,50011,50012,50013,50014,50015,50016,50017,50018,50019],
+  "held_out_seeds": [52000,52001,52002,52003,52004,52005,52006,52007,52008,52009,52010,52011,52012,52013,52014,52015,52016,52017,52018,52019],
+  "held_out_use": "Reserve during development and fitting. Freeze policy and conditions before first use; later reuse is regression evidence.",
+  "training_seed_range": [53000,53999],
+  "bias_frame": "arm base; rotation changes position about base origin and object orientation",
+  "noise": "Independent Gaussian position and rotation-vector components, with separate seeded streams; resample once per delivered observation timestamp",
+  "delay": "Latest captured pose at or before now-delay; log effective age and startup warmup; no interpolation",
+  "translation_mm": [0,1,2,5,10,20],
+  "rotation_deg": [0,0.5,1,2,5],
+  "directions": ["+x","-x","+y","-y","+z","-z"],
+  "position_noise_std_mm": [0,1,2,5],
+  "rotation_noise_std_deg": [0,0.5,1,2],
+  "delay_ms": [0,50,100,200],
+  "minimum_successes_per_20": 18,
+  "required_true_hold_s": 2,
+  "allowed_prohibited_contacts": 0,
+  "allowed_numerical_failures": 0,
+  "tolerance": "Largest tested magnitude with at least 18/20 true successes in every tested direction at that and all lower levels; report counts, uncertainty and scope. No untested or physical tolerance claims."
+}

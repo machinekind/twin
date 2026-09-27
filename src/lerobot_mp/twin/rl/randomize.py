@@ -111,13 +111,26 @@ class Randomization:
     centre: Dynamics = field(default_factory=Dynamics)
     #: Najmniejsze opoznienie akcji [takty]; bez randomizacji = max_delay = zmierzone.
     min_delay: int = 0
+    #: Linear joint measurement noise [m], per jaw coordinate, not total gap.
+    #: Provisional simulation setting; replace with measured G1 noise before deployment.
+    obs_noise_m: float = 0.0003
+
+    def joint_noise_std(self, kin) -> np.ndarray:
+        """Per-coordinate standard deviations in the model's actual joint units."""
+        import mujoco
+
+        if any(not np.isfinite(v) or v < 0 for v in (self.obs_noise_deg, self.obs_noise_m)):
+            raise ValueError("Joint observation noise must be finite and nonnegative")
+        types = [kin.model.joint(kin.prefix + name).type[0] for name in kin.spec.joints]
+        return np.where(np.asarray(types) == mujoco.mjtJoint.mjJNT_SLIDE,
+                        self.obs_noise_m, np.radians(self.obs_noise_deg))
 
     @staticmethod
     def none() -> Randomization:
         """Bez randomizacji, model Menagerie, idealna percepcja - do testow i porownan deterministycznych."""
         one = (1.0, 1.0)
         return Randomization(one, one, one, one, one, one, obs_noise_deg=0.0, max_delay=0, cube_delay=0,
-                             cube_period=1, cube_noise=0.0, fold_yaw=False)
+                             cube_period=1, cube_noise=0.0, fold_yaw=False, obs_noise_m=0.0)
 
     @staticmethod
     def nominal(dyn: Dynamics | None = None) -> Randomization:

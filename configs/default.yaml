@@ -150,6 +150,7 @@ a1x:
   stream_hz: 200.0           # strumien 0x050/0x051 [Hz]
   max_step_deg_s: 90.0       # wlasny limit predkosci backendu (pod nadzorem blizniaka)
   stale_ms: 150.0            # brak 0x052 dluzej = lacze milczy, wysylka stoi
+  command_timeout_s: 0.25    # independent CAN sender stops if the control loop stops renewing targets
   frozen_frames: 50          # tyle identycznych 0x052 = ramie zwolnione (FF 2): wylacz i wlacz zasilanie
   deaf_err_deg: 3.0          # rozkaz-pomiar tyle st. przez deaf_s przy stojacym stawie
   deaf_s: 1.0                #   = ramie gluche (Wlacz silniki A1X) albo zablokowane -> STOP

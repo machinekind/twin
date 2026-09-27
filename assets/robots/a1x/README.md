@@ -31,8 +31,12 @@ Model ramienia Galaxea A1X dla MuJoCo, wygenerowany skryptem
    akcje ramienia, kontakt z blatem) do ~36 mm, teraz najgorzej ok. 12 mm, zwykle 2-5 mm.
    Krotsza stala czasu niz 0.01 s przy kroku 5 ms nic nie daje (MuJoCo podnosi ja do 2 x krok).
 
-Kazda regula ma test w `tests/test_twin_a1x_sim.py`, podobnie jak to, ze skrypt odtwarza
-zatwierdzony `a1x.xml` bajt w bajt.
+The former rule-by-rule and byte-for-byte regeneration tests are not present in
+this checkout. `tests/test_twin_a1x_sim.py` covers staged homing; collision and RL
+contracts have separate tests. Current measured grasp and CPU/GPU evidence is in
+[A1X_OFFLINE_VALIDATION.md](../../../docs/A1X_OFFLINE_VALIDATION.md). The five nominal
+scripted lifts there have less than 0.6 mm jaw coupling error; the larger historical
+errors above involved different, aggressive contact trajectories.
 
 ## Regeneracja
 

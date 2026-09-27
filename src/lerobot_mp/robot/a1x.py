@@ -11,7 +11,8 @@ Jednostki: jak w calej aplikacji - stawy ramienia w stopniach, chwytak 0..100
 * staw: ``rad = radians(st. + a1x.joint_offsets_deg[i])`` (przesuniecie zera, J3 ~ +1,49 st.),
 * chwytak: p_des liniowo ``closed + v/100 * (open - closed)`` (bardziej dodatnie = ciasniej);
   pomiar z grupy 7 ramki 0x052 przez dwa punkty `gripper_fb_closed/open`, gdy zmierzone,
-  inaczej petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`).
+  without calibrated feedback the displayed opening is only a placeholder,
+  and gripper motion is refused.
 
 Zasady bezpieczenstwa (galaxeo docs/SAFETY.md, docs/PROTOCOL.md):
 
@@ -19,9 +20,9 @@ Zasady bezpieczenstwa (galaxeo docs/SAFETY.md, docs/PROTOCOL.md):
   poze, w ktorej stoi; blizniak tez nie wysyla nic do pierwszego ruchu.
 * Strumien p_des startuje od ZMIERZONEJ pozy i jedzie najwyzej `max_step_deg_s`,
   wiec zly pierwszy rozkaz nie skacze. Strumien leci z `stream_hz` i powtarza ostatni cel.
-* Stara telemetria (> `stale_ms`) albo zamrozona (FF 2) = wysylka stoi, `link_silent`
-  i blad w `faults()` - blizniak robi STOP i startuje potem od pomiaru. Cele ramienia
-  i chwytaka przepadaja: po powrocie ramek nic nie idzie do nastepnego `send_joints`.
+* Stale/frozen telemetry, a command older than `command_timeout_s`, or an I/O
+  failure cancel targets and latch the sender. Fresh telemetry alone cannot
+  resume motion: `resume_commands()` and a new command are required.
 * Nigdy FF 2 (zwolnienie: ramie bez hamulcow opada), nigdy kp 0 (ramie gluche),
   nigdy heartbeat 0x023. Wlaczenie FF 1 -> 5 -> 6 tylko na zyczenie (`enable`),
   z p_des = pomiar przed, miedzy i po kazdym kodzie.
@@ -130,6 +131,8 @@ class A1XArm(RobotBackend):
         self._goal: dict[str, float] = {}            # ostatnie cele w jednostkach aplikacji
         self._pinned = False                         # sekwencja wlaczenia: p_des = pomiar
         self._last_io: float | None = None
+        self._command_time: float | None = None
+        self._halt_reason = ""
         self._deaf_since: dict[int, float] = {}
         self._deaf: str = ""
         self._bus_error: str = ""
@@ -251,6 +254,7 @@ class A1XArm(RobotBackend):
                 if not self._bus_error:
                     logger.error("A1X: blad lacza CAN: %s", exc)
                 self._bus_error = str(exc)
+                self.cancel_commands(f"CAN sender failure: {exc}")
                 self._stop.wait(0.1)
                 continue
             nxt += period
@@ -286,7 +290,7 @@ class A1XArm(RobotBackend):
     def io_step(self, now: float) -> None:
         """Jeden takt wymiany: odbior wszystkich ramek, potem (gdy wolno) 0x050 i 0x051."""
         with self._lock:
-            if self._bus is None:
+            if self._bus is None or not self._connected:
                 return
             self._drain(now)
             dt = (1.0 / self.acfg.stream_hz if self._last_io is None
@@ -298,10 +302,15 @@ class A1XArm(RobotBackend):
                 # jechac do celu sprzed przerwy (ramie po wylacz/wlacz albo zablokowane stoi gdzie
                 # indziej, a A1X nie ma hamulcow). Po powrocie ramek nic nie idzie do nastepnego
                 # `send_joints`: ramie trzyma poze, w ktorej stoi, chwytak ostatni p_des.
-                self._p_target = self._p_stream = None
-                self._g_target = self._g_stream = None
-                self._g_frozen = False
-                self._deaf_since, self._deaf = {}, ""
+                if self._p_target is not None or self._g_target is not None:
+                    self.cancel_commands("feedback lost or frozen; clear STOP after feedback recovers")
+                return
+            if self._halt_reason:
+                return
+            if (not self._pinned and (self._p_target is not None or self._g_target is not None)
+                    and self._command_time is not None
+                    and now - self._command_time > self.acfg.command_timeout_s):
+                self.cancel_commands("command timeout; controller stopped renewing targets")
                 return
             if self._pinned:
                 self._p_target = self._measured_rad()
@@ -344,6 +353,27 @@ class A1XArm(RobotBackend):
         self._deaf = worst
 
     # ------------------------------------------------------------------ wymiana
+    def cancel_commands(self, reason: str) -> None:
+        """Latch a stop in the independent CAN sender. Never send a release frame."""
+        with self._lock:
+            self._halt_reason = self._halt_reason or reason or "commands cancelled"
+            self._p_target = self._p_stream = None
+            self._g_target = self._g_stream = None
+            self._g_frozen = False
+            self._command_time = None
+            self._goal.clear()
+            self._deaf_since, self._deaf = {}, ""
+
+    def resume_commands(self) -> None:
+        """Explicit recovery only; the next command starts a new ramp from feedback."""
+        with self._lock:
+            if (not self._connected or self._fb is None or self._stale_now(self._clock())
+                    or self._frozen() or self._bus_error
+                    or str(getattr(self._bus, "state", "ok")) in ("bus-off", "error-passive")):
+                raise RuntimeError("A1X: fresh healthy feedback required before clearing STOP")
+            self._halt_reason = ""
+            self._link_silent = False
+
     def read_joints(self) -> dict[str, float]:
         """Stopnie ramienia (minus przesuniecie zera) + chwytak 0..100. Przy ciszy - ostatnie wartosci."""
         with self._lock:
@@ -366,8 +396,15 @@ class A1XArm(RobotBackend):
         with self._lock:
             if not self._connected:
                 raise RuntimeError("Ramie A1X nie jest polaczone")
-            if self._link_silent or self._pinned or self._fb is None:
+            if self._halt_reason or self._link_silent or self._pinned or self._fb is None:
                 return {}
+            # Validate the whole request before changing any target.
+            if any(not math.isfinite(float(v)) for v in targets.values()):
+                raise ValueError("A1X targets must be finite")
+            if (GRIPPER in targets and not self.gripper_measured()
+                    and abs(float(targets[GRIPPER]) - self._grip_app()) > GRIP_START_DELTA):
+                raise RuntimeError("A1X gripper requires calibrated feedback before motion; "
+                                   "set gripper_fb_closed/open from physical measurements")
             sent: dict[str, float] = {}
             arm = [n for n in self.arm if n in targets]
             if arm:
@@ -394,7 +431,8 @@ class A1XArm(RobotBackend):
                     if self._g_target is None:
                         # Pierwszy rozkaz: strumien od ZGLOSZONEGO rozwarcia, nie od celu.
                         self._g_target, self._g_stream = want, self._pdes(reported)
-                    elif want < self._g_target:             # otwieranie zawsze przechodzi
+                    elif want < self._g_target or (self._g_stream is not None and want < self._g_stream):
+                        # Renewing an opening target must not invoke the closing-force stop.
                         self._g_target, self._g_frozen = want, False
                     elif not self._g_frozen:
                         if abs(self._fb.eff[6]) > self.acfg.gripper_force and self._g_stream is not None:
@@ -404,6 +442,8 @@ class A1XArm(RobotBackend):
                     self._g_cmd = v
                 sent[GRIPPER] = v
             self._goal.update(sent)
+            if sent:
+                self._command_time = self._clock()
             return sent
 
     def _fresh_fb(self) -> Any:
@@ -442,6 +482,8 @@ class A1XArm(RobotBackend):
                 now = self._clock()
                 if self._bus_error:
                     out.append(f"magistrala CAN: {self._bus_error}")
+                if self._halt_reason:
+                    out.append(f"A1X stopped: {self._halt_reason}")
                 if self._stale_now(now):
                     out.append(f"brak odpowiedzi ramienia od {(now - self._fb_t) * 1000.0:.0f} ms")
                 elif self._frozen():
@@ -466,10 +508,9 @@ class A1XArm(RobotBackend):
         return None
 
     def gripper_known(self) -> bool:
-        """Czy pozycja chwytaka jest znana: pomiar albo rozkaz, ktory NAPRAWDE poszedl w 0x051.
-        Cel rowny zglaszanemu domyslnemu (`GRIP_START_DELTA`) nic nie wysyla i niczego nie ustala."""
+        """Commands and display placeholders do not establish a measured opening."""
         with self._lock:
-            return self.gripper_measured() or self._g_cmd is not None
+            return self.gripper_measured()
 
     def gripper_measured(self) -> bool:
         """Czy chwytak ma pomiar (dwa punkty `gripper_fb_*`). Bez nich `joints()` zglasza ostatni
@@ -496,6 +537,8 @@ class A1XArm(RobotBackend):
                 raise RuntimeError("Ramie A1X nie jest polaczone")
             if self._fb is None or self._stale_now(self._clock()):
                 raise RuntimeError("A1X: brak swiezych ramek 0x052 - wlaczenie odrzucone")
+            if self._halt_reason:
+                raise RuntimeError(f"A1X stopped: {self._halt_reason}; clear STOP first")
             if self._frozen():
                 raise RuntimeError("A1X: telemetria zamrozona (FF 2) - wylacz i wlacz zasilanie; FF 1-5-6 tego "
                                    "nie naprawia")

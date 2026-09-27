@@ -59,6 +59,13 @@ class Normalizer(nn.Module):
         return torch.clamp((x - self.mean) / torch.sqrt(self.var + 1e-8), -self.clip, self.clip)
 
 
+def validate_cube_height_error_bound(value, task_name: str) -> float:
+    value = float(value)
+    if not np.isfinite(value) or value < 0 or (value and task_name != "lift"):
+        raise ValueError("Cube height error bound must be finite, nonnegative and used only for lift")
+    return value
+
+
 @dataclass
 class PolicyMeta:
     task: dict[str, Any]
@@ -75,6 +82,23 @@ class PolicyMeta:
     notes: str = ""
     #: Ramie, na ktorym polityka sie uczyla (`RobotSpec.name`). Polityki sprzed tego pola - SO-101.
     robot: str = "so101"
+    #: Optional deterministic inputs derived from the original observation.
+    features: str = "raw"
+    feature_geometry_sha256: str | None = None
+    #: Optional learned correction to the gripper, independent of the arm actor.
+    gripper_residual: str = "none"
+    #: Square-cube orientation convention, applied before constructing observations.
+    cube_yaw_mode: str = "canonical"
+    #: Optional finite gripper action set; the actor chooses via nearest output.
+    gripper_decoder: str = "identity"
+    #: Declared upper bound on perceived cube-height overestimation, in metres.
+    #: PolicyRunner uses a lower height bound for completion; actor inputs/actions
+    #: and the true task criterion are unchanged. Zero preserves legacy behavior.
+    cube_height_error_bound_m: float = 0.0
+
+    def __post_init__(self):
+        self.cube_height_error_bound_m = validate_cube_height_error_bound(
+            self.cube_height_error_bound_m, self.task.get("name", "reach"))
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,
@@ -91,14 +115,78 @@ class Policy(nn.Module):
     def __init__(self, meta: PolicyMeta):
         super().__init__()
         self.meta = meta
+        if meta.cube_yaw_mode != "canonical" and (meta.obs_dim != 36 or meta.act_dim != 7):
+            raise ValueError("Continuous cube yaw requires the folded 36-input A1X cube-lift contract")
+        tk.cube_yaw_tracker(meta.cube_yaw_mode, task=meta.task_config(), robot=meta.robot,
+                            fold=bool(meta.randomization.get("fold_yaw", False)))
         self.norm = Normalizer(meta.obs_dim)
         self.actor = mlp([meta.obs_dim, *meta.hidden], meta.act_dim)
+        self.feature_encoder = None
+        if meta.features != "raw":
+            from .features import A1XAlignmentFeatures
+            if (meta.features != A1XAlignmentFeatures.name or meta.robot != "a1x"
+                    or meta.task.get("name") != "lift" or meta.obs_dim != 36 or meta.act_dim != 7
+                    or meta.task.get("cube_half") != .015):
+                raise ValueError("Unsupported policy feature contract")
+            self.feature_encoder = A1XAlignmentFeatures()
+            signature = self.feature_encoder.geometry_sha256
+            if meta.feature_geometry_sha256 not in (None, signature):
+                raise ValueError("Policy alignment geometry does not match the current robot model")
+            meta.feature_geometry_sha256 = signature
+            first = self.actor[0]
+            # Preserve the raw network and RNG stream; extra columns initially do nothing.
+            with torch.random.fork_rng(devices=[]):
+                expanded = nn.Linear(first.in_features + self.feature_encoder.dim, first.out_features)
+            with torch.no_grad():
+                expanded.weight.zero_()
+                expanded.weight[:, :meta.obs_dim].copy_(first.weight)
+                expanded.bias.copy_(first.bias)
+            self.actor[0] = expanded
+        self.gripper_residual = None
+        if meta.gripper_residual != "none":
+            if (meta.gripper_residual != "mlp64-v1" or meta.robot != "a1x"
+                    or meta.task.get("name") != "lift" or meta.obs_dim != 36 or meta.act_dim != 7
+                    or meta.evals.get("imitation", {}).get("ignore_previous_arm", False)):
+                raise ValueError("Unsupported gripper residual contract")
+            # Initial predictions and the caller's RNG stream remain unchanged.
+            with torch.random.fork_rng(devices=[]):
+                self.gripper_residual = mlp([self.actor[0].in_features, 64, 64], 1)
+            with torch.no_grad():
+                self.gripper_residual[-1].weight.zero_()
+                self.gripper_residual[-1].bias.zero_()
+        if meta.gripper_decoder != "identity":
+            if (meta.gripper_decoder != "a1x-templates-v1" or meta.robot != "a1x"
+                    or meta.task.get("name") != "lift" or meta.obs_dim != 36 or meta.act_dim != 7
+                    or meta.task.get("cube_half") != .015 or meta.gripper_residual != "none"):
+                raise ValueError("Unsupported A1X gripper decoder contract")
+            from ..kinematics import RobotKinematics
+            from ..robots import A1X
+            limits = tk.Limits.of(self.feature_encoder.kin if self.feature_encoder else RobotKinematics(A1X))
+            if limits.lo[-1] != 0 or limits.hi[-1] != .05:
+                raise ValueError("A1X gripper decoder requires the measured 0..50 mm jaw coordinate")
         #: Wagi krytyka z treningu (tylko do douczania; do jazdy niepotrzebne). Polityki
         #: zapisane przed jego dodaniem go nie maja - douczanie grzeje wtedy krytyka od zera.
         self.critic_state: dict | None = None
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.actor(self.norm(obs))
+    def derived_features(self, obs: torch.Tensor) -> torch.Tensor | None:
+        if self.feature_encoder is None:
+            return None
+        values = self.feature_encoder(obs.detach().cpu().numpy())
+        return torch.as_tensor(values, device=obs.device, dtype=obs.dtype)
+
+    def forward(self, obs: torch.Tensor, *, derived: torch.Tensor | None = None) -> torch.Tensor:
+        inputs = self.norm(obs)
+        if self.feature_encoder is not None:
+            derived = self.derived_features(obs) if derived is None else derived
+            if derived.shape != (*obs.shape[:-1], self.feature_encoder.dim):
+                raise ValueError("Derived feature batch must match the observation batch")
+            inputs = torch.cat((inputs, derived), dim=-1)
+        elif derived is not None:
+            raise ValueError("Raw policies do not accept derived features")
+        action = self.actor(inputs)
+        if self.gripper_residual is not None:
+            action = torch.cat((action[..., :6], action[..., 6:] + self.gripper_residual(inputs)), dim=-1)
+        return action
 
     @torch.no_grad()
     def act(self, obs: np.ndarray) -> np.ndarray:
@@ -106,6 +194,19 @@ class Policy(nn.Module):
         x = torch.as_tensor(np.asarray(obs, np.float32), device=self.norm.mean.device)
         single = x.ndim == 1
         a = self(x[None] if single else x).clamp(-1.0, 1.0).cpu().numpy()
+        if self.meta.gripper_decoder == "a1x-templates-v1":
+            values = np.asarray(obs, np.float32)
+            if (values.ndim not in (1, 2) or values.shape[-1] != 36
+                    or not np.isfinite(values).all() or not np.isfinite(a).all()):
+                raise ValueError("Gripper decoding requires finite A1X observations and actor outputs")
+            measured = (values[None] if single else values)[:, 6].astype(float)
+            # Normalized absolute targets: 30 mm open, 1 mm inward from measured
+            # jaw, fully closed. Match the audited teacher action vocabulary;
+            # select only from the learned output, never from teacher phase logic.
+            templates = np.column_stack((np.full(len(measured), .2),
+                np.clip(measured - .04, -1., 1.), np.full(len(measured), -1.))).astype(np.float32)
+            chosen = np.abs(templates - a[:, 6:7]).argmin(axis=1)
+            a[:, 6] = templates[np.arange(len(a)), chosen]
         return a[0] if single else a
 
     @property

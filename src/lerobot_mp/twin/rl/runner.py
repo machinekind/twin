@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import task as tk
-from .policy import Policy
+from .policy import Policy, validate_cube_height_error_bound
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,8 @@ class RunnerStatus:
     last_action: list[float] = field(default_factory=list)
     #: Ile taktow z rzedu zadanie jest wykonane.
     success_streak: int = 0
+    #: Elapsed time since the first continuously successful observation.
+    success_hold_s: float = 0.0
     #: reach: cel przyciety do obszaru treningu (panel pokazuje, ze kula stoi gdzie indziej).
     #: pickplace: cel odlozenia przesuniety na pierscien celow z treningu.
     goal_clamped: bool = False
@@ -134,6 +136,10 @@ class PolicyRunner:
         self.twin = twin
         self.policy = policy
         self.task = policy.task
+        self.cube_height_error_bound_m = validate_cube_height_error_bound(
+            getattr(policy.meta, "cube_height_error_bound_m", 0.0), self.task.name)
+        self._cube_yaw = tk.cube_yaw_tracker(getattr(policy.meta, "cube_yaw_mode", "canonical"),
+            task=self.task, robot=spec.name, fold=bool(policy.meta.randomization.get("fold_yaw", False)))
         # Wlasna kinematyka (wlasne MjData): ta ze sceny liczy tez panel (IK uchwytu)
         # z innego watku, a `tcp()` pisze do swojego MjData.
         self.kin = RobotKinematics(spec)
@@ -174,6 +180,7 @@ class PolicyRunner:
         self.grip_creep = jaw.creep
         self._grip_prev: float | None = None
         self._streak_grip = 0.0
+        self._success_since: float | None = None
         #: pickplace: kostka byla niesiona (jak `task.carry_latch` w treningu) i gdzie byla na poczatku serii.
         self._carried = False
         self._streak_cube: np.ndarray | None = None
@@ -214,11 +221,16 @@ class PolicyRunner:
                 raise NoCube(f"zadanie {self.task.name} potrzebuje polozenia kostki - kamery jej nie widza")
             cube_pos, cube_rot = got[0], got[1]
             self._cube_src = str(got[2]) if len(got) > 2 else (self.cube_source() if self.cube_source else None)
+            if not self.twin.status.simulated and self._cube_src not in ("kamery", "w dloni"):
+                raise NoCube("Physical policy requires a current camera or held-object estimate; "
+                             f"received {self._cube_src!r}")
             self._cube = np.asarray(cube_pos, float).copy()
             if self.policy.meta.randomization.get("fold_yaw", False):
                 # W treningu polityka widziala obrot zlozony do +-45 st. (jak z detektora);
                 # poza "w dloni" i prawda z symulacji tego nie maja - skladamy tak samo.
-                cube_rot = tk.fold_yaw(np, np.asarray(cube_rot, float))
+                rotation = np.asarray(cube_rot, float)
+                cube_rot = (self._cube_yaw(rotation) if self._cube_yaw is not None
+                            else tk.fold_yaw(np, rotation))
         if self.task.target:
             target = self.target[None]
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], tcp[None], self.prev_action[None],
@@ -236,6 +248,9 @@ class PolicyRunner:
         """
         if not self.twin.connected:
             raise RuntimeError("ramie blizniaka nie jest polaczone")
+        if not self.twin.status.simulated and not self.twin.gripper_measured():
+            raise RuntimeError("Physical policies require calibrated gripper feedback; "
+                               "a commanded opening is not a measured grasp")
         self.stop()
         # Najpierw wlasnosc: fala albo identyfikacja w toku, aktywny STOP albo odebranie
         # w trakcie startu -> RuntimeError, nic nie rusza.
@@ -250,8 +265,11 @@ class PolicyRunner:
         self.prev_action = np.zeros(self.task.act_dim)
         self.status = RunnerStatus(running=True, goal_clamped=self.status.goal_clamped)
         self._cube, self._cube_src = None, None
+        if self._cube_yaw is not None:
+            self._cube_yaw.reset()
         self._grip_prev = None
         self._carried, self._streak_cube = False, None
+        self._success_since = None
         self._stop.clear()
         self._t_start, self._ticks = None, 0            # zegar startuje z pierwszym taktem
         # Sprzeglo tylko, jesli ramie wciaz nasze - sprawdzenie i wlaczenie razem w `Twin`.
@@ -383,14 +401,26 @@ class PolicyRunner:
                 if holding and st.success_streak > 0 and q[self.g] < self._streak_grip - self.grip_creep:
                     holding = False
                 st.success = (self._cube is not None and self._cube_fresh() and holding
-                              and self._cube[2] - self.task.cube_half > self.task.lift_height)
+                              and self._cube[2] - self.task.cube_half
+                              > self.task.lift_height + self.cube_height_error_bound_m)
                 if st.success and st.success_streak == 0:
                     self._streak_grip = float(q[self.g])
             st.success_streak = st.success_streak + 1 if st.success else 0
+            if st.success:
+                if self._success_since is None:
+                    self._success_since = now
+                st.success_hold_s = max(0.0, now - self._success_since)
+            else:
+                self._success_since = None
+                st.success_hold_s = 0.0
             self._ticks += 1
             if now - self._t_hz >= 1.0:
                 st.hz, self._ticks, self._t_hz = self._ticks / (now - self._t_hz), 0, now
-            if self.end_on_success > 0 and st.success_streak >= self.end_on_success:
+            # N observations span only N-1 intervals. Count alone previously
+            # finished a 2 s hold at 1.95 s, and faster calls could shorten it
+            # further. Require both consecutive observations and elapsed time.
+            if (self.end_on_success > 0 and st.success_streak >= self.end_on_success
+                    and st.success_hold_s >= self.end_on_success / self.task.control_hz - 1e-9):
                 self._halt("zadanie wykonane")
                 return False
             if self.episode_limit and st.step >= self.task.episode_steps:
@@ -402,13 +432,13 @@ class PolicyRunner:
             if self.status.step == 0 and now - self._t_start < self.wait_for_cube:
                 self.status.stopped_because = "czekam na kostke z kamer"
                 return True
-            self._halt(str(exc))
+            self._halt(str(exc), hold_measured=True)
             return False
         except Exception as exc:                        # ramie sie rozlaczylo, ramie odebrane, blad percepcji...
             if self.twin.owner != OWNER and self._stop.is_set():
                 return False                            # zatrzymana przez `stop` w trakcie taktu
             logger.exception("Petla polityki przerwana")
-            self._halt(f"{type(exc).__name__}: {exc}")
+            self._halt(f"{type(exc).__name__}: {exc}", hold_measured=True)
             return False
         return True
 

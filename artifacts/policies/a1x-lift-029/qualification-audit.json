@@ -1,0 +1,45 @@
+{
+  "policy_sha256": "3c0c29e22282050132ec119e67cfbe1a81724f22bfd8e8e3fe833e1f15b5c95e",
+  "frames": 44537,
+  "unique_starts": 20,
+  "trials": 320,
+  "initial_true_states_paired": true,
+  "supplied_pose_and_bias_math_checked": true,
+  "delay_sources_checked": true,
+  "trace_hashes_checked": true,
+  "successful_true_hold_s": [
+    2.079999999999978,
+    2.43999999999997
+  ],
+  "effective_nonwarm_delay_s_counts": {
+    "0.06": 1414,
+    "0.1": 1394
+  },
+  "all_conditions_meet_18_of_20": true,
+  "physical_validation": false,
+  "script_sha256": "f9704ccdf05482340d35149b265fbbfbd9878632028a9a6689039236f46d3ad1",
+  "qualification_report_sha256": "d2f477553d1fbe31a03d8ee9a9b4fcae6fb436be30f98b9d081e51722bfd8029",
+  "prior_dataset_role_audit": {
+    "028": {
+      "train": 196,
+      "validation": 49,
+      "dataset_report_sha256": "8a49fb7657ab04a5672fa814e8a6a23d512aa752b9a379f3fe3740ea1d289132",
+      "reserved_seeds_absent": true
+    },
+    "029": {
+      "train": 196,
+      "validation": 67,
+      "dataset_report_sha256": "9fcd958d723654839b8be4309b8b291f97aad46df768bc62018f5e4199dc1893",
+      "reserved_seeds_absent": true
+    },
+    "030": {
+      "train": 215,
+      "validation": 67,
+      "dataset_report_sha256": "0f0897045508ea9a724382f9e69b75ccf8f6b4ae430de70c21d11893c9e1773e",
+      "reserved_seeds_absent": true
+    }
+  },
+  "selection_development_disjoint_from_holdout": true,
+  "source_revision": "0781f4c546c5aa34bdeef659381767749eece7e2",
+  "qualification_seed_use": "First frozen use; future reuse is regression"
+}

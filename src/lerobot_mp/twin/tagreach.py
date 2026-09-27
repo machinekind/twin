@@ -19,6 +19,7 @@ import numpy as np
 
 from .calib import tags
 from .calib.handeye import _median_T
+from .workspace import require_physical_cameras
 
 
 @dataclass
@@ -45,7 +46,7 @@ class TagFix:
 
 
 def tag_from_frames(frames: Mapping[str, np.ndarray], cameras: Iterable, tag_id: int,
-                    tag_size: float) -> TagFix | None:
+                    tag_size: float, *, physical: bool = False) -> TagFix | None:
     """Poza taga `tag_id` (bok czarnego kwadratu `tag_size` [m]) z kadrow zaufanych kamer.
 
     `cameras` to rekordy stanowiska (`CameraRecord`): liczy sie kamera wlaczona,
@@ -56,6 +57,13 @@ def tag_from_frames(frames: Mapping[str, np.ndarray], cameras: Iterable, tag_id:
         img = frames.get(cam.name)
         if img is None or not cam.enabled or cam.T_cam2base is None or cam.K is None:
             continue
+        if not cam.trusted and not cam.simulated:
+            continue
+        if physical:
+            try:
+                require_physical_cameras([cam], [cam.name])
+            except RuntimeError:
+                continue
         seen = tags.detect(img)
         if int(tag_id) not in seen:
             continue

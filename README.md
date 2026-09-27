@@ -93,13 +93,20 @@ zostaje sprawdzenie.
 
 W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 (inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
-8/8. Testy są wyłącznie integracyjne: łańcuchy przez kilka modułów
-i zachowania groźne dla sprzętu. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
-zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
-na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
-ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
-krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
-Decyzje i pułapki: [HANDOFF.md](HANDOFF.md).
+8/8.
+
+The figures above are historical SO-101 results, not A1X results. A1X has
+fake-CAN regression tests, scripted simulation lifts, bounded GPU checks, and
+learned lift checkpoints evaluated through the guarded controller. The team has
+performed physical calibration work; an end-to-end learned physical grasp has
+not been established here. Current commands, evidence and limitations are in
+[A1X_OFFLINE_VALIDATION.md](docs/A1X_OFFLINE_VALIDATION.md); remaining work is in
+[A1X_EXECUTION_PLAN.md](docs/A1X_EXECUTION_PLAN.md).
+The [A1X + G1 policy comparison package](artifacts/policies/a1x-lift-029/README.md)
+contains candidate 029, matching controller instructions and a frozen calibration
+benchmark: 318/320 simulated trials, full two-second holds, zero prohibited
+contacts. Physical and actual-camera validation remain pending.
+Decyzje, historia i pułapki: [HANDOFF.md](HANDOFF.md).
 
 ---
 
@@ -251,14 +258,11 @@ pytest -q                     # ok. 3-4 min z GPU (+ ok. 100 s kompilacji kernel
 pytest -q -m "not render"     # komputer bez OpenGL
 ```
 
-Testy GPU pomijają się same bez CUDA albo bez `mujoco_warp`; testy bliźniaka —
-bez `mujoco`/`torch`. Jeden stary test (`test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`)
-jest oznaczony jako znany problem (`xfail`).
-
-Czysty wynik bez NVIDIA i bez LeRobota: same `passed` poza **12 skipped**
-(4 testy GPU, 8 testów LeRobota) i **1 xfailed**; ok. 2–3 min na CPU. Z kartą
-NVIDIA zostają tylko pominięcia LeRobota (albo żadne, gdy jest zainstalowany).
-Bez pakietu `galaxeo` (extra `a1x`) pomijają się dodatkowo testy backendu `a1x`.
+Optional-dependency tests skip when their dependencies are absent; inspect the
+reported skips instead of expecting historical counts. A complete offline run on
+2026-09-26 passed 145 tests, including rendering and GPU checks, with `galaxeo` supplied from the
+adjacent checkout. GPU smoke/trajectory checks also have explicit validation
+scripts; see the A1X evidence document for their separate results.
 
 ### 5. Trening (tylko NVIDIA)
 

@@ -54,10 +54,14 @@ class PPOConfig:
     init_std: float = 0.6
     #: Pierwsze iteracje douczania ucza tylko krytyka (aktor stoi) - patrz `train`.
     critic_warmup: int = 0
+    #: Preserve pretrained observation coordinates throughout refinement, not only warm-up.
+    freeze_normalizer: bool = False
     hidden: tuple[int, ...] = (256, 256, 128)
     seed: int = 0
     #: Co ile iteracji zapisywac punkt kontrolny (0 = tylko na koncu).
     save_every: int = 50
+    #: Keep separately reloadable intermediate policies for bounded development comparisons.
+    checkpoint_history: bool = False
 
 
 class ActorCritic(nn.Module):
@@ -88,6 +92,9 @@ class Progress:
     elapsed: float = 0.0
     status: str = "uczenie"
     history: list[dict[str, float]] = field(default_factory=list)
+    physics: dict = field(default_factory=dict)
+    numerical_failures: int = 0
+    collision_episodes: int = 0
 
 
 def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace: Workspace | None = None,
@@ -104,6 +111,10 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
     spec = (workspace or Workspace()).spec()
     tsk = task if isinstance(task, tk.TaskConfig) else tk.make_task(task, spec)
     if init is not None:
+        if init.meta.gripper_decoder != "identity":
+            raise ValueError("Batch training does not support a decoded gripper action contract")
+        if init.meta.cube_yaw_mode != "canonical":
+            raise ValueError("Batch training does not support continuous cube yaw observations")
         if init.meta.robot != spec.name:
             raise RuntimeError(f"polityka uczona na {init.meta.robot}, stanowisko ma {spec.name}")
         tsk = init.task                                # to samo zadanie, na ktorym sie uczyla
@@ -113,6 +124,7 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
                       randomization=_rand_dict(rand), robot=spec.name)
     if init is not None:
         meta.hidden = list(init.meta.hidden)
+        meta.cube_height_error_bound_m = init.meta.cube_height_error_bound_m
         meta.notes = f"douczana z polityki z {init.meta.created} ({init.meta.steps / 1e6:.0f} mln krokow)"
     ac = ActorCritic(meta, cfg.init_std).to(device)
     warmup = 0
@@ -159,7 +171,7 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
         # ---------------------------------------------------------- zbieranie
         with torch.no_grad():
             for t in range(T):
-                if not warming:
+                if not warming and not cfg.freeze_normalizer:
                     ac.policy.norm.update(obs)
                 obs_n = ac.policy.norm(obs)
                 dist = ac.dist(obs_n)
@@ -167,13 +179,16 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
                 logp = dist.log_prob(act).sum(-1)
                 val = ac.value(obs_n)
                 obs, rew, done, info = env.step(act)
+                prog.numerical_failures += int(info["broken"].sum().item())
+                prog.collision_episodes += int(info["unsafe"].sum().item())
                 rew = rew + cfg.gamma * val * info["time_outs"].float()
                 buf_obs[t], buf_act[t], buf_logp[t], buf_val[t] = obs_n, act, logp, val
                 buf_rew[t], buf_done[t] = rew, done.float()
                 ep_ret += rew
                 ep_len += 1
                 if done.any():
-                    recent_succ += info["success"][done].float().tolist()
+                    completed = info["finished"] if tsk.end_on_success > 0 else info["success"] & ~info["broken"]
+                    recent_succ += completed[done].float().tolist()
                     recent_ret += ep_ret[done].tolist()
                     recent_len += ep_len[done].tolist()
                     ep_ret[done] = 0.0
@@ -244,6 +259,7 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
         prog.episode_len = float(np.mean(recent_len)) if recent_len else 0.0
         prog.lr, prog.std = lr, float(ac.log_std.detach().exp().mean())
         prog.elapsed = time.perf_counter() - t_start
+        prog.physics = env.physics_diagnostics()
         prog.history.append({"it": it, "steps": prog.steps, "success": prog.success, "reward": prog.reward})
         stopping = stop is not None and stop.is_set()
         if it == cfg.iterations or stopping:
@@ -254,6 +270,8 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
             (out / "progress.json").write_text(json.dumps(asdict(prog)), encoding="utf-8")
             if cfg.save_every and it % cfg.save_every == 0:
                 _finish(ac, prog, out / "policy.pt")
+                if cfg.checkpoint_history:
+                    _finish(ac, prog, out / "checkpoints" / f"iteration-{it:06d}" / "policy.pt")
         if stopping:
             break
 
@@ -266,7 +284,10 @@ def _finish(ac: ActorCritic, prog: Progress, path: Path | None) -> Policy:
     pol.critic_state = {k: v.detach().cpu().clone() for k, v in ac.critic.state_dict().items()}
     pol.meta.steps, pol.meta.iterations = prog.steps, prog.iteration
     pol.meta.success = prog.success
-    pol.meta.evals["gpu"] = {"success": prog.success, "reward": prog.reward, "steps": prog.steps}
+    pol.meta.evals["gpu"] = {"success": prog.success, "reward": prog.reward, "steps": prog.steps,
+                             "numerical_failures": prog.numerical_failures,
+                             "collision_episodes": prog.collision_episodes,
+                             "physics": prog.physics}
     if path is not None:
         pol.save(path)
     return pol

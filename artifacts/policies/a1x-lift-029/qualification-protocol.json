@@ -1,0 +1,577 @@
+{
+  "policy": "artifacts/policies/a1x-lift-029/policy.pt",
+  "policy_sha256": "3c0c29e22282050132ec119e67cfbe1a81724f22bfd8e8e3fe833e1f15b5c95e",
+  "split": "held_out",
+  "seeds": [
+    52000,
+    52001,
+    52002,
+    52003,
+    52004,
+    52005,
+    52006,
+    52007,
+    52008,
+    52009,
+    52010,
+    52011,
+    52012,
+    52013,
+    52014,
+    52015,
+    52016,
+    52017,
+    52018,
+    52019
+  ],
+  "conditions": [
+    {
+      "id": "zero",
+      "factor": "zero",
+      "magnitude": 0.0,
+      "direction": null,
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "translation_mm-1-px",
+      "factor": "translation_mm",
+      "magnitude": 1.0,
+      "direction": "px",
+      "corruption": {
+        "translation_m": [
+          0.001,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "translation_mm-1-nx",
+      "factor": "translation_mm",
+      "magnitude": 1.0,
+      "direction": "nx",
+      "corruption": {
+        "translation_m": [
+          -0.001,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "translation_mm-1-py",
+      "factor": "translation_mm",
+      "magnitude": 1.0,
+      "direction": "py",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.001,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "translation_mm-1-ny",
+      "factor": "translation_mm",
+      "magnitude": 1.0,
+      "direction": "ny",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          -0.001,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "translation_mm-1-pz",
+      "factor": "translation_mm",
+      "magnitude": 1.0,
+      "direction": "pz",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.001
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "translation_mm-1-nz",
+      "factor": "translation_mm",
+      "magnitude": 1.0,
+      "direction": "nz",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          -0.001
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_deg-0.5-px",
+      "factor": "rotation_deg",
+      "magnitude": 0.5,
+      "direction": "px",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.5,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_deg-0.5-nx",
+      "factor": "rotation_deg",
+      "magnitude": 0.5,
+      "direction": "nx",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          -0.5,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_deg-0.5-py",
+      "factor": "rotation_deg",
+      "magnitude": 0.5,
+      "direction": "py",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.5,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_deg-0.5-ny",
+      "factor": "rotation_deg",
+      "magnitude": 0.5,
+      "direction": "ny",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          -0.5,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_deg-0.5-pz",
+      "factor": "rotation_deg",
+      "magnitude": 0.5,
+      "direction": "pz",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.5
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_deg-0.5-nz",
+      "factor": "rotation_deg",
+      "magnitude": 0.5,
+      "direction": "nz",
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          -0.5
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "position_noise_mm-1",
+      "factor": "position_noise_mm",
+      "magnitude": 1.0,
+      "direction": null,
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.001,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "rotation_noise_deg-0.5",
+      "factor": "rotation_noise_deg",
+      "magnitude": 0.5,
+      "direction": null,
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.5,
+        "delay_s": 0.0
+      }
+    },
+    {
+      "id": "delay_ms-50",
+      "factor": "delay_ms",
+      "magnitude": 50.0,
+      "direction": null,
+      "corruption": {
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_vector_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_noise_std_m": 0.0,
+        "rotation_noise_std_deg": 0.0,
+        "delay_s": 0.05
+      }
+    }
+  ],
+  "configuration": {
+    "version": 1,
+    "simulation_only": true,
+    "baseline_policy_sha256": "22d796227530e8775c1843300054768d454a5fcf5c21268e7a9416de88530a43",
+    "development_seeds": [
+      50000,
+      50001,
+      50002,
+      50003,
+      50004,
+      50005,
+      50006,
+      50007,
+      50008,
+      50009,
+      50010,
+      50011,
+      50012,
+      50013,
+      50014,
+      50015,
+      50016,
+      50017,
+      50018,
+      50019
+    ],
+    "held_out_seeds": [
+      52000,
+      52001,
+      52002,
+      52003,
+      52004,
+      52005,
+      52006,
+      52007,
+      52008,
+      52009,
+      52010,
+      52011,
+      52012,
+      52013,
+      52014,
+      52015,
+      52016,
+      52017,
+      52018,
+      52019
+    ],
+    "held_out_use": "Reserve during development and fitting. Freeze policy and conditions before first use; later reuse is regression evidence.",
+    "training_seed_range": [
+      53000,
+      53999
+    ],
+    "bias_frame": "arm base; rotation changes position about base origin and object orientation",
+    "noise": "Independent Gaussian position and rotation-vector components, with separate seeded streams; resample once per delivered observation timestamp",
+    "delay": "Latest captured pose at or before now-delay; log effective age and startup warmup; no interpolation",
+    "translation_mm": [
+      0,
+      1,
+      2,
+      5,
+      10,
+      20
+    ],
+    "rotation_deg": [
+      0,
+      0.5,
+      1,
+      2,
+      5
+    ],
+    "directions": [
+      "+x",
+      "-x",
+      "+y",
+      "-y",
+      "+z",
+      "-z"
+    ],
+    "position_noise_std_mm": [
+      0,
+      1,
+      2,
+      5
+    ],
+    "rotation_noise_std_deg": [
+      0,
+      0.5,
+      1,
+      2
+    ],
+    "delay_ms": [
+      0,
+      50,
+      100,
+      200
+    ],
+    "minimum_successes_per_20": 18,
+    "required_true_hold_s": 2,
+    "allowed_prohibited_contacts": 0,
+    "allowed_numerical_failures": 0,
+    "tolerance": "Largest tested magnitude with at least 18/20 true successes in every tested direction at that and all lower levels; report counts, uncertainty and scope. No untested or physical tolerance claims."
+  },
+  "teacher_intervention": false,
+  "simulation_only": true,
+  "path": "PolicyRunner -> Twin -> SafetySupervisor -> SceneBackend",
+  "max_seconds": 600,
+  "cube_yaw_mode": "continuous",
+  "gripper_decoder": "a1x-templates-v1",
+  "cube_height_error_bound_m": 0.005,
+  "versions": {
+    "torch": "2.11.0+cu126",
+    "mujoco": "3.14.0",
+    "numpy": "2.2.6"
+  },
+  "git_head": "0781f4c546c5aa34bdeef659381767749eece7e2",
+  "source_sha256": {
+    "src/lerobot_mp/__init__.py": "1301b33863435562a8e08f401e5dfb8e42c387a3ec03bf84b28f72c5c46362b6",
+    "src/lerobot_mp/__main__.py": "b5977fbfff9e596bc45b9f8249af2ac360f88ee5afb7721b695c3d5ea410ed1c",
+    "src/lerobot_mp/app.py": "293934a65a2a5cb14a73524c343f0e50eb6ae2e4fba6ba087ddaf62d0344a7af",
+    "src/lerobot_mp/cli.py": "48b8a279f8c6d860009c1994eaf2d6a0834296e799ac1348c601b88f869370f6",
+    "src/lerobot_mp/config.py": "5aeab76bd9b221f5319ff8bc2cac2703fc912c47c844beea01e64e8719c89a5a",
+    "src/lerobot_mp/control/__init__.py": "77475d2e1d0b72ef43c9e8252d9a27fb059c79498b3c8f43195efb78a3474b0e",
+    "src/lerobot_mp/control/filters.py": "ea11337330ad431220778b810faf5e53c2d39dc0e50fdc7a156605645a68ff02",
+    "src/lerobot_mp/control/keyboard.py": "6303ca849688fa4e1af13339a02d2cb8d1535444f11d5f7c78810aa1e492706d",
+    "src/lerobot_mp/control/kinematics.py": "9c1e8602cc6c82e04041bef8ce9f8eb40988a39ce52ebd9ec85f28a038e2d0b5",
+    "src/lerobot_mp/control/mapping.py": "53c357ea4b077b58d672c3905c7d174fb290a523c5d98e2b5ba9e876bf1d1282",
+    "src/lerobot_mp/control/safety.py": "c1b8cf3c3d053bde72c4a0c8dee46e3cd5e90c6ccb6c4fed115feab9147de544",
+    "src/lerobot_mp/paths.py": "ef749dcd9441408e7f1f0a6b7aca4af3cd6e9555bfde32d63c50ec44c205bc17",
+    "src/lerobot_mp/preview/__init__.py": "7b035e7022518041d67b4faabf72d427a97f36ba3f3471522936db046ad01f08",
+    "src/lerobot_mp/preview/model.py": "d9f8f4eb347e93eb9975f1063f6fcb05ec2a4d849344e9b193d6eb6dda40bf23",
+    "src/lerobot_mp/preview/render.py": "fc729e50d605a6811d5428e2dbf8b559c106f8ccb509c9adbe06294188e8ba4e",
+    "src/lerobot_mp/preview/stream.py": "0cd25c9c91b49303e234544e39bc0b0020e3d2a04a4bb03b4b4a2405d286533d",
+    "src/lerobot_mp/robot/__init__.py": "6db77f175a1091e31ca002fab4ea05d1a79586cca80feb7633b92dad10e62342",
+    "src/lerobot_mp/robot/a1x.py": "f61c9adc90ea55c3f85214f28a8135065b59663655ac12136a747683002fe69f",
+    "src/lerobot_mp/robot/base.py": "5c9af47f9a3862be394b2080e46e849d07a081fa3d8abbf43e7f080a02603371",
+    "src/lerobot_mp/robot/factory.py": "400d2e6964254d7ec83e626a0167cca126432ccffb2d6a7b229a02d720ac321a",
+    "src/lerobot_mp/robot/feetech.py": "9b735c1954326b7ed8eaf590c55cfc6a53b8bfa086078091d88bbafa94ba84c0",
+    "src/lerobot_mp/robot/lerobot_backend.py": "9aa5bf26aa10fcb8d881f18e1b5b94d5ac3fd931390b4acbc227551092b8be58",
+    "src/lerobot_mp/robot/serial_bridge.py": "50e4aedaec04dcef21934200256f1ea81aa74f1931a9160ec0c094f23765b352",
+    "src/lerobot_mp/robot/sim.py": "88fde091389c17f31077553bce95894b50acfc0d0a96dc5635261dacd29e5572",
+    "src/lerobot_mp/twin/__init__.py": "3861c58b1c6cadea3f31a22596540da34535e617466729a66939c6437dc1a9d5",
+    "src/lerobot_mp/twin/calib/__init__.py": "81524868e7d32a469ab26e1e031f107293b1e8036cec2a610c70c3f27047e720",
+    "src/lerobot_mp/twin/calib/card.py": "1ed5cfbf0ac0b8de727e22ec3f6d22ddb959f2875a0be5a4661ab1e6d1f9773e",
+    "src/lerobot_mp/twin/calib/handeye.py": "b2687aae5e21c1382e805543ad31154f42d5cf4bb94046264b83c352278b645e",
+    "src/lerobot_mp/twin/calib/intrinsics.py": "5e04493c7f305c36380ce90b937ef1b586d13a874f6e86d07896d6db4aadc319",
+    "src/lerobot_mp/twin/calib/session.py": "0daf725a6e88c29b696982024d7f5a0c65f6cd7415e5140b34ad2886e15df20d",
+    "src/lerobot_mp/twin/calib/simulate.py": "91bfde9cf8a2b8e408e02bb1130ada603b5854fc571883aa4d8f6ac2027f2449",
+    "src/lerobot_mp/twin/calib/tags.py": "696a2ed96468862bdd905d757aa5e37fe39aa5b1993929b2d55ba7938a5755e1",
+    "src/lerobot_mp/twin/calib/topdown.py": "ab5804e471ff61ee5e865593ec8ad48c3ebe91732fda3bd110bad918d6ce8cc4",
+    "src/lerobot_mp/twin/cameras.py": "58103a7c9be64f64d49d57e4fdb5ab42fda412d159db16387b9bb921586189ee",
+    "src/lerobot_mp/twin/cli.py": "ac2909d57f810a3871010d019cc92b86bf3fe30a9bf6b33fb22f2ca64c4bf44a",
+    "src/lerobot_mp/twin/collision.py": "4488fd33570c1279b3284cfad04ddde94e7b2e376865b3c6e154d7fd1c873d00",
+    "src/lerobot_mp/twin/impact.py": "b8ad18fbfc607d40c63042a360b68b2f815adbc818dc3b80780492d4f5e6d67f",
+    "src/lerobot_mp/twin/kinematics.py": "15bc1bcee68aef6ae906b9852a8f7663dc91b4328c2dc6951d401d00fd83420c",
+    "src/lerobot_mp/twin/perception.py": "5e14db1672e57f0dcb3ba1acbe673453b82fd373ff43b85dd2ed0471bb8cc7c0",
+    "src/lerobot_mp/twin/pmd.py": "73f87468b3205eb4089856c53dd630c13420ffaa128f3456353ba59f2ca0cc9e",
+    "src/lerobot_mp/twin/reach.py": "2ba78f9eb8a4e640353ea5e1f84de97cd13207d31c2b6635662fbce385ee8864",
+    "src/lerobot_mp/twin/rl/__init__.py": "1f9bb7003e39b34fe3ea3dd6259de85527df9eba5187d3f4c008515938929ce7",
+    "src/lerobot_mp/twin/rl/batch.py": "a182562157f8fcb246c2c3d87da29429fb4941adee66bd86b4a5f94da22b0681",
+    "src/lerobot_mp/twin/rl/env.py": "c8e42f302e045194b0dabe76647094c5c886355b579acb49422724341e9eb69e",
+    "src/lerobot_mp/twin/rl/evaluate.py": "ad3fbd9a1c287edad52e5d73d0b8f37cc361aeb5b974b4f79e3bbc02870d7a44",
+    "src/lerobot_mp/twin/rl/features.py": "8b913325329b8d21639f053a48e60dcf130eb25a33894c0a73a71d27fce5b772",
+    "src/lerobot_mp/twin/rl/imitation.py": "6073101d731fb2759ea904c0c617deb59a6cf45c9f42e6bb2264b36f8bd63c12",
+    "src/lerobot_mp/twin/rl/perception.py": "827a0efdb33474a6b4e5d1c389b908aefbbf4b8bcb42ead8a54a0e1f6e9596fc",
+    "src/lerobot_mp/twin/rl/policy.py": "553a91cc5f66e39a1b6b1e9b4526ee3e246fadd53e3cd4c30c398e60e1ad1785",
+    "src/lerobot_mp/twin/rl/ppo.py": "c699eab95237730a5e186d9fab2d8169aba3b6eb3b92923c2259198734bdf7e4",
+    "src/lerobot_mp/twin/rl/randomize.py": "d7e930145eb236a155cac1d5f359a79328bcdf841dc07a0581178d693dc4562b",
+    "src/lerobot_mp/twin/rl/runner.py": "fbfbccc48df06c9d10cca28945c4a9d285e84dd4c5d6bfee69592d103f530761",
+    "src/lerobot_mp/twin/rl/sysid.py": "e9a0e26ae97be716a1f92214a264114e24fb6c1c0950ed124f02f8afcb18e86f",
+    "src/lerobot_mp/twin/rl/task.py": "590dc9be6407590790101e23609e0dea8acb167ba080003d602bdd59b12ff9ed",
+    "src/lerobot_mp/twin/rl/warp_diagnostics.py": "e4cb8a6cd4db3e3a98a3bfe5fa33682891c45d4f5228621b5b7c2ad7f416157a",
+    "src/lerobot_mp/twin/robots.py": "4b01ffe327bc4e0ba27ce11b53b01e7710ffbaab661af387c25507cd4e536167",
+    "src/lerobot_mp/twin/runtime.py": "05130474e5bb19c362de8b7f110506f4adaf2f9344bafcb39ee6942726847d7d",
+    "src/lerobot_mp/twin/scene.py": "4574d19ae3713c1a67744ea0dbc784cb165ff3e77932fedfc91b7b4eccd66a90",
+    "src/lerobot_mp/twin/specsreach.py": "c8fed1106072f6bbfaa8d33681199c1a257c0cd250ffb63c1231e0b903b5a32d",
+    "src/lerobot_mp/twin/tagbody.py": "82d5637bb0b291da0be54c16359d1e1880ab21dcf1826321cb29a79bab758c66",
+    "src/lerobot_mp/twin/tagreach.py": "b1bacf3ab9b7c26da55402faaf99b26c9b1929fa3c1d4a84481fad2dd79cd29f",
+    "src/lerobot_mp/twin/ueye.py": "89d0724fe7a145644816e7e6267d366d5bc036af012d83cb47689253e89c819a",
+    "src/lerobot_mp/twin/ui/__init__.py": "930e6eccd07144f790f11a0601c4636d124e618fb404512832d7e8d7ab456042",
+    "src/lerobot_mp/twin/ui/app.py": "489b09acfca7880ced6c162efafec3de45dee8190a4f382a2830debf58626bca",
+    "src/lerobot_mp/twin/ui/bridge.py": "63e6b1f654084a0ab3ff804ca382e1faafa0d02aec70db917a28e45a8eefd47d",
+    "src/lerobot_mp/twin/ui/guide.py": "1d3ea03c4b1b3cbb118ea39abf43747de3ee8d4cbd4eae85f5c0f50d80ca585d",
+    "src/lerobot_mp/twin/ui/jobs.py": "82ce723df0c536d0a9f2a1b690eed00f2cf3212a3cd7435d067d666b0781fe6a",
+    "src/lerobot_mp/twin/ui/specs_panel.py": "b14ef7149734a6aa3f0cd3132a95c1fadaaa7fdc9895e2f1ffb484c10ca71b9b",
+    "src/lerobot_mp/twin/ui/stream.py": "026b13c2a161274d5bbe75e9e1c46a93db65c6dfc5f23640cf9e240d248388da",
+    "src/lerobot_mp/twin/ui/watch.py": "57d97b243913a01e245fa8b8808679e230ea90e754c1bfeb77ea46c78a434406",
+    "src/lerobot_mp/twin/workspace.py": "093e244fb881c039256b76c9bbb9124b847683a1086cea765eb530d36ca8a79e",
+    "src/lerobot_mp/ui/__init__.py": "2dc035637876a48d0f47955ea071a9b4aee0d7d584e982d1c36ca7b4eb2de715",
+    "src/lerobot_mp/ui/arm_view.py": "bea320f47ba20884b5fb12553df768f7b9ea4d72137b72a9f1c8c281ed28ecef",
+    "src/lerobot_mp/ui/hud.py": "b3154f16002795a53f6c10e7e24ee60b6dbd388fca2f52785a88adb9a6d54576",
+    "src/lerobot_mp/ui/theme.py": "1032ae65cfa2fe10f1ff94a15614935d78edf54cb98d71c5b7da639beea320b0",
+    "src/lerobot_mp/utils/__init__.py": "112eecca1869a139ad329810f466fa20a6e4260b682cd145bb78eea1f522fb9d",
+    "src/lerobot_mp/utils/logging.py": "2195c77ed7d478c43e4a6362066830df406b1319cf27557cdd87a7edfabf7c5d",
+    "src/lerobot_mp/utils/rate.py": "be4968cb7cd3caccdbd6d5f97379711cbbdc96cd9288889354529ac04e06c0e4",
+    "src/lerobot_mp/vision/__init__.py": "a7ccb72e2d11d4fc5230410b91bf1c340e8c4f71f3f0705a9a7d275e3de7bc4a",
+    "src/lerobot_mp/vision/arm_features.py": "883f4ea11a4456c1d2a8fc324b1eb8261548d4c2ae6a712d3de4c5fd3a0b16d6",
+    "src/lerobot_mp/vision/blank.py": "413f0bc00f1faf94b341e5f928fc90643818cf2ae7d75136e48afc4a26d28c54",
+    "src/lerobot_mp/vision/camera.py": "db054a370584243b492be3c7423182179b23e8d88733ebc7ec19c27707fe75ee",
+    "src/lerobot_mp/vision/features.py": "80b3f6e3a4732782e8b0b27ffa8c62af7eff274f3598a70b69143dc98efee5e1",
+    "src/lerobot_mp/vision/landmarks.py": "bc21c3b084d0e9ef51d32eb88b74932bc23f8515c6a227438fca9ed923be411b",
+    "src/lerobot_mp/vision/pose.py": "321e32080319e01d99d2c446af6691c7ffc2f3ed6e2543af6c7e92843a098abd",
+    "src/lerobot_mp/vision/tracker.py": "c84f720314102042d4a936d20053297d8c335ae70757b30c419000b8d2d7e72c",
+    "scripts/evaluate_a1x_perception.py": "655b387257e195aae732126a05145852a3f6a7ded54e55885200a19dccec7dde",
+    "scripts/evaluate_a1x_runtime.py": "c7e22c86ff1c6a7acfda8422b2d9e3dfe7416a9bcf6fbd9fb386ecd3d9497eef",
+    "scripts/a1x_runtime_env.py": "67d241b2d71b51cb008ee9e62ac8e07e44d32361d383f6f8ed5cbd098fbd200e",
+    "configs/a1x_perception_robustness.json": "bb63c0581fef39b253474818c9c0034923bc0738c29abc042186486b4266a21d",
+    "assets/robots/a1x/a1x.xml": "baf97c0e2c647821542e90cd6a7010f4b7ef3d69cf46282176e10febf0264ed2"
+  },
+  "source_archive_sha256": "2d52f2539ea1f4846ef2a89c96ef3e910c9e7c8407c555ef2ce1281f4ed61d37",
+  "zero_reference_sha256": null,
+  "qualification": "Development comparison; held-out status must be audited separately before any claim"
+}

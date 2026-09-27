@@ -8,6 +8,7 @@ na prawdziwe ramie.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -32,20 +33,29 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     task = policy.task
     rand = randomization if randomization is not None else \
         Randomization.nominal(Dynamics.from_dict(workspace.dynamics) if workspace is not None else None)
-    env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None)
-    succ, final, ever, place = [], [], [], []
+    # Cube symmetry is the saved policy's input convention, not observation
+    # noise. Disabling randomization must not change it relative to runtime.
+    rand = replace(rand, fold_yaw=bool(policy.meta.randomization.get("fold_yaw", False)))
+    cube_yaw_mode = getattr(policy.meta, "cube_yaw_mode", "canonical")
+    env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None,
+                  cube_yaw_mode=cube_yaw_mode)
+    succ, final, ever, place, final_state = [], [], [], [], []
+    collisions = numerical = 0
     try:
         for ep in range(episodes):
             obs, _ = env.reset(seed=seed + ep)
             hit = False
             for _ in range(task.episode_steps):
                 obs, _, term, trunc, info = env.step(policy.act(obs))
+                collisions += int(info.get("unsafe", False))
+                numerical += int(info.get("broken", False))
                 hit |= info["success"]
                 if on_frame is not None:
                     on_frame(env.render())
                 if term or trunc:
                     break
-            succ.append(float(info["success"]))
+            final_state.append(float(info["success"]))
+            succ.append(float(info["finished"] if task.end_on_success > 0 else info["success"]))
             ever.append(float(hit))
             final.append(info["distance"] if task.name == "reach" else info["height"])
             if "dist_target" in info:
@@ -53,6 +63,14 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     finally:
         env.close()
     out = {"episodes": episodes, "success": float(np.mean(succ)), "ever_success": float(np.mean(ever)),
+           "collision_episodes": collisions, "numerical_failures": numerical,
+           "final_state_success": float(np.mean(final_state)),
+           "required_hold_s": task.end_on_success / task.control_hz,
+           "fold_yaw": rand.fold_yaw,
+           "cube_yaw_mode": cube_yaw_mode,
+           "gripper_decoder": getattr(policy.meta, "gripper_decoder", "identity"),
+           "cube_height_error_bound_m": policy.meta.cube_height_error_bound_m,
+           "runtime_height_bound_applied": False,  # Bare physics, not PolicyRunner qualification.
            "randomized": rand.randomized, "centre": rand.centre.source}
     key = "final_distance_mm" if task.name == "reach" else "final_height_mm"
     out[key] = float(np.median(final) * 1000)

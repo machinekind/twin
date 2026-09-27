@@ -1,0 +1,30 @@
+{
+  "focused_passed": 195,
+  "components": [
+    {
+      "passed": 163,
+      "scope": "Simulation/controller/observations/imitation",
+      "note": "Includes re-run of the single collector check after correcting WSL worktree Git path"
+    },
+    {
+      "passed": 32,
+      "scope": "Actual A1X backend with fake CAN bus"
+    }
+  ],
+  "excluded": "Three actual PPO training cases",
+  "hardware_access": false,
+  "sdk_revision": "d9fa67708a344de5660967c4be998b8d34ec86e1",
+  "sdk_source_sha256": {
+    "bus.py": "f408706e3c659d4533fba02765335c0b90e659afc886b54ac9316580ed2ce1e4",
+    "xcan_usb.py": "93a8645ec4e223950c1db952870e37ddff5b241c272bd062d3d9ef2922609622",
+    "__init__.py": "37229b2e273d94d6efaa3e99f981cd9193dc242cdac0d267527ed783aad1b10d",
+    "protocol.py": "60ee43c50661b3f8d62e628018406c419f2e396a08d6ee527062766532f7bf7f"
+  },
+  "logs_sha256": {
+    "publication-fake-can-001.log": "ac9a332fbf35387394c9b9061c928dc5d7e563c2bd52e0060a89513720657036",
+    "publication-contracts-002.log": "4fd07bcee9b5a8f0645ee8bc81e966b1fc7417a9a0ec85c8404455fe322cb09f",
+    "publication-contracts-001.log": "0216dfa7b4349ba2893b3a2a725d33f7b2fd31f978ef0759595f90d090e6c0ad"
+  },
+  "simulation_regression": "60/60 previous development outcomes and final states exactly reproduced",
+  "qualification": "320 held-out simulation trials; 318 success; full true holds; zero prohibited contacts/numerical faults"
+}

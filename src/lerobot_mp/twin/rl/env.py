@@ -105,20 +105,27 @@ class TwinEnv(gym.Env):
 
     def __init__(self, task: str | tk.TaskConfig = "reach", *, workspace: Workspace | None = None,
                  randomization: Randomization | None = None, render_mode: str | None = None,
-                 render_camera: str | None = None):
+                 render_camera: str | None = None, cube_yaw_mode: str = "canonical"):
         self.task = task if isinstance(task, tk.TaskConfig) else \
             tk.make_task(task, spec=(workspace or Workspace()).spec())
         self.render_mode = render_mode
+        self.rand = randomization if randomization is not None else Randomization()
+        self._cube_yaw = tk.cube_yaw_tracker(cube_yaw_mode, task=self.task,
+            robot=(workspace or Workspace()).spec().name, fold=self.rand.fold_yaw)
         self.scene = sc.build(scene_config(self.task, workspace, view=render_mode is not None))
         self.render_camera = render_camera or (self.scene.cfg.cameras[0].name if self.scene.cfg.cameras else None)
         self.kin = self.scene.kin
         self.limits = tk.Limits.of(self.kin)
-        self.rand = randomization if randomization is not None else Randomization()
+        self._forbidden = None
+        if self.kin.spec.name == "a1x":
+            from ..collision import CollisionChecker
+            self._forbidden = CollisionChecker(self.scene, grasp_objects=("cube",) if self.task.cube else ()).forbidden_pairs()
         self.fields = ModelFields(self.scene, self.task.cube)
         m = self.scene.model
         m.opt.timestep = self.task.timestep
         self.T_world2base = inverse(self.scene.T_base2world)
         self.site = self.kin.site_id
+        self.tip_ids = [m.geom(self.kin.prefix + name).id for name in self.kin.spec.fingertips]
         if self.task.cube:
             self.cube_qadr = m.jnt_qposadr[m.body_jntadr[self.fields.cube_body]]
             self.cube_dadr = m.jnt_dofadr[m.body_jntadr[self.fields.cube_body]]
@@ -138,7 +145,7 @@ class TwinEnv(gym.Env):
         self.t = 0
         self._streak = 0                     # takty sukcesu z rzedu (`task.end_on_success`)
         self._delay: list[np.ndarray] = []
-        self._noise = 0.0
+        self._noise = np.zeros(self.task.n_joints)
         self._cube_delay, self._cube_period = 0, 1
         self._cube_hist: list[tuple[np.ndarray, np.ndarray]] = []
         self._cube_seen = (np.zeros(3), np.eye(3))
@@ -149,6 +156,8 @@ class TwinEnv(gym.Env):
         d = self.scene.data
         R, t = self.T_world2base[:3, :3], self.T_world2base[:3, 3]
         out = {"q": d.qpos[self.kin.qadr].copy(), "tcp": R @ d.site_xpos[self.site] + t}
+        if self.task.grasp_tip_reward:
+            out["grasp_pos"] = R @ d.geom_xpos[self.tip_ids].mean(axis=0) + t
         if self.task.cube:
             b = self.fields.cube_body
             out["cube_pos"] = R @ d.xpos[b] + t
@@ -161,7 +170,7 @@ class TwinEnv(gym.Env):
         return out
 
     def _obs(self, s: dict[str, np.ndarray]) -> np.ndarray:
-        q = s["q"] + np.radians(self.np_random.normal(0.0, self._noise, self.task.n_joints)) if self._noise > 0 else s["q"]
+        q = s["q"] + self.np_random.normal(0.0, self._noise) if np.any(self._noise) else s["q"]
         cube_pos, cube_rot = self._cube_seen if self.task.cube else (np.zeros(3), np.eye(3))
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], s["tcp"][None],
                          self.prev_action[None], goal=self.goal[None],
@@ -184,7 +193,7 @@ class TwinEnv(gym.Env):
         if self.rand.cube_noise > 0:
             pos[:2] += self.np_random.normal(0.0, self.rand.cube_noise, 2)
         if self.rand.fold_yaw:
-            rot = tk.fold_yaw(np, rot)
+            rot = self._cube_yaw(rot) if self._cube_yaw is not None else tk.fold_yaw(np, rot)
         self._cube_seen = (pos, rot)
 
     # ------------------------------------------------------------ gym
@@ -195,10 +204,12 @@ class TwinEnv(gym.Env):
         m, d = self.scene.model, self.scene.data
         s = {k: float(v[0]) for k, v in self.rand.sample(rng, 1).items()}
         self.fields.apply(m, d, s)
-        self._noise = self.rand.obs_noise_deg
+        self._noise = self.rand.joint_noise_std(self.kin)
         self._delay = [np.zeros(self.task.act_dim)] * int(s["delay"])
         self._cube_delay, self._cube_period = int(s["cube_delay"]), int(s["cube_period"])
         self._cube_hist = []
+        if self._cube_yaw is not None:
+            self._cube_yaw.reset()
 
         mujoco.mj_resetData(m, d)
         q0 = np.asarray(options["q"], float) if "q" in options else tk.sample_start(self.task, self.limits, rng, 1)[0]
@@ -257,7 +268,14 @@ class TwinEnv(gym.Env):
         self.q_cmd = tk.apply_action(np, self.task, self.limits, self.q_cmd[None], executed[None])[0]
         d = self.scene.data
         d.ctrl[self.scene.act_ids] = self.q_cmd
-        mujoco.mj_step(self.scene.model, d, nstep=self.task.substeps)
+        unsafe = False
+        if self._forbidden is None:
+            mujoco.mj_step(self.scene.model, d, nstep=self.task.substeps)
+        else:
+            for _ in range(self.task.substeps):
+                mujoco.mj_step(self.scene.model, d)
+                unsafe |= any(c.dist <= 0 and self._forbidden[int(c.geom1), int(c.geom2)]
+                              for c in d.contact[:d.ncon])
         # Po mj_step qpos jest juz po calkowaniu, a site_xpos/xpos/xmat - z przejscia w przod
         # PRZED nim (5 ms starsze). TCP w obserwacji rozjezdzal sie z FK(q) o 4-8 mm w ruchu,
         # a runner na ramieniu liczy TCP dokladnie z q - polityka uczyla sie relacji,
@@ -272,14 +290,20 @@ class TwinEnv(gym.Env):
             self._carried = bool(carried[0])
             kw = dict(target=self.target[None], cube_vel=s["cube_vel"][None], carried=carried,
                       grip_open=tk.grip_is_open(np, self.limits, self.q_cmd[None]))
-        r, success, failure = tk.reward(np, self.task, s["tcp"][None], action[None], self.prev_action[None],
+        r, success, failure = tk.reward(np, self.task, s.get("grasp_pos", s["tcp"])[None], action[None], self.prev_action[None],
                                         goal=self.goal[None], cube_pos=s.get("cube_pos", np.zeros(3))[None],
                                         jaw_contacts=s.get("jaws", np.zeros(2))[None],
                                         q_cmd=self.q_cmd[None], limits=self.limits, **kw)
+        broken = not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all() or np.max(np.abs(d.qvel)) > 100
+        if unsafe or broken:
+            success[:] = False
+            failure[:] = True
+            r[:] = -10.0 if unsafe else 0.0
         self.prev_action = action
         streak, finished = tk.success_streak(np, self.task, np.array([self._streak]), success)
         self._streak = int(streak[0])
-        info = {"success": bool(success[0]), "finished": bool(finished[0])}
+        info = {"success": bool(success[0]), "finished": bool(finished[0]),
+                "unsafe": bool(unsafe), "broken": bool(broken)}
         if self.task.name == "reach":
             info["distance"] = float(np.linalg.norm(self.goal - s["tcp"]))
         else:

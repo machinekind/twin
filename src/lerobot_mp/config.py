@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -404,6 +405,8 @@ class A1XConfig:
     max_step_deg_s: float = 90.0
     #: Brak 0x052 dluzej niz tyle [ms] = lacze milczy: wysylka stoi, blizniak dostaje blad.
     stale_ms: float = 150.0
+    #: Commands must be renewed by the controller even when CAN feedback is healthy.
+    command_timeout_s: float = 0.25
     #: Tyle identycznych ramek 0x052 z rzedu = telemetria zamrozona (ramie zwolnione, FF 2).
     frozen_frames: int = 50
     #: Rozjazd rozkaz-pomiar [st.] trwajacy `deaf_s` przy stojacym stawie = ramie gluche albo zablokowane.
@@ -414,18 +417,36 @@ class A1XConfig:
     enable_on_connect: bool = False
 
     def __post_init__(self) -> None:
+        for name in ("kp", "kd", "gripper_kp", "gripper_open_pdes", "gripper_closed_pdes",
+                     "gripper_rate_pdes_s", "gripper_force", "stream_hz", "max_step_deg_s",
+                     "stale_ms", "gripper_start"):
+            if not math.isfinite(float(getattr(self, name))):
+                raise ValueError(f"a1x.{name} must be finite")
         if self.kp <= 0 or self.gripper_kp <= 0:
             raise ValueError("a1x.kp i a1x.gripper_kp musza byc > 0 - przy kp 0 ramie A1X przestaje "
                              "sluchac rozkazow")
         if len(self.joint_offsets_deg) != 6:
             raise ValueError("a1x.joint_offsets_deg: potrzeba 6 wartosci (arm_joint1..6)")
         self.joint_offsets_deg = tuple(float(x) for x in self.joint_offsets_deg)
+        if not all(math.isfinite(x) for x in self.joint_offsets_deg):
+            raise ValueError("a1x.joint_offsets_deg must be finite")
+        if self.gripper_open_pdes >= self.gripper_closed_pdes:
+            raise ValueError("a1x.gripper_open_pdes must be less than gripper_closed_pdes")
+        if any(v is not None and not math.isfinite(v) for v in (self.gripper_fb_closed, self.gripper_fb_open)):
+            raise ValueError("a1x.gripper feedback endpoints must be finite")
         if (self.gripper_fb_closed is None) != (self.gripper_fb_open is None):
             raise ValueError("a1x.gripper_fb_closed i gripper_fb_open: podaj oba albo zadne")
         if self.gripper_fb_closed is not None and abs(self.gripper_fb_open - self.gripper_fb_closed) < 1e-6:
             raise ValueError("a1x.gripper_fb_closed i gripper_fb_open nie moga byc rowne")
         if self.stream_hz <= 0 or self.max_step_deg_s <= 0 or self.gripper_rate_pdes_s <= 0:
             raise ValueError("a1x.stream_hz, max_step_deg_s i gripper_rate_pdes_s musza byc > 0")
+        if not math.isfinite(self.command_timeout_s) or self.command_timeout_s <= 0:
+            raise ValueError("a1x.command_timeout_s must be finite and > 0")
+
+    @property
+    def gripper_speed(self) -> float:
+        """Maximum command ramp in application opening units (0..100) per second."""
+        return 100.0 * self.gripper_rate_pdes_s / (self.gripper_closed_pdes - self.gripper_open_pdes)
 
 
 @dataclass

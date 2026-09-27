@@ -1,0 +1,370 @@
+"""Behavior cloning from recorded A1X lift episodes using the saved runtime actor.
+
+Validation episodes are kept whole and excluded from observation normalization.
+Action prediction scores never count as manipulation success; replay the saved
+policy through physics and the normal runtime separately.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
+import time
+
+import numpy as np
+import torch
+
+from .policy import Policy, PolicyMeta
+from .task import TaskConfig, cube_yaw_tracker
+
+
+@dataclass
+class Demonstrations:
+    task: dict
+    randomization: dict
+    train_obs: np.ndarray
+    train_actions: np.ndarray
+    valid_obs: np.ndarray
+    valid_actions: np.ndarray
+    provenance: dict
+
+
+def load_demonstrations(path: Path | list[Path], *, seed: int = 0,
+                        validation_fraction: float = .2) -> Demonstrations:
+    """Load successful teacher labels; keep each source's episode split when aggregating.
+
+    Corrective datasets distinguish teacher targets (`actions`) from the actual
+    mixed controls (`executed_actions`). Only teacher targets train the actor.
+    """
+    if isinstance(path, (list, tuple)):
+        if not path:
+            raise ValueError("At least one demonstration source is required")
+        sources = [load_demonstrations(p, seed=seed, validation_fraction=validation_fraction) for p in path]
+        if len(sources) == 1:
+            return sources[0]
+        first, seen = sources[0], set()
+        keys = ("train_seeds", "validation_seeds", "excluded_seeds")
+        for data in sources:
+            if data.task != first.task or data.randomization != first.randomization:
+                raise ValueError("Demonstration sources must have identical task and observation contracts")
+            if data.provenance["teacher_contract"] != first.provenance["teacher_contract"]:
+                raise ValueError("Demonstration sources must use the same teacher contract")
+            if data.provenance.get("cube_yaw_mode", "canonical") != first.provenance.get("cube_yaw_mode", "canonical"):
+                raise ValueError("Demonstration sources must use the same cube yaw contract")
+            recorded = set(sum([data.provenance[k] for k in keys], []))
+            if seen & recorded:
+                raise ValueError("Episode seeds overlap across demonstration sources")
+            seen.update(recorded)
+        provenance = dict(sources=[d.provenance for d in sources], split_seed=seed,
+                          teacher_contract=first.provenance["teacher_contract"],
+                          **{key: sum([d.provenance[key] for d in sources], []) for key in keys})
+        if "cube_yaw_mode" in first.provenance:
+            provenance["cube_yaw_mode"] = first.provenance["cube_yaw_mode"]
+        return Demonstrations(first.task, first.randomization,
+            *[np.concatenate([getattr(d, key) for d in sources]) for key in
+              ("train_obs", "train_actions", "valid_obs", "valid_actions")], provenance)
+    path = Path(path)
+    if not 0 < validation_fraction < 1:
+        raise ValueError("validation_fraction must be between zero and one")
+    manifest = json.loads((path / "manifest.json").read_text())
+    report = json.loads((path / "report.json").read_text())
+    task = TaskConfig(**manifest["task"])
+    if task.name != "lift" or task.n_joints != 7:
+        raise ValueError("Expected the seven-action A1X lift task")
+    yaw_mode = manifest.get("cube_yaw_mode", "canonical")
+    cube_yaw_tracker(yaw_mode, task=task, robot="a1x", fold=manifest["randomization"].get("fold_yaw", False))
+    seen, good, excluded, hashes = set(), [], [], {}
+    for item in report["episodes"]:
+        episode = item["seed"]
+        if type(episode) is not int or episode in seen:
+            raise ValueError("Episode seeds must be unique integers")
+        seen.add(episode)
+        if item.get("success") is not True or item.get("collision") is not False or item.get("numerical") is not False:
+            excluded.append(episode)
+            continue
+        file = path / f"seed-{episode}.npz"
+        hashes[file.name] = hashlib.sha256(file.read_bytes()).hexdigest()
+        with np.load(file, allow_pickle=False) as data:
+            obs, actions = data["obs"].copy(), data["actions"].copy()
+        if (obs.ndim != 2 or obs.shape[1] != task.obs_dim or
+                actions.shape != (len(obs), task.act_dim) or len(obs) != item.get("steps") or not len(obs)):
+            raise ValueError(f"Invalid shapes/length in episode {episode}")
+        if not np.isfinite(obs).all() or not np.isfinite(actions).all() or (np.abs(actions) > 1 + 1e-6).any():
+            raise ValueError(f"Nonfinite observations or invalid actions in episode {episode}")
+        good.append((episode, obs.astype(np.float32), actions.astype(np.float32)))
+    if len(good) < 3:
+        raise ValueError("Need at least three successful episodes for an episode-level split")
+    declared_split = manifest.get("episode_split")
+    if declared_split is None:
+        order = np.random.default_rng(seed).permutation(len(good))
+        n_valid = max(1, min(len(good) - 1, round(len(good) * validation_fraction)))
+        valid, train = [good[i] for i in order[:n_valid]], [good[i] for i in order[n_valid:]]
+    else:
+        if (not isinstance(declared_split, dict) or set(declared_split) != {"train", "validation"}
+                or any(not isinstance(v, list) or any(type(s) is not int for s in v)
+                       for v in declared_split.values())):
+            raise ValueError("Explicit episode split must contain integer train and validation lists")
+        all_seeds = declared_split["train"] + declared_split["validation"]
+        if len(all_seeds) != len(set(all_seeds)) or set(all_seeds) != seen:
+            raise ValueError("Explicit episode split must assign every recorded seed exactly once")
+        train = [item for item in good if item[0] in declared_split["train"]]
+        valid = [item for item in good if item[0] in declared_split["validation"]]
+        if not train or not valid:
+            raise ValueError("Explicit episode split needs successful training and validation episodes")
+    for name in ("manifest.json", "report.json"):
+        hashes[name] = hashlib.sha256((path / name).read_bytes()).hexdigest()
+    provenance = dict(directory=str(path), file_sha256=hashes, split_seed=seed,
+                      teacher_contract=manifest.get("teacher_contract", "legacy-waypoints"),
+                      train_seeds=[x[0] for x in train], validation_seeds=[x[0] for x in valid],
+                      excluded_seeds=excluded)
+    # Preserve legacy provenance/signatures when no new contract is declared.
+    if "cube_yaw_mode" in manifest:
+        provenance["cube_yaw_mode"] = yaw_mode
+    if declared_split is not None:
+        provenance["episode_split"] = declared_split
+    return Demonstrations(manifest["task"], manifest["randomization"],
+                          np.concatenate([x[1] for x in train]), np.concatenate([x[2] for x in train]),
+                          np.concatenate([x[1] for x in valid]), np.concatenate([x[2] for x in valid]), provenance)
+
+
+def _sampling_weights(values, count):
+    weights = np.asarray(values, dtype=np.float32)
+    if (weights.shape != (count,) or not np.isfinite(weights).all()
+            or (weights < 1).any() or (weights > 100).any()):
+        raise ValueError("Sampling weights must have one finite value in [1, 100] per training frame")
+    return weights
+
+
+def load_sampling_weights(path: Path, demos: Demonstrations) -> np.ndarray:
+    """Bind per-frame training priorities to exact source hashes and split/order."""
+    expected = hashlib.sha256(json.dumps(demos.provenance, sort_keys=True).encode()).hexdigest()
+    with np.load(path, allow_pickle=False) as data:
+        if str(data["dataset_sha256"].item()) != expected:
+            raise ValueError("Sampling weights do not match the exact demonstration sources and split")
+        return _sampling_weights(data["weights"], len(demos.train_obs)).copy()
+
+
+def fit(demos: Demonstrations, *, device: str = "cpu", updates: int = 3000, seconds: float = 120,
+        seed: int = 0, batch_size: int = 256, hidden: tuple[int, ...] = (256, 256, 128),
+        lr: float = 3e-4, report_every: int = 100, on_progress=None,
+        init: Policy | None = None, train_weights: np.ndarray | None = None,
+        features: str | None = None, ignore_previous_arm: bool | None = None,
+        train_channels: str = "all", gripper_residual: str | None = None) -> tuple[Policy, dict]:
+    """Bounded supervised fit; an initial policy keeps its observation normalizer fixed.
+
+    Return the best whole-episode validation checkpoint, including the initial
+    policy if fitting does not improve it. Never mutate the supplied checkpoint.
+    Optional weights change training sampling only; normalization, validation
+    distribution and checkpoint selection remain unchanged.
+    An optional history ablation zeroes previous arm-action input columns in the
+    saved network, retaining gripper history; later refinement inherits it.
+    Gripper-only refinement changes just the final gripper output row/bias,
+    preserving every arm output for an identical observation.
+    Gripper-residual refinement freezes the entire original actor and trains a
+    separate nonlinear correction from the same normalized/derived inputs.
+    """
+    if not (0 < updates <= 20000 and 0 < seconds <= 600 and batch_size > 0 and report_every > 0):
+        raise ValueError("Invalid imitation budget; maximum 20,000 updates / 600 seconds")
+    if not 0 < lr <= .01:
+        raise ValueError("Learning rate must be in (0, .01]")
+    if train_channels not in ("all", "gripper", "gripper-residual") or (train_channels != "all" and init is None):
+        raise ValueError("Training channels must be all, gripper or gripper-residual; gripper refinement requires an initial policy")
+    weights = (_sampling_weights(train_weights, len(demos.train_obs)) if train_weights is not None
+               else np.ones(len(demos.train_obs), np.float32))
+    weighted = not np.all(weights == weights[0])
+    yaw_mode = demos.provenance.get("cube_yaw_mode", "canonical")
+    if init is not None:
+        if init.meta.gripper_decoder != "identity":
+            if (init.meta.gripper_decoder != "a1x-templates-v1"
+                    or demos.provenance.get("teacher_contract") != "a1x-lift-observable-v1"):
+                raise ValueError("A decoded gripper action contract requires matching observable teacher labels")
+            for obs, actions in ((demos.train_obs, demos.train_actions), (demos.valid_obs, demos.valid_actions)):
+                templates = np.column_stack((np.full(len(obs), .2), np.clip(obs[:, 6] - .04, -1, 1),
+                                             np.full(len(obs), -1)))
+                error = np.min(np.abs(templates - actions[:, 6:7]), axis=1)
+                if not np.isfinite(error).all() or (error > 2e-6).any():
+                    raise ValueError("A decoded gripper action contract requires labels within its supported templates")
+        if init.meta.cube_yaw_mode != yaw_mode:
+            raise ValueError("Initial policy and demonstrations must use the same cube yaw contract")
+        # JSON canonicalizes tuple/list differences in saved task configurations.
+        if (init.meta.robot != "a1x" or json.dumps(init.meta.task, sort_keys=True) !=
+                json.dumps(demos.task, sort_keys=True) or
+                init.meta.obs_dim != demos.train_obs.shape[1] or init.meta.act_dim != 7 or
+                init.meta.randomization.get("fold_yaw", False) != demos.randomization.get("fold_yaw", False)):
+            raise ValueError("Initial policy must match the A1X task and observation contract")
+        hidden = tuple(init.meta.hidden)
+    features = features if features is not None else init.meta.features if init is not None else "raw"
+    if ignore_previous_arm is None:
+        ignore_previous_arm = bool(init is not None and
+            init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))
+    previous_residual = init.meta.gripper_residual if init is not None else "none"
+    gripper_residual = gripper_residual if gripper_residual is not None else previous_residual
+    if gripper_residual not in ("none", "mlp64-v1") or (previous_residual != "none" and gripper_residual != previous_residual):
+        raise ValueError("Cannot remove or change an existing gripper residual contract")
+    if previous_residual != "none" and features != init.meta.features:
+        raise ValueError("Residual refinement must preserve the initial observation mapping")
+    if ((gripper_residual != previous_residual and train_channels != "gripper-residual")
+            or (train_channels == "gripper-residual" and gripper_residual == "none")
+            or (ignore_previous_arm and gripper_residual != "none")):
+        raise ValueError("Adding a gripper residual requires gripper-residual training with intact observation history")
+    if init is not None and init.meta.features not in ("raw", features):
+        raise ValueError("Refinement cannot remove or change an existing feature contract")
+    if train_channels != "all" and (features != init.meta.features or ignore_previous_arm !=
+            bool(init.meta.evals.get('imitation', {}).get('ignore_previous_arm', False))):
+        raise ValueError("Gripper-only refinement must preserve the initial observation mapping")
+    torch.manual_seed(seed)
+    meta = PolicyMeta(task=demos.task, hidden=list(hidden), obs_dim=demos.train_obs.shape[1], act_dim=7,
+                      robot="a1x", randomization=demos.randomization, features=features,
+                      gripper_residual=gripper_residual,
+                      cube_yaw_mode=yaw_mode,
+                      gripper_decoder=init.meta.gripper_decoder if init is not None else "identity",
+                      cube_height_error_bound_m=init.meta.cube_height_error_bound_m if init is not None else 0.0,
+                      notes="Behavior cloning of scripted simulation lifts; not RL or physical validation")
+    policy = Policy(meta).to(device)
+    x, y, vx, vy = [torch.as_tensor(a, device=device) for a in
+                    (demos.train_obs, demos.train_actions, demos.valid_obs, demos.valid_actions)]
+    if init is None:
+        policy.norm.update(x)  # Validation observations never enter this estimate.
+    else:
+        initial_state = dict(init.state_dict())
+        if init.meta.features == "raw" and features != "raw":
+            expanded = policy.actor[0].weight.detach().clone()
+            expanded.zero_()
+            expanded[:, :init.meta.obs_dim] = initial_state['actor.0.weight']
+            initial_state['actor.0.weight'] = expanded
+        if previous_residual == "none" and gripper_residual != "none":
+            initial_state.update({k: v for k, v in policy.state_dict().items() if k.startswith('gripper_residual.')})
+        policy.load_state_dict(initial_state)
+        policy.meta.notes = "Imitation refinement with frozen input statistics; not RL or physical validation"
+    if ignore_previous_arm:
+        if policy.meta.obs_dim != 36 or policy.task.name != 'lift' or policy.task.n_joints != 7:
+            raise ValueError("Arm-history ablation requires the 36-input A1X lift contract")
+        # Zero columns encode the ablation in the saved network itself. During
+        # fitting, neutral normalized inputs keep their gradients exactly zero.
+        # Clone tensors to preserve original demonstrations; retain grip history.
+        with torch.no_grad():
+            policy.actor[0].weight[:, 29:35].zero_()
+        x, vx = x.clone(), vx.clone()
+        x[:, 29:35] = policy.norm.mean[29:35]
+        vx[:, 29:35] = policy.norm.mean[29:35]
+    feature_started = time.monotonic()
+    train_features, valid_features = policy.derived_features(x), policy.derived_features(vx)
+    feature_prepare_s = time.monotonic()-feature_started
+    gradient_hooks = []
+    if train_channels != "all":
+        for parameter in policy.parameters():
+            parameter.requires_grad_(False)
+    if train_channels == "gripper":
+        output = policy.actor[-1]
+        for parameter in (output.weight, output.bias):
+            parameter.requires_grad_(True)
+            gradient_hooks.append(parameter.register_hook(
+                lambda grad: torch.cat((torch.zeros_like(grad[:-1]), grad[-1:]), dim=0)))
+    elif train_channels == "gripper-residual":
+        for parameter in policy.gripper_residual.parameters():
+            parameter.requires_grad_(True)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
+    probabilities = torch.as_tensor(weights, device=device) if weighted else None
+
+    def losses(pred, target):
+        error = (pred - target).square()
+        arm, grip = error[:, :6].mean(), error[:, 6].mean()
+        return arm + grip, arm, grip  # Do not dilute the one gripper channel among six arm joints.
+
+    @torch.no_grad()
+    def assess():
+        values = losses(policy(vx, derived=valid_features), vy)
+        return dict(loss=values[0].item(), arm_mse=values[1].item(), gripper_mse=values[2].item())
+
+    initial, history = assess(), []
+    best, best_at, completed = initial["loss"], 0, 0
+    best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+    started = time.monotonic()
+    for update in range(1, updates + 1):
+        if time.monotonic() - started >= seconds:
+            break
+        size = min(batch_size, len(x))
+        idx = (torch.multinomial(probabilities, size, replacement=True) if weighted else
+               torch.randint(len(x), (size,), device=device))
+        loss, _, _ = losses(policy(x[idx], derived=train_features[idx] if train_features is not None else None), y[idx])
+        if not torch.isfinite(loss):
+            raise RuntimeError("Nonfinite imitation loss")
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
+        optimizer.step()
+        completed = update
+        if update % report_every == 0 or update == updates:
+            metrics = assess()
+            if not all(np.isfinite(v) for v in metrics.values()):
+                raise RuntimeError("Nonfinite imitation validation score")
+            entry = dict(update=update, training_loss=loss.item(), validation=metrics,
+                         elapsed_s=time.monotonic() - started)
+            history.append(entry)
+            if metrics["loss"] < best:
+                best, best_at = metrics["loss"], update
+                best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+            if on_progress:
+                on_progress(entry)
+    # Include the final partial interval when the time limit interrupted training.
+    metrics = assess()
+    if np.isfinite(metrics["loss"]) and metrics["loss"] < best:
+        best, best_at = metrics["loss"], completed
+        best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+    policy.load_state_dict(best_state)
+    if train_channels == "gripper":
+        last = f"actor.{len(policy.actor)-1}."
+        for name, value in policy.state_dict().items():
+            old = init.state_dict()[name].to(value.device)
+            unchanged = torch.equal(value[:-1], old[:-1]) if name.startswith(last) else torch.equal(value, old)
+            if not unchanged:
+                raise RuntimeError("Gripper-only refinement changed the frozen arm mapping")
+    elif train_channels == "gripper-residual":
+        for name, value in init.state_dict().items():
+            if not name.startswith('gripper_residual.') and not torch.equal(value.to(device), policy.state_dict()[name]):
+                raise RuntimeError("Gripper residual refinement changed the original actor or normalizer")
+    for handle in gradient_hooks:
+        handle.remove()
+    for parameter in policy.parameters():
+        parameter.requires_grad_(True)
+    if ignore_previous_arm and torch.count_nonzero(policy.actor[0].weight[:, 29:35]):
+        raise RuntimeError("Arm-history ablation did not preserve zero input columns")
+    policy.eval()
+    policy.meta.iterations = best_at
+    policy.meta.steps = 0  # No new environment transitions were collected by this learner.
+    result = dict(method="behavior cloning", initialized=init is not None,
+                  cube_yaw_mode=yaw_mode, gripper_decoder=policy.meta.gripper_decoder,
+                  prediction_loss="raw actor outputs against teacher actions; runtime decoding evaluated separately",
+                  train_channels=train_channels,
+                  gripper_residual=gripper_residual,
+                  features=features, feature_prepare_s=feature_prepare_s,
+                  ignore_previous_arm=ignore_previous_arm,
+                  ignored_observation_indices=list(range(29, 35)) if ignore_previous_arm else [],
+                  feature_geometry_sha256=policy.meta.feature_geometry_sha256,
+                  normalizer="frozen initial policy" if init is not None else "training observations only",
+                  learning_rate=lr, optimizer_updates=completed, selected_update=best_at,
+                  sampling=dict(mode="weighted" if weighted else "uniform",
+                      min_weight=float(weights.min()), max_weight=float(weights.max()),
+                      weight_sum=float(weights.sum()),
+                      weights_sha256=hashlib.sha256(weights.tobytes()).hexdigest()),
+                  train_samples=len(x), validation_samples=len(vx), initial_validation=initial,
+                  selected_validation=assess(), history=history, elapsed_s=time.monotonic() - started)
+    policy.meta.evals["imitation"] = {k: v for k, v in result.items() if k != "history"}
+    return policy, result
+
+
+def load_refinement_policy(path: Path, demos: Demonstrations) -> Policy:
+    """Require the runner's hash-bound record and keep prior train/validation roles."""
+    path = Path(path)
+    report = json.loads(path.with_name("report.json").read_text())
+    if report.get("policy_sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+        raise ValueError("Initial policy hash does not match its imitation report")
+    previous = report.get("dataset", {})
+    if not all(key in previous for key in ("train_seeds", "validation_seeds")):
+        raise ValueError("Initial policy report must record its dataset split")
+    if any(not set(previous[key]).issubset(demos.provenance[key])
+           for key in ("train_seeds", "validation_seeds")):
+        raise ValueError("Refinement must retain prior episodes in their training and validation roles")
+    return Policy.load(path)

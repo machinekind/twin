@@ -1,0 +1,2939 @@
+{
+  "status": "complete",
+  "all_final_states_exactly_reproduced": true,
+  "trials": [
+    {
+      "condition": "zero",
+      "seed": 50000,
+      "perception_seed": 1154525048,
+      "steps": 138,
+      "success": true,
+      "first_bilateral_step": 66,
+      "max_true_height_m": 0.07176897596926214,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07176897596926214,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1899999999999755,
+        "max_coupling_mm": 0.603648249349352
+      },
+      "last_measured": {
+        "arm_joint1": 6.978729380307358,
+        "arm_joint2": 123.57887707955342,
+        "arm_joint3": -88.17156667630186,
+        "arm_joint4": 54.52229160993304,
+        "arm_joint5": -0.08218411345185239,
+        "arm_joint6": 43.43558118115756,
+        "gripper": 24.208556816162698
+      },
+      "last_command": {
+        "arm_joint1": 6.964679330953325,
+        "arm_joint2": 122.92677498884926,
+        "arm_joint3": -88.60788001540766,
+        "arm_joint4": 54.44537787747614,
+        "arm_joint5": -0.08315061684074053,
+        "arm_joint6": 43.446930438800386,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50000.jsonl",
+      "trace_sha256": "e81d5f2142451a1733623aff951398fe9b4f4fe416ccf468c7b9364a37e840a9"
+    },
+    {
+      "condition": "zero",
+      "seed": 50001,
+      "perception_seed": 3835370153,
+      "steps": 133,
+      "success": true,
+      "first_bilateral_step": 59,
+      "max_true_height_m": 0.07008217501539062,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07007007014599755,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2349999999999746,
+        "max_coupling_mm": 1.0093601793323277
+      },
+      "last_measured": {
+        "arm_joint1": 29.09342038818564,
+        "arm_joint2": 116.94953412876669,
+        "arm_joint3": -76.11185513240885,
+        "arm_joint4": 49.27827230084685,
+        "arm_joint5": -0.048809709844975964,
+        "arm_joint6": 11.608771043111549,
+        "gripper": 24.20854550956252
+      },
+      "last_command": {
+        "arm_joint1": 29.102535016963667,
+        "arm_joint2": 116.36303465950586,
+        "arm_joint3": -76.52895838529592,
+        "arm_joint4": 49.192299081140355,
+        "arm_joint5": -0.049446574200692546,
+        "arm_joint6": 11.61298196649451,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50001.jsonl",
+      "trace_sha256": "1f5ef4437f51899d6b84bea3aab5f99af13ea73e496572eac523f959d77f3b14"
+    },
+    {
+      "condition": "zero",
+      "seed": 50002,
+      "perception_seed": 2653842833,
+      "steps": 135,
+      "success": true,
+      "first_bilateral_step": 61,
+      "max_true_height_m": 0.06952591582309965,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06952591582309965,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2249999999999748,
+        "max_coupling_mm": 0.4562234451808145
+      },
+      "last_measured": {
+        "arm_joint1": -15.809260790406354,
+        "arm_joint2": 125.21239529225186,
+        "arm_joint3": -90.7622748683646,
+        "arm_joint4": 56.10756872210428,
+        "arm_joint5": -0.07777722436042725,
+        "arm_joint6": 8.38030472702835,
+        "gripper": 24.208507674338477
+      },
+      "last_command": {
+        "arm_joint1": -15.804585916412412,
+        "arm_joint2": 124.53456241492398,
+        "arm_joint3": -91.1777029225997,
+        "arm_joint4": 56.02679065069504,
+        "arm_joint5": -0.0782400068899373,
+        "arm_joint6": 8.378389521157228,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50002.jsonl",
+      "trace_sha256": "1f99afc76dbcbda4c99045d27f86d8cda8f7757a036345894cc0a9665f6f750e"
+    },
+    {
+      "condition": "zero",
+      "seed": 50003,
+      "perception_seed": 1484854140,
+      "steps": 145,
+      "success": true,
+      "first_bilateral_step": 70,
+      "max_true_height_m": 0.06898948442313936,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06897835300667855,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2399999999999745,
+        "max_coupling_mm": 0.4673693429703141
+      },
+      "last_measured": {
+        "arm_joint1": -26.027685848916235,
+        "arm_joint2": 148.30343371542313,
+        "arm_joint3": -139.33383003185426,
+        "arm_joint4": 80.36836498207325,
+        "arm_joint5": 0.050663329489054915,
+        "arm_joint6": 4.408527518513079,
+        "gripper": 24.208261478782966
+      },
+      "last_command": {
+        "arm_joint1": -26.022290414771394,
+        "arm_joint2": 147.4840070955759,
+        "arm_joint3": -139.80574954552753,
+        "arm_joint4": 80.31543352084745,
+        "arm_joint5": 0.05047010638801134,
+        "arm_joint6": 4.43212160288577,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50003.jsonl",
+      "trace_sha256": "0cf29c1212279b72b79c721dc34cd690e54603c97544155d6127ebbaa5f91b48"
+    },
+    {
+      "condition": "zero",
+      "seed": 50004,
+      "perception_seed": 1033449854,
+      "steps": 147,
+      "success": true,
+      "first_bilateral_step": 74,
+      "max_true_height_m": 0.07167357881851279,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07152240655779253,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.204999999999975,
+        "max_coupling_mm": 0.818885749099274
+      },
+      "last_measured": {
+        "arm_joint1": 37.06634060387873,
+        "arm_joint2": 134.17564057231664,
+        "arm_joint3": -108.28633477878053,
+        "arm_joint4": 64.02601057320915,
+        "arm_joint5": -0.050714384159904626,
+        "arm_joint6": 26.333100892392178,
+        "gripper": 24.208401284434615
+      },
+      "last_command": {
+        "arm_joint1": 37.06942230431648,
+        "arm_joint2": 133.4354734070208,
+        "arm_joint3": -108.74570531731928,
+        "arm_joint4": 63.952064075896644,
+        "arm_joint5": -0.052044779680394844,
+        "arm_joint6": 26.343323240799695,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50004.jsonl",
+      "trace_sha256": "041d34cdd434c2cde5898232b28bfd3a47b81995384cd7438a4877715ac8fa4d"
+    },
+    {
+      "condition": "zero",
+      "seed": 50005,
+      "perception_seed": 111243313,
+      "steps": 133,
+      "success": true,
+      "first_bilateral_step": 57,
+      "max_true_height_m": 0.06957373412768376,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06957373412768376,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.254999999999974,
+        "max_coupling_mm": 0.4763054749337935
+      },
+      "last_measured": {
+        "arm_joint1": 4.215554166496954,
+        "arm_joint2": 115.93678063247884,
+        "arm_joint3": -74.18380120768059,
+        "arm_joint4": 48.6551213782686,
+        "arm_joint5": -0.024194822749483737,
+        "arm_joint6": -20.857583781774863,
+        "gripper": 24.20844236426202
+      },
+      "last_command": {
+        "arm_joint1": 4.213621974796868,
+        "arm_joint2": 115.35750546530208,
+        "arm_joint3": -74.59092356407454,
+        "arm_joint4": 48.57271647452776,
+        "arm_joint5": -0.023795443030127504,
+        "arm_joint6": -20.861738967472448,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50005.jsonl",
+      "trace_sha256": "ac86749bc3fd03b60669e22437d1992218ba08b275c83d54f9292f76943640f6"
+    },
+    {
+      "condition": "zero",
+      "seed": 50006,
+      "perception_seed": 3139426464,
+      "steps": 130,
+      "success": true,
+      "first_bilateral_step": 56,
+      "max_true_height_m": 0.07029506056473457,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07029506056473457,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.219999999999975,
+        "max_coupling_mm": 0.44338159146652817
+      },
+      "last_measured": {
+        "arm_joint1": 4.599387756279045,
+        "arm_joint2": 129.7645731764767,
+        "arm_joint3": -99.45180212865442,
+        "arm_joint4": 60.2014410126426,
+        "arm_joint5": -0.10795180327032661,
+        "arm_joint6": 7.08665809443526,
+        "gripper": 24.20848952406616
+      },
+      "last_command": {
+        "arm_joint1": 4.588792547781669,
+        "arm_joint2": 129.0361559300122,
+        "arm_joint3": -99.85516525834761,
+        "arm_joint4": 60.11561895509111,
+        "arm_joint5": -0.1081358764928654,
+        "arm_joint6": 7.096526878098062,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50006.jsonl",
+      "trace_sha256": "eed2c2131c315822bf287f4b2de6a33d55674c7b27982b516932d69c50c2dedc"
+    },
+    {
+      "condition": "zero",
+      "seed": 50007,
+      "perception_seed": 1685330147,
+      "steps": 159,
+      "success": true,
+      "first_bilateral_step": 88,
+      "max_true_height_m": 0.07317434231108723,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07311833806434255,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1999999999999753,
+        "max_coupling_mm": 1.0762656434192448
+      },
+      "last_measured": {
+        "arm_joint1": 35.501081546026874,
+        "arm_joint2": 135.97218041083886,
+        "arm_joint3": -112.43474807948945,
+        "arm_joint4": 67.02509875284296,
+        "arm_joint5": -0.0732054483881845,
+        "arm_joint6": 72.73846377950603,
+        "gripper": 24.208863107685943
+      },
+      "last_command": {
+        "arm_joint1": 35.492665401790234,
+        "arm_joint2": 135.20846979251476,
+        "arm_joint3": -112.86688037024443,
+        "arm_joint4": 66.95113240304616,
+        "arm_joint5": -0.073647592242134,
+        "arm_joint6": 72.78317610484784,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50007.jsonl",
+      "trace_sha256": "0e572d671b9832e2e782f10e12ee2880bd4b8a9c9cf41d2d07ab111b57b1ba7e"
+    },
+    {
+      "condition": "zero",
+      "seed": 50008,
+      "perception_seed": 3019445504,
+      "steps": 149,
+      "success": true,
+      "first_bilateral_step": 77,
+      "max_true_height_m": 0.07391117787628988,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07390699121570322,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1949999999999754,
+        "max_coupling_mm": 1.07281755469784
+      },
+      "last_measured": {
+        "arm_joint1": 34.488025400096916,
+        "arm_joint2": 113.0683033776186,
+        "arm_joint3": -69.9889909765018,
+        "arm_joint4": 46.705525525769,
+        "arm_joint5": 0.0151923606939621,
+        "arm_joint6": 62.221192634389624,
+        "gripper": 24.208750036849345
+      },
+      "last_command": {
+        "arm_joint1": 34.50133972252693,
+        "arm_joint2": 112.52048516729495,
+        "arm_joint3": -70.39672247796089,
+        "arm_joint4": 46.612462958349,
+        "arm_joint5": 0.015302130491304954,
+        "arm_joint6": 62.22534540586202,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50008.jsonl",
+      "trace_sha256": "7da7639b32df5e975d13af4ec1ade29dfcff2c251f54fa6a8363c45718dd58a4"
+    },
+    {
+      "condition": "zero",
+      "seed": 50009,
+      "perception_seed": 2742081971,
+      "steps": 149,
+      "success": true,
+      "first_bilateral_step": 81,
+      "max_true_height_m": 0.07675715216565017,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07675715216565017,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1449999999999765,
+        "max_coupling_mm": 1.0583020102260445
+      },
+      "last_measured": {
+        "arm_joint1": -40.54204457864456,
+        "arm_joint2": 132.42030320331725,
+        "arm_joint3": -105.57055543519839,
+        "arm_joint4": 63.17614847240224,
+        "arm_joint5": -0.1021107665686827,
+        "arm_joint6": -85.25216831226739,
+        "gripper": 24.208151307347983
+      },
+      "last_command": {
+        "arm_joint1": -40.57087012018052,
+        "arm_joint2": 131.69662968075437,
+        "arm_joint3": -106.03868594808135,
+        "arm_joint4": 63.10744953015825,
+        "arm_joint5": -0.10420377409436773,
+        "arm_joint6": -85.32805840402527,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50009.jsonl",
+      "trace_sha256": "ca1f9a0123374e31b5d178ff57cb146455c2e7e5ac83d267c2622bbd066039f7"
+    },
+    {
+      "condition": "zero",
+      "seed": 50010,
+      "perception_seed": 1944204433,
+      "steps": 142,
+      "success": true,
+      "first_bilateral_step": 70,
+      "max_true_height_m": 0.07084988133060423,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07084988133060423,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1799999999999757,
+        "max_coupling_mm": 0.44122486494336044
+      },
+      "last_measured": {
+        "arm_joint1": -8.046024563436628,
+        "arm_joint2": 142.30200391417242,
+        "arm_joint3": -125.73328428932949,
+        "arm_joint4": 73.47398056067559,
+        "arm_joint5": -0.06945756662806682,
+        "arm_joint6": -23.898039484502114,
+        "gripper": 24.208409273780276
+      },
+      "last_command": {
+        "arm_joint1": -8.04947170008441,
+        "arm_joint2": 141.504472116037,
+        "arm_joint3": -126.1918244664098,
+        "arm_joint4": 73.41745482149145,
+        "arm_joint5": -0.06942079676338385,
+        "arm_joint6": -23.888400102632815,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50010.jsonl",
+      "trace_sha256": "7f1aff1d2a2dd9d625db17c6a865fe2e2bc780592f8f6afe7e52f4c19806c1c8"
+    },
+    {
+      "condition": "zero",
+      "seed": 50011,
+      "perception_seed": 717978514,
+      "steps": 131,
+      "success": true,
+      "first_bilateral_step": 57,
+      "max_true_height_m": 0.07017878545483082,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07017878545483082,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2349999999999746,
+        "max_coupling_mm": 0.7043416883021764
+      },
+      "last_measured": {
+        "arm_joint1": 8.531107290282815,
+        "arm_joint2": 122.19605312663658,
+        "arm_joint3": -85.20067000089983,
+        "arm_joint4": 53.29052606703794,
+        "arm_joint5": -0.06492816020238176,
+        "arm_joint6": -16.709758786925423,
+        "gripper": 24.20850528202101
+      },
+      "last_command": {
+        "arm_joint1": 8.530998023008486,
+        "arm_joint2": 121.54393513312111,
+        "arm_joint3": -85.60557695770106,
+        "arm_joint4": 53.20214203421778,
+        "arm_joint5": -0.06476530689691015,
+        "arm_joint6": -16.704284536035527,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50011.jsonl",
+      "trace_sha256": "19a388baba4ea40b3ea0f2079b3922931b37eff5b9454afb33ad0a450486e9e0"
+    },
+    {
+      "condition": "zero",
+      "seed": 50012,
+      "perception_seed": 2814486609,
+      "steps": 138,
+      "success": true,
+      "first_bilateral_step": 65,
+      "max_true_height_m": 0.07082301931971748,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07079893475962364,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1949999999999754,
+        "max_coupling_mm": 0.6505296564938978
+      },
+      "last_measured": {
+        "arm_joint1": 30.057791360987245,
+        "arm_joint2": 130.70150492763986,
+        "arm_joint3": -101.48804414730841,
+        "arm_joint4": 60.70425021296045,
+        "arm_joint5": -0.11922734389460021,
+        "arm_joint6": 8.571261814186643,
+        "gripper": 24.208306772124757
+      },
+      "last_command": {
+        "arm_joint1": 30.071556658712005,
+        "arm_joint2": 129.9775135183737,
+        "arm_joint3": -101.91948000661425,
+        "arm_joint4": 60.61221916609283,
+        "arm_joint5": -0.12098280652244635,
+        "arm_joint6": 8.580748827842658,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50012.jsonl",
+      "trace_sha256": "ce1894b39a6a1b8706e0f80245e2042081bb2f2613088e83d309fbc00a72b4bb"
+    },
+    {
+      "condition": "zero",
+      "seed": 50013,
+      "perception_seed": 2568212096,
+      "steps": 139,
+      "success": true,
+      "first_bilateral_step": 65,
+      "max_true_height_m": 0.06960773779688613,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06959934893166998,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2399999999999745,
+        "max_coupling_mm": 0.45245134899390627
+      },
+      "last_measured": {
+        "arm_joint1": -6.5218879134398575,
+        "arm_joint2": 143.15321424085718,
+        "arm_joint3": -127.96329167229538,
+        "arm_joint4": 74.24648560755507,
+        "arm_joint5": -0.008563017160695597,
+        "arm_joint6": 17.705657114927398,
+        "gripper": 24.20817149669092
+      },
+      "last_command": {
+        "arm_joint1": -6.531073259512245,
+        "arm_joint2": 142.3617276889165,
+        "arm_joint3": -128.44894269127792,
+        "arm_joint4": 74.19504528011363,
+        "arm_joint5": -0.008884385605717042,
+        "arm_joint6": 17.734303612725547,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50013.jsonl",
+      "trace_sha256": "6ed9becd62e5bafba864dfa39c638b16da62b9d5593a9bdeb51c08cba9d887b8"
+    },
+    {
+      "condition": "zero",
+      "seed": 50014,
+      "perception_seed": 831777817,
+      "steps": 141,
+      "success": true,
+      "first_bilateral_step": 66,
+      "max_true_height_m": 0.07059380755552293,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07058887692856454,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2299999999999747,
+        "max_coupling_mm": 0.6709102902655636
+      },
+      "last_measured": {
+        "arm_joint1": -21.94422842418429,
+        "arm_joint2": 112.12228203003018,
+        "arm_joint3": -68.26449248242471,
+        "arm_joint4": 46.52224406388569,
+        "arm_joint5": -0.04022142546387233,
+        "arm_joint6": -60.13479768708519,
+        "gripper": 24.208716984591202
+      },
+      "last_command": {
+        "arm_joint1": -21.936849793861644,
+        "arm_joint2": 111.58098075248223,
+        "arm_joint3": -68.65852102864034,
+        "arm_joint4": 46.42981608113877,
+        "arm_joint5": -0.04060151436480741,
+        "arm_joint6": -60.13552295370632,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50014.jsonl",
+      "trace_sha256": "9dc6491af77177584d1122f7efe180b866c09fbdf2386aeff14b2bc3e2e02ae8"
+    },
+    {
+      "condition": "zero",
+      "seed": 50015,
+      "perception_seed": 4263454734,
+      "steps": 145,
+      "success": true,
+      "first_bilateral_step": 72,
+      "max_true_height_m": 0.07167735320668957,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07167735320668957,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2299999999999747,
+        "max_coupling_mm": 1.3809791637014248
+      },
+      "last_measured": {
+        "arm_joint1": -36.61369319092535,
+        "arm_joint2": 126.32998510363933,
+        "arm_joint3": -92.92435030343484,
+        "arm_joint4": 57.87379153975373,
+        "arm_joint5": 0.04755036549731687,
+        "arm_joint6": -68.54413168181058,
+        "gripper": 24.208677923433317
+      },
+      "last_command": {
+        "arm_joint1": -36.61816633394598,
+        "arm_joint2": 125.62704361587618,
+        "arm_joint3": -93.30700532976823,
+        "arm_joint4": 57.78228048794546,
+        "arm_joint5": 0.048119781242087004,
+        "arm_joint6": -68.59441132331584,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50015.jsonl",
+      "trace_sha256": "a9c7cb0768c935ae4b514746f955cc8f4da51e1e08966d4701d6969eeff26541"
+    },
+    {
+      "condition": "zero",
+      "seed": 50016,
+      "perception_seed": 2350285948,
+      "steps": 138,
+      "success": true,
+      "first_bilateral_step": 63,
+      "max_true_height_m": 0.0705910872760931,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.0705910872760931,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1949999999999754,
+        "max_coupling_mm": 0.4468961727249268
+      },
+      "last_measured": {
+        "arm_joint1": -7.823135823176465,
+        "arm_joint2": 134.87704189254399,
+        "arm_joint3": -109.77237827652068,
+        "arm_joint4": 65.67248771366775,
+        "arm_joint5": -0.038728562104665167,
+        "arm_joint6": -15.509324408988764,
+        "gripper": 24.208443665089607
+      },
+      "last_command": {
+        "arm_joint1": -7.833539980331575,
+        "arm_joint2": 134.10397975910155,
+        "arm_joint3": -110.17264556070786,
+        "arm_joint4": 65.5934908477993,
+        "arm_joint5": -0.037906429313913144,
+        "arm_joint6": -15.49960761130073,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50016.jsonl",
+      "trace_sha256": "b371643d28508cc1c43a2b0f966b0b8d9d0886291123766728bf3f4280607344"
+    },
+    {
+      "condition": "zero",
+      "seed": 50017,
+      "perception_seed": 2924952484,
+      "steps": 140,
+      "success": true,
+      "first_bilateral_step": 63,
+      "max_true_height_m": 0.06947374759136106,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06947374759136106,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.264999999999974,
+        "max_coupling_mm": 0.5910248532229844
+      },
+      "last_measured": {
+        "arm_joint1": -16.885423001128046,
+        "arm_joint2": 116.62221762350494,
+        "arm_joint3": -75.31201902490028,
+        "arm_joint4": 49.4395304781067,
+        "arm_joint5": -0.0008291249524908915,
+        "arm_joint6": -34.06198184416694,
+        "gripper": 24.20819348439576
+      },
+      "last_command": {
+        "arm_joint1": -16.878971476623384,
+        "arm_joint2": 116.03361479235242,
+        "arm_joint3": -75.71558239782135,
+        "arm_joint4": 49.36033129570208,
+        "arm_joint5": -0.00033982234200047784,
+        "arm_joint6": -34.05841891264964,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50017.jsonl",
+      "trace_sha256": "7f910014acaf2cd2174be44d22039b58b511842feee75ff15b45f289d0b35803"
+    },
+    {
+      "condition": "zero",
+      "seed": 50018,
+      "perception_seed": 592633835,
+      "steps": 134,
+      "success": true,
+      "first_bilateral_step": 59,
+      "max_true_height_m": 0.0705710183218602,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07057018762709445,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.219999999999975,
+        "max_coupling_mm": 0.5878810423096195
+      },
+      "last_measured": {
+        "arm_joint1": 7.1253499513987615,
+        "arm_joint2": 112.9460809565546,
+        "arm_joint3": -69.35360441026765,
+        "arm_joint4": 46.92279487528587,
+        "arm_joint5": -0.0038187579376621514,
+        "arm_joint6": 19.43465691709016,
+        "gripper": 24.20844270626006
+      },
+      "last_command": {
+        "arm_joint1": 7.122046664935926,
+        "arm_joint2": 112.397856508997,
+        "arm_joint3": -69.75234485243084,
+        "arm_joint4": 46.840609390655516,
+        "arm_joint5": -0.0032161687274210138,
+        "arm_joint6": 19.441853694282653,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50018.jsonl",
+      "trace_sha256": "d0082d76b6b0f6ce6b116734aaf857dc50c99c2ee3ab293f134e34c8b22d2456"
+    },
+    {
+      "condition": "zero",
+      "seed": 50019,
+      "perception_seed": 1472634408,
+      "steps": 144,
+      "success": true,
+      "first_bilateral_step": 71,
+      "max_true_height_m": 0.07151868841985444,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07151868841985444,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1899999999999755,
+        "max_coupling_mm": 0.8985424008201848
+      },
+      "last_measured": {
+        "arm_joint1": 20.287824982116348,
+        "arm_joint2": 146.30703903936976,
+        "arm_joint3": -135.23583384382619,
+        "arm_joint4": 77.43600636437661,
+        "arm_joint5": -0.17552467825399756,
+        "arm_joint6": 24.288054824143202,
+        "gripper": 24.20890884680521
+      },
+      "last_command": {
+        "arm_joint1": 20.260140269825477,
+        "arm_joint2": 145.51496217286294,
+        "arm_joint3": -135.7602580517637,
+        "arm_joint4": 77.38265603971628,
+        "arm_joint5": -0.17863400131465698,
+        "arm_joint6": 24.29039013048292,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "zero-seed-50019.jsonl",
+      "trace_sha256": "74224f748fcdf1326f05cc2b621da6927a25ec79fc78dcba75e80dc38da52136"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50000,
+      "perception_seed": 1154525048,
+      "steps": 135,
+      "success": true,
+      "first_bilateral_step": 63,
+      "max_true_height_m": 0.0720124275443176,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.0720124275443176,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1799999999999757,
+        "max_coupling_mm": 0.49090083543071317
+      },
+      "last_measured": {
+        "arm_joint1": 9.759631364637725,
+        "arm_joint2": 125.56440743048714,
+        "arm_joint3": -91.96141966084241,
+        "arm_joint4": 55.65658416924938,
+        "arm_joint5": -0.10248848773707941,
+        "arm_joint6": 46.86509474367812,
+        "gripper": 24.208486524236957
+      },
+      "last_command": {
+        "arm_joint1": 9.761088239452535,
+        "arm_joint2": 124.90176488952798,
+        "arm_joint3": -92.42501681950007,
+        "arm_joint4": 55.580666995856795,
+        "arm_joint5": -0.10378400128963418,
+        "arm_joint6": 46.9140386831653,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50000.jsonl",
+      "trace_sha256": "71d8e5e4376888268ca90d179b33dabfb78aba329a4e1f0d7871b6f17a0b0a5b"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50001,
+      "perception_seed": 3835370153,
+      "steps": 129,
+      "success": true,
+      "first_bilateral_step": 57,
+      "max_true_height_m": 0.07114097829599565,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07113750022051692,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.164999999999976,
+        "max_coupling_mm": 1.0147346183917716
+      },
+      "last_measured": {
+        "arm_joint1": 33.55725843701688,
+        "arm_joint2": 118.03608838621918,
+        "arm_joint3": -78.28239803779486,
+        "arm_joint4": 49.82255904565643,
+        "arm_joint5": -0.13973398279110116,
+        "arm_joint6": 17.469514447148498,
+        "gripper": 24.20897308842833
+      },
+      "last_command": {
+        "arm_joint1": 33.604756259132756,
+        "arm_joint2": 117.44571941593505,
+        "arm_joint3": -78.72085358983153,
+        "arm_joint4": 49.738256915847245,
+        "arm_joint5": -0.14124681406971712,
+        "arm_joint6": 17.536180458465875,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50001.jsonl",
+      "trace_sha256": "cf22acdb9aa27fd623535eb1a80ae31f264f13e52935a283134f2de506bd39a0"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50002,
+      "perception_seed": 2653842833,
+      "steps": 133,
+      "success": true,
+      "first_bilateral_step": 59,
+      "max_true_height_m": 0.06920555691305853,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06920555691305853,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2299999999999747,
+        "max_coupling_mm": 0.45056933272450206
+      },
+      "last_measured": {
+        "arm_joint1": -13.038553621557192,
+        "arm_joint2": 126.07076068781238,
+        "arm_joint3": -92.27409822789174,
+        "arm_joint4": 56.49947611968223,
+        "arm_joint5": -0.09388918479145394,
+        "arm_joint6": 16.529372724736216,
+        "gripper": 24.208604351936813
+      },
+      "last_command": {
+        "arm_joint1": -13.00954133727984,
+        "arm_joint2": 125.39460889545549,
+        "arm_joint3": -92.71135794610241,
+        "arm_joint4": 56.42595505306526,
+        "arm_joint5": -0.09469434155041764,
+        "arm_joint6": 16.592659907898415,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50002.jsonl",
+      "trace_sha256": "4c4ac0fe1cd5a735387b584916609cfdad548b25c8cf9cdf1e404a954858e190"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50003,
+      "perception_seed": 1484854140,
+      "steps": 148,
+      "success": true,
+      "first_bilateral_step": 72,
+      "max_true_height_m": 0.06836482270693668,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06827159707801402,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.254999999999974,
+        "max_coupling_mm": 0.4660513142239128
+      },
+      "last_measured": {
+        "arm_joint1": -22.991184654549162,
+        "arm_joint2": 147.88004395438148,
+        "arm_joint3": -138.14324711455072,
+        "arm_joint4": 79.71337535998455,
+        "arm_joint5": 0.0988834550010407,
+        "arm_joint6": 12.643714270784454,
+        "gripper": 24.20813021074082
+      },
+      "last_command": {
+        "arm_joint1": -22.9456833304157,
+        "arm_joint2": 147.07728089326173,
+        "arm_joint3": -138.64795825767098,
+        "arm_joint4": 79.67315606150851,
+        "arm_joint5": 0.09918340365560006,
+        "arm_joint6": 12.743710488121271,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50003.jsonl",
+      "trace_sha256": "30134cdcf21d843e37908b22a59b1193fe8e5507f34be93dec57b9d8af725640"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50004,
+      "perception_seed": 1033449854,
+      "steps": 137,
+      "success": true,
+      "first_bilateral_step": 64,
+      "max_true_height_m": 0.072021741137567,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.071801038619849,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1849999999999756,
+        "max_coupling_mm": 0.8193473230376571
+      },
+      "last_measured": {
+        "arm_joint1": 40.86547977354101,
+        "arm_joint2": 136.5453957417784,
+        "arm_joint3": -113.50972601078226,
+        "arm_joint4": 66.1261270700833,
+        "arm_joint5": -0.07288331967975693,
+        "arm_joint6": 30.391205965037443,
+        "gripper": 24.20866610712298
+      },
+      "last_command": {
+        "arm_joint1": 40.89526807405758,
+        "arm_joint2": 135.80304633783427,
+        "arm_joint3": -114.01002108593005,
+        "arm_joint4": 66.06397700521102,
+        "arm_joint5": -0.07391185534408794,
+        "arm_joint6": 30.455163689540893,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50004.jsonl",
+      "trace_sha256": "afc3255d717134ce0cb2a8a6664769f2ad49af217b5c486a14ba377b4904014d"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50005,
+      "perception_seed": 111243313,
+      "steps": 134,
+      "success": true,
+      "first_bilateral_step": 60,
+      "max_true_height_m": 0.07061752830041258,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07061752830041258,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2249999999999748,
+        "max_coupling_mm": 0.4748443712682404
+      },
+      "last_measured": {
+        "arm_joint1": 8.133107228887445,
+        "arm_joint2": 114.74087247048365,
+        "arm_joint3": -72.60000884483934,
+        "arm_joint4": 48.27104990522511,
+        "arm_joint5": -0.054365424552537345,
+        "arm_joint6": -16.624970048368677,
+        "gripper": 24.208888090198695
+      },
+      "last_command": {
+        "arm_joint1": 8.167133615752398,
+        "arm_joint2": 114.16098588015693,
+        "arm_joint3": -72.98470002026228,
+        "arm_joint4": 48.18125372137134,
+        "arm_joint5": -0.053845006679085476,
+        "arm_joint6": -16.58082565265508,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50005.jsonl",
+      "trace_sha256": "8deccb4be14f400a762a0dc17fe1cb097b248a44c8a111c09c5400629d9a5822"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50006,
+      "perception_seed": 3139426464,
+      "steps": 130,
+      "success": true,
+      "first_bilateral_step": 57,
+      "max_true_height_m": 0.07059534714657013,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07059534714657013,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.174999999999976,
+        "max_coupling_mm": 0.449784961792328
+      },
+      "last_measured": {
+        "arm_joint1": 7.851367834464009,
+        "arm_joint2": 130.3867943878357,
+        "arm_joint3": -100.85963336248635,
+        "arm_joint4": 60.53508404012347,
+        "arm_joint5": -0.17271372271629315,
+        "arm_joint6": 13.943367649058443,
+        "gripper": 24.20824529519896
+      },
+      "last_command": {
+        "arm_joint1": 7.875484119880832,
+        "arm_joint2": 129.66030508716605,
+        "arm_joint3": -101.28189952143214,
+        "arm_joint4": 60.45135980784497,
+        "arm_joint5": -0.17381407648248487,
+        "arm_joint6": 14.024937565674545,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50006.jsonl",
+      "trace_sha256": "b5d7cbe52922c63f3be03f1204077e7d56d680107f611878ef47d078e7e20dab"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50007,
+      "perception_seed": 1685330147,
+      "steps": 153,
+      "success": true,
+      "first_bilateral_step": 80,
+      "max_true_height_m": 0.07158628790917988,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07144000475854419,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2249999999999748,
+        "max_coupling_mm": 1.035333541012505
+      },
+      "last_measured": {
+        "arm_joint1": 37.561765658391785,
+        "arm_joint2": 141.1670401288403,
+        "arm_joint3": -123.79170535224578,
+        "arm_joint4": 72.40278933503573,
+        "arm_joint5": -0.023627552036932013,
+        "arm_joint6": 76.20269669645701,
+        "gripper": 24.20836588650648
+      },
+      "last_command": {
+        "arm_joint1": 37.5591317225852,
+        "arm_joint2": 140.38139248225872,
+        "arm_joint3": -124.2564986837133,
+        "arm_joint4": 72.34016148033508,
+        "arm_joint5": -0.023845659584778835,
+        "arm_joint6": 76.29200572000178,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50007.jsonl",
+      "trace_sha256": "6054af1caf87972109791e424e05213e977724a3881014aad7339898fd1e9579"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50008,
+      "perception_seed": 3019445504,
+      "steps": 150,
+      "success": true,
+      "first_bilateral_step": 77,
+      "max_true_height_m": 0.07294995243486026,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07294995243486026,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1899999999999755,
+        "max_coupling_mm": 1.0732516847712579
+      },
+      "last_measured": {
+        "arm_joint1": 37.55047660703313,
+        "arm_joint2": 117.15511946210665,
+        "arm_joint3": -76.9755097467463,
+        "arm_joint4": 49.130636930815136,
+        "arm_joint5": -0.08777188254865663,
+        "arm_joint6": 69.47108524578337,
+        "gripper": 24.20819480352951
+      },
+      "last_command": {
+        "arm_joint1": 37.58312340454224,
+        "arm_joint2": 116.58746415978302,
+        "arm_joint3": -77.4404384749779,
+        "arm_joint4": 49.05363893436692,
+        "arm_joint5": -0.08895168990828896,
+        "arm_joint6": 69.52962605702312,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50008.jsonl",
+      "trace_sha256": "ff0b58fe19d087320db533c4566c70547cd2970edeceabb40299ba8a228651ae"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50009,
+      "perception_seed": 2742081971,
+      "steps": 150,
+      "success": true,
+      "first_bilateral_step": 84,
+      "max_true_height_m": 0.08107600765266922,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.08107600765266922,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.114999999999977,
+        "max_coupling_mm": 1.573466279744664
+      },
+      "last_measured": {
+        "arm_joint1": -41.33287795083978,
+        "arm_joint2": 124.85234037426692,
+        "arm_joint3": -91.96146902580924,
+        "arm_joint4": 57.7300028017248,
+        "arm_joint5": -0.08116763163113175,
+        "arm_joint6": -90.57046194859879,
+        "gripper": 24.208130709060306
+      },
+      "last_command": {
+        "arm_joint1": -41.418744505542726,
+        "arm_joint2": 124.16003388715363,
+        "arm_joint3": -92.35012938269892,
+        "arm_joint4": 57.623106433995815,
+        "arm_joint5": -0.0832527408421333,
+        "arm_joint6": -90.71377910202541,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50009.jsonl",
+      "trace_sha256": "68d3fe9e3d560cd41a88b7bcfdbe736174a48ddea4c66980f4c837ac30d6ab5b"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50010,
+      "perception_seed": 1944204433,
+      "steps": 147,
+      "success": true,
+      "first_bilateral_step": 76,
+      "max_true_height_m": 0.07211070444456492,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07211070444456492,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1949999999999754,
+        "max_coupling_mm": 0.6712404779952355
+      },
+      "last_measured": {
+        "arm_joint1": -4.976843074860822,
+        "arm_joint2": 140.8692102111146,
+        "arm_joint3": -122.92088911616922,
+        "arm_joint4": 72.13623162672197,
+        "arm_joint5": -0.12026705631150425,
+        "arm_joint6": -19.556674155273882,
+        "gripper": 24.208673284066375
+      },
+      "last_command": {
+        "arm_joint1": -4.964303595317968,
+        "arm_joint2": 140.070421642582,
+        "arm_joint3": -123.35611186372698,
+        "arm_joint4": 72.0653310613765,
+        "arm_joint5": -0.12055013799589291,
+        "arm_joint6": -19.511421280716174,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50010.jsonl",
+      "trace_sha256": "3c653f108a0f8663364657a77fae3852b04aa26312e203d580af7973d53049bf"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50011,
+      "perception_seed": 717978514,
+      "steps": 133,
+      "success": true,
+      "first_bilateral_step": 61,
+      "max_true_height_m": 0.07102118934809422,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07102118934809422,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1999999999999753,
+        "max_coupling_mm": 0.7122393934559725
+      },
+      "last_measured": {
+        "arm_joint1": 12.276904917404446,
+        "arm_joint2": 121.59676360247532,
+        "arm_joint3": -84.5588952885827,
+        "arm_joint4": 53.062925342730175,
+        "arm_joint5": -0.12439920967812192,
+        "arm_joint6": -12.313952799657402,
+        "gripper": 24.20874186415363
+      },
+      "last_command": {
+        "arm_joint1": 12.303845459856078,
+        "arm_joint2": 120.94675226083972,
+        "arm_joint3": -84.95826071989136,
+        "arm_joint4": 52.968941063013,
+        "arm_joint5": -0.12478310122068412,
+        "arm_joint6": -12.265934770323458,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50011.jsonl",
+      "trace_sha256": "a4def7b8c19ffa6fe73a85f20d5460ebac2af06c607d8eccd42f5155dc4c25c6"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50012,
+      "perception_seed": 2814486609,
+      "steps": 134,
+      "success": true,
+      "first_bilateral_step": 62,
+      "max_true_height_m": 0.07197239495068099,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07192738185949844,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1849999999999756,
+        "max_coupling_mm": 0.6533896876179807
+      },
+      "last_measured": {
+        "arm_joint1": 33.20442804852822,
+        "arm_joint2": 131.68604259222224,
+        "arm_joint3": -103.78482772674408,
+        "arm_joint4": 61.47170181537915,
+        "arm_joint5": -0.1728154786741807,
+        "arm_joint6": 14.955815961247126,
+        "gripper": 24.2080933365079
+      },
+      "last_command": {
+        "arm_joint1": 33.24978998374781,
+        "arm_joint2": 130.96498287511096,
+        "arm_joint3": -104.24456544211054,
+        "arm_joint4": 61.384882864202474,
+        "arm_joint5": -0.17505605026676857,
+        "arm_joint6": 15.039154574173795,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50012.jsonl",
+      "trace_sha256": "9b5dd6729ca8ca560d212a407849b13c2d113805c43befcb693eb6dab1c35406"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50013,
+      "perception_seed": 2568212096,
+      "steps": 134,
+      "success": true,
+      "first_bilateral_step": 61,
+      "max_true_height_m": 0.07022402837915744,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07022402837915744,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1949999999999754,
+        "max_coupling_mm": 0.4527970314220295
+      },
+      "last_measured": {
+        "arm_joint1": -4.322992215702873,
+        "arm_joint2": 145.4329071588879,
+        "arm_joint3": -133.24925365341988,
+        "arm_joint4": 75.79025668511929,
+        "arm_joint5": -0.012354429421221563,
+        "arm_joint6": 23.01057496866896,
+        "gripper": 24.20908010242605
+      },
+      "last_command": {
+        "arm_joint1": -4.324449670532528,
+        "arm_joint2": 144.6790048300708,
+        "arm_joint3": -133.86094172809615,
+        "arm_joint4": 75.77326093548183,
+        "arm_joint5": -0.013029396854476967,
+        "arm_joint6": 23.107361275777638,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50013.jsonl",
+      "trace_sha256": "fc03cbc91a6d077f3441405258dcb278922838dc7f137f85144ffdf3c3485b5f"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50014,
+      "perception_seed": 831777817,
+      "steps": 139,
+      "success": true,
+      "first_bilateral_step": 66,
+      "max_true_height_m": 0.07202152720531664,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07194699248480009,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1999999999999753,
+        "max_coupling_mm": 0.9381939397479517
+      },
+      "last_measured": {
+        "arm_joint1": -19.328903703024434,
+        "arm_joint2": 109.82996758960908,
+        "arm_joint3": -65.0138674297361,
+        "arm_joint4": 45.342723237952896,
+        "arm_joint5": -0.08137789263178387,
+        "arm_joint6": -60.28659438052189,
+        "gripper": 24.209060068736836
+      },
+      "last_command": {
+        "arm_joint1": -19.310009572935826,
+        "arm_joint2": 109.308852132607,
+        "arm_joint3": -65.39702111508667,
+        "arm_joint4": 45.240977129827414,
+        "arm_joint5": -0.08234719974752464,
+        "arm_joint6": -60.269050216507836,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50014.jsonl",
+      "trace_sha256": "e083362012ff09d4b2254f44903c177a7bf201053312ab0fdd69c6bffb49f2b9"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50015,
+      "perception_seed": 4263454734,
+      "steps": 143,
+      "success": true,
+      "first_bilateral_step": 73,
+      "max_true_height_m": 0.07385327435047064,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07385327435047064,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.174999999999976,
+        "max_coupling_mm": 1.4479318124927514
+      },
+      "last_measured": {
+        "arm_joint1": -34.10199845782853,
+        "arm_joint2": 122.28565164268078,
+        "arm_joint3": -86.08263037462419,
+        "arm_joint4": 55.81076647939641,
+        "arm_joint5": 0.09383473142510881,
+        "arm_joint6": -60.69871014987742,
+        "gripper": 24.209640521548152
+      },
+      "last_command": {
+        "arm_joint1": -34.096642058704475,
+        "arm_joint2": 121.59165438175366,
+        "arm_joint3": -86.40126245827423,
+        "arm_joint4": 55.700083709342515,
+        "arm_joint5": 0.09476918810190232,
+        "arm_joint6": -60.710091848359866,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50015.jsonl",
+      "trace_sha256": "3759262eb960387dd91b0faeaa50b6dbb4165b23cc833fc20bf6ce62458ab8ba"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50016,
+      "perception_seed": 2350285948,
+      "steps": 145,
+      "success": true,
+      "first_bilateral_step": 73,
+      "max_true_height_m": 0.07151642832372442,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07151642832372442,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.214999999999975,
+        "max_coupling_mm": 0.6721906658870378
+      },
+      "last_measured": {
+        "arm_joint1": -4.200415887081513,
+        "arm_joint2": 134.16079163210335,
+        "arm_joint3": -108.55893914565121,
+        "arm_joint4": 65.11553628518598,
+        "arm_joint5": -0.0969759993750885,
+        "arm_joint6": -9.852583130279735,
+        "gripper": 24.208358893126153
+      },
+      "last_command": {
+        "arm_joint1": -4.186050323148118,
+        "arm_joint2": 133.39558443055157,
+        "arm_joint3": -108.96220178061884,
+        "arm_joint4": 65.03320912761686,
+        "arm_joint5": -0.09681258277256845,
+        "arm_joint6": -9.796700292563992,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50016.jsonl",
+      "trace_sha256": "b93174a99c62d30a1f5ed8d11a47a0eefda41a2e0929b9e232195848976c00b1"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50017,
+      "perception_seed": 2924952484,
+      "steps": 140,
+      "success": true,
+      "first_bilateral_step": 66,
+      "max_true_height_m": 0.07077081882408522,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07077081882408522,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.209999999999975,
+        "max_coupling_mm": 0.5805583105128881
+      },
+      "last_measured": {
+        "arm_joint1": -12.812259992586455,
+        "arm_joint2": 114.60004577340514,
+        "arm_joint3": -72.31407992148003,
+        "arm_joint4": 48.567438298563175,
+        "arm_joint5": -0.018918313559120905,
+        "arm_joint6": -30.11758004639435,
+        "gripper": 24.20821999458904
+      },
+      "last_command": {
+        "arm_joint1": -12.774882997275087,
+        "arm_joint2": 114.02037345121734,
+        "arm_joint3": -72.693080289156,
+        "arm_joint4": 48.48012559858575,
+        "arm_joint5": -0.018110505453479624,
+        "arm_joint6": -30.0601841669226,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50017.jsonl",
+      "trace_sha256": "4c272171c223aa91afcf14a50909f77627406180326a51caaeaf677ef614798f"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50018,
+      "perception_seed": 592633835,
+      "steps": 132,
+      "success": true,
+      "first_bilateral_step": 58,
+      "max_true_height_m": 0.0708196259287295,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.0708196259287295,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.204999999999975,
+        "max_coupling_mm": 0.5929477178080387
+      },
+      "last_measured": {
+        "arm_joint1": 11.251016783861989,
+        "arm_joint2": 114.22925831871987,
+        "arm_joint3": -71.40530089202267,
+        "arm_joint4": 47.29579744739213,
+        "arm_joint5": -0.09839574348287704,
+        "arm_joint6": 25.973635010377837,
+        "gripper": 24.2081354232613
+      },
+      "last_command": {
+        "arm_joint1": 11.295930870344781,
+        "arm_joint2": 113.67790086286092,
+        "arm_joint3": -71.82786404800807,
+        "arm_joint4": 47.21829054915303,
+        "arm_joint5": -0.09842341845368273,
+        "arm_joint6": 26.049662338748046,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50018.jsonl",
+      "trace_sha256": "5600055a13c5a5b11998e7dba8bdbd3acf9b713affd63df3ad11c8bd4654a4d5"
+    },
+    {
+      "condition": "translation_mm-2-py",
+      "seed": 50019,
+      "perception_seed": 1472634408,
+      "steps": 139,
+      "success": true,
+      "first_bilateral_step": 66,
+      "max_true_height_m": 0.07244718947268093,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07243277695271012,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.209999999999975,
+        "max_coupling_mm": 0.9024404040909179
+      },
+      "last_measured": {
+        "arm_joint1": 22.76300393409419,
+        "arm_joint2": 148.65419121655233,
+        "arm_joint3": -141.0916051496527,
+        "arm_joint4": 79.60384633321024,
+        "arm_joint5": -0.18532525649954415,
+        "arm_joint6": 29.41360862153821,
+        "gripper": 24.20743931598081
+      },
+      "last_command": {
+        "arm_joint1": 22.753043881513825,
+        "arm_joint2": 147.85802332524165,
+        "arm_joint3": -141.63783857222188,
+        "arm_joint4": 79.55061818358662,
+        "arm_joint5": -0.18812785522036468,
+        "arm_joint6": 29.45063820937396,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "translation_mm-2-py-seed-50019.jsonl",
+      "trace_sha256": "b30b3c8b274d1cb5999110cc8edb1b0dc17394a7ac85b60fa9d15652a1cad07e"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50000,
+      "perception_seed": 1154525048,
+      "steps": 156,
+      "success": true,
+      "first_bilateral_step": 86,
+      "max_true_height_m": 0.07353763057659725,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07353539543129763,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.174999999999976,
+        "max_coupling_mm": 0.8637923441465415
+      },
+      "last_measured": {
+        "arm_joint1": 2.2442896812289677,
+        "arm_joint2": 120.27904844752437,
+        "arm_joint3": -82.48270410521478,
+        "arm_joint4": 52.74672973659095,
+        "arm_joint5": -0.034065347500271945,
+        "arm_joint6": 42.06487018121225,
+        "gripper": 24.208918278586562
+      },
+      "last_command": {
+        "arm_joint1": 2.1913041800970254,
+        "arm_joint2": 119.63977845512463,
+        "arm_joint3": -82.87246116990498,
+        "arm_joint4": 52.65851786895699,
+        "arm_joint5": -0.0345493181169515,
+        "arm_joint6": 42.08550200273752,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50000.jsonl",
+      "trace_sha256": "cff53d0ef3eb58026dd0a421129f80b07d3a9cb8aa5ba133a310f070b6717adf"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50001,
+      "perception_seed": 3835370153,
+      "steps": 155,
+      "success": true,
+      "first_bilateral_step": 80,
+      "max_true_height_m": 0.06982025575992325,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06981701769645045,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2499999999999742,
+        "max_coupling_mm": 1.001164983483023
+      },
+      "last_measured": {
+        "arm_joint1": 19.11749060621997,
+        "arm_joint2": 115.48507370817211,
+        "arm_joint3": -73.58956884343327,
+        "arm_joint4": 48.42628833782419,
+        "arm_joint5": 0.03375482708666839,
+        "arm_joint6": 3.4995529729319634,
+        "gripper": 24.20757271219645
+      },
+      "last_command": {
+        "arm_joint1": 19.061840102343076,
+        "arm_joint2": 114.90438131062531,
+        "arm_joint3": -73.98480516584206,
+        "arm_joint4": 48.33412159290094,
+        "arm_joint5": 0.03426857078268165,
+        "arm_joint6": 3.4858514574482573,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50001.jsonl",
+      "trace_sha256": "f408720dc560e7547709da7094160cb53ed424a45e1b16f6ef3cfa52fb011f6f"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50002,
+      "perception_seed": 2653842833,
+      "steps": 138,
+      "success": true,
+      "first_bilateral_step": 66,
+      "max_true_height_m": 0.07244506612008751,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07244506612008751,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1849999999999756,
+        "max_coupling_mm": 0.6842965220705821
+      },
+      "last_measured": {
+        "arm_joint1": -23.58727968457963,
+        "arm_joint2": 123.29933786071274,
+        "arm_joint3": -87.99810003412135,
+        "arm_joint4": 55.38261653599013,
+        "arm_joint5": 0.04803422540395355,
+        "arm_joint6": 5.57496560897242,
+        "gripper": 24.209036436617808
+      },
+      "last_command": {
+        "arm_joint1": -23.678777211242377,
+        "arm_joint2": 122.62013711117785,
+        "arm_joint3": -88.37870894516722,
+        "arm_joint4": 55.28976801147241,
+        "arm_joint5": 0.04853227460533616,
+        "arm_joint6": 5.55539784452188,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50002.jsonl",
+      "trace_sha256": "74a3c262247515fc3d21dfa9734453c49441fcee7f19b27a9c30670736c8b681"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50003,
+      "perception_seed": 1484854140,
+      "steps": 153,
+      "success": true,
+      "first_bilateral_step": 83,
+      "max_true_height_m": 0.07198957669457075,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.071989264050513,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1899999999999755,
+        "max_coupling_mm": 0.4701764158200582
+      },
+      "last_measured": {
+        "arm_joint1": -34.81234639655049,
+        "arm_joint2": 146.90176424288677,
+        "arm_joint3": -137.05438105676137,
+        "arm_joint4": 78.91405693585617,
+        "arm_joint5": 0.11829899718358682,
+        "arm_joint6": -1.3890647771959637,
+        "gripper": 24.20750172649427
+      },
+      "last_command": {
+        "arm_joint1": -34.88990738564945,
+        "arm_joint2": 146.09166018127613,
+        "arm_joint3": -137.53966088728174,
+        "arm_joint4": 78.85731367446132,
+        "arm_joint5": 0.11747769568743503,
+        "arm_joint6": -1.4067280958047894,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50003.jsonl",
+      "trace_sha256": "ec5f01a7c75a0e5d4ea754dec68b7eb73c407614eab01e056854fba262fc2a87"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50004,
+      "perception_seed": 1033449854,
+      "steps": 173,
+      "success": true,
+      "first_bilateral_step": 102,
+      "max_true_height_m": 0.07328450338912508,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07328450338912508,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.164999999999976,
+        "max_coupling_mm": 0.8156834951112274
+      },
+      "last_measured": {
+        "arm_joint1": 26.302872237366397,
+        "arm_joint2": 130.54028784336808,
+        "arm_joint3": -101.05203056246566,
+        "arm_joint4": 60.96500956362929,
+        "arm_joint5": -0.04131507326780959,
+        "arm_joint6": 18.058811569850885,
+        "gripper": 24.208364458921196
+      },
+      "last_command": {
+        "arm_joint1": 26.24389301893117,
+        "arm_joint2": 129.80641251114355,
+        "arm_joint3": -101.45654127529234,
+        "arm_joint4": 60.870070449110045,
+        "arm_joint5": -0.04256758892396373,
+        "arm_joint6": 18.04334202969921,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50004.jsonl",
+      "trace_sha256": "68068c6a6916cb5b173497cc0c4c8b0b00408cc807fe2a25353917a28e2e0563"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50005,
+      "perception_seed": 111243313,
+      "steps": 134,
+      "success": true,
+      "first_bilateral_step": 57,
+      "max_true_height_m": 0.06882278373309726,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06882278373309726,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.269999999999974,
+        "max_coupling_mm": 0.4788205998990866
+      },
+      "last_measured": {
+        "arm_joint1": -1.4630237294264394,
+        "arm_joint2": 117.3910828682696,
+        "arm_joint3": -76.51183806363221,
+        "arm_joint4": 49.313562648000875,
+        "arm_joint5": 0.010507006556135606,
+        "arm_joint6": -25.70745996000773,
+        "gripper": 24.20889245007509
+      },
+      "last_command": {
+        "arm_joint1": -1.5251275755449047,
+        "arm_joint2": 116.8066338829507,
+        "arm_joint3": -76.94109918553123,
+        "arm_joint4": 49.23953477274196,
+        "arm_joint5": 0.011402107259991582,
+        "arm_joint6": -25.721888589745536,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50005.jsonl",
+      "trace_sha256": "7572e7b3ee2e75cb19f4f02df9b8b6db6f19618121ae1442fe100e0bdd0b2819"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50006,
+      "perception_seed": 3139426464,
+      "steps": 171,
+      "success": true,
+      "first_bilateral_step": 99,
+      "max_true_height_m": 0.07211447267075034,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07211447267075034,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.164999999999976,
+        "max_coupling_mm": 0.4620336138604023
+      },
+      "last_measured": {
+        "arm_joint1": -4.0058214220064015,
+        "arm_joint2": 128.2815298476093,
+        "arm_joint3": -96.84371904835332,
+        "arm_joint4": 59.41348705320039,
+        "arm_joint5": -0.009759948317502166,
+        "arm_joint6": -0.9856162895166278,
+        "gripper": 24.20757268556055
+      },
+      "last_command": {
+        "arm_joint1": -4.069737325388405,
+        "arm_joint2": 127.56154269292699,
+        "arm_joint3": -97.23525929798545,
+        "arm_joint4": 59.32677108048188,
+        "arm_joint5": -0.008775125807451595,
+        "arm_joint6": -1.0120512064650806,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50006.jsonl",
+      "trace_sha256": "6414bf58fbf25207abf182a694e4c7aee1cb8e68466485fca65419f6909cb498"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50007,
+      "perception_seed": 1685330147,
+      "steps": 155,
+      "success": true,
+      "first_bilateral_step": 84,
+      "max_true_height_m": 0.07329985614427371,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07280410820870177,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1949999999999754,
+        "max_coupling_mm": 1.0515114294167935
+      },
+      "last_measured": {
+        "arm_joint1": 34.25888195673886,
+        "arm_joint2": 132.4752423436135,
+        "arm_joint3": -105.19082399539123,
+        "arm_joint4": 63.97558395851999,
+        "arm_joint5": -0.04993721671491717,
+        "arm_joint6": 76.60526749588927,
+        "gripper": 24.208125849171495
+      },
+      "last_command": {
+        "arm_joint1": 34.2498259327878,
+        "arm_joint2": 131.72536366786795,
+        "arm_joint3": -105.5792368113344,
+        "arm_joint4": 63.88704611262494,
+        "arm_joint5": -0.0492514850656069,
+        "arm_joint6": 76.71382643665683,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50007.jsonl",
+      "trace_sha256": "b36ae394e6b9bafe94c718a725e77d343824411917c9bad79c720c610c547d02"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50008,
+      "perception_seed": 3019445504,
+      "steps": 162,
+      "success": true,
+      "first_bilateral_step": 92,
+      "max_true_height_m": 0.07513651589705041,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07511547356433491,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.159999999999976,
+        "max_coupling_mm": 1.0696625126425385
+      },
+      "last_measured": {
+        "arm_joint1": 32.07693136915913,
+        "arm_joint2": 110.79448225399014,
+        "arm_joint3": -66.62054679704912,
+        "arm_joint4": 45.6337513152099,
+        "arm_joint5": 0.11188019596552927,
+        "arm_joint6": 69.93625163170884,
+        "gripper": 24.208844083941127
+      },
+      "last_command": {
+        "arm_joint1": 32.06667199642405,
+        "arm_joint2": 110.25082583886525,
+        "arm_joint3": -66.99074799301205,
+        "arm_joint4": 45.52464227104363,
+        "arm_joint5": 0.11322630166807474,
+        "arm_joint6": 70.0220546357851,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50008.jsonl",
+      "trace_sha256": "727730cc874583f00b1ce0085e8f05dec7dfc7cd72002a760dde2502af1c8021"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50009,
+      "perception_seed": 2742081971,
+      "steps": 50,
+      "success": false,
+      "first_bilateral_step": null,
+      "max_true_height_m": 0.0,
+      "premature_controller_success": false,
+      "failure_category": "controller-fault-before-grasp",
+      "final": {
+        "finished": false,
+        "unsafe": false,
+        "broken": false,
+        "height": -0.00041794799382020853,
+        "grasped": false,
+        "runtime_stop": "przerwana: petla ramienia padla: RuntimeError: A1X motion rejected: kolizja: table z gripper_finger_link2 w 0% drogi",
+        "guard_rejection": true,
+        "max_continuous_hold_s": 0.0,
+        "max_coupling_mm": 0.8191809612095556
+      },
+      "last_measured": {
+        "arm_joint1": -39.542507532313294,
+        "arm_joint2": 146.91308035121963,
+        "arm_joint3": -113.52528983853786,
+        "arm_joint4": 58.529645395876614,
+        "arm_joint5": 0.4130826951240563,
+        "arm_joint6": -80.63183606826456,
+        "gripper": 36.94911499499218
+      },
+      "last_command": {
+        "arm_joint1": -39.62500962441529,
+        "arm_joint2": 146.06234134948807,
+        "arm_joint3": -113.48638969116223,
+        "arm_joint4": 58.355476810385774,
+        "arm_joint5": 0.3022320199462226,
+        "arm_joint6": -80.61644673953397,
+        "gripper": 34.7311794757843
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50009.jsonl",
+      "trace_sha256": "877c2775f46cc6a7d88363639906b60fe6a90ed83fdbc76734f8951508cc1984"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50010,
+      "perception_seed": 1944204433,
+      "steps": 142,
+      "success": true,
+      "first_bilateral_step": 70,
+      "max_true_height_m": 0.07156943110763526,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07156943110763526,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1499999999999764,
+        "max_coupling_mm": 0.4710929246174861
+      },
+      "last_measured": {
+        "arm_joint1": -13.21460919456398,
+        "arm_joint2": 145.42013417197006,
+        "arm_joint3": -132.9395966196707,
+        "arm_joint4": 75.87634044634392,
+        "arm_joint5": -0.08673948346708521,
+        "arm_joint6": -30.231444945217532,
+        "gripper": 24.208045710516448
+      },
+      "last_command": {
+        "arm_joint1": -13.25955492775002,
+        "arm_joint2": 144.6700215462522,
+        "arm_joint3": -133.55819730412392,
+        "arm_joint4": 75.86842931420804,
+        "arm_joint5": -0.0886414965820706,
+        "arm_joint6": -30.233727463591098,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50010.jsonl",
+      "trace_sha256": "a52b9c66c02fc872c7cabfbc244b6cd7680b95b85a27c989991904b286a0045a"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50011,
+      "perception_seed": 717978514,
+      "steps": 133,
+      "success": true,
+      "first_bilateral_step": 59,
+      "max_true_height_m": 0.06961176571075235,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06961101661324488,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.214999999999975,
+        "max_coupling_mm": 0.692172755405944
+      },
+      "last_measured": {
+        "arm_joint1": 2.513090315808867,
+        "arm_joint2": 123.79384219982475,
+        "arm_joint3": -87.99202628313026,
+        "arm_joint4": 54.21810595125106,
+        "arm_joint5": -0.039830510974324766,
+        "arm_joint6": -22.989540684539136,
+        "gripper": 24.20802393833463
+      },
+      "last_command": {
+        "arm_joint1": 2.465393895627198,
+        "arm_joint2": 123.13829103276812,
+        "arm_joint3": -88.42420792939691,
+        "arm_joint4": 54.14121302062073,
+        "arm_joint5": -0.039062163361093485,
+        "arm_joint6": -23.00000656593482,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50011.jsonl",
+      "trace_sha256": "1e5a66467b2f74002913d82438617d5a29d9ad12459f2cc6295b115bd8ad4396"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50012,
+      "perception_seed": 2814486609,
+      "steps": 188,
+      "success": true,
+      "first_bilateral_step": 115,
+      "max_true_height_m": 0.07152278500384125,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07151856554914261,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.159999999999976,
+        "max_coupling_mm": 0.6449573719266231
+      },
+      "last_measured": {
+        "arm_joint1": 18.891628280963683,
+        "arm_joint2": 129.46534876618443,
+        "arm_joint3": -99.0451888757508,
+        "arm_joint4": 59.61549995942006,
+        "arm_joint5": -0.087714236752851,
+        "arm_joint6": 1.2107535176899433,
+        "gripper": 24.20899504489976
+      },
+      "last_command": {
+        "arm_joint1": 18.81077671613914,
+        "arm_joint2": 128.73683175351601,
+        "arm_joint3": -99.44495974549085,
+        "arm_joint4": 59.513061012573296,
+        "arm_joint5": -0.08917203408964908,
+        "arm_joint6": 1.1819699789906282,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50012.jsonl",
+      "trace_sha256": "fc94d115b73017143257240ac0b90d79eeb73dd59c0284f4a60bd066efa93f2c"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50013,
+      "perception_seed": 2568212096,
+      "steps": 166,
+      "success": true,
+      "first_bilateral_step": 96,
+      "max_true_height_m": 0.07355560856147815,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07355560856147815,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.164999999999976,
+        "max_coupling_mm": 0.7567294360664063
+      },
+      "last_measured": {
+        "arm_joint1": -14.380811250162177,
+        "arm_joint2": 139.82287328621356,
+        "arm_joint3": -121.29767338978074,
+        "arm_joint4": 71.66683966708855,
+        "arm_joint5": 0.09516530554332121,
+        "arm_joint6": 14.135842457058002,
+        "gripper": 24.209364684293252
+      },
+      "last_command": {
+        "arm_joint1": -14.454570938602986,
+        "arm_joint2": 139.03272614366892,
+        "arm_joint3": -121.7406811216156,
+        "arm_joint4": 71.60912653814225,
+        "arm_joint5": 0.09624113850499286,
+        "arm_joint6": 14.158111474650914,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50013.jsonl",
+      "trace_sha256": "61e8a1162c515501e83680d675f3e6a38d2d591716613532074e625971518ef8"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50014,
+      "perception_seed": 831777817,
+      "steps": 142,
+      "success": true,
+      "first_bilateral_step": 64,
+      "max_true_height_m": 0.06967177942240367,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06965756617885611,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2449999999999743,
+        "max_coupling_mm": 0.4905581003124132
+      },
+      "last_measured": {
+        "arm_joint1": -24.839573336624223,
+        "arm_joint2": 114.28742913115997,
+        "arm_joint3": -71.29309498376107,
+        "arm_joint4": 47.52863235903122,
+        "arm_joint5": 0.0413701246091931,
+        "arm_joint6": -54.180019756286065,
+        "gripper": 24.208315684520752
+      },
+      "last_command": {
+        "arm_joint1": -24.861010823315272,
+        "arm_joint2": 113.73076393943676,
+        "arm_joint3": -71.70215764966196,
+        "arm_joint4": 47.44861707388542,
+        "arm_joint5": 0.04224699633747804,
+        "arm_joint6": -54.13871720921583,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50014.jsonl",
+      "trace_sha256": "7989500a875f1f9bda3ac06633d534c8987a16a9d5ac87e36f52b64d31714ca4"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50015,
+      "perception_seed": 4263454734,
+      "steps": 149,
+      "success": true,
+      "first_bilateral_step": 72,
+      "max_true_height_m": 0.06859526707867016,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.0685897343331038,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2899999999999734,
+        "max_coupling_mm": 0.9374150046639069
+      },
+      "last_measured": {
+        "arm_joint1": -39.587994293284055,
+        "arm_joint2": 130.9357257391276,
+        "arm_joint3": -101.33571082414448,
+        "arm_joint4": 61.09740608409302,
+        "arm_joint5": 0.10767317157356018,
+        "arm_joint6": -58.89516651333908,
+        "gripper": 24.208030581610885
+      },
+      "last_command": {
+        "arm_joint1": -39.60815245499663,
+        "arm_joint2": 130.22341849659293,
+        "arm_joint3": -101.78980399112086,
+        "arm_joint4": 61.03556144998254,
+        "arm_joint5": 0.10890831446473337,
+        "arm_joint6": -58.896195158871514,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50015.jsonl",
+      "trace_sha256": "44cb6412f4ba85b9e87eb456b943cc110209c4f366a9ac10777bebe88bf07c29"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50016,
+      "perception_seed": 2350285948,
+      "steps": 145,
+      "success": true,
+      "first_bilateral_step": 72,
+      "max_true_height_m": 0.07107732637308385,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07107732637308385,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.1799999999999757,
+        "max_coupling_mm": 0.43312246825735756
+      },
+      "last_measured": {
+        "arm_joint1": -14.182257185268734,
+        "arm_joint2": 136.15749835699643,
+        "arm_joint3": -112.5918198395366,
+        "arm_joint4": 66.6714617375922,
+        "arm_joint5": 0.012382968412355486,
+        "arm_joint6": -21.545888859025652,
+        "gripper": 24.207714704324506
+      },
+      "last_command": {
+        "arm_joint1": -14.235885119356208,
+        "arm_joint2": 135.3946188320309,
+        "arm_joint3": -113.03747255228026,
+        "arm_joint4": 66.60499545390171,
+        "arm_joint5": 0.013218981752060032,
+        "arm_joint6": -21.564976865073742,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50016.jsonl",
+      "trace_sha256": "3f706acad078657babd0a7cb493eb0af535d8e5606d0065d3e40e219397386bd"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50017,
+      "perception_seed": 2924952484,
+      "steps": 138,
+      "success": true,
+      "first_bilateral_step": 60,
+      "max_true_height_m": 0.06866541614335732,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.06866541614335732,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.2799999999999736,
+        "max_coupling_mm": 0.5924852303789384
+      },
+      "last_measured": {
+        "arm_joint1": -22.220153194596644,
+        "arm_joint2": 119.27050098716795,
+        "arm_joint3": -79.68477501948588,
+        "arm_joint4": 50.86625075939148,
+        "arm_joint5": 0.04272060681865992,
+        "arm_joint6": -38.43300479745563,
+        "gripper": 24.20885918174387
+      },
+      "last_command": {
+        "arm_joint1": -22.25876731346111,
+        "arm_joint2": 118.67357665531463,
+        "arm_joint3": -80.12880433254084,
+        "arm_joint4": 50.798811801637655,
+        "arm_joint5": 0.04349120362273069,
+        "arm_joint6": -38.42796480134913,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50017.jsonl",
+      "trace_sha256": "64e929e5f88ab82309e19ba25c7954faf8917d9d50b7aa26913dd4fcc8ed275a"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50018,
+      "perception_seed": 592633835,
+      "steps": 141,
+      "success": true,
+      "first_bilateral_step": 68,
+      "max_true_height_m": 0.07200864146281961,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07200864146281961,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.219999999999975,
+        "max_coupling_mm": 0.6586139975424103
+      },
+      "last_measured": {
+        "arm_joint1": -0.7537408355191594,
+        "arm_joint2": 111.32017174955584,
+        "arm_joint3": -67.03197510049823,
+        "arm_joint4": 46.25506329089168,
+        "arm_joint5": 0.07877502265138343,
+        "arm_joint6": 13.616113499454645,
+        "gripper": 24.207803391229778
+      },
+      "last_command": {
+        "arm_joint1": -0.80968769682754,
+        "arm_joint2": 110.78455595919046,
+        "arm_joint3": -67.41979693209909,
+        "arm_joint4": 46.167452153989224,
+        "arm_joint5": 0.0799168859569921,
+        "arm_joint6": 13.610640533855902,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50018.jsonl",
+      "trace_sha256": "285feed817e067877d1e31dd89ee3a18deba6dc39f1811cc712a0d00f0151389"
+    },
+    {
+      "condition": "rotation_deg-0.5-nz",
+      "seed": 50019,
+      "perception_seed": 1472634408,
+      "steps": 174,
+      "success": true,
+      "first_bilateral_step": 102,
+      "max_true_height_m": 0.07345637381438054,
+      "premature_controller_success": false,
+      "failure_category": "success",
+      "final": {
+        "finished": true,
+        "unsafe": false,
+        "broken": false,
+        "height": 0.07345637381438054,
+        "grasped": true,
+        "runtime_stop": "zadanie wykonane",
+        "guard_rejection": false,
+        "max_continuous_hold_s": 2.169999999999976,
+        "max_coupling_mm": 0.8875497601862139
+      },
+      "last_measured": {
+        "arm_joint1": 9.93256649197499,
+        "arm_joint2": 140.68961729566294,
+        "arm_joint3": -122.86757166151375,
+        "arm_joint4": 72.13517737046934,
+        "arm_joint5": -0.12394657675951977,
+        "arm_joint6": 15.4288805929948,
+        "gripper": 24.209037849822693
+      },
+      "last_command": {
+        "arm_joint1": 9.83046668264051,
+        "arm_joint2": 139.891720716126,
+        "arm_joint3": -123.30293188079989,
+        "arm_joint4": 72.06121724755043,
+        "arm_joint5": -0.1252305020811637,
+        "arm_joint6": 15.391560570913246,
+        "gripper": 0.0
+      },
+      "effective_delay_s_range": [
+        0.0,
+        0.0
+      ],
+      "delay_warmup_frames": 0,
+      "contact_penetration_mm": {},
+      "trace": "rotation_deg-0.5-nz-seed-50019.jsonl",
+      "trace_sha256": "d7aeccbdd562db9ca5a9d8f4984b246b990da2cb58f377d64fab8862648e411e"
+    }
+  ],
+  "summary": {
+    "zero": {
+      "episodes": 20,
+      "expected_episodes": 20,
+      "successes": 20,
+      "complete": true,
+      "success_fraction": 1.0,
+      "wilson_95": [
+        0.8388748419471806,
+        1.0
+      ],
+      "controller_faults": 0,
+      "prohibited_contacts": 0,
+      "numerical_failures": 0,
+      "premature_controller_successes": 0,
+      "failure_categories": {}
+    },
+    "translation_mm-2-py": {
+      "episodes": 20,
+      "expected_episodes": 20,
+      "successes": 20,
+      "complete": true,
+      "success_fraction": 1.0,
+      "wilson_95": [
+        0.8388748419471806,
+        1.0
+      ],
+      "controller_faults": 0,
+      "prohibited_contacts": 0,
+      "numerical_failures": 0,
+      "premature_controller_successes": 0,
+      "failure_categories": {}
+    },
+    "rotation_deg-0.5-nz": {
+      "episodes": 20,
+      "expected_episodes": 20,
+      "successes": 19,
+      "complete": true,
+      "success_fraction": 0.95,
+      "wilson_95": [
+        0.763868806553258,
+        0.9911185511992047
+      ],
+      "controller_faults": 1,
+      "prohibited_contacts": 0,
+      "numerical_failures": 0,
+      "premature_controller_successes": 0,
+      "failure_categories": {
+        "controller-fault-before-grasp": 1
+      }
+    }
+  },
+  "elapsed_s": 65.47291127099743
+}

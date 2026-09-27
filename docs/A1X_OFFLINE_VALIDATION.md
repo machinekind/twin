@@ -1,0 +1,1120 @@
+# A1X offline validation
+
+Updated 2026-09-26. Working branch: `a1x-twin`, starting commit `7edfceb`.
+This records simulation and fake transport evidence. No physical commands were
+sent by this validation task. Physical setup access is deferred by the user.
+
+## Reproduce
+
+WSL Ubuntu, Python 3.12.14 in `/home/kuba/.venvs/a1x-twin`; RTX 2000 Ada Laptop,
+8188 MiB total; Windows driver 560.76. Installed PyTorch 2.11.0+cu126,
+MuJoCo 3.14.0, mujoco-warp 3.14.0, Warp 1.17.0, NumPy 2.2.6.
+Dependencies follow `constraints.txt`; PyTorch uses its cu126 wheel index.
+The environment is isolated from the adjacent driver's working environment.
+
+From the repository in WSL, with that environment activated:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../galaxeo-manipulators MUJOCO_GL=egl python -m pytest -q --tb=short
+MUJOCO_GL=egl python scripts/validate_a1x_cpu.py --out workspace/validation/cpu-new --seeds 5 --video
+python scripts/compare_a1x_physics.py --cpu workspace/validation/cpu-new --out workspace/validation/comparison-new.json
+python scripts/validate_a1x_runtime.py --cpu workspace/validation/cpu-new --out workspace/validation/runtime-new.json
+python scripts/validate_a1x_gpu.py --task reach --out workspace/validation/gpu-reach-new
+python scripts/validate_a1x_gpu.py --task lift --out workspace/validation/gpu-lift-new
+python scripts/train_a1x_candidate.py --out workspace/validation/reach-new --task reach --envs 512 --iters 300 --seconds 900 --seed 11
+python scripts/evaluate_a1x_runtime.py workspace/validation/reach-new/policy/policy.pt --out workspace/validation/reach-runtime-new.json
+```
+
+Use new output paths. Tests use fake transport; do not launch the hardware UI or
+select the `a1x` backend for these commands. The scripts contain no hardware calls.
+Artifacts are local, ignored under `workspace/validation/`. GPU reports record
+source hashes and package versions; they must accompany a checkpoint when shared.
+
+## Control corrections
+
+- Unknown G1 opening cannot initiate gripper motion. Calibrated feedback is
+  required, and commands containing an invalid gripper request are rejected
+  before any joint target changes. A command estimate is not measured opening.
+- A1X's asynchronous sender latches a stop after command timeout (default 250 ms),
+  stale/frozen feedback, or an I/O exception. Runtime STOP and loop failure cancel
+  targets. Recovery requires explicit clearing with fresh healthy telemetry;
+  old targets are discarded. This does not transmit a torque-release command.
+- Common A1X target submission and the final command before sending are checked
+  for joint limits and model collisions. The checker follows current object poses.
+  Only fixed mounting contacts and intended fingertip/cube contacts are exempt.
+  Unmodelled real obstacles and physical calibration errors remain outside this check.
+  With bilateral fingertip contact on the allowed cube, a tighter squeeze setpoint
+  is checked at measured jaw opening: the object prevents the fingers from reaching
+  that setpoint. This preserves pressure commands without exempting palm collisions.
+- G1 training commands use the configured 1.3-second full-travel rate. Actual
+  physical actuator response is still unmeasured here.
+- Observation noise uses radians for arm joints and metres for sliding jaws.
+  The 0.3 mm jaw noise is a provisional simulation parameter, not a measurement.
+- Physical policy start requires measured gripper feedback. UI camera-driven
+  physical movement requires real, enabled cameras with trusted calibration.
+- New A1X lift tasks require two seconds of consecutive success. CPU evaluation
+  distinguishes a completed hold from merely being above the height threshold
+  on the last frame. Existing saved policies retain their saved task definition.
+
+Original-source reproduction: `baseline-regressions.log` contains 11 failures,
+including stale sender motion, nonfinite requests, unknown gripper startup,
+gripper rate mismatch and about 5.1 mm of accidental jaw observation noise.
+Full suite after the control and training corrections: `offline-suite-003.log`,
+**145 passed**, including rendering and GPU tests (180.01 s, with the candidate
+training process running concurrently). GPU checks cover mixed-unit observation
+noise, injected capacity overflow, matching CPU/GPU observations/rewards, timeout
+reset and termination on a real folded-wrist/shoulder collision.
+Six backend regression cases were added afterward: feedback endpoints and midpoint,
+first calibrated squeeze while holding an object, sender I/O failure/recovery, and
+reconnection. All **14 backend-contract cases passed** in
+`a1x-backend-contracts-final.log` (0.87 s). These results describe checkpoint
+`5de2292`; subsequent changes and their verification are recorded below.
+The fake-CAN tests imported the adjacent `galaxeo` working tree (HEAD `d9fa677`);
+that checkout contains team changes and was neither edited nor installed by this task.
+
+## Scripted physics baseline
+
+`cpu-lift-005`: five seeds, 3 cm / 30 g cube around x=0.35 m, y=0 with independent
+position offsets within +/-1 cm. Scripted approach, close, lift 7 cm and hold 2 s.
+All five succeeded; no prohibited contacts or MuJoCo warnings were recorded.
+Final lift was about 68.7 mm, maximum jaw coupling error below 0.6 mm, peak contact
+penetration about 1.6 mm, peak 12 contacts / 49 constraint rows. These values
+describe this model and these trajectories; friction/dynamics remain provisional.
+
+The TCP is about 29.89 mm behind the fingertip midpoint along its approach axis.
+The script derives that offset from geometry while preserving the team's existing
+TCP and calibration. A first attempt placed the TCP at the cube and drove the
+fingers into the table (about 9.9 mm coupling error). That failure is retained in
+`cpu-lift-001`; the successful baseline corrects the grasp target, not the model's
+frame or stiffness. `cpu-lift-005/seed-0.mp4` was rendered and visually inspected.
+
+`cpu-gpu-comparison-001.json`: replayed all 212 actions per seed from the successful
+CPU traces in five Warp worlds. All five held for two seconds. Maximum differences:
+
+| Quantity | Observed maximum |
+|---|---:|
+| Arm joint position | 0.000141 degrees |
+| Controlled jaw position | 0.000108 mm |
+| Cube position | 0.00381 mm |
+| GPU jaw coupling error | 0.578 mm |
+| Contacts, all five worlds / capacity | 60 / 320 |
+| Constraint rows per world / capacity | 49 / 384 |
+| Capacity overflow | 0 worlds |
+
+GPU diagnostics accumulate every physics substep, including flags that could be
+lost between policy ticks. Capacity overflow aborts a run. Solver iteration-limit
+flags are reported separately through their raw bitmask; they do not by themselves
+mean an allocation overflow. No universal CPU/GPU tolerance is inferred from five
+successful scripted trajectories.
+
+`runtime-lift-004.json`: the same five scripted action sequences through
+`PolicyRunner -> Twin -> SafetySupervisor -> SceneBackend`, with policy at 20 Hz
+and runtime at 50 Hz. **5/5 two-second holds**, no prohibited contacts or warnings;
+final heights 68.77-68.84 mm. Runtime tick p99 was 0.97-1.18 ms on this machine.
+The first replay correctly exposed virtual overclosure into the solid cube;
+bilateral-contact geometry handling fixed this without relaxing palm/table checks.
+
+## GPU capacity and learning status
+
+| Run | Worlds x iterations | Transitions | Peak total GPU memory used | Outcome |
+|---|---:|---:|---:|---|
+| `gpu-reach-001` | 256 x 3 | 18,432 | 1286.5 MiB | Checkpoint reload + 2 CPU episodes passed; 0 task successes |
+| `gpu-lift-001` | 256 x 3 | 18,432 | 1418.5 MiB | Checkpoint reload + 2 CPU episodes passed; 0 task successes |
+
+These were plumbing checks before the new capacity instrumentation and two-second
+hold default. They establish that this GPU can run small A1X training batches.
+They do not establish a usable learned policy. Memory includes Warp and desktop
+usage; Torch's own allocator count alone substantially understates total usage.
+
+`reach-candidate-001` attempted 512 worlds x 300 iterations, at most 900 s, seed 11,
+with 20 nominal and 20 randomized CPU evaluation episodes reserved at seeds
+20000-20019. It stopped after 18.2 s on an actual constraint-capacity overflow:
+69 rows required, 64 allocated, one world affected. Peak total GPU use 1336.5 MiB.
+No evaluated checkpoint resulted. The report/manifest and failure are retained.
+A1X reach now receives the same 64-contact / 384-row capacity as A1X lift.
+
+A1X CPU/GPU environments now terminate an episode with reward -10 on prohibited
+model contact, checked every physics substep. Intended fingertip/cube and fixed
+mounting contacts remain allowed. Training/evaluation report collision episodes
+and numerical failures separately; numerical failure stops bounded candidates.
+These constraints were absent from the original training environment even though
+the physical runtime needs them.
+
+`reach-candidate-002`: same 512-world, 300-iteration, 900-second ceiling and seed 11
+after the capacity/collision corrections. Completed 3,686,400 transitions in 283.5 s
+including setup; training plus CPU evaluation took 298.1 s. Peak total GPU memory
+was **1592.5 MiB**, including the concurrent test process. No numerical failures or
+capacity overflow. Training accumulated 849 collision-ended exploration episodes;
+they were penalized/reset, not counted as success. Final training success was 15.2%.
+
+Independent evaluation (saved/reloaded deterministic policy, seeds 20000-20019):
+
+| Evaluation path | Final successes | Other results |
+|---|---:|---|
+| CPU, nominal physics/perception | 9/20 | Median final error 27.3 mm; no collisions or numerical failures |
+| CPU, provisional randomization | 10/20 | Median final error 21.4 mm; no collisions or numerical failures |
+| `PolicyRunner -> Twin -> SafetySupervisor` | 6/20 | All 20 completed; no prohibited contacts or numerical failures |
+
+Runtime evidence is `reach-runtime-003.json`. The previous evaluator report `002`
+mistakenly treated the normal end-of-episode message as a fault; it is superseded.
+Success here means final TCP error below 20 mm; reach has no sustained-hold
+requirement. This checkpoint demonstrates learning, but is **not ready for a demo
+or hardware deployment**. The scripted lift remains the stronger current baseline.
+The improved candidate below supersedes it for reaching experiments.
+
+## Follow-up geometry, perception and learned reach
+
+`a1x-geometry-001.log`: two independent geometry checks pass. URDF forward
+kinematics agree with every MuJoCo robot link across 100 random joint poses;
+joint limits, jaw unit/sign conversion, the 29.89 mm TCP/fingertip offset and
+normalized generated XML agree. This validates conversion from vendor assets,
+not the physical assembly, calibration offsets or installed accessories.
+
+`reach-candidate-003` fine-tunes candidate 002 for 500 iterations, 512 worlds,
+seed 14, 900 s ceiling and initial action std 0.3. It restores actor, critic and
+normalizer, with a fresh optimizer/action variance. Additional training:
+6,144,000 transitions, 464.2 s including setup, 477.5 s through CPU evaluation,
+1,592.5 MiB peak total GPU memory. No numerical failures or capacity overflow.
+
+| Seed set | Nominal CPU | Default-randomized CPU | Guarded runtime |
+|---|---:|---:|---:|
+| 21000-21019, validation | 19/20 | 20/20 | 19/20; 1 safe rejection |
+| 30000-30019, fresh policy evaluation | 19/20 | 20/20 | 19/20; 1 safe rejection |
+
+CPU median final errors were about 1.5-1.8 mm. Each nominal CPU set had one
+collision-ended episode. The old runtime guard also allowed one table contact
+in each set. Seed 21007 exposed 0.1194 mm finger/table penetration even though
+the commanded endpoint was clear: the measured tracking pose was not included
+when a short path used only its endpoint. Evidence: `reach-contact-21007.json`.
+
+The guard now includes the measured start and uses 3 mm environmental clearance
+on a private model copy. Simulated dynamics remain unchanged. Positive internal
+housing clearances are exempt from that buffer; actual self penetration remains
+prohibited. Both replays now have zero actual contacts and one safe rejection:
+`reach-runtime-buffered-001.json`, `reach-holdout-buffered-003.json`. Since the
+guard changed after inspecting these sets, they are regression evidence for the
+guard, not untouched guard holdouts. `clearance-003.log`: eight focused tests
+pass. All five scripted lifts still pass (`runtime-lift-buffered-001.json`).
+This 3 mm choice is provisional and is not a measured physical error bound.
+
+After freezing the policy and guard, a fresh seed set 32000-32019 passed **20/20**
+through the common controller (`reach-final-holdout-003.json`). The evaluator
+observes every 5 ms physics substep: zero prohibited contacts or numerical
+failures. The same monitor passes all five scripted lifts, with continuous
+bilateral contact above 6 cm for 3.815-3.825 s, and maximum jaw coupling below
+0.565 mm (`runtime-lift-substeps-001.json`). Learned reaching is still a narrow
+simulation result; this does not qualify a hardware policy.
+
+Physical-mode policy observations now refuse stale, simulated or unknown cube
+sources. Observation loss and exceptions after movement hold measured arm pose
+while preserving an existing squeeze. Current camera/held-object estimates
+update free-object collision geometry using the saved task's cube size, while
+retaining unrelated modeled obstacles. Simulation truth is not overwritten by
+camera estimates. Tests: `physical-observation-loss-002.log` (12 passed),
+`observed-geometry-001.log` (38 passed), `observed-geometry-002.log` (8 passed).
+These are fake/simulated observations; live camera operation remains untested.
+The complete updated suite passed **166 tests** in 193.41 s
+(`offline-suite-004.log`), including GPU and rendering. The later evaluation
+script changes were exercised by the fresh reaching set and scripted lifts above.
+
+## Lift learning experiments
+
+`gpu-lift-1024/report.json`: 1,024 worlds x 3 iterations, 73,728 transitions,
+2,074.5 MiB peak total GPU memory, approximately 38-40k transitions/s after
+warm-up. No overflow; peak 4,098/65,536 contacts and 23/384 constraint rows.
+Save/reload and two CPU episodes passed; this smoke run did not learn a lift.
+
+`lift-candidate-001` is the bounded original-reward baseline: 1,024 worlds,
+1,000 iterations or 900 seconds, seed 17, CPU evaluation seeds 22000-22019.
+Its manifest preserves the source/task loaded before reward changes below.
+Do not overwrite it or relabel it as the corrected experiment.
+It completed at its 900 s training limit: 606 iterations, 14,893,056 transitions,
+2,074.5 MiB peak total GPU memory; 979.5 s including CPU evaluation. Success was
+0/20 nominal and 0/20 randomized, with no evaluation collisions or numerical
+failures. Training had 226 collision-ended episodes and no capacity overflow.
+
+The original lift approach reward uses a 5 cm scale centered on the TCP. For
+100 actual A1X starting poses, its float32 value is exactly zero in 99 cases
+and at most 5.96e-8. The A1X starts roughly half a metre from the cube, and its
+gripping surfaces are 29.89 mm ahead of the TCP. A new A1X lift task therefore
+uses a coarse 20 cm plus fine 5 cm approach reward centered on the fingertip
+midpoint. On the same starts, its range is 0.00100-0.00757 (median 0.00334),
+with no exact zeros. This gives a learning signal; it does not prove learning.
+
+The calibrated TCP frame and observation layout are unchanged. Saved task
+definitions and SO-101 defaults retain the legacy reward. Success still requires
+bilateral contact, over 6 cm height and a consecutive 2 s hold. CPU/GPU reward
+and fingertip position agreement plus legacy compatibility pass 11 focused
+tests (`lift-reward-contracts-001.log`); diagnostic samples are in
+`lift-reward-diagnosis.json`.
+
+`lift-candidate-002`: same seed 17, 1,024 worlds, at most 606 iterations / 900 s.
+The time limit ended this run at 476 iterations (11,698,176 transitions), so this
+is a same-time-ceiling comparison, not equal training steps. Total elapsed
+935.97 s, peak total GPU memory 2,074.5 MiB. No numerical failures or capacity
+overflow; 7,990 collision-ended exploration episodes. CPU results remained 0/20
+nominal and 0/20 randomized, with no evaluation collisions. At iteration 150,
+five CPU traces showed approach within 25.9-36.5 mm and fully open jaws, with no
+bilateral grasp (`lift-inspection-002a`). Reward growth alone did not solve lift.
+
+While that run was active, evaluation was corrected to preserve the saved
+policy's folded cube-yaw representation even when randomization is disabled.
+Previously nominal CPU evaluation supplied raw yaw, unlike the physical runner.
+Two new tests compare actual initial CPU and runtime observations; all 11 focused
+RL tests passed (`evaluation-yaw-contract-001.log`). Both earlier lift reports
+used the old evaluator loaded at process start and are retained as such.
+
+The corrected reevaluation is saved separately as `lift-runtime-002.json`:
+0/20 nominal CPU, 0/20 randomized CPU and 0/20 common-controller lifts. All use
+the saved folded-yaw convention. Runtime monitoring found no prohibited contact
+or numerical failure, but no sustained lift either. Checkpoint SHA256:
+`c2513640ffd2f36fab8edd0eafe07644315f69f9e890af10ce1f6ebc1a2efcb5`.
+
+`collect_a1x_lift_demos.py` provides a bounded scripted-demonstration experiment.
+It samples the full original lift region, cube yaw and noisy starting joints,
+records observations/actions and retains failed cases. Its own first attempt
+had an incorrect world/base-frame offset; `lift-demos-001` is invalid and retained.
+The corrected collector initially completed 15/20 (`002`, `003`), then 16/20
+when IK searched within configured controller bounds (`004`). A 7.5 cm approach
+waypoint instead of 10 cm completed 18/20 (`005`); two collision-ended episodes
+remain failures, not training successes. No limits or success thresholds were
+relaxed. Successful trajectories may seed imitation; no imitator has yet been
+trained, and these broader scripted sequences have not passed the runtime guard.
+
+`reach-video-003/seed-32000.mp4` is a labeled, visually inspected CPU replay of
+the learned reach candidate (1.05 mm final error, zero collisions). Reproduce
+with `scripts/render_a1x_candidate.py`; the report includes checkpoint hash.
+
+## Additional H100 compute
+
+### Demonstration warm start
+
+`lift-demos-006` collected seeds 41000-41199 in 45.60 s: 196/200 scripted lifts
+held above 6 cm for two seconds; four ended on collisions, zero numerical faults.
+All attempts remain recorded. These are development demonstrations, not a learned
+holdout or guarded-runtime result. Only successful collision-free episodes enter
+`rl/imitation.py`; it rejects invalid shapes, nonfinite samples, out-of-range
+actions and repeated episode IDs. The training/validation split is by whole
+episode, and validation observations never enter normalization.
+
+`lift-imitation-001`: 5,000 supervised updates, seed 23, CPU, 120 s ceiling;
+actual training 15.81 s. The checkpoint at update 4,700 had the lowest held-out
+episode action error. This score is not manipulation success. Reloaded physics
+evaluation on seeds 50000-50019 achieved 0/20 nominal and 2/20 randomized holds,
+with 6 and 7 collision-ended episodes respectively, no numerical failures.
+Three nominal traces in `lift-imitation-inspection-001` show bilateral grasp
+and maximum lifts of 51.6-52.8 mm, below the required 60 mm.
+
+`lift-imitation-runtime-001.json`: five same-seed controller trials, zero lifts;
+all stopped on collision-guard rejection, with zero actual prohibited contacts
+at every physics substep. This policy must not be deployed. Checkpoint SHA256:
+`031af15422f82427597af2c1386162198679f47baa1ca5054768fab3f0b3185e`.
+Six data/training tests passed (`imitation-contracts-001.log`).
+The later `imitation-contracts-002.log` passes all seven, including an actual
+GPU PPO iteration proving critic-only warm-up preserves every actor and
+observation-normalizer value exactly.
+
+The frozen refinement experiment used this exact checkpoint, 4,096 GPU worlds,
+PPO seed 29, initial action standard deviation 0.15, 20 critic-only warm-up
+iterations, and at most 500 iterations / 300 training seconds. The outer process
+limit was 480 s including setup/evaluation. A three-iteration 4,096-world
+compatibility check ran first. Evaluation used the same development seeds
+50000-50019; final qualification still needs fresh seeds. Numerical/capacity
+faults were stop conditions; height/hold requirements and runtime guards remained
+unchanged.
+
+`brev/h100-lift-4096-001` passed at 294,912 transitions, 4,266.9 MiB peak total
+GPU memory, zero overflow and 35/384 peak constraint rows. Warm iterations ran
+at 111-156k transitions/s; the total including CPU evaluation was 11.13 s.
+The untrained smoke checkpoint had 0/2 CPU lifts and one collision-ended episode.
+
+`brev/h100-lift-imitation-ppo-001` completed 237 iterations / 23,298,048
+transitions in 300.51 training seconds, 321.85 s including evaluation; peak total
+GPU memory 4,268.9 MiB. Source snapshot: `0538669987de325f8c10e1afe5fef033332b0658`,
+archive SHA256 `07d3d78f50fb7ada4d7e7aa2d962aa78ff518af11d4520597d3f0181c0a6acc6`.
+Training had 24,710 collision-ended episodes, zero numerical failures and zero
+overflow. Final CPU results were 0/20 nominal and randomized, without evaluation
+collisions. The grasp behavior was lost despite early training successes.
+The historical manifest's generic continuation string says the critic was
+restored; the imitation checkpoint had no critic. The actual configured 20
+critic-only iterations initialized it; future runner descriptions are corrected.
+
+`imitation-refinement-ablation-001.json` exchanges only the observation
+normalizers between the frozen pre/post-refinement policies. On five development
+seeds, the original actor with the new normalizer collides in 5/5, and the new
+actor with the old normalizer also collides in 5/5. Both full checkpoints fail
+the lift. Normalization changed enough to break the old actor, but this does
+not establish it as the sole cause of the failed refinement. Future work should
+test fixed normalization and an imitation constraint during PPO, not just run
+the same configuration longer.
+
+### State-triggered examples and remaining controller gap
+
+The timed expert had a hidden-clock problem: in all 196 successful episodes,
+the observations just before/at each descend, close and lift transition differed
+by less than 0.001 in every coordinate while an action channel jumped by more
+than 0.5. Median observation changes were 2.33e-10, 1.53e-13 and 2.79e-5
+respectively (`demo-phase-boundaries-001.json`; mixed observation units).
+Thus the deterministic observation-only policy was given conflicting labels
+for effectively the same state. This was a problem in the newly generated
+demonstrations, not evidence of an upstream hardware issue.
+
+The collector's optional `--state-triggered` mode advances when the commanded
+arm waypoint is reached and measured arm error is below 0.02 rad. Closure also
+requires bilateral contact and a completed closing setpoint. Phase time limits
+remain enforced; failure to reach a phase condition is retained as failure.
+This changes example generation, not the policy observation schema, physical
+limits, 6 cm lift requirement or 2 s hold. `lift-demos-state-001` passed its
+first 20/20 scripted trials. `lift-demos-state-002` repeats the same 200 seeds
+as the timed dataset: 196/200 holds, four collision failures, zero numerical
+faults, 32.54 s. The successful episodes still need separate runtime validation.
+
+`lift-imitation-002` uses the same learner, seed 23, 5,000-update / 120 s ceiling
+and development evaluation seeds as candidate 001, with the state-triggered
+dataset. Training took 15.62 s; update 5,000 had the best action validation loss
+(0.009824 versus 0.020098 for candidate 001). Reloaded CPU results: **16/20
+nominal holds**, three collision-ended episodes; **5/20 randomized holds**,
+12 collision-ended episodes; no numerical failures. These are development
+results, not a final untouched holdout. Checkpoint SHA256:
+`eb06853be2011ca11ddfa17551ca0276a2c4e044d2b256ea6b860906563af887`.
+
+The same candidate through `PolicyRunner -> Twin -> SafetySupervisor` achieved
+**0/20** (`lift-imitation-runtime-002.json`): every trial stopped on finger-body
+versus cube guard rejection. Every-substep monitoring found zero actual
+prohibited contacts and zero numerical failures. Training must produce paths
+accepted by that guard; bare-environment successes are insufficient.
+
+`lift-imitation-video-002/seed-50001.mp4` is a visually inspected, labeled
+successful bare-CPU replay (89 frames, 74.03 mm final lift, completed 2 s hold).
+It is imitation, not PPO performance, and does not pass the guarded runtime.
+
+### Correcting guard distance and hold duration
+
+`grasp-guard-diagnosis-001` records the exact rejected model configurations
+without changing decisions. All three inspected finger-body/cube rejections
+involved contact candidates separated by approximately 5.0-5.95 mm, despite
+the configured 3 mm clearance. The checker had treated membership in MuJoCo's
+contact-candidate array as sufficient. Contact arrays can include separated
+pairs; see the primary [MuJoCo contact documentation](https://mujoco.readthedocs.io/en/latest/computation/#contact).
+The decisive local reproduction uses two analytically positioned boxes and
+independent `mj_geomDistance` measurements: the original checker incorrectly
+rejects both 5 mm and 3.1 mm gaps (`clearance-boundary-before-002.log`).
+The first test attempt included unrelated toy-fixture housing overlap and is
+retained as `clearance-boundary-before-001.log`, not counted as this reproduction.
+
+The correction explicitly compares signed contact distance with the requested
+clearance. The intended environmental threshold remains 3 mm; 2.9 mm gaps and
+penetrations still fail, and self penetration remains forbidden. The scene's
+physics margins and positions are unchanged. No new contact exemptions were
+introduced. `clearance-runtime-contracts-001.log`: 48 passed.
+
+With only the distance correction, three trials reached controller completion,
+but independent holds were only 1.955, 1.990 and 1.970 s
+(`lift-imitation-runtime-003.json`). Forty successful observations at 20 Hz span
+39 intervals, not two seconds. Two fake-arm tests reproduce that premature
+completion, including loss/reacquisition of the grasp (`hold-clock-before-001.log`).
+The runtime now requires both the consecutive observations and the full elapsed
+hold duration, resetting elapsed time on loss and on restart. This strengthens
+the runtime completion rule. CPU/GPU training's existing sample-count rule is
+unchanged; independent every-substep runtime monitoring remains the qualification
+criterion. `clearance-runtime-contracts-002.log`: all 50 focused tests pass.
+
+`lift-imitation-runtime-004.json` reevaluates the unchanged candidate 002 and
+same development seeds: **3/20 guarded lifts**, 16 guarded rejections and one
+timeout. Successful independent holds are 2.015, 2.050 and 2.010 s; the controller
+reports 2.0 s. All 20 have zero actual prohibited contacts and numerical failures.
+This is still below the proposed 18/20 gate. Future data collection must exercise
+the actual controller; bare-physics imitation scores do not qualify deployment.
+
+The complete offline suite passes **181 tests** in 160.17 s
+(`offline-suite-005.log`), including GPU/render and fake transport. The unchanged
+adjacent driver checkout supplied imports through `PYTHONPATH`; its HEAD was
+`d9fa67708a344de5660967c4be998b8d34ec86e1`, with the team's working changes preserved.
+`reach-clearance-regression-001.json` repeats the existing 32000-32019 set:
+20/20 reaching successes, zero prohibited contacts/numerical failures. This is
+a regression set, not a new holdout. `runtime-lift-distance-001.json` repeats
+the established scripted fallback: 5/5, 3.815-3.825 s continuous holds and under
+0.565 mm peak jaw-coupling error. No physical tests were run.
+
+### Demonstrations through the guarded runtime
+
+The simulation-only `scripts/a1x_runtime_env.py` adapter executes demonstration
+actions through `PolicyRunner -> Twin -> SafetySupervisor -> SceneBackend`.
+Every recorded observation is asserted equal to the actual policy input. The
+adapter requires both controller completion and independently measured full
+physics hold duration, with no prohibited contacts, numerical faults or guard
+rejections. It has no hardware-selection argument. Failures remain in the report
+and are excluded by the existing imitation loader.
+
+Matched development seeds 41000-41019 exposed problems in the scripted teacher:
+
+| Artifact | Teacher change | Scripted guarded holds |
+|---|---|---:|
+| `lift-demos-runtime-001` | Original state-triggered waypoints | 10/20 |
+| `lift-demos-runtime-002` | Scale arm increments together instead of clipping each joint independently | 13/20 |
+| `lift-demos-runtime-003` | Close at most 1 mm beyond measured opening until bilateral pad contact | 0/20: closure phase cap too short |
+| `lift-demos-runtime-004` | Allow up to 64 closure ticks within unchanged 200-step overall limit | 14/20 |
+| `lift-demos-runtime-005` | Quarter-size synchronized lift increments | 20/20 |
+
+All five comparisons recorded zero actual prohibited contacts and numerical
+failures. `runtime-demo-guard-diagnosis-001` captures the original rejection
+configurations: one descent puts a finger body 2.019 mm from the cube, inside
+the existing 3 mm guard. Synchronizing joint increments removed descent failures
+on these seeds. Gentle closing removed closure failures. The remaining lift
+rejection captured in `runtime-demo-guard-diagnosis-002` has a hypothetical
+finger-body/cube overlap at the next commanded pose while the actual held block
+has not moved yet. Smaller lift increments pass without changing the guard,
+object-contact exemptions, dynamics, action limits, or success criteria.
+
+The gentler closing phase uses simulator contact measurements as teacher
+information. Those contacts are not added to the learned policy's observations;
+the resulting policy still requires independent controller evaluation.
+This is development of a scripted teacher, not learned-policy qualification.
+
+`lift-demos-runtime-006` broadens the final teacher to seeds 41000-41199:
+**197/200 scripted guarded lifts**, 143.60 s, zero actual prohibited contacts
+or numerical failures. Seeds 41062, 41190 and 41197 were rejected at lift-off
+and excluded from training. Maximum finger-coupling error over every monitored
+physics substep was 1.369 mm. The full task workspace, initial pose noise,
+200-step episode limit, 6 cm height, 2 s hold and 3 mm clearance are unchanged.
+Reproduce in the isolated WSL environment with a new output directory:
+
+```bash
+MUJOCO_GL=disable OMP_NUM_THREADS=2 python scripts/collect_a1x_lift_demos.py \
+  --out workspace/validation/NEW_RUNTIME_DEMOS --episodes 200 --seed 41000 \
+  --seconds 240 --state-triggered --runtime --synchronized --measured-close --lift-rate .25
+```
+
+`runtime-demo-contracts-002.log`: 12 tests pass, including simulation-only
+connection, exact reset/input reproduction, atomic nonfinite-action rejection,
+successful full-duration scripted holds, guarded failure reporting, dataset
+exclusion, and the existing GPU critic-warmup preservation check.
+
+Two matched imitation fits on this dataset keep seed 23, whole-episode split,
+the existing network, and development evaluation seeds 50000-50019:
+
+| Candidate | Supervised updates / elapsed | Best validation loss | Bare nominal / randomized holds | Guarded runtime holds |
+|---|---|---:|---:|---:|
+| `lift-imitation-003` | 5,000 / 15.88 s | 0.002667 | 7/20 / 5/20 | 3/20 |
+| `lift-imitation-004` | 20,000 / 64.09 s; selected update 19,900 | 0.001039 | 4/20 / 10/20 | 2/20 |
+
+Both fits were capped at 120 s. The first bare evaluations had 1/9 collision
+episodes, the second 12/7, nominal/randomized respectively. Neither had numerical
+failures. `lift-imitation-runtime-005.json` records candidate 003: 11 guarded
+rejections and six timeouts. `lift-imitation-runtime-006.json` records candidate
+004: 17 guarded rejections and one timeout. Both runtime sets had zero actual
+prohibited contacts and numerical failures. Candidate 004 briefly achieved the
+height/contact criterion in 19/20 nominal CPU trials, but sustained it in only
+4/20. Lower action-prediction loss did not produce reliable autonomous holds.
+These are reused development cases, not fresh qualification trials.
+
+Checkpoint SHA256 values:
+
+- Candidate 003: `1a7d192afdfbecb5441add9bf24fa6593162ccc428093ebde7ae475c2e52ab40`.
+- Candidate 004: `279ebfec3864e51888b29ea58e4eec775889f10a97920c41c8dbc2b6e315916a`.
+
+The demonstrated improvement is in the guarded scripted teacher and data
+collection, not the learned controller. Keep candidate 002 and its evidence;
+neither new candidate qualifies deployment. Next investigate the learner's
+departures from the demonstrated trajectories, particularly grasp retention,
+and collect corrective examples before another unanchored PPO refinement.
+
+### Corrective teaching after learner deviations
+
+`runtime-drift-001` compares candidate 003 and the scripted teacher on development
+seeds 50000, 50001 and 50006 through the same guarded runtime. In the first two
+learned trials both finger contacts persist after grasp, but the arm repeatedly
+raises and lowers the held block. Peak heights are 65.13 and 83.51 mm; continuous
+holds reach only 0.75 and 1.41 s. This is commanded arm drift, not a demonstrated
+loss of gripper contact. The third trial is rejected for table clearance during
+approach, before grasp. The teacher succeeds on all three. Recorded observations,
+actions, joint targets, measured joints and object trajectories support this
+diagnosis; these trials are not new qualification cases.
+
+The collector now optionally executes a supplied learner with probability 0.2
+and the teacher otherwise. At every visited state it records the teacher's
+recommended action as the training label; `executed_actions` separately preserves
+the actual controls. The manifest records the learner checkpoint hash, mixing
+probability and deterministic sampling seeds. Corrective collection requires the
+guarded runtime, state-triggered teacher and matching robot/task/yaw convention.
+Mixed rollouts are explicitly marked as teacher-assisted, not autonomous learned
+successes. Existing failed-episode exclusion and full-duration success checks apply.
+
+`lift-demos-corrective-001`: 19/20 teacher-assisted pilot holds on seeds
+42000-42019, with one guarded descent rejection. `lift-demos-corrective-002`
+expands to seeds 42000-42199: **188/200 teacher-assisted holds**, 162.41 s,
+5,251 learner-selected actions among 25,920 total actions. Twelve failed attempts
+(eight descents, one closure, three lifts) remain in the report and are excluded
+from training. All 200 have zero actual prohibited contacts and numerical faults.
+These collection seeds are separate from both the original teacher dataset and
+the fixed development evaluation seeds 50000-50019.
+
+`corrective-demo-contracts-001.log`: 13 focused tests pass. The new test supplies
+a learner that never moves the arm: its zero arm commands are preserved as actual
+controls while nonzero teacher corrections remain the labels, and the unfinished
+attempt cannot become a successful example.
+
+`lift-imitation-005` fits the first corrective dataset with the same seed 23,
+5,000-update / 120 s ceiling and network as candidate 003. It selects update
+4,900 after 21.51 s, validation loss 0.003442. Despite higher prediction error,
+autonomous results improve to **17/20 nominal CPU**, **11/20 randomized CPU**,
+and **12/20 guarded-runtime holds** (`lift-imitation-runtime-007.json`). Bare
+evaluations have two/six collision episodes respectively. The guarded set has
+seven rejected paths and one timeout, zero actual prohibited contacts and
+numerical failures, and 2.000-2.055 s independent holds in successful trials.
+The same reused development seeds 50000-50019 remain below the proposed 18/20 gate.
+Candidate 005 SHA256:
+`b51ed8d0040dc1a443688d477427614b98fa6d7a93148bdc05f1f23b25040131`.
+
+`lift-demos-corrective-003` uses candidate 005 for half the actions on new
+seeds 43000-43199: **160/200 teacher-assisted holds**, 152.85 s, 11,894 learner
+actions among 24,167. No actual prohibited contacts or numerical faults occurred.
+Forty failed attempts (7 above, 18 descent, 8 close, 7 lift) remain excluded.
+The loader now accepts disjoint sources and preserves each source's existing
+train/validation split and hashes; duplicate seeds or mismatched task/observation
+contracts are rejected. Aggregation does not move prior validation episodes into
+training. `corrective-demo-contracts-002.log`: 15 tests pass, including these checks.
+
+`lift-imitation-006` combines both corrective sources: 278 training episodes,
+70 validation episodes, 52 failures excluded. Its 10,000-update / 120 s ceiling
+selects update 9,700 after 33.68 s, validation loss 0.003745. Results regress to
+12/20 nominal CPU, 7/20 randomized CPU, and **10/20 guarded holds**
+(`lift-imitation-runtime-008.json`). The bare evaluations have five/six collision
+episodes; guarded evaluation has ten rejections, zero actual prohibited contacts
+and numerical faults. Keep candidate 005 as the best guarded lift candidate.
+Candidate 006 SHA256:
+`c8ee5e7c44286866fbcd05f5fa4d3e380d53f427c551ec7c66b5acfc2f9073df`.
+
+The remaining guarded rejections predominantly occur during approach near the
+table or cube. Next measure the teacher's actual approach clearance and test
+whether a higher grasp point can leave useful tracking margin while retaining
+bilateral contact, the full workspace, height/hold requirements and existing
+collision thresholds. This is a proposed teacher adjustment, not a relaxed gate.
+
+`render_a1x_candidate.py --runtime` now records a policy through the same guarded
+adapter, with a visible simulation/imitation label. The inspected replay
+`lift-imitation-runtime-video-001/seed-50001.mp4` shows candidate 005 lifting and
+holding the block: 149 frames, 7.40 s simulated duration, 72.03 mm final height,
+2.010 s independent hold. Final height, hold duration and maximum coupling error
+match the unrendered evaluation exactly for this seed. The preview is saved next
+to the video. This is a selected successful simulation trial, not overall
+qualification or hardware evidence.
+`corrective-demo-contracts-003.log` repeats all 15 focused checks after adding
+the guarded-render option: all pass. No physical or Brev commands were sent
+during these corrective experiments.
+
+### Higher grasp and fixed-normalization refinement
+
+`grasp-height-comparison-001` measures actual MuJoCo finger/table geometry at
+every physics substep on seeds 41000-41019, comparing the original teacher with
+all grasp waypoints raised by 5 mm. Both succeed **20/20** with the same full
+hold requirement and zero prohibited contacts/numerical failures. Minimum gaps:
+
+| Gripping-point offset | Descent | Closing | Lift |
+|---|---:|---:|---:|
+| 0 mm | 4.01 mm | 2.85 mm | 3.01 mm |
+| +5 mm | 8.48 mm | 7.85 mm | 7.98 mm |
+
+The 3 mm command-path guard is unchanged. Actual substep clearance can be smaller
+because of tracking/coupling; these measurements do not establish a guaranteed
+physical margin. The raised waypoints preserve the commanded 7 cm object lift,
+model, workspace, gripper behavior and task criteria. Invalid offsets are
+rejected before connecting/resetting the simulation.
+
+`lift-demos-raised-001` collects through the guarded runtime with state-triggered,
+synchronized waypoints, measured closing, lift-rate 0.25 and grasp-offset 5 mm.
+Candidate 005 supplies 20% of actions; labels always come from the teacher.
+The 200-episode / 240 s ceiling stops after **194 attempts**, 185 successes,
+241.50 s (time checked between episodes), seeds 44000-44193. There are 5,105
+learner actions; nine failed attempts (three close, six lift) remain excluded.
+No actual prohibited contacts or numerical failures occur. These are
+teacher-assisted demonstrations, not autonomous learned successes.
+
+`lift-imitation-007` uses this dataset, seed 23, 5,000-update / 120 s ceiling;
+validation selects update 4,800 after 19.50 s, loss 0.0031073. Policy SHA256:
+`b3b196c3fb66b79606214d10450d3ce4def92f0d4201041fbc051580e066e000`.
+On development seeds 50000-50019 it achieves **15/20 nominal CPU** (no collisions),
+**13/20 randomized CPU** (one collision), and **13/20 guarded holds**
+(`lift-imitation-runtime-009.json`). The guarded path has two rejections, five
+timeouts, zero actual prohibited contacts and zero numerical failures. Successful
+holds last 2.010-2.055 s. Retain this checkpoint as the best guarded candidate;
+it does not meet the proposed 18/20 gate or constitute fresh qualification.
+
+The PPO trainer now optionally freezes the pretrained observation normalizer
+throughout refinement and preserves intermediate checkpoints. Defaults remain
+unchanged. The bounded runner exposes nominal training, fixed learning-rate/KL
+settings and these two options. `raised-refinement-contracts-001.log` passes
+**22 tests** in 18.21 s, including unchanged warm-up actor/statistics, actual
+actor updates afterward, exact frozen statistics, reloaded checkpoint history,
+full-duration guarded teacher holds and invalid-offset rejection.
+
+`lift-ppo-fixed-001` refines candidate 007 locally: 512 worlds, seed 31, nominal
+physics/perception, frozen normalizer, initial standard deviation 0.05, 20 critic
+warm-up iterations, fixed learning rate 0.0001 (`desired_kl=0`), at most 500
+iterations / 300 s. It finishes 167 iterations / 2,052,096 transitions in
+300.06 s, peak total GPU usage 1,626.5 MiB. There are 1,046 collision-ended
+training episodes, zero numerical failures/overflow, peak contacts 3,606/32,768
+and constraint rows 82/384. Training success ends at 50.8%; independent replay
+shows this is not a useful replacement for the imitation policy:
+
+| Saved iteration | Nominal CPU /20 | Randomized CPU /20 | Guarded /20 | Guard rejections | Timeouts |
+|---|---:|---:|---:|---:|---:|
+| 50 | 7 | 6 | 3 | 6 | 11 |
+| 100 | 7 | 6 | 1 | 7 | 12 |
+| 150 | 8 | 8 | 5 | 6 | 9 |
+| 167, final | 7 | 9 | 0 | 10 | 10 |
+
+All guarded evaluations have zero actual prohibited contacts/numerical failures.
+Reports are `lift-ppo-fixed-001-runtime-{50,100,150,final}.json`, with `--cpu`
+and development seeds 50000-50019. No checkpoint is promoted. The final SHA256
+is `15d10b0a0c5b014358d4ba26ceb0690deb95bdf459c19c3f0bb259fdb4ca3ad2`.
+
+Reporting correction: this experiment's original runner reused nominal training
+randomization in the field named `cpu_randomized`, producing a duplicate nominal
+result (its nested `randomized` flag correctly says false). Preserve that original
+report and source hashes; the independent reports above contain the actual
+randomized evaluations. The runner now always evaluates default randomization
+separately and records both evaluation configurations. A one-iteration, 32-world
+smoke (`nominal-runner-contract-001`, 20.39 s including CPU evaluation) verifies
+the `randomized` flag is false for nominal evaluation and true for randomized
+evaluation, while preserving folded-yaw observations in both. This smoke is not
+a promoted candidate.
+
+`runtime-drift-002` compares candidate 007 with the raised teacher on four failed
+development cases. Seeds 50003/50010 finish with bilateral grip but only 57.39 /
+64.80 mm lift and maximum continuous qualifying holds 0 / 0.690 s. Seeds
+50007/50015 finish without a grip and with the block on the table. The teacher
+completes full holds on all four. These traces motivate collecting corrections
+from candidate 007's own trajectories before another fit; the existing raised
+dataset used candidate 005. No physical or Brev commands were sent in this round.
+
+### Correcting the retained policy and auditing information sufficiency
+
+The next collection uses candidate 007 for 30% of executed actions, with the
+same raised, synchronized, state-triggered teacher and guarded runtime. The
+20-case / 60 s pilot `lift-demos-raised-pilot-002` (45000-45019) completes 20/20
+teacher-assisted holds in 17.36 s, 790/2,702 learner actions. Its bounded expansion
+`lift-demos-raised-002` (45020-45219, at most 200 cases / 240 s) completes 192/200
+in 161.58 s, 7,877/26,610 learner actions. Eight failures are retained: one above,
+six close, one lift. Both runs have zero actual prohibited contacts or numerical
+faults. These results are teacher-assisted, not learned-policy qualification.
+
+Combining the old raised set and both new sources preserves 318 training and
+79 validation episodes, with 17 failures excluded. Candidate 008 is a fresh fit
+on this combination: 10,000 updates / 120 s ceiling, seed 23, selected update
+10,000, 33.76 s, validation loss 0.0025307. Candidate 009 instead starts from
+007, keeps its normalizer fixed, and fits the same data at learning rate 0.0001:
+10,000 updates / 120 s ceiling, 34.85 s, validation loss 0.0039600 -> 0.0025103.
+The lower action-prediction errors do not improve guarded behavior:
+
+| Policy | Nominal CPU /20 | Randomized CPU /20 | Guarded /20 | Guard rejections | Timeouts |
+|---|---:|---:|---:|---:|---:|
+| 007, retained baseline | 15 | 13 | 13 | 2 | 5 |
+| 008, combined fresh fit | 16 | 13 | 10 | 8 | 2 |
+| 009, conservative refinement | 13 | 14 | 12 | 4 | 4 |
+
+Nominal/randomized bare-CPU collision counts are 0/1, 2/6 and 1/5 respectively.
+All guarded runs have zero actual prohibited contacts and numerical failures;
+only complete two-second holds without controller faults count. Reports are
+`lift-imitation-runtime-{009,010,011}.json`, using development seeds 50000-50019.
+The audit verifies identical task, seed order, evaluator hash and all recorded
+runtime source hashes; only training modules differ. No candidate is promoted.
+Candidate 008 SHA256:
+`df36ddaa627346a5e71e586f70a4c946529931f5653569877cd36d7d65c716a2`.
+Candidate 009 SHA256:
+`c3b1d44be023c526832a147411b470c1c285734d3c9cbed24ee8b2e6cccc8b48`.
+
+The new imitation `--init` option preserves the actor/input statistics and never
+mutates the original policy. It requires a matching checkpoint/report hash and
+retains every prior training/validation episode in its original role; changed
+task/observation contracts are rejected. Defaults still fit from scratch.
+`imitation-refinement-contracts-001.log`: 16 tests pass in 11.59 s, including
+actual fitting, unchanged source/statistics, reload and leakage protections.
+
+`runtime-drift-003` completes the missing matched traces for baseline seeds
+50004/50008/50009; the teacher succeeds on all three. Together with drift-002,
+`lift-failure-audit-002/report.json` classifies all seven baseline failures:
+
+- **Grasp execution (4):** 50007/50009/50015 stall without bilateral contact;
+  50008 receives a finger/cube rejection before a bilateral grip.
+- **Maintaining lift (2):** 50003/50010 grasp but finish at 57.39/64.80 mm,
+  with qualifying holds 0/0.690 s.
+- **Approach clearance (1):** 50004 gets a table/finger rejection before contact.
+
+This supports prioritizing grasp decisions while keeping the previously improved
+approach clearance. The policy input contains measured/commanded joints including
+G1 opening, current TCP/cube pose and previous action. The memoryless actor does
+not directly receive the teacher's phase history, initial cube position, chosen
+IK waypoints or MuJoCo touch signals. In a recorded closing state (50008, step 64),
+the teacher selects gripper label -1 with bilateral touch, versus -0.5082 through
+its no-contact branch while holding all actor inputs fixed. This is a synthetic
+branch audit, not evidence of two physically reachable identical observations.
+Position/history proxies may explain part of the hidden decision; the audit
+does not prove missing inputs cause all failures. Exact reproducibility remains
+unestablished, so more data/fitting is not yet justified. Resolve the control
+teacher's dependence on shared observables/history before the next targeted
+corrective set; keep simulation truth for independent success/contact checking.
+
+The baseline has a hash-verified copy under
+`workspace/validation/baselines/lift-imitation-007/`, including policy, metadata,
+training records and controller evaluation. The fixed protocol is
+`configs/a1x_lift_evaluation.json`: development 50000-50019; reserved held-out
+51000-51019, with no prior use found in experiment records. Do not use reserved
+cases for training or tuning. Freeze a nominal candidate before qualification;
+later reuse after a failed qualification must not be called a fresh holdout.
+
+The user's latest scope keeps scripted demonstrations -> imitation -> corrective
+teaching, with short comparisons and no new PPO/long run. Camera-estimation noise
+and delay tests/training follow nominal reliability. Simulated robustness cannot
+validate actual two-camera calibration/perception. Physical work remains deferred;
+the adjacent task's reported table/tool model discrepancy remains unresolved.
+
+### Observation-only teacher and bounded corrective pilot
+
+`scripts/a1x_observable_teacher.py` implements a separate simulation teaching
+contract, `a1x-lift-observable-v1`. Its decisions use exactly the actor's 36 inputs
+plus fixed task/robot geometry. It does not receive scene contacts, initial cube
+pose, waypoint history or elapsed time. Closing continuity uses the already
+observed previous action; grip/holding decisions use measured versus commanded
+opening. These are model-specific proxies, not independent success detection.
+The actual guarded runtime and independent physics monitor still determine
+two-second holds, prohibited contacts and failures.
+
+Short scripted probes retained each unsuccessful attempt:
+
+| Probe under `workspace/validation/` | Cases / successes | Finding |
+|---|---:|---|
+| `observable-teacher-pilot-001` | 2 / 0 | Closing lost its condition and reopened |
+| `observable-teacher-pilot-002` | 2 / 1 | Previous action fixes closing continuity; chasing held-cube XY causes IK drift |
+| `observable-teacher-pilot-003` | 2 / 2 | Preserve commanded XY/orientation during lift; use observed height for vertical correction |
+| `observable-teacher-pilot-004` | 7 / 4 | Measured tracking offsets prevent three approaches from reaching the closing condition |
+| `observable-teacher-pilot-005` | 7 / 7 | Require commanded arrival plus bounded measured error; all seven diagnosed baseline cases hold for 2.020-2.045 s |
+
+The final probe has no guard rejections, prohibited contacts or numerical failures.
+It is scripted development evidence on previously inspected cases, not a new
+learned result or held-out qualification. Original probe sources are retained in
+the artifact directories; the successful control is integrated in the new module.
+
+A fresh training pilot uses seeds 46000-46019, excluded from both development and
+reserved qualification. Learner 007 executes with probability 0.3 only when the
+observation-derived teacher stage is close or lift, targeting the dominant grasp
+and holding failures. Labels always come from the teacher; executed actions are
+recorded separately. Reproduce with a new output directory:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 MUJOCO_GL=disable OMP_NUM_THREADS=2 \
+  /home/kuba/.venvs/a1x-twin/bin/python scripts/collect_a1x_lift_demos.py \
+  --teacher observable --runtime \
+  --learner workspace/validation/lift-imitation-007/policy.pt \
+  --learner-probability .3 --episodes 20 --seed 46000 --seconds 60 \
+  --out workspace/validation/NEW_CORRECTIVE_PILOT
+```
+
+| Pilot | Full guarded holds | Executed learner actions | Elapsed |
+|---|---:|---:|---:|
+| `lift-demos-observable-001` | 20/20 | 631/2,655 | 19.48 s |
+| `lift-observable-paired-teacher-001`, same seeds without learner | 20/20 | 0/2,643 | 18.76 s |
+
+Both have zero prohibited contacts, guard rejections and numerical failures;
+maximum finger coupling error is 1.244 mm. The assisted minimum hold is 2.000 s
+(within floating-point rounding), independently checked at physics substeps.
+`lift-observable-label-audit-001.json` replays every saved label in reverse order:
+all 2,655 are exactly equal. It also verifies the frozen 007 bundle, original
+checkpoint and protocol hashes, and no overlap with development/held-out seeds.
+This establishes reproducible labels for these observations, not adequate data
+coverage or physical observability. Actual calibrated G1 measurement is unverified.
+
+Dataset aggregation now rejects mixed teacher contracts. The collector and
+imitation CLI reject reserved held-out seeds before creating outputs. Existing
+episode-level split and refinement-lineage protections remain unchanged.
+`observable-teacher-contracts-001.log`: 34 focused tests pass in 23.23 s, covering
+history/contact independence, full guarded holds, targeted corrective labels,
+protected seeds and prior imitation behavior.
+
+One fresh imitation diagnostic uses only this pilot: 16 training / 4 validation
+episodes (split seed 23), no exclusions or baseline initialization, 3,000 updates
+with a 60 s ceiling. `lift-imitation-010` finishes fitting in 8.63 s, selects
+update 2,100 with whole-episode validation loss 0.0045898. Its SHA256 is
+`5e08c5f77821f8c84a38fd551a6c56e3582c383f8abc0953aabd7d49afde5bad`.
+
+| Policy | Nominal CPU /20 | Randomized CPU /20 | Autonomous guarded /20 | Rejections | Timeouts |
+|---|---:|---:|---:|---:|---:|
+| 007, retained baseline | 15 | 13 | 13 | 2 | 5 |
+| 010, small observation-only pilot fit | 0 | 2 | 0 | 6 | 14 |
+
+`lift-imitation-runtime-012.json` uses the actual controller without intervention,
+development seeds 50000-50019 and unchanged full-hold/contact criteria. Four guard
+rejections concern table/finger clearance and two concern finger/cube motion.
+All candidate episodes have zero qualifying hold; actual prohibited contacts and
+numerical failures are zero. Bare CPU evaluations have 2/9 collision episodes
+respectively; those exploratory randomized results are not camera robustness.
+`lift-observable-candidate-comparison-001.json` verifies identical evaluation
+seed order, task, evaluator hash and recorded runtime sources. Training-only
+modules differ. Teacher, dataset size and initialization also differ, so the
+score change cannot isolate the effect of removing hidden teacher information.
+
+Candidate 010 is rejected. The improvement is the audited teaching contract and
+successful targeted data collection, not autonomous reliability. Next inspect
+the earliest wrong approach/grasp commands before collecting more data or fitting.
+Any later refinement of 007 must retain its original episode split roles, with
+consistent relabeling if changing teacher; do not mix incompatible label sources.
+The frozen baseline and reserved qualification cases remain untouched. No long
+run, H100 operation, camera-noise campaign or physical test was started.
+
+### Arm-channel diagnosis and consistent-label refinement
+
+`observable-policy-drift-001` records teacher and candidate-010 trajectories on
+one training, one validation and three development cases, plus baseline-007
+controls on the development cases. All five teacher runs succeed; all five 010
+runs fail, including the training case. The traces show premature closure while
+misaligned, open-jaw stalls, and near-zero arm actions while pose errors persist.
+This is not solely failure to generalize to unseen positions. Normalizer clipping
+is not present on every failed trajectory. The probe takes 16.18 s.
+
+A channel intervention separates some causes (`observable-channel-ablation-001`,
+25.78 s). Each intervention replaces either the six arm actions or the gripper
+action with the observation-only teacher, through the unchanged guarded runtime:
+
+| Policy / cases | Teacher arm, learned gripper | Learned arm, teacher gripper |
+|---|---:|---:|
+| 007: 50000/50003/50004/50007/50008 | 4/5 | 1/5 |
+| 010: 46000/50000/50001 | 2/3 | 0/3 |
+
+These are assisted diagnostics, not qualification. They support targeting arm
+alignment during approach and grasp; gripper-only correction does not suffice.
+Baseline seed 50007 still fails with either single-channel intervention.
+
+The observable collector now accepts explicit learner phases and `all` or `arm`
+channels. Defaults remain close/lift with all channels. `lift-demos-observable-arm-001`
+uses fresh training seeds 47000-47019, baseline 007, probability 0.3,
+`--learner-phases approach close lift --learner-channels arm`. All 20 assisted
+episodes finish with full holds, zero prohibited contacts, rejections or numerical
+failures: 812 learner arm substitutions across 2,699 actions, 18.80 s, minimum
+hold 2.000 s, maximum coupling 1.195 mm. The teacher still sees only actor inputs.
+
+`lift-demos-observable-relabel-001` generates 25,087 observation-only labels on the
+185 successful trajectories originally used by 007, with no label-query failures
+(50.13 s). It preserves source hashes, original teacher labels and actually
+executed controls. These are counterfactual labels on existing executions, not
+185 new teacher successes. All original training/validation/excluded seed roles
+are verified unchanged; refinement's checkpoint/split checks pass. The nine
+original failed episodes remain excluded. No evaluation cases enter fitting.
+
+Candidate 011 combines the relabeled source with the two 20-case observable
+pilots: 180 training / 45 validation episodes. It starts from 007, freezes its
+normalizer, and uses learning rate 0.0001 for 3,000 updates with a 60 s ceiling.
+Fit time is 9.84 s; selected update 2,900; whole-episode validation loss changes
+from 0.0135689 to 0.0033146. `--nominal-only` defers automatic randomized CPU
+evaluation until the nominal gate; its actual run records only nominal results.
+
+| Policy | Nominal CPU /20 | Autonomous guarded /20 | Guard rejections | Timeouts |
+|---|---:|---:|---:|---:|
+| 007, preserved reference | 15 | 13 | 2 | 5 |
+| 011, consistent-label refinement | 15 | 16 | 0 | 4 |
+
+`lift-imitation-runtime-013.json`: zero prohibited contacts and numerical failures;
+minimum successful hold 2.010 s. It fixes 50003/50004/50010/50015 and regresses
+50000. `observable-refinement-comparison-001.json` verifies identical task,
+dependency versions, seed order, evaluator and recorded runtime sources, unchanged
+normalization tensors, preserved original split roles and no development/held-out
+training overlap. Teacher/source changes are intentional; the gain is not assigned
+to one factor independently. Both baseline bundles are hash verified.
+
+Candidate 011 is preserved under `workspace/validation/baselines/lift-imitation-011/`,
+SHA256 `e7975d9b3ca6cec62b8f9a857059eefb85e5b031cbe9a1367394cc822fac3539`.
+Original 007 is untouched. The new result remains below the 18/20 development
+gate, so reserved qualification and camera robustness tests are not run.
+
+`observable-refined-drift-001` traces the four remaining failures without any
+teacher intervention: 50000/50007/50008/50009 all fail before bilateral contact.
+Final finger-midpoint lateral errors are 7.34/11.74/7.34/8.85 mm; measured jaw
+coordinates remain 18.51/20.67/18.66/20.58 mm. Teacher queries still call for
+alignment/closure while the learned arm commands approach zero. A next bounded
+pilot should permit sustained candidate-011 control followed by teacher recovery,
+testing whether it covers these stalls better than isolated substitutions. Do
+not infer that more updates alone solve the closed-loop behavior.
+
+`observable-channel-contracts-001.log`: 21 runtime-demonstration tests pass in
+15.66 s, including arm-only disturbances that preserve teacher gripper commands,
+invalid-selection rejection before connection, and the existing full-hold/input
+contracts. No physical arm or H100 operation occurred in this experiment.
+
+### Sustained learner control and matched recovery comparison
+
+The observable collector now supports `--learner-prefix-steps`: uninterrupted
+learner control followed by teacher-only recovery, with teacher labels recorded
+throughout. It requires an explicit learner, all phases/channels, and at least
+half the unchanged episode budget for recovery. It never bypasses guard faults
+or extends success deadlines. Default intermittent collection remains available.
+`learner-prefix-contracts-001.log`: 27 tests pass in 21.26 s, including exact
+executed-action scheduling, label reproducibility, full guarded recovery holds,
+and invalid prefix configurations rejected before connection.
+
+Two matched 20-case pilots use fresh training seeds 48000-48019 and candidate
+011. The prefix runs use 80 steps (4 s) of learner control. The control runs use
+learner probability 0.3 across approach/close/lift. Both have a 60 s collection
+ceiling; neither supplies autonomous qualification:
+
+| Dataset | Assisted full holds | Learner steps / total | Elapsed |
+|---|---:|---:|---:|
+| `lift-demos-prefix-001` | 20/20 | 1,600 / 2,885 | 23.34 s |
+| `lift-demos-prefix-control-001` | 20/20 | 786 / 2,604 | 19.41 s |
+
+All have zero prohibited contacts, guard rejections and numerical failures;
+minimum successful hold is 2.000 s within floating-point rounding. The audit
+`learner-prefix-comparison-001.json` verifies the learner-only prefix and
+teacher-only recovery from recorded actions, original checkpoint hashes, and no
+development/held-out seed overlap.
+
+Define a diagnostic correction frame as maximum absolute learned arm action
+below 0.02, maximum teacher arm action above 0.2, and no teacher holding proxy.
+The prefix data contain **269 such frames in 19 episodes**, versus **zero** in
+the matched control. This is action disagreement, not proof that each state is
+a stable dynamical fixed point. It demonstrates that uninterrupted learner
+control reaches a class of corrections absent from the intermittent pilot.
+
+Two short refinements use the same frozen 011 start and its three existing data
+sources, adding either the prefix or control source. Never aggregate both matched
+sources because their episode seeds overlap. Each fit retains the original roles:
+196 training / 49 validation episodes, nine original failures excluded. Both use
+seed 23, learning rate 0.0001, fixed normalization, 3,000 updates / 60 s maximum,
+and nominal-only CPU development evaluation.
+
+| Candidate | Added data | Fit time | Selected update | Nominal CPU /20 | Guarded /20 | Rejections / timeouts |
+|---|---|---:|---:|---:|---:|---:|
+| 011, preserved | None | Prior result | Prior result | 15 | 16 | 0 / 4 |
+| 012 | Sustained prefix | 13.11 s | 3,000 | 16 | 16 | 0 / 4 |
+| 013 | Intermittent control | 13.78 s | 2,800 | 15 | 15 | 1 / 4 |
+
+Runtime reports are `lift-imitation-runtime-{014,015}.json`; all actual prohibited
+contact and numerical counts are zero. Candidate 012 fixes 50000 but regresses
+50015; 013 loses 50015 without fixing a prior failure. The original 011 is retained.
+Candidate 012 SHA256:
+`a31eb6c908df2a17312c62a6eb9fd4bfd4234a62e2c8984cc637aabcd4619181`.
+Candidate 013 SHA256:
+`1be8ad034672b0815b83f33fd4d60b35538fa613c27eea51e44815cc7e974735`.
+
+`learner-prefix-fit-comparison-001.json` verifies identical initial checkpoint and
+report, hyperparameters, episode split roles, dependency versions, runtime source,
+evaluator, evaluation seeds and frozen normalization. Source trajectories and
+their frame counts intentionally differ. No checkpoint is promoted from a tie.
+
+The learning audit evaluates all three saved policies on the same prefix data:
+
+| Prefix subset | Frames | 011 arm MSE | 012 arm MSE | 013 arm MSE |
+|---|---:|---:|---:|---:|
+| Training correction frames | 197 | 0.11665 | 0.01377 | 0.11231 |
+| Validation correction frames | 72 | 0.06242 | 0.02309 | 0.06260 |
+
+Thus the new examples improve the intended local predictions, but do not yet
+improve autonomous success. These 197 training frames are only 0.74% of 26,724
+samples. Candidate 012's aggregate validation arm MSE is 0.002978, considerably
+below the corrective subset's error. This supports a small sampling-priority
+comparison as the next hypothesis, not more data or longer training by default.
+Keep the validation distribution and success/contact rules fixed so a loss change
+cannot be confused with task improvement. The 011 bundle is verified unchanged;
+reserved evaluation, camera robustness, H100 and physical-arm work remain deferred.
+
+### IK retry must preserve gripper state
+
+Source review found that the home-pose IK restart included the home gripper
+opening, although the method promises to retain the caller's gripper setting.
+`ik-gripper-restart-before-001.json` reproduces this using actual A1X geometry:
+requests for 0% and 100% both return 60% when the home arm solution wins.
+Both targeted tests fail before the fix (`ik-gripper-restart-before-002.log`).
+The home restart now replaces only arm coordinates, preserving the gripper
+just like the random restarts. No limits or geometry changed. This issue is
+independent of learned policy execution, which does not call IK.
+
+`runtime-demo-contracts-003.log`: 18 geometry, legacy-robot, runtime-demo and
+imitation tests pass, including both new IK regressions. The existing UI test
+for rejecting a jump to a different IK branch also passes
+(`ik-ui-regression-001.log`). The recorded dataset and policy fits predate this
+IK correction; their manifests retain the original source hashes. No physical
+commands or Brev configuration changes were made.
+
+### Remote environment and isolation
+
+The user supplied Brev organization `wysocki-55ff9e-nih0` and machine
+`empty-peach-tortoise` (ID `cdeczltwl`). Read-only inspection confirms hostname
+`brev-cdeczltwl`, H100 PCIe with 81,559 MiB and driver 570.148.08. Brev CLI v0.6.335
+can list a specific organization without changing context, but its connection
+lookup uses the active organization. The other project remains active.
+
+The task read only the designated workspace metadata through the same official
+Brev API used by the CLI, using existing authentication without printing tokens.
+It verified organization and instance identities, then wrote a separate local
+SSH config/known-hosts file under `workspace/validation/brev/`. No shared config
+or organization switch was required. WSL shared file hashes before/after:
+
+- `/home/kuba/.brev/ssh_config`: `64a3b978e9f0bb1c53530f103c72e239fdd4fe99e4630ab28e0eabcea96c8cf9`
+- `/home/kuba/.ssh/config`: `1d4cd26da5cc01120cc0576762e9dc28e40c614dfeffd67775ab6bbc6898a3c0`
+
+Remote files and dependencies belong only under `/home/ubuntu/a1x-twin-training`.
+Transfer repository source/assets and explicit experiment artifacts, excluding
+local credentials, live workspace/calibration files and the adjacent driver.
+Snapshot manifests accompany non-Git source exports. Start with a bounded smoke
+check; the longer training budget is pending the user's answer.
+
+The remote isolated environment is `/home/ubuntu/a1x-twin-training/venv`, Python
+3.12.14, Torch 2.11.0+cu126, MuJoCo / MuJoCo Warp 3.14.0 and Warp 1.17.0. Its
+source export is commit `d7497a34a873f9aaeff7fddf1d8142683b14ae77`; all 161
+exported files are hashed in `SOURCE_SNAPSHOT.json`. The archive SHA256, verified
+after transfer, is
+`6fdcd7c4b284b9dff66c5b3b89d0c51bb766ec6b2638cb6a13bbf7c83de68483`.
+The tracked assets include the repository's two camera-intrinsic text files;
+these are not a verified copy of the current physical calibration and are not
+used for state-vector training. No live camera or hardware access was attempted.
+
+`MUJOCO_GL=egl` failed during import because the host lacks an EGL loader
+(`brev/h100-lift-1024-001.log`). Training works with `MUJOCO_GL=disable`, without
+changing system libraries or drivers. Remote image rendering remains unverified.
+
+The corrected smoke run `brev/h100-lift-1024-002` passed: 1,024 worlds x three
+iterations, 73,728 transitions, checkpoint reload and two CPU episodes. Total
+elapsed 119.49 s includes initial compilation and CPU evaluation. Warm iterations
+measured approximately 38-44k transitions/s; this small workload does not yet
+show a substantial speed advantage over the laptop. Peak total GPU use was
+1,708.9 MiB, with 4,099/65,536 peak contacts, 26/384 constraint rows and zero
+overflow. CPU evaluation had no collisions/numerical failures and 0/2 lifts,
+as expected from a plumbing check. Report and checkpoint were copied locally.
+
+Reproduce from WSL in the local repository, using a new output directory:
+
+```bash
+ssh -F workspace/validation/brev/ssh_config a1x-h100 \
+  'cd /home/ubuntu/a1x-twin-training/source && PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUJOCO_GL=disable timeout 600 ../venv/bin/python scripts/validate_a1x_gpu.py --task lift --envs 1024 --iters 3 --out workspace/validation/NEW_RUN'
+```
+
+`brev/h100-cpu-contracts-001.log`: 28 tests passed in 4.32 s, covering geometry,
+RL action/observation/reward conventions, collision checks and physical-observation
+rejection using simulated inputs. Tests ran with rendering disabled and
+`OMP_NUM_THREADS=2`; they do not test real hardware. The adjacent driver was not
+installed or transferred, and remote renderer/backend checks are not claimed.
+
+`brev/h100-gpu-contracts-001.log`: both GPU tests passed in 13.86 s. These check
+CPU/GPU observation and reward agreement, resets, actual collision termination,
+mixed angular/linear sensor noise and fatal handling of injected capacity overflow.
+
+A subsequent shared-config check observed a different Brev-generated file hash
+(`2514ddf1917e125bc0acabbe35baeee93013e5d06dabd94710752ce2cb1ad391`)
+while another project's `brev exec` process was active. The main `.ssh/config`
+hash remained unchanged. This task did not write either shared file or switch
+organizations. Preserve concurrent changes; never restore the earlier snapshot.
+The task-local SSH configuration is independent of those refreshes.
+
+## Remaining validation
+
+- Preserve the verified implementation checkpoint; relevant historical README/test
+  claims have been reconciled with the evidence above.
+- Scripted runtime path passed; retain the regression and evaluate learned
+  candidates through that same controller path.
+- Extend grasp/contact stress coverage as needed; the five successful lift traces
+  remain a narrow nominal comparison, not physical dynamics validation.
+- Retain the improved reach candidate as simulation-only. Train lift with explicit experiment scope,
+  recorded limits, and independent sustained-hold/runtime evaluation.
+- Preserve and verify live calibration/configuration, actual G1 feedback, dynamics,
+  camera latency, and physical success when the user returns to hardware testing.
+
+Full execution-plan completion still requires the physical demonstration. Existing
+read-only hardware findings from other tasks do not substitute for that work.

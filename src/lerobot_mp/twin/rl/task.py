@@ -101,6 +101,11 @@ class TaskConfig:
     #: pierscien kostki ze `spec.desk`).
     target_radius: tuple[float, float] = (0.15, 0.25)
     target_bearing: tuple[float, float] = (-0.8, 0.8)
+    #: Coarse lift-approach reward distance [m]; legacy/SO-101 shaping remains 5 cm.
+    approach_scale: float = 0.05
+    #: A1X's fingertip midpoint is 29.89 mm ahead of its calibrated TCP.
+    #: Reward approaching with the actual gripping surface, without moving the TCP frame.
+    grasp_tip_reward: bool = False
 
     @property
     def obs_dim(self) -> int:
@@ -150,7 +155,19 @@ def make_task(name: str = "reach", spec: RobotSpec | None = None, **overrides) -
         base = replace(base, n_joints=len(spec.joints), goal_radius=d.goal_radius, goal_height=d.goal_height,
                        cube_radius=d.cube_radius, cube_bearing=d.cube_bearing,
                        target_radius=d.cube_radius, target_bearing=d.cube_bearing)
-    return replace(base, **overrides)
+        if spec.name == "a1x" and name == "lift":
+            base = replace(base, approach_scale=0.20, grasp_tip_reward=True)
+    task = replace(base, **overrides)
+    if not np.isfinite(task.approach_scale) or task.approach_scale <= 0:
+        raise ValueError("approach_scale must be finite and > 0")
+    if spec is not None:
+        if not np.isfinite(task.control_hz) or task.control_hz <= 0:
+            raise ValueError("control_hz must be finite and > 0")
+        speed = robot_config(spec).joint(spec.gripper).max_vel
+        task = replace(task, grip_step=min(task.grip_step, speed / (100.0 * task.control_hz)))
+        if spec.name == "a1x" and name in ("lift", "pickplace") and "end_on_success" not in overrides:
+            task = replace(task, end_on_success=int(np.ceil(2.0 * task.control_hz)))
+    return task
 
 
 # --------------------------------------------------------------- limity
@@ -248,6 +265,46 @@ def fold_yaw(xp, R):
     return xp.stack(rows, -2)
 
 
+class ContinuousCubeYaw:
+    """Keep the nearest 90-degree-equivalent yaw across delivered cube poses.
+
+    Like legacy folding, this assumes an upright square cube and discards tilt.
+    It uses only observation history, never the true pose or teacher state.
+    Call reset at episode start. Rotations of >=45 degrees between observations
+    are ambiguous; this is not a general object-orientation tracker.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self) -> None:
+        self.previous: float | None = None
+
+    def __call__(self, rotation: np.ndarray) -> np.ndarray:
+        rotation = np.asarray(rotation, float)
+        if rotation.shape != (3, 3) or not np.isfinite(rotation).all():
+            raise ValueError("Cube rotation must be a finite 3x3 matrix")
+        folded = fold_yaw(np, rotation)
+        yaw = float(np.arctan2(folded[1, 0], folded[0, 0]))
+        if self.previous is None:
+            self.previous = yaw
+            return folded
+        yaw += round((self.previous - yaw) / (np.pi / 2)) * (np.pi / 2)
+        self.previous = yaw
+        c, s = np.cos(yaw), np.sin(yaw)
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def cube_yaw_tracker(mode: str, *, task: TaskConfig, robot: str, fold: bool):
+    """Validate the saved observation mode; legacy checkpoints remain stateless."""
+    if mode == "canonical":
+        return None
+    if (mode != "continuous" or robot != "a1x" or task.name != "lift"
+            or task.obs_dim != 36 or task.act_dim != 7 or task.cube_half != .015 or not fold):
+        raise ValueError("Continuous cube yaw requires the folded 36-input A1X cube-lift contract")
+    return ContinuousCubeYaw()
+
+
 # ---------------------------------------------------------------- nagroda
 def limit_cost(xp, task: TaskConfig, limits: Limits, q_cmd):
     """(N,) kara za cele stawow ramienia blizej limitu niz `limit_margin` (0 w srodku zakresu)."""
@@ -323,7 +380,8 @@ def reward(xp, task: TaskConfig, tcp, action, prev_action, goal=None, cube_pos=N
     success = grasped & (height > task.lift_height)
     g = grasped.to(tcp.dtype) if xp is not np else grasped.astype(tcp.dtype)
     s = success.to(tcp.dtype) if xp is not np else success.astype(tcp.dtype)
-    r = (1.0 - xp.tanh(d / 0.05)) + g + 4.0 * g * lifted + 2.0 * s
+    approach = 0.5 * (1.0 - xp.tanh(d / task.approach_scale)) + 0.5 * (1.0 - xp.tanh(d / 0.05))
+    r = approach + g + 4.0 * g * lifted + 2.0 * s
     if task.hold_still > 0:
         na = action.shape[-1] - 1 if limits is None else limits.n_arm
         cost = cost + task.hold_still * s * (_clip(xp, action[..., :na], -1.0, 1.0) ** 2).sum(-1)

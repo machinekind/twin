@@ -2541,9 +2541,11 @@ class TwinApp:
                 and self.runner.cube_provider == self._vision_cube)
 
     def _mapper_now(self) -> TableMapper | None:
-        key = tuple((c.name, c.enabled, c.trusted, str(c.T_cam2base), str(c.K)) for c in self.ws.cameras)
+        key = tuple((c.name, c.source, c.enabled, c.trusted, str(c.T_cam2base), str(c.K), str(c.dist))
+                    for c in self.ws.cameras)
         if key != self._mapper_key:
             self._mapper_key = key
+            self.last_cube = None  # Never reuse a detection after changing camera identity/calibration.
             m = TableMapper.from_workspace(self.ws, only_trusted=True)
             self.mapper = m if m.cameras else None
         return self.mapper
@@ -3037,13 +3039,16 @@ class TwinApp:
         with self.twin.lock:
             return name in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
 
-    def _configure_objects(self, cube: bool, pad: bool) -> None:
+    def _configure_objects(self, cube: bool, pad: bool, task=None) -> None:
         """Kostka i/lub podkladka celu pickplace w scenie blizniaka (przebudowa, stan zostaje)."""
         from ..rl import task as tk
         from ..rl.env import TARGET_RGBA, TARGET_SIZE
-        task = tk.make_task("lift", self.ws.spec())
+        task = task or tk.make_task("lift", self.ws.spec())
         h = task.cube_half
-        objs, sensors = [], []
+        # Retain unrelated modeled obstacles when adding/removing task objects.
+        with self.twin.lock:
+            objs = [o for o in self.twin.scene.cfg.objects if o.name not in ("cube", "target")]
+            sensors = [name for name in self.twin.scene.cfg.grasp_sensors if name != "cube"]
         if cube:
             objs.append(sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0), mass=task.cube_mass))
             sensors.append("cube")
@@ -3336,7 +3341,8 @@ class TwinApp:
         """Poza taga z kadrow zaufanych kamer -> zielona plytka w 3D i tekst z rozrzutem miedzy kamerami."""
         from ..tagreach import tag_from_frames
         frames = self._grab()
-        fix = tag_from_frames(frames, self.ws.cameras, int(self.tag_id.value), self.tag_mm.value / 1000.0)
+        fix = tag_from_frames(frames, self.ws.cameras, int(self.tag_id.value), self.tag_mm.value / 1000.0,
+                              physical=self.twin.connected and not self.twin.status.simulated)
         self._tag_fix = fix
         if fix is None:
             trusted = [c.name for c in self.ws.cameras if c.enabled and c.T_cam2base is not None]
@@ -3379,6 +3385,9 @@ class TwinApp:
             raise RuntimeError(f"ramie zajete: {self.twin.owner} - rozbroj panel / zatrzymaj")
         if not self.twin.status.simulated and not self.pol_confirm.value:
             raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie w zakladce Polityki")
+        if not self.twin.status.simulated:
+            from ..workspace import require_physical_cameras
+            require_physical_cameras(self.ws.cameras, fix.per_camera)
         p = hover_point(fix.T_tag2base, self.tag_above_cm.value / 100.0)
         cmd = {k: float(v) for k, v in (self.twin.status.command or self.twin.joints()).items()}
         sol = self._kin_gizmo.ik(p, seed=cmd)
@@ -3440,6 +3449,8 @@ class TwinApp:
         swieza odnawiala `hold_s` w nieskonczonosc - zamrozona kamera albo wylaczona
         mapa i polityka jechala po kostke, ktorej juz tam nie bylo.
         """
+        if not self.twin.status.simulated:
+            self._require_physical_vision()
         kin = self._kin_vision
         st = self.twin.status
         joints = dict(st.measured) or self.twin.joints()
@@ -3462,7 +3473,15 @@ class TwinApp:
             det = None
         if det is not None:
             self._cube_used_t = det.t
-        return self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
+        observed = self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
+        if observed is not None and not st.simulated and self.cube_tracker.source in ("kamery", "w dloni"):
+            self.twin.observe_object("cube", observed[0], observed[1])
+        return observed
+
+    def _require_physical_vision(self) -> None:
+        from ..workspace import require_physical_cameras
+        mapper = self._mapper_now()
+        require_physical_cameras(self.ws.cameras, mapper.cameras if mapper is not None else ())
 
     def _grip_closed_q(self) -> float:
         """Kat szczeki [rad] pustego, zamknietego chwytaka (chwytak 0) - `grip_closed` trackera.
@@ -3512,6 +3531,9 @@ class TwinApp:
                     raise RuntimeError("kostka z kamer wymaga co najmniej jednej skalibrowanej kamery (zakladka Mapa)")
                 if not (self.map_on.value and self.cube_on.value):
                     raise RuntimeError("kostka z kamer wymaga wlaczonej mapy i szukania kostki (zakladka Mapa)")
+                if not self.twin.status.simulated:
+                    self._require_physical_vision()
+                    self._configure_objects(cube=True, pad=self._body_in_scene("target"), task=pol.task)
                 self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
                 self._cube_used_t = 0.0
                 provider = self._vision_cube

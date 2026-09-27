@@ -263,7 +263,12 @@ class RobotKinematics:
         rng = rng if rng is not None else np.random.default_rng(0)
         q_seed = self.to_q(seed)
 
-        starts = [q_seed, self.to_q(self.spec.home)]
+        # Restarts may change the arm, never the requested gripper state.
+        # A full home vector would silently reopen a closed gripper when that
+        # restart wins, despite IK's documented preservation contract.
+        q_home = q_seed.copy()
+        q_home[self.arm] = self.to_q(self.spec.home)[self.arm]
+        starts = [q_seed, q_home]
         for _ in range(restarts):
             q = q_seed.copy()
             q[self.arm] = rng.uniform(self.lo[self.arm], self.hi[self.arm])

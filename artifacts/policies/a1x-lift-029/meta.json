@@ -1,0 +1,156 @@
+{
+  "task": {
+    "name": "lift",
+    "control_hz": 20.0,
+    "timestep": 0.005,
+    "episode_steps": 200,
+    "arm_step": 0.05,
+    "grip_step": 0.03846153846153846,
+    "success_dist": 0.02,
+    "goal_radius": [
+      0.25,
+      0.5
+    ],
+    "goal_height": [
+      0.03,
+      0.25
+    ],
+    "cube_half": 0.015,
+    "cube_mass": 0.03,
+    "cube_radius": [
+      0.28,
+      0.45
+    ],
+    "cube_bearing": [
+      -0.7,
+      0.7
+    ],
+    "lift_height": 0.06,
+    "start_noise_deg": 8.0,
+    "action_rate": 0.02,
+    "end_on_success": 40,
+    "limit_penalty": 0.5,
+    "limit_margin": 0.15,
+    "hold_still": 0.5,
+    "roll_penalty": 0.0,
+    "n_joints": 7,
+    "place_radius": 0.03,
+    "place_height": 0.01,
+    "target_min_sep": 0.1,
+    "settle_speed": 0.02,
+    "target_radius": [
+      0.28,
+      0.45
+    ],
+    "target_bearing": [
+      -0.7,
+      0.7
+    ],
+    "approach_scale": 0.2,
+    "grasp_tip_reward": true
+  },
+  "hidden": [
+    256,
+    256,
+    128
+  ],
+  "obs_dim": 36,
+  "act_dim": 7,
+  "created": "2026-09-27T05:54:15",
+  "steps": 0,
+  "iterations": 200,
+  "success": null,
+  "randomization": {
+    "kp": [
+      1.0,
+      1.0
+    ],
+    "damping": [
+      1.0,
+      1.0
+    ],
+    "armature": [
+      1.0,
+      1.0
+    ],
+    "frictionloss": [
+      1.0,
+      1.0
+    ],
+    "cube_mass": [
+      1.0,
+      1.0
+    ],
+    "cube_friction": [
+      1.0,
+      1.0
+    ],
+    "obs_noise_deg": 0.0,
+    "max_delay": 0,
+    "cube_delay": 0,
+    "cube_period": 1,
+    "cube_noise": 0.0,
+    "fold_yaw": true,
+    "centre": {
+      "kp": 1.0,
+      "damping": 1.0,
+      "armature": 1.0,
+      "frictionloss": 1.0,
+      "delay": 0.0,
+      "source": "menagerie",
+      "fit_deg": null,
+      "fitted": [],
+      "band": {}
+    },
+    "min_delay": 0,
+    "obs_noise_m": 0.0
+  },
+  "evals": {
+    "imitation": {
+      "method": "behavior cloning",
+      "initialized": true,
+      "cube_yaw_mode": "continuous",
+      "gripper_decoder": "a1x-templates-v1",
+      "prediction_loss": "raw actor outputs against teacher actions; runtime decoding evaluated separately",
+      "train_channels": "all",
+      "gripper_residual": "none",
+      "features": "a1x-alignment-v1",
+      "feature_prepare_s": 4.301673506000952,
+      "ignore_previous_arm": false,
+      "ignored_observation_indices": [],
+      "feature_geometry_sha256": "2242d33295f0c86ec27528f9f0e770d5d345a434204e94e5fded65e85d62468f",
+      "normalizer": "frozen initial policy",
+      "learning_rate": 3e-05,
+      "optimizer_updates": 1000,
+      "selected_update": 200,
+      "sampling": {
+        "mode": "uniform",
+        "min_weight": 1.0,
+        "max_weight": 1.0,
+        "weight_sum": 26795.0,
+        "weights_sha256": "16f30e404b7dafd994abbb2cee64d94f31d7bedea3ac92b10a308624688663a1"
+      },
+      "train_samples": 26795,
+      "validation_samples": 9037,
+      "initial_validation": {
+        "loss": 0.003123218659311533,
+        "arm_mse": 0.0021636418532580137,
+        "gripper_mse": 0.0009595768060535192
+      },
+      "selected_validation": {
+        "loss": 0.0029864320531487465,
+        "arm_mse": 0.002047562040388584,
+        "gripper_mse": 0.0009388699545525014
+      },
+      "elapsed_s": 3.6582042629961506
+    }
+  },
+  "notes": "Imitation refinement with frozen input statistics; not RL or physical validation",
+  "robot": "a1x",
+  "features": "a1x-alignment-v1",
+  "feature_geometry_sha256": "2242d33295f0c86ec27528f9f0e770d5d345a434204e94e5fded65e85d62468f",
+  "gripper_residual": "none",
+  "cube_yaw_mode": "continuous",
+  "gripper_decoder": "a1x-templates-v1",
+  "cube_height_error_bound_m": 0.005
+}

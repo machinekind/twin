@@ -1,0 +1,2 @@
+# Keep package evidence byte-identical across Windows and Linux checkouts.
+* -text
