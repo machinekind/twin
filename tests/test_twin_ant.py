@@ -14,16 +14,17 @@ import pytest
 pytest.importorskip("mujoco")
 
 from lerobot_mp.twin import scene as sc  # noqa: E402
-from lerobot_mp.twin.ant import (LEG_POSES, Ant, level_mount, locate, mount_matrix, rest_height,  # noqa: E402
-                                 zyx)
+from lerobot_mp.twin.ant import (MAST_IN_BACK_TAG, LEG_POSES, Ant, level_mount, locate, mount_matrix,  # noqa: E402
+                                 rest_height, snap_yaw, square_layout, zyx)
 from lerobot_mp.twin.calib.simulate import look_at  # noqa: E402
-from lerobot_mp.twin.kinematics import inverse, pose  # noqa: E402
+from lerobot_mp.twin.kinematics import pose  # noqa: E402
 from lerobot_mp.twin.tagbody import learn_layout, observe  # noqa: E402
 from lerobot_mp.twin.workspace import CameraRecord, Workspace  # noqa: E402
 
 TAG = 0.040
-#: Prawdziwy montaz taga 2 na grzbiecie: troche obok srodka, na tekturze, obrocony i lekko krzywo.
-MOUNT = {"x": 0.012, "y": -0.006, "z": 0.031, "yaw": 30.0, "pitch": 2.5, "roll": -1.5}
+#: Prawdziwy montaz taga 2 na grzbiecie: troche obok srodka, na tekturze, osie wzdluz nog (135 st. od przodu),
+#: lekko krzywo.
+MOUNT = {"x": 0.012, "y": -0.006, "z": 0.031, "yaw": 135.0, "pitch": 2.5, "roll": -1.5}
 
 
 def angle_deg(Ra, Rb) -> float:
@@ -36,10 +37,8 @@ def rz(deg: float) -> np.ndarray:
 
 
 def true_layout() -> dict[int, np.ndarray]:
-    """Tag 1 na maszcie z tylu mrowki, 10 cm nad grzbietem, twarza do przodu (+x mrowki), w ukladzie taga 2."""
-    R = np.column_stack([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])   # x taga w lewo, y w gore, z do przodu
-    T1_in_ant = pose(rz(-8.0) @ R, np.array([-0.055, 0.004, 0.0244 + 0.10]))
-    return {1: inverse(mount_matrix(MOUNT)) @ T1_in_ant}
+    """Tag 1 na maszcie w ukladzie taga 2, jak na zdjeciu stanowiska: prostopadle, krawedzie rownolegle, nad noga."""
+    return {1: pose(MAST_IN_BACK_TAG, np.array([0.095, -0.005, 0.075]))}
 
 
 def ant_at(xy, heading_deg: float, joints=LEG_POSES["lezy"]) -> np.ndarray:
@@ -84,22 +83,26 @@ def test_ant_layout_mount_and_pose_from_sim_cameras_match_the_truth():
     T1 = true_layout()[1]
     assert np.linalg.norm(fit.layout[1][:3, 3] - T1[:3, 3]) < 0.0015
     assert angle_deg(fit.layout[1][:3, :3], T1[:3, :3]) < 1.0
-    ant.tags.layout = fit.layout
+    # Maszt prostopadly (panel: domyslnie): przyciagniecie wyuczonego obrotu daje dokladnie prawde.
+    snapped, offs = square_layout({1: fit.layout[1]})
+    assert np.allclose(snapped[1][:3, :3], T1[:3, :3], atol=1e-12) and offs[1] < 1.0
+    ant.tags.layout = {2: np.eye(4), **snapped}
 
     # Montaz: x, y i obrot wokol pionu z linijki (tu z prawdy), wysokosc i pochylenie z blatu.
     ant.mount = {**ant.mount, "x": MOUNT["x"], "y": MOUNT["y"], "yaw": MOUNT["yaw"]}
     fix = locate(fa, ws_a.cameras, ant)
     assert fix is not None and set(fix.tags.per_camera) == {"cam0", "cam1", "cam2"}
     ant.mount = level_mount(fix.tags.T_body2base, ant)
-    assert abs(ant.mount["z"] - MOUNT["z"]) < 0.0015
+    # Wysokosc to glebokosc pozy z kamer (mediana trzech, 2,6 mm zmierzone), pochylenie niosa oba tagi (0,2 st.).
+    assert abs(ant.mount["z"] - MOUNT["z"]) < 0.0035
     assert abs(ant.mount["pitch"] - MOUNT["pitch"]) < 0.7 and abs(ant.mount["roll"] - MOUNT["roll"]) < 0.7
 
     # Poza mrowki w drugim miejscu - innymi kadrami niz te, z ktorych wypoziomowano montaz.
     fix = locate(fb, ws_b.cameras, ant)
     assert fix is not None
-    # Dwie z trzech kamer widza tu tylko tag na grzbiecie: PnP jednego taga 40 mm z 0,5 m ma blad glebokosci
-    # kilku mm (5 mm zmierzone) - tyle trzyma polozenie; kierunek i pochylenie niosa oba tagi, ponizej stopnia.
-    assert np.linalg.norm(fix.position - B[:3, 3]) < 0.006
+    # Tu tagi widza tylko dwie kamery, jedna z nich sam tag na grzbiecie: PnP jednego taga 40 mm z 0,5 m ma blad
+    # glebokosci kilku mm (7 mm zmierzone) - tyle trzyma polozenie; kierunek i pochylenie ponizej stopnia.
+    assert np.linalg.norm(fix.position - B[:3, 3]) < 0.008
     assert angle_deg(fix.T_ant2base[:3, :3], B[:3, :3]) < 1.0
     assert abs(fix.heading_deg - (-40.0)) < 1.0 and fix.tilt_deg < 1.0
     # Rozrzut miedzy kamerami (panel go pokazuje) jest wiekszy niz blad mediany: kamera z jednym tagiem
@@ -109,7 +112,10 @@ def test_ant_layout_mount_and_pose_from_sim_cameras_match_the_truth():
     # Bez obrotu montazu (linijki nie przylozono) nogi w blizniaku sa obrocone dokladnie o tyle.
     wrong = Ant(tags=ant.tags, mount={**ant.mount, "yaw": 0.0})
     fix0 = locate(fb, ws_b.cameras, wrong)
-    assert abs(fix0.heading_deg - (-40.0 + MOUNT["yaw"])) < 1.0
+    assert abs(np.degrees(np.angle(np.exp(1j * np.radians(fix0.heading_deg - (-40.0 + MOUNT["yaw"])))))) < 1.0
+
+    assert snap_yaw(137.8) == pytest.approx((135.0, 2.8)) and snap_yaw(-47.0) == pytest.approx((-45.0, -2.0))
+    assert snap_yaw(90.0)[0] == 90.0                        # 45 st. od siatki - bez przyciagania
 
 
 def test_level_mount_refuses_a_tag_that_is_not_lying_on_the_back():

@@ -16,7 +16,9 @@ Trzy uklady, ktorych trzeba pilnowac:
   na maszcie (1) wzgledem niego, uczy sie z kadrow: kazdy kadr z oboma tagami daje ich wzajemna poze,
   wszystkie rogi naraz - uklad (`tagbody.learn_layout`). Linijka niepotrzebna.
 * **montaz** (`mount`) - gdzie tag na grzbiecie siedzi w ukladzie mrowki: x, y, z [m] i odchylenie
-  (wokol pionu), pochylenie, przechylenie [st.] (`mount_matrix`).
+  (wokol pionu), pochylenie, przechylenie [st.] (`mount_matrix`). Na tej mrowce krawedzie taga sa rownolegle
+  do plyty korpusu, wiec jego osie ida wzdluz nog: odchylenie 45 + k * 90 st. (`snap_yaw`), a tag na maszcie
+  jest do niego prostopadly (`square_layout`).
 
 Montazu kamery nie widza w calosci - widza tylko tagi, nie korpus. Dzieli sie wiec na dwie czesci:
 
@@ -67,8 +69,10 @@ LEG_POSES: dict[str, dict[str, float]] = {
     "stoi": {j: (0.0 if j.startswith("hip") else round(float(np.degrees(0.9)), 2)) for j in JOINTS},
 }
 
-#: Tag na grzbiecie: srodek korpusu, 5 mm nad gorna plyta (tektura), x taga do przodu mrowki.
-DEFAULT_MOUNT: dict[str, float] = {"x": 0.0, "y": 0.0, "z": TOP + 0.005, "yaw": 0.0, "pitch": 0.0, "roll": 0.0}
+#: Tag na grzbiecie: srodek korpusu, 5 mm nad gorna plyta (tektura), krawedzie rownolegle do plyty korpusu - osie
+#: taga wzdluz nog, czyli 45 st. od przodu mrowki (przod jest MIEDZY nogami 2 i 3). Ktora z czterech nog pokazuje
+#: x taga, mowi kalibracja kierunku (`snap_yaw`: 45 + k * 90 st.).
+DEFAULT_MOUNT: dict[str, float] = {"x": 0.0, "y": 0.0, "z": TOP + 0.005, "yaw": 45.0, "pitch": 0.0, "roll": 0.0}
 #: Tag 2 na grzbiecie (uklad), tag 1 na maszcie; bok czarnego kwadratu do zmierzenia linijka.
 DEFAULT_IDS = (2, 1)
 DEFAULT_TAG_SIZE = 0.040
@@ -103,6 +107,57 @@ def mount_matrix(mount: Mapping[str, float]) -> np.ndarray:
     m = {**DEFAULT_MOUNT, **dict(mount)}
     R = _rz(m["yaw"]) @ _ry(m["pitch"]) @ _rx(m["roll"])
     return pose(R, np.array([m["x"], m["y"], m["z"]], float))
+
+
+def snap_yaw(yaw_deg: float, max_off_deg: float = 20.0) -> tuple[float, float]:
+    """(odchylenie przyciagniete do 45 + k * 90 st., odchylka [st.]) - tag z krawedziami wzdluz plyty korpusu.
+
+    Dalej niz `max_off_deg` od siatki - bez przyciagania (tag przyklejony inaczej), odchylka jak jest.
+    """
+    k = np.round((yaw_deg - 45.0) / 90.0)
+    snapped = float(np.degrees(np.angle(np.exp(1j * np.radians(45.0 + 90.0 * k)))))
+    off = float(np.degrees(np.angle(np.exp(1j * np.radians(yaw_deg - snapped)))))
+    return (snapped, off) if abs(off) <= max_off_deg else (float(yaw_deg), off)
+
+
+def _square_rotations() -> list[np.ndarray]:
+    """24 obroty wlasciwe o katach wielokrotnosci 90 st. (macierze permutacji ze znakami, wyznacznik +1)."""
+    from itertools import permutations, product
+    out = []
+    for perm in permutations(range(3)):
+        for signs in product((1.0, -1.0), repeat=3):
+            R = np.zeros((3, 3))
+            for col, (row, sg) in enumerate(zip(perm, signs)):
+                R[row, col] = sg
+            if np.linalg.det(R) > 0:
+                out.append(R)
+    return out
+
+
+_SQUARE = _square_rotations()
+
+
+def square_layout(layout: Mapping[int, np.ndarray], max_off_deg: float = 15.0) -> tuple[dict[int, np.ndarray],
+                                                                                         dict[int, float]]:
+    """Uklad z obrotami przyciagnietymi do prostopadlych (krawedzie tagow rownolegle): ({id: T}, {id: odchylka st.}).
+
+    Maszt jest prostopadly do grzbietu, a tag na nim ma krawedzie rownolegle do taga na grzbiecie (zdjecie
+    stanowiska: normalna taga 1 = -x taga 2, gora taga 1 = normalna taga 2). Nauka z kadrow daje obrot z bledem
+    rzedu stopnia; przyciagniecie go usuwa, a odchylka jest sprawdzianem naklejenia. Tag dalej niz `max_off_deg`
+    od kazdego prostopadlego obrotu zostaje bez zmian. Polozenie zostaje z nauki.
+    """
+    out, offs = {}, {}
+    for i, T in layout.items():
+        T = np.asarray(T, float)
+        R = T[:3, :3]
+        best = min(_SQUARE, key=lambda Q: np.linalg.norm(Q - R))
+        off = float(np.degrees(np.arccos(np.clip((np.trace(best.T @ R) - 1) / 2, -1, 1))))
+        offs[int(i)] = off
+        T2 = T.copy()
+        if off <= max_off_deg:
+            T2[:3, :3] = best
+        out[int(i)] = T2
+    return out, offs
 
 
 def mount_params(T_tag2ant: np.ndarray) -> dict[str, float]:
@@ -286,14 +341,16 @@ def level_mount(T_body2base: np.ndarray, ant: Ant, height: float | None = None,
 #: Mrowka w `lerobot-twin demo --ant`: stoi na palcach 55 cm przed podstawa, 30 cm w lewo, przodem do +x.
 DEMO_ANT_XY = (0.55, 0.30)
 #: Prawdziwy montaz i uklad tagow mrowki w demo (kalibracja ich nie zna - wychodza z kadrow).
-DEMO_MOUNT = {"x": 0.006, "y": -0.004, "z": TOP + 0.006, "yaw": 35.0, "pitch": 1.5, "roll": -1.0}
+#: Osie taga wzdluz nog (jak na zdjeciu stanowiska), ale inna noga niz w `DEFAULT_MOUNT` - kalibracja ma co robic.
+DEMO_MOUNT = {"x": 0.006, "y": -0.004, "z": TOP + 0.006, "yaw": 135.0, "pitch": 1.5, "roll": -1.0}
+#: Obrot taga 1 w ukladzie taga 2 (zdjecie stanowiska): normalna = -x taga 2, gora = normalna taga 2.
+MAST_IN_BACK_TAG = np.column_stack([[0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]])
 
 
 def demo_layout() -> dict[int, np.ndarray]:
-    """Tag 1 na maszcie z tylu mrowki, 10 cm nad grzbietem, twarza do przodu - w ukladzie taga 2 (`DEMO_MOUNT`)."""
-    R = np.column_stack([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
-    T1_in_ant = pose(_rz(-8.0) @ R, np.array([-0.055, 0.004, TOP + 0.10]))
-    return {1: inverse(mount_matrix(DEMO_MOUNT)) @ T1_in_ant}
+    """Tag 1 na maszcie w ukladzie taga 2 - geometria ze zdjecia stanowiska: prostopadle, krawedzie rownolegle,
+    ~9,5 cm wzdluz +x taga 2 (nad noga), 7,5 cm nad nim, twarza w strone taga 2."""
+    return {1: pose(MAST_IN_BACK_TAG, np.array([0.095, -0.005, 0.075]))}
 
 
 def add_demo_ant(data: dict[str, Any]) -> dict[str, Any]:

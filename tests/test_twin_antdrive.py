@@ -19,7 +19,8 @@ pytest.importorskip("mujoco")
 
 from lerobot_mp.twin import antwalk as aw  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
-from lerobot_mp.twin.ant import DEMO_MOUNT, LEG_POSES, Ant, add_demo_ant, level_mount, locate, rest_height  # noqa: E402
+from lerobot_mp.twin.ant import (DEMO_MOUNT, LEG_POSES, Ant, add_demo_ant, demo_layout, level_mount, locate,  # noqa: E402
+                                 rest_height, snap_yaw, square_layout)
 from lerobot_mp.twin.antdrive import DEADMAN, AntDrive, heading_from_tracks  # noqa: E402
 from lerobot_mp.twin.kinematics import pose  # noqa: E402
 from lerobot_mp.twin.tagbody import learn_layout, observe  # noqa: E402
@@ -138,12 +139,14 @@ def test_calibrated_against_the_table_from_frames_then_walks_on_tag_poses(tmp_pa
         frames = {c.name: tw.render(c.name) for c in ws.cameras}
         fit = learn_layout(observe(frames, ws.cameras, ant.tags), ant.tags)
         assert fit.missing(ant.tags.ids) == []
-        ant.tags.layout = fit.layout
+        snapped, offs = square_layout({1: fit.layout[1]})
+        assert offs[1] < 1.5 and np.allclose(snapped[1][:3, :3], demo_layout()[1][:3, :3])
+        ant.tags.layout = {2: np.eye(4), **snapped}
         ant.joints = dict(LEG_POSES["stoi"])
         fix = locate(frames, ws.cameras, ant)
         ant.mount = level_mount(fix.tags.T_body2base, ant)
         assert abs(ant.mount["z"] - DEMO_MOUNT["z"]) < 0.004
-        assert ant.mount["yaw"] == 0.0                    # przodu jeszcze nie znamy
+        assert ant.mount["yaw"] == 45.0                   # osie wzdluz nog, ale ktora noga - jeszcze nie wiadomo
 
         drive = AntDrive(tw, lambda: ant, camera="tagi")
         pad = Pad(drive)
@@ -153,9 +156,10 @@ def test_calibrated_against_the_table_from_frames_then_walks_on_tag_poses(tmp_pa
         res = drive.last_calibration
         assert res is not None and not res["error"], res
         assert abs(res["yaw_deg"] - DEMO_MOUNT["yaw"]) < 6.0, res
+        assert snap_yaw(res["yaw_deg"])[0] == DEMO_MOUNT["yaw"]
         assert min(res["dists"]) > 0.15 and res["spread_deg"] < 8.0, res
         assert drive.camera == "tagi"
-        ant.mount = {**ant.mount, "yaw": res["yaw_deg"]}
+        ant.mount = {**ant.mount, "yaw": snap_yaw(res["yaw_deg"])[0]}
 
         # Jazda do przodu na pozie z tagow: prosto wzdluz przodu mrowki.
         p0 = tw.scene.ant_pose()

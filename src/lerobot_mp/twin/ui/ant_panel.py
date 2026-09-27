@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 import viser
 
-from ..ant import LEG_POSES, Ant, level_mount, locate
+from ..ant import LEG_POSES, Ant, level_mount, locate, snap_yaw, square_layout
 from ..tagbody import TagBody, learn_layout, observe
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,10 @@ class AntTab:
                                       "wzgledem taga na grzbiecie. Kilka kadrow z roznych stron.")
             forget = g.add_button("Nauka od nowa", icon=viser.Icon.TRASH, color="gray",
                                   hint="Wyrzuca zebrane kadry i uklad (np. po przeklejeniu taga).")
+            self.square = g.add_checkbox("Maszt prostopadle do grzbietu", True,
+                                         hint="Tag na maszcie stoi prostopadle do taga na grzbiecie, krawedzie rownolegle: "
+                                              "wyuczony obrot przyciagany do najblizszego prostopadlego (do 15 st.); "
+                                              "odchylka w opisie ponizej to sprawdzian naklejenia.")
         with g.add_folder("2. Wzgledem stolu", expand_by_default=True):
             self.legs = g.add_dropdown("Mrowka teraz", tuple(LEGS), initial_value=self._legs_label(),
                                        hint="Jak stoi przy Poziom z blatu - od tego wysokosc korpusu nad blatem "
@@ -72,7 +76,11 @@ class AntTab:
             self.my = g.add_number("Tag na grzbiecie: y [mm]", round(self.ant.mount["y"] * 1000, 1), step=0.5,
                                    hint="Przesuniecie w lewo mrowki (linijka).")
             self.myaw = g.add_number("Obrot taga wzgledem przodu [st.]", round(self.ant.mount["yaw"], 1), step=0.5,
-                                     hint="Kalibruj kierunek wpisuje go sam; mozna poprawic recznie.")
+                                     hint="Osie taga wzdluz nog = 45 st. (+ k * 90) od przodu mrowki (przod miedzy "
+                                          "nogami 2 i 3). Kalibruj kierunek wybiera, ktora noga; mozna poprawic recznie.")
+            self.snap = g.add_checkbox("Tag wzdluz nog (45 + k * 90 st.)", True,
+                                       hint="Kalibracja kierunku przyciaga wynik do 45 + k * 90 st. (krawedzie taga "
+                                            "rownolegle do plyty korpusu); przejazd W/S ma kilka stopni dryfu.")
             calib = g.add_button("Kalibruj kierunek (jazda W i S)", icon=viser.Icon.ARROWS_MOVE_VERTICAL,
                                  color="orange",
                                  hint="RUSZA mrowka: ~3 s do przodu, ~3 s do tylu (polityka z kamera nominalna), "
@@ -204,12 +212,20 @@ class AntTab:
         self._obs.extend(obs)
         fit = learn_layout(self._obs, body)
         body.layout = fit.layout
+        squared = ""
+        if self.square.value:
+            others = {i: T for i, T in fit.layout.items() if i != body.ref}
+            snapped, offs = square_layout(others)
+            body.layout = {body.ref: np.eye(4), **snapped}
+            squared = "".join(f" Tag {i}: przyciagniety do prostopadlego o {off:.1f} st." if off <= 15.0 else
+                              f" **Tag {i}: {off:.0f} st. od prostopadlego - zostawiony, jak wyszedl.**"
+                              for i, off in offs.items())
         pairs = ", ".join(f"{a}-{b} x{n}" for (a, b), n in sorted(fit.pairs.items()))
         missing = fit.missing(body.ids)
         seen = "; ".join(f"{o.camera}: {', '.join(map(str, o.ids))}" for o in obs)
         text = f"kadr {len(self._obs)}: {seen}. Pary naraz: {pairs or 'brak'}. "
         text += (f"**Bez pozy: tag {', '.join(map(str, missing))}** - pokaz go kamerze razem z tagiem na grzbiecie."
-                 if missing else "Uklad kompletny - teraz Poziom z blatu.")
+                 if missing else "Uklad kompletny - teraz Poziom z blatu.") + squared
         self._note(text)
         self._publish(rebuild=True)
 
@@ -353,11 +369,15 @@ class AntTab:
             if res.get("error"):
                 self._note(f"kalibracja kierunku: **{res['error']}**")
             else:
-                self.ant.mount = {**self.ant.mount, "yaw": float(res["yaw_deg"])}
-                self.myaw.value = round(float(res["yaw_deg"]), 1)
-                self._note(f"kalibracja kierunku: obrot taga {res['yaw_deg']:+.1f} st. (przod / tyl zgodne co do "
-                           f"{res['spread_deg']:.1f} st.; przejazdy {', '.join(f'{x:.2f}' for x in res['dists'])} m). "
-                           f"Zapisz do stanowiska, zeby zostalo.")
+                raw = float(res["yaw_deg"])
+                yaw, off = snap_yaw(raw) if self.snap.value else (raw, 0.0)
+                self.ant.mount = {**self.ant.mount, "yaw": yaw}
+                self.myaw.value = round(yaw, 1)
+                how = (f"przejazd {raw:+.1f} st., przyciagniety do {yaw:+.0f} (odchylka {off:+.1f})" if yaw != raw
+                       else f"{raw:+.1f} st." + (" - **daleko od 45 + k * 90, bez przyciagania**" if self.snap.value
+                                                  else ""))
+                self._note(f"kalibracja kierunku: obrot taga {how}; przod / tyl zgodne co do {res['spread_deg']:.1f} st., "
+                           f"przejazdy {', '.join(f'{x:.2f}' for x in res['dists'])} m. Zapisz do stanowiska, zeby zostalo.")
                 self._publish()
         now = time.monotonic()
         if now - self._t_md < 0.3:

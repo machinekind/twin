@@ -901,18 +901,21 @@ i serwa te same, kształt bioder w renderze nie.
 
 1. **Tagi** — numery i bok czarnego kwadratu (linijka). **Ucz układu: dodaj kadr** — kadry, na których kamera
    widzi oba tagi naraz, dają pozę taga na maszcie względem taga na grzbiecie (jak kamera PMD, `tagbody`,
-   poza kamer niepotrzebna). W symulacji: 1,5 mm / 1° od prawdy.
+   poza kamer niepotrzebna). W symulacji: 1,5 mm / 1° od prawdy. Maszt stoi prostopadle do grzbietu, krawędzie
+   równolegle (normalna taga 1 = −x taga 2, sprawdzone na zdjęciu stanowiska) — przy włączonym *Maszt prostopadle*
+   wyuczony obrót jest przyciągany do najbliższego prostopadłego, a odchyłka jest sprawdzianem naklejenia.
 2. **Względem stołu** — czego kamery nie widzą, bo widzą tylko tagi, nie korpus:
    * **Poziom z blatu**: mrówka leży na brzuchu (24 mm) albo stoi na palcach (78 mm, poza startowa polityki) —
      korpus jest wtedy poziomo, więc wysokość i pochylenie taga widziane przez kamery to wysokość i pochylenie
-     taga względem korpusu (1,5 mm / 0,7°);
-   * **Kalibruj kierunek**: mrówka jedzie ~3 s do przodu i ~3 s do tyłu z obserwacją nominalną (jak
-     `robot_teleop.py`, niezależną od montażu), kamery mierzą kierunek przejazdu → obrót taga względem przodu
-     mrówki (w symulacji ≤ 6°, przód i tył zgodne);
+     taga względem korpusu (w symulacji 2,6 mm / 0,2°);
+   * **Kalibruj kierunek**: krawędzie taga są równoległe do płyty korpusu, więc jego osie idą wzdłuż nóg —
+     45° + k·90° od przodu mrówki (przód między nogami 2 i 3). Którą nogę pokazuje x taga: mrówka jedzie ~3 s
+     do przodu i ~3 s do tyłu z obserwacją nominalną (jak `robot_teleop.py`, niezależną od montażu), kamery
+     mierzą kierunek przejazdu (w symulacji ≤ 6°), wynik przyciągany do 45° + k·90°;
    * przesunięcie taga na grzbiecie (x, y) — linijką, kilka mm, dla chodu bez znaczenia.
 3. **Zapisz do stanowiska** — sekcja `ant` w `twin.json`.
 
-Poza mrówki z trzech kamer w symulacji: 5 mm / 1° (dwie z trzech widziały tylko tag na grzbiecie — PnP jednego
+Poza mrówki z kamer w symulacji: 7 mm / 1° (tagi widziały dwie kamery, jedna sam tag na grzbiecie — PnP jednego
 taga 40 mm z 0,5 m ma kilka mm błędu głębokości). **Uwaga:** tag 1 jest też na karcie kalibracyjnej ramienia —
 mrówki nie może być w kadrze podczas fali (albo inny numer na maszcie; panel ostrzega).
 
