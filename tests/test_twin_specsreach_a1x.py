@@ -321,15 +321,18 @@ def grip_pdes(rig: Rig, since: int = 0) -> list[float]:
 
 
 def test_fist_close_then_open_then_close_drives_0x051_and_done_waits_for_the_slew(rig):
-    """Chwytak zalozony zamkniety (`gripper_start` 0): "zamknij" nic nie wysyla, "otworz" idzie od razu
-    na -2,0 (zgadniete rozwarcie: bez ramki ku +0,6), "zamknij" rampa do +0,6, a `done` przychodzi
-    dopiero, gdy strumien doszedl do celu."""
+    """Chwytak z pomiarem (domyslny A1X), szczeki na zamknietym ograniczniku: "zamknij" nic nie wysyla,
+    "otworz" jedzie rampa od zmierzonego rozwarcia do `gripper_open_pdes`, "zamknij" rampa do
+    `gripper_closed_pdes` (nigdy dalej: +0,6 przegrzalo silnik), a `done` przychodzi dopiero, gdy
+    strumien doszedl do celu."""
+    a = rig.arm.acfg
+    assert rig.arm.gripper_measured()
+    rig.bus.q[6] = a.gripper_fb_closed                                  # jaws closed at the stop
     d = rig.connect_driver()
+    assert rig.twin.status.measured["gripper"] == pytest.approx(0.0, abs=0.05)
     # The specs driver of the teleop branch waits `gripper_travel_s()` itself; here the test sets it.
-    # Until that branch lands, the shipped driver still says `done` after `grip_wait_s` = 1.2 s,
-    # before the 1.3 s slew ends.
     d.grip_wait_s = rig.arm.gripper_travel_s()
-    assert d.grip_wait_s == pytest.approx(1.5)
+    assert d.grip_wait_s == pytest.approx(abs(a.gripper_open_pdes - a.gripper_closed_pdes) / a.gripper_rate_pdes_s + 0.2)
     assert rig.arm.gripper_drivable()                                   # port "fake", not XCAN
 
     def run_grip(action: str) -> tuple[dict, int]:
@@ -346,22 +349,25 @@ def test_fist_close_then_open_then_close_drives_0x051_and_done_waits_for_the_sle
 
     st, n = run_grip("close")
     assert st["state"] == "done", st
-    assert grip_pdes(rig, n) == []                                       # already (assumed) closed
+    assert grip_pdes(rig, n) == []                                       # already (measured) closed
 
     lsb = 2 / P.POS_SCALE
     st, n = run_grip("open")
     assert st["state"] == "done", st
     ps = grip_pdes(rig, n)
-    assert ps and ps[-1] == pytest.approx(-2.0, abs=lsb)                # reached before `done`
-    assert ps[0] == pytest.approx(-2.0, abs=lsb)                        # a guess: straight to open, no slam
-    assert all(b <= a + lsb for a, b in zip(ps, ps[1:]))
+    assert ps and ps[-1] == pytest.approx(a.gripper_open_pdes, abs=lsb)  # reached before `done`
+    assert ps[0] == pytest.approx(a.gripper_closed_pdes, abs=2.0 * STEP + lsb)   # a ramp from the measured jaws
+    assert all(b <= a_ + lsb for a_, b in zip(ps, ps[1:]))
+    assert rig.twin.status.measured["gripper"] == pytest.approx(100.0 * (a.gripper_open_pdes - a.gripper_fb_closed)
+                                                                / (a.gripper_fb_open - a.gripper_fb_closed), abs=0.5)
 
     st, n = run_grip("close")
     assert st["state"] == "done", st
     ps = grip_pdes(rig, n)
-    assert ps and ps[-1] == pytest.approx(0.6, abs=lsb)
-    assert all(b >= a - lsb for a, b in zip(ps, ps[1:]))
-    assert max(b - a for a, b in zip(ps, ps[1:])) <= 2.0 * STEP + lsb   # the backend's slew
+    assert ps and ps[-1] == pytest.approx(a.gripper_closed_pdes, abs=lsb)
+    assert max(ps) <= a.gripper_closed_pdes + lsb                        # never past the closed p_des
+    assert all(b >= a_ - lsb for a_, b in zip(ps, ps[1:]))
+    assert max(b - a_ for a_, b in zip(ps, ps[1:])) <= 2.0 * STEP + lsb  # the backend's slew
     assert rig.twin.status.command["gripper"] == pytest.approx(0.0)
     assert rig.twin.safety_state.value != "estop"
 

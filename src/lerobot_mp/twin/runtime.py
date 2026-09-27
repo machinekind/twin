@@ -957,7 +957,7 @@ class Twin:
         backendem wysylal 0 przy zglaszanym "otwarty" i strumien zamykal szczeki; bez przestawienia nastepne
         "zamknij" szlo rampa od starego 100 i szczeki najpierw drgaly w strone otwarcia. Po odmowie nic nie
         rusza szczekami: przycisk tylko zapisuje dom. Sim: chwytak sceny (poza i serwo) zamyka sie od razu.
-        Backend z pomiarem (Feetech): pomiar jest prawda, dom zapisany, stan bez zmian (False).
+        Backend z pomiarem (Feetech, A1X z `gripper_fb_*`): pomiar jest prawda, dom zapisany, stan bez zmian (False).
         """
         b, g = self._backend, self._grip
         if b is None or g is None:

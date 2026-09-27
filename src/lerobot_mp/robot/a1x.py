@@ -9,16 +9,16 @@ Jednostki: jak w calej aplikacji - stawy ramienia w stopniach, chwytak 0..100
 (0 = zamkniety). Przeliczenie aplikacja <-> CAN jest tylko tutaj:
 
 * staw: ``rad = radians(st. + a1x.joint_offsets_deg[i])`` (przesuniecie zera, J3 ~ +1,49 st.),
-* chwytak: p_des liniowo ``closed + v/100 * (open - closed)`` (bardziej dodatnie = ciasniej);
-  pomiar z grupy 7 ramki 0x052 przez dwa punkty `gripper_fb_closed/open`, gdy zmierzone,
-  inaczej petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`). Przed pierwszym
+* chwytak: p_des [rad] liniowo ``closed + v/100 * (open - closed)`` (bardziej dodatnie = ciasniej);
+  pomiar z grupy 7 ramki 0x052 (pozycja szczek, rad jak p_des; zmierzone 2026-09-27: ograniczniki
+  +0,039 zamkniety, -1,992 otwarty) przez dwa punkty `gripper_fb_closed/open` - domyslnie ustawione;
+  bez nich (oba None) petla otwarta (ostatni rozkaz; ostrzezenie w `calibration_warnings`). Przed pierwszym
   rozkazem petla otwarta zglasza `gripper_start` (0 = zamkniety), a "Ustaw dom = tu" blizniaka
   potwierdza to przez `assume_gripper(0)` - umowa stanowiska: dom = szczeki zamkniete. Dopoki
   rozwarcie jest tylko zgadniete, pierwsze otwieranie idzie od razu na cel, zamykanie rampa.
-* Chwytak przez XCAN (macOS) domyslnie odmawia (`gripper_drivable()` False): galaxeo `bus.py`
-  twierdzilo, ze chwytak ignoruje 0x051 z XCAN. To niezweryfikowane (galaxeo PR "XCAN gripper",
-  `python -m galaxeo.xcan_usb --grip-test`); `a1x.gripper_over_xcan` albo env A1X_GRIPPER_XCAN=1
-  wlacza probe.
+* Chwytak przez XCAN (macOS) rusza: zmierzone 2026-09-27 (`python -m galaxeo.xcan_usb --grip-test`),
+  wbrew dawnemu komentarzowi galaxeo `bus.py`. `a1x.gripper_over_xcan: false` przywraca odmowe
+  (`gripper_drivable()` False); env A1X_GRIPPER_XCAN=1 wymusza sterowanie.
 
 Zasady bezpieczenstwa (galaxeo docs/SAFETY.md, docs/PROTOCOL.md):
 
@@ -445,14 +445,14 @@ class A1XArm(RobotBackend):
                             # szczeki moga byc otwarte). Start od bardziej otwartego z {zgadniete, cel}:
                             # otwieranie idzie od razu na cel (pusty, zamkniety chwytak nic nie traci,
                             # otwarty nie drgnie), a przy zlym zgadnieciu pierwsza ramka nie zatrzaskuje
-                            # szczek (+0,6 z kp 25, bez progu sily - ten dziala tylko przy zamykaniu).
+                            # szczek (zamkniety p_des z kp 25, bez progu sily - ten dziala tylko przy zamykaniu).
                             # `_g_cmd` z rozkazu, ktory naprawde poszedl, przezywa przerwe lacza i dalej
                             # jest rampa od niego.
                             stream = min(stream, want)
                         self._g_target, self._g_stream, self._g_assumed = want, stream, False
                     elif want <= self._g_target:
                         # Otwieranie (albo ten sam cel) zawsze przechodzi i zdejmuje zamrozenie. Z ostrym `<`
-                        # cel zamrozony na krancu otwarcia (-2,0) nie dawal sie juz niczym ruszyc.
+                        # cel zamrozony na krancu otwarcia (`gripper_open_pdes`) nie dawal sie juz niczym ruszyc.
                         self._g_target, self._g_frozen = want, False
                     elif not self._g_frozen:
                         if self._grip_contact() and self._g_stream is not None:
@@ -572,7 +572,7 @@ class A1XArm(RobotBackend):
 
     def gripper_xcan_trial(self) -> bool:
         """XCAN z wlaczonym chwytakiem (`a1x.gripper_over_xcan`, domyslnie, albo A1X_GRIPPER_XCAN=1):
-        rozkazy ida; bez sprzezenia panel pokazuje rozkaz, wiec linia stanu o tym przypomina."""
+        rozkazy ida; linia stanu panelu to pokazuje (bez sprzezenia przypomina, ze widac rozkaz)."""
         return self._on_xcan() and self._gripper_xcan_allowed()
 
     def _on_xcan(self) -> bool:
@@ -583,13 +583,13 @@ class A1XArm(RobotBackend):
         return bool(self.acfg.gripper_over_xcan) or env
 
     def gripper_travel_s(self) -> float:
-        """Czas pelnego skoku chwytaka [s]: |open - closed| / `gripper_rate_pdes_s` + zapas (1,5 s przy
-        domyslnych). Tyle czekac po rozkazie, zeby szczeki naprawde doszly (1,2 s bylo za malo na 1,3 s)."""
+        """Czas pelnego skoku chwytaka [s]: |open - closed| / `gripper_rate_pdes_s` + zapas (1,2 s przy
+        domyslnych: 2,03 / 2,0 + 0,2). Tyle czekac po rozkazie, zeby szczeki naprawde doszly."""
         a = self.acfg
         return abs(a.gripper_open_pdes - a.gripper_closed_pdes) / a.gripper_rate_pdes_s + GRIP_TRAVEL_MARGIN_S
 
     def gripper_measured(self) -> bool:
-        """Czy chwytak ma pomiar (dwa punkty `gripper_fb_*`). Bez nich `joints()` zglasza ostatni
+        """Czy chwytak ma pomiar (dwa punkty `gripper_fb_*`; domyslnie tak, od pomiaru 2026-09-27). Bez nich `joints()` zglasza ostatni
         rozkaz, a przed pierwszym - `gripper_start` (albo `assume_gripper`), ktore nie musi zgadzac
         sie ze szczekami."""
         a = self.acfg

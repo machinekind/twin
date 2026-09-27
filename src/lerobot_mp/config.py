@@ -381,18 +381,22 @@ class A1XConfig:
     kp: float = 20.0
     kd: float = 1.0
     gripper_kp: float = 25.0
-    #: p_des chwytaka [jednostki ramienia] przy 100 (otwarty) i przy 0 (zamkniety);
-    #: bardziej ujemne = szerzej (galaxeo so101_bridge.py).
-    gripper_open_pdes: float = -2.0
-    gripper_closed_pdes: float = 0.6
-    #: Pozycja grupy 7 z 0x052 [rad] przy 0 i przy 100 - zmierz na swoim ramieniu.
-    #: None = sprzezenie niezmierzone: backend zglasza ostatni rozkaz (petla otwarta).
-    gripper_fb_closed: float | None = None
-    gripper_fb_open: float | None = None
+    #: p_des chwytaka [rad, te same jednostki co grupa 7 ramki 0x052] przy 100 (otwarty) i przy 0
+    #: (zamkniety); bardziej ujemne = szerzej. Pomiar 2026-09-27 (galaxeo `xcan_usb --grip-test`, kp 20):
+    #: zamkniety ogranicznik ok. +0,039 rad (+2,2 st.), otwarty ok. -1,99 rad (-114 st.). Stare +0,6 pchalo
+    #: szczeki 0,56 rad za ogranicznik: prad utyku (|effort| 7,8 zamiast 0,2) przegrzal silnik chwytaka.
+    #: Zamkniety = 0,04 rad docisku za ogranicznikiem (przedmioty i tak lapie stop kontaktowy
+    #: `gripper_force`), otwarty = wlos przed ogranicznikiem, zeby sie o niego nie opieral.
+    gripper_open_pdes: float = -1.95
+    gripper_closed_pdes: float = 0.08
+    #: Pozycja grupy 7 z 0x052 [rad] przy 0 i przy 100: ograniczniki zmierzone 2026-09-27 (wyzej).
+    #: None (oba) = sprzezenie niezmierzone: backend zglasza ostatni rozkaz (petla otwarta).
+    gripper_fb_closed: float | None = 0.039
+    gripper_fb_open: float | None = -1.992
     #: Co backend zglasza jako chwytak przed pierwszym rozkazem, gdy sprzezenie niezmierzone.
     #: 0 = zamkniety: umowa stanowiska (dom = szczeki zamkniete, "Ustaw dom = tu" to potwierdza).
     gripper_start: float = 0.0
-    #: Slew p_des chwytaka [jednostki p_des / s]; pelny skok 2,6 to 1,3 s.
+    #: Slew p_des chwytaka [rad / s]; pelny skok 2,03 to ok. 1,0 s.
     gripper_rate_pdes_s: float = 2.0
     #: |effort| grupy 7 o tyle ponad spoczynek (mediana z pierwszych 0,1 s zamykania) = kontakt:
     #: cel zamarza (chwyta, nie miazdzy).
