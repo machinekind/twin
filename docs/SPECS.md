@@ -362,6 +362,30 @@ The TCP sphere turns red with the label `closed` while the gripper's command is
 nearer closed than open, whoever set it (the glasses, `--grasp`, the panel).
 The panel's status line shows the last gripper command and its state.
 
+**The gripper starts closed.** The A1X has no gripper position feedback in the
+twin (`a1x.gripper_fb_closed/open` unmeasured), so the twin only knows what it
+commanded. Before the first command it reports `a1x.gripper_start`, which is 0
+(closed), and the sim A1X starts closed too. The workstation contract is
+"home = jaws closed": the panel's *Ustaw dom = tu* (set home here) always
+stores gripper 0 and, with an unmeasured gripper, tells the backend that the
+jaws are closed now. Close the empty jaws for real before you press it. The
+first `open` after that goes to the target at once; every `close` is a ramp,
+and the backend's contact stop still freezes the jaws on an object. If the
+gripper was already commanded in this session, the button only stores the home
+and leaves the gripper's state alone (log: `chwytak juz sterowany`): close it
+with the slider and press the button again.
+
+**macOS XCAN cannot drive the gripper.** The adapter sends the 10-byte `0x051`
+frame as 12 bytes, and the gripper ignores it. The arm joints work; the gripper
+only moves over Linux SocketCAN. Without feedback the twin cannot notice: the
+panel, the 3D jaws and the TCP sphere show the command. The panel's status line
+says `chwytak: brak sterowania przez XCAN` when the port is `xcan...`
+(`A1XArm.gripper_drivable()`).
+
+A full A1X gripper stroke takes 1.3 s (2.6 `p_des` at 2.0 per second);
+`A1XArm.gripper_travel_s()` gives it with a 0.2 s margin (1.5 s), longer than
+`grip_wait_s`.
+
 ## 4. Modes and consent
 
 | mode | what moves | needs |
@@ -464,6 +488,8 @@ gripper command by `ts`. Other message types are ignored. For the full relay pro
 | After a relay restart nothing is accepted | The twin reconnects by itself within 2 s, but the new relay has no registration yet. Look at the markers until "registration OK". |
 | `hold` with `relay` | The relay connection dropped during a real move. Check the network, then pinch again. |
 | `backoff` during calm moves | The effort thresholds are too tight. See [the effort log](#5-the-effort-log-in-dry-mode). |
+| The gripper command is `done` but the jaws do not move | On macOS over XCAN the gripper frame never arrives (the panel says `chwytak: brak sterowania przez XCAN`). Drive the gripper from Linux (SocketCAN). |
+| The jaws are open but the twin shows them closed | The twin has no gripper feedback and assumes closed after connecting and after *Ustaw dom = tu*. The slider at 0 sends nothing then: move it open and back to 0 so the jaws really close, then press *Ustaw dom = tu*. |
 
 ## 8. Tests
 
