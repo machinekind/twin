@@ -248,6 +248,13 @@ class Bench:
                                      f"(clock at {self.clock.now():.2f}, late barriers {self.clock.late})")
         return until is None or bool(until())
 
+    def pump_to(self, t: float, *, until: Callable[[], object] | None = None, dt: float = DT) -> bool:
+        """Steps the loop until the clock reaches `t` (a tick that would overshoot it by less than half a tick
+        still counts: a cadence that is not a multiple of `dt` alternates, 3-2-3-2 ticks for 50 ms at 20 ms),
+        stopping early once `until()` holds. Returns whether `until` held; True without `until`."""
+        return self.pump(until=lambda: self.clock.now() >= t - dt / 2 or (until is not None and until()),
+                         max_sim_s=max(0.0, t - self.clock.now()) + dt) and (until is None or bool(until()))
+
     @staticmethod
     def wait_real(pred: Callable[[], object], timeout: float = 10.0, what: str = "") -> None:
         """Waits in real time, without moving the clock, for something the network threads do."""
@@ -354,7 +361,11 @@ class Bench:
         """Starts an attached `SpecsReach` (mode "sim" by default) and waits until it has the registration."""
         assert self.relay is not None
         kw.setdefault("mode", "sim")
-        d = self.attach(SpecsReach(self.twin, relay_url=self.relay.url, **kw))
+        return self.start_driver(self.attach(SpecsReach(self.twin, relay_url=self.relay.url, **kw)))
+
+    def start_driver(self, d: SpecsReach) -> SpecsReach:
+        """Starts an attached driver and waits (real time) until it has handled the relay's registration."""
+        assert self.relay is not None
         n = self._handled_count("registration")
         d.start()
         self.relay.wait_client()
