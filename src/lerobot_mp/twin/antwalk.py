@@ -46,6 +46,12 @@ N_FEATURES = 29
 HIP_CTRL, ANKLE_CTRL = 0.80031, 1.14549
 #: Poza "osiadania" przed obrotem (robot_route.py): biodra na srodku, nogi lekko w dol.
 SETTLE_POSE = np.array([0.0, -0.25] * 4)
+#: Pozy z robot_route.py / robot_teleop_v2.py: plasko (nogi poziomo) i na palcach (nogi calkiem w dol).
+FLAT_POSE = np.array([0.0, 1.0] * 4)
+TIPTOE_POSE = np.array([0.0, -1.0] * 4)
+#: Robot: kostka powyzej +1 idzie dalej za poziom (511 + 224 jednostki na jednostke akcji, robot_route.py) - do poz
+#: jak machanie noga w gore. Polityka sama nigdy nie przekracza +1; symulacja obcina do +1 (`action_to_ctrl`).
+ANKLE_ACTION_MAX = 2.0
 #: Kierunki chodu: noga polityki k (0..3) napedza fizyczna noge perm[k]; theta = kierunek jazdy od przodu.
 #: Nogi 1 z tylu po prawej, 2 z przodu po prawej, 3 z przodu po lewej, 4 z tylu po lewej.
 DIRECTIONS: dict[str, tuple[list[int], float]] = {

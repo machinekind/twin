@@ -914,11 +914,15 @@ naklejenia). **Uwaga:** tag 1 jest też na karcie kalibracyjnej ramienia — mr�
 fali (albo inny numer na maszcie; panel ostrzega).
 
 **Demo** (bez prawdziwej mrówki): udaje ją druga mrówka w scenie (`antprawda/`) z prawdziwymi tagami, na
-polityce chodu `exp004_smooth2` w numpy — przeniesiony `robot_teleop.py`: **WSAD nie zmienia polityki**
+polityce chodu `exp004_smooth2` w numpy — przeniesiony `robot_teleop_v2.py`: **WSAD nie zmienia polityki**
 (w bok i w tył ta sama polityka z przemianowanymi nogami i obserwacją obróconą o 90°/180°), Q / E obrót
-w miejscu, regulator wysokości, czuwak 0,4 s, obserwacja domyślnie *nominalna* (jak na prawdziwej —
-mrówka nie ma kamery). Pulpit WSAD w zakładce i pod `http://<host panelu>:8091/`; kierunki względem widoku 3D
-(W = w głąb ekranu), klawisze przechwytywane przed kamerą 3D visera (kamerę przesuwają strzałki i mysz).
+w miejscu (**tapnięcie = jeden cykl 1 s**, zmiana trybu czeka na koniec cyklu, więc kąt jest powtarzalny),
+Z / C mały obrót (biodra 0,2, tapnięcie = pół cyklu, ~13°), pozy 0 / V / F / T (start polityki, postawa,
+płasko, na palcach — dwie ostatnie to pozy z kroku *Poziom z blatu*), H / 1–4 noga prosto, B / N machanie nogą,
+spacja stop natychmiast; ze stania do jazdy przez pozę startową (rampa 0,5 s), regulator wysokości, czuwak 0,4 s,
+obserwacja domyślnie *nominalna* (jak na prawdziwej — mrówka nie ma kamery). Pulpit WSAD w zakładce i pod
+`http://<host panelu>:8091/`; kierunki względem widoku 3D (W = w głąb ekranu), klawisze przechwytywane przed
+kamerą 3D visera (kamerę przesuwają strzałki i mysz).
 Kopia (niebieska, półprzezroczysta, schowana przed kamerami symulowanymi) śledzi ją tylko z odczytów serw
 (zaokrąglonych do jednostek AX-12A) i kadrów. STOP panelu zatrzymuje ją razem z ramieniem; Spectacles na
 ramieniu i WSAD jadą naraz.
