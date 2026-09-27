@@ -44,7 +44,7 @@ stepping is a tick listener on the twin's loop (`twin/follow.py`: a bounded trac
 step per tick; all times from the loop's `TickSample.t`). The network thread only writes the newest sample
 into the stream's slot. A stream ends with `hold`: exit (`active: false`), timeout (no sample for 0.6 s; the
 arm is released 2 s after the last one), outside volume, ik / collision (1 s / 2 s of failed ticks; shorter
-failures pause the stream with a `hold` and it resumes), impact (then the backoff), retargeted (a new
+failures only pause it: `moving` with detail "paused: ik" / "paused: collision"), impact (then the backoff), retargeted (a new
 stream, target or grab), stop, preempted, mode, relay. A new stream starts only from a new stream id.
 The driver holds the arm for "worker" and "follow" (`_holders`) and releases it when neither needs it,
 so a gripper command during a stream runs without ending it.
@@ -495,7 +495,8 @@ class SpecsReach:
     # the arm is released `follow_release_s` after the last sample.
     follow_timeout_s = 0.6
     follow_release_s = 2.0
-    # Failed ticks pause the stream (hold, then moving again); this long without a good tick ends it.
+    # Failed ticks pause the stream (`moving`, detail "paused: ik" / "paused: collision"); this long
+    # without a good tick ends it with `hold`.
     follow_ik_fail_s = 1.0
     follow_collision_s = 2.0
     # `moving` at most every `follow_report_s`, and at least every `follow_heartbeat_s`.
@@ -510,6 +511,8 @@ class SpecsReach:
     follow_guard_lag_deg = 2.5
     follow_guard_lag_s = 0.3
     follow_guard_vel_still = 15.0
+    # After a stream: how long to wait for the status to show the frozen command.
+    freeze_wait_s = 0.2
 
     # Grab (top-down). Height when the glasses don't know the object's size, the tallest height used,
     # grasp tip height limits, widest object the jaws take (80 % of its width must fit in 90 mm).
@@ -596,6 +599,8 @@ class SpecsReach:
         self._stream: _Stream | None = None
         self._ended: deque = deque(maxlen=64)
         self._follow_stop = threading.Event()
+        # Held by the tick listener during a step; `_drop_follow` waits for it (lock order: step, follow).
+        self._step_lock = threading.Lock()
         self._follow_handle: int | None = None
         self._follow_release_at: float | None = None
         self._outbox: queue.SimpleQueue[_FollowReport] = queue.SimpleQueue()
@@ -1158,8 +1163,7 @@ class SpecsReach:
         """One gripper command: the arm checks, then the gripper joint to open or closed. Returns the
         next item if a new target interrupted the settle wait."""
         self._current_grip = cmd
-        if self._stream is None:                        # a running stream's interrupts must not be lost
-            self._reset_cancel()
+        self._reset_cancel()                            # the follower has its own `_follow_stop`
         self._phase = "moving"                          # so a new target interrupts the settle wait
         try:
             self._gate_arm()
@@ -1377,6 +1381,8 @@ class SpecsReach:
         self._drop_follow()
         if item.hit is not None:
             self._follow_backoff(st, item.hit)
+        else:
+            self._freeze()
         if st.reason == "timeout":
             later = max(0.0, self.follow_release_s - self.follow_timeout_s)
             self._follow_release_at = time.monotonic() + later
@@ -1386,12 +1392,40 @@ class SpecsReach:
         return None
 
     def _drop_follow(self) -> None:
-        """No stream runs any more: the tick listener goes."""
+        """No stream runs any more: the tick listener goes (and a step running right now finishes first,
+        so no `set_target` of the stream comes after this)."""
         handle, self._follow_handle = self._follow_handle, None
         if handle is not None:
             self.twin.remove_tick_listener(handle)
-        with self._follow_lock:
+        with self._step_lock, self._follow_lock:
             self._stream = None
+
+    def _freeze(self) -> None:
+        """The arm's target := its current command, so the supervisor stops where it is now.
+
+        The follower's last `set_target` stays pending after the stream ends, and the supervisor would
+        keep chasing it (the wrist turning towards tool-down at 1 rad/s even at a still point): a target
+        or grab validated right after the stream saw the command move and held with "moved". The
+        gripper keeps its own goal (`Twin.hold_command` only sets the arm joints).
+        """
+        if self.twin.owner != OWNER:
+            return
+        try:
+            target = self.twin.hold_command(owner=OWNER)
+        except RuntimeError:
+            return
+        if target is None:
+            return
+        # Until the status shows it (a tick in flight publishes its command after `hold_command`): the
+        # next target's validation reads `status.command`.
+        want = self._arm_joints(target)
+        deadline = time.monotonic() + self.freeze_wait_s
+        while time.monotonic() < deadline:
+            now = self._arm_joints(self._command())
+            if all(abs(now.get(k, math.inf) - v) < 1e-3 for k, v in want.items()):
+                return
+            if self._stop.wait(0.005):
+                return
 
     def _release_follow_when_due(self) -> None:
         at = self._follow_release_at
@@ -1439,15 +1473,16 @@ class SpecsReach:
     # ------------------------------------------------------------------ follow streams: the loop thread
     def _on_follow_tick(self, sample) -> None:
         """Runs on the twin's loop thread after each tick: one step of the running stream."""
-        st = self._stream
-        if st is None or st.ended or st.follower is None or self._follow_stop.is_set():
-            return
-        try:
-            self._follow_step(st, sample)
-        except Exception as exc:                        # a listener that raises is removed: end cleanly
-            logger.exception("Sledzenie: blad kroku")
-            with self._follow_lock:
-                self._end_stream(st, "error", f"{type(exc).__name__}: {exc}"[:200])
+        with self._step_lock:
+            st = self._stream
+            if st is None or st.ended or st.follower is None or self._follow_stop.is_set():
+                return
+            try:
+                self._follow_step(st, sample)
+            except Exception as exc:                    # a listener that raises is removed: end cleanly
+                logger.exception("Sledzenie: blad kroku")
+                with self._follow_lock:
+                    self._end_stream(st, "error", f"{type(exc).__name__}: {exc}"[:200])
 
     def _follow_step(self, st: _Stream, s) -> None:
         f = st.follower
@@ -1472,6 +1507,7 @@ class SpecsReach:
         hit = st.guard.feed(t, s.sent, s.measured, s.fresh, efforts=self._efforts(),
                             velocities=self._velocities())
         if hit is not None:
+            self._hold_now()
             self._end_follow(st, "impact", f"{hit.kind} {hit.joint}", hit=hit)
             return
 
@@ -1487,6 +1523,7 @@ class SpecsReach:
                     joint, err = lag
                     pose = st.guard.backoff_pose(t, s.measured)
                     stall = Impact(t=t, joint=joint, kind="lag", value=err, backoff_pose=pose)
+                    self._hold_now()
                     self._end_follow(st, "impact", f"lag {joint}", hit=stall)
                     return
 
@@ -1501,7 +1538,8 @@ class SpecsReach:
             if t - st.fail_since >= limit:
                 self._end_follow(st, out.fail, out.detail)
             else:
-                self._follow_report(st, t, "hold", out.fail, out.detail)
+                # A pause, not a hold: `hold` always ends a stream (the glasses then stop sending).
+                self._follow_report(st, t, "moving", None, f"paused: {out.fail}")
             return
         st.fail = ""
 
@@ -1513,6 +1551,17 @@ class SpecsReach:
         tilt = math.degrees(out.tilt)
         detail = f"tilt {tilt:.0f} deg" if tilt > self.follow_tilt_deg else ""
         self._follow_report(st, t, "moving", None, detail)
+
+    def _hold_now(self) -> None:
+        """Impact while following: hold the measured pose on the loop thread, right now. The backoff
+        waits for the worker, which may be busy (a gripper's settle wait): until then the supervisor
+        would keep pushing towards the follower's last target."""
+        if self.twin.owner != OWNER:
+            return
+        try:
+            self.twin.hold_measured()
+        except Exception:
+            logger.exception("Sledzenie: hold_measured po uderzeniu")
 
     def _follow_lag(self, s) -> tuple[str, float] | None:
         """The arm joint farthest behind what was sent, if more than `follow_lag_deg`."""
@@ -1529,13 +1578,13 @@ class SpecsReach:
             self._end_stream(st, reason, detail, ts=st.ts, hit=hit)
 
     def _follow_report(self, st: _Stream, t: float, state: State, reason: str | None, detail: str) -> None:
-        """`moving` / a pause `hold` from the loop thread: on change, at most every `follow_report_s`;
-        `moving` again every `follow_heartbeat_s` (loop time)."""
+        """`moving` from the loop thread (detail: a pause, the tool's tilt): on change, at most every
+        `follow_report_s`; again every `follow_heartbeat_s` (loop time)."""
         sig = (state, reason, detail)
         since = t - st.last_report
         if since < self.follow_report_s:
             return
-        if sig == st.last_sig and (state != "moving" or since < self.follow_heartbeat_s):
+        if sig == st.last_sig and since < self.follow_heartbeat_s:
             return
         with self._follow_lock:
             if st.ended:

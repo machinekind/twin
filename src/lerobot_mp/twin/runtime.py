@@ -848,11 +848,11 @@ class Twin:
         """Nowy cel. Z `owner` - tylko, jesli ten wlasciciel wciaz ma ramie (inaczej RuntimeError):
         watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego.
 
-        Czesciowy cel (np. sam chwytak albo same stawy ramienia) nakladamy na OCZEKUJACY cel
-        tego samego wlasciciela, jesli taki jest, a dopiero bez niego na start rampy (ostatni
-        wyslany rozkaz). Inaczej sledzenie z okularow, ktore co takt podaje same stawy ramienia,
-        po jednym takcie zatrzymywalo rampe chwytaka w miejscu (rozkaz 94 zamiast 0), a suwak
-        drugiego stawu zatrzymywal pierwszy w polowie drogi.
+        Czesciowy cel (np. sam chwytak albo same stawy ramienia) od TEGO SAMEGO wlasciciela
+        (podany `owner`) nakladamy na jego oczekujacy cel, a w pozostalych przypadkach (bez
+        `owner`, inny wlasciciel, brak celu) na start rampy (ostatni wyslany rozkaz). Inaczej
+        sledzenie z okularow, ktore co takt podaje same stawy ramienia, po jednym takcie
+        zatrzymywalo rampe chwytaka w miejscu (rozkaz 94 zamiast 0).
         """
         cmd = self._ramp_start(joints)
         given = {k: float(v) for k, v in joints.items()}
@@ -864,6 +864,25 @@ class Twin:
             base = pending if pending is not None and mine else cmd
             self._target = {**cmd, **base, **given}
             self._target_by = owner
+
+    def hold_command(self, owner: str | None = None) -> dict[str, float] | None:
+        """Cel stawow ramienia := biezacy rozkaz nadzoru: ramie staje tam, dokad juz doszedl rozkaz.
+        Chwytak jedzie dalej do swojego celu. Zwraca nowy cel (None - nie bylo celu).
+
+        Pod blokada nadzoru: takt w toku, ktory liczyl krok w strone starego celu, konczy go przed
+        nami, a jego rozkaz staje sie celem. `set_target(status.command)` z innego watku dawal jeszcze
+        jeden krok w strone starego celu, a w nastepnym takcie powrot - cel z okularow sprawdzony
+        zaraz po koncu sledzenia widzial ruch o 1 st. i konczyl sie "moved". Z `owner` jak `set_target`.
+        """
+        with self._sup_lock, self._own_lock:
+            if owner is not None and self._owner != owner:
+                raise RuntimeError(f"ramie odebrane ({self._refusal(owner)})")
+            sup = self._supervisor
+            if sup is None or self._target is None:
+                return None
+            arm = {k: float(v) for k, v in sup.command.items() if k != self._grip}
+            self._target = {**self._target, **arm}
+            return dict(self._target)
 
     def home(self) -> None:
         """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa.

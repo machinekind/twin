@@ -49,15 +49,20 @@ class Bench:
         self.twin.set_target({**{k: sol.joints[k] for k in self.arm}, "gripper": 100.0}, owner="test")
         self.pump(2.0)
         self.twin.release("test")
-        # What the follower asks for (arm joints, per tick) and what the loop sent (per tick).
+        # What the follower asks for (arm joints, per tick), its tracker's point and velocity then, and
+        # what the loop sent (per tick).
         self.asked: list[dict] = []
+        self.points: list[tuple[np.ndarray, np.ndarray]] = []
         self.sent: list[dict] = []
         real_set_target = self.twin.set_target
 
         def spy(joints, owner=None):
             real_set_target(joints, owner=owner)
-            if owner == "specs" and set(joints) == set(self.arm):
+            st = self.driver._stream
+            follower = st.follower if st is not None else None
+            if owner == "specs" and set(joints) == set(self.arm) and follower is not None:
                 self.asked.append(dict(joints))
+                self.points.append((follower.point, follower.tracker.v.copy()))
         self.twin.set_target = spy
         self.twin.add_tick_listener(lambda s: self.sent.append(dict(s.sent)))
         kw.setdefault("mode", "sim")
@@ -91,6 +96,9 @@ class Bench:
 
     def states(self, stream: int = STREAM) -> list[tuple[str, str | None]]:
         return [(s["state"], s.get("reason")) for s in self.relay.stream_states(stream)]
+
+    def details(self, stream: int = STREAM) -> list[tuple[str, str | None]]:
+        return [(s["state"], s.get("detail")) for s in self.relay.stream_states(stream)]
 
     def state(self, stream: int, states: set[str], reason: str | None = None) -> dict | None:
         hit = [s for s in self.relay.stream_states(stream)
@@ -233,12 +241,21 @@ def test_one_second_of_identical_samples_stays_moving(bench):
 def test_far_entry_point_is_a_ramp(bench):
     c = bench.vol.center
     far = c + np.array([0.1, 0.25, -0.08])
+    v_max, a_max = 0.2, 0.8
     bench.stream([far] * 50)
     assert bench.near(far)
+    # The tracker's commanded point: speed within v_max, acceleration within a_max, from standstill.
+    tracked = [p for p, _ in bench.points]
+    vels = [v for _, v in bench.points]
+    speeds = [float(np.linalg.norm(b - a)) / DT for a, b in zip(tracked, tracked[1:])]
+    assert max(speeds) <= v_max + 1e-9, max(speeds)
+    assert float(np.linalg.norm(vels[0])) <= a_max * DT + 1e-9          # the first tick: one step of a_max
+    accel = [float(np.linalg.norm(b - a)) / DT for a, b in zip(vels, vels[1:])]
+    assert max(accel) <= a_max + 1e-6, max(accel)
+    # The FK of what IK made of it: each point is within ik_tol (3 mm) of the tracker's.
     pts = [bench.kin.tcp(q)[:3, 3] for q in bench.asked]
-    speeds = [float(np.linalg.norm(b - a)) / DT for a, b in zip(pts, pts[1:])]
-    assert max(speeds) <= 0.2 * 1.1, max(speeds)        # never faster than v_max (IK within 3 mm)
-    assert speeds[0] < 0.05                             # starts slowly: bounded acceleration
+    fk = [float(np.linalg.norm(b - a)) / DT for a, b in zip(pts, pts[1:])]
+    assert max(fk) <= v_max + 0.003 / DT, max(fk)
     assert largest_step(bench.asked, bench.arm) <= ASK_DEG_PER_TICK
 
 
@@ -276,7 +293,7 @@ def test_start_outside_the_box_is_rejected_and_the_stream_stays_refused(bench):
     assert bench.states(STREAM + 7)[0] == ("accepted", None)
 
 
-def test_a_wall_in_the_way_holds_with_collision_then_resumes(bench):
+def test_a_wall_in_the_way_pauses_the_stream_then_it_resumes(bench):
     d = bench.driver
     kin, checker = d._follow_tools()                    # the follower's own checker: add a wall at y > c.y + 4 cm
     wall_y = float(bench.vol.center[1]) + 0.04
@@ -285,13 +302,31 @@ def test_a_wall_in_the_way_holds_with_collision_then_resumes(bench):
     c = bench.vol.center
     seq = bench.stream([c] * 10)
     seq = bench.stream([c + [0.0, 0.1, 0.0]] * 20, seq0=seq)           # 1 s into the wall
-    assert ("hold", "collision") in bench.states(), bench.states()
+    # A pause is not a hold (a hold ends the stream: the glasses stop sending).
+    assert ("moving", "paused: collision") in bench.details(), bench.details()
+    assert not any(k[0] == "hold" for k in bench.states()), bench.states()
     assert bench.tcp()[1] < wall_y + 0.005
     bench.stream([c + [0.0, -0.05, 0.0]] * 20, seq0=seq)               # back out: moving again
-    kinds = bench.states()
-    assert kinds[-1] == ("moving", None), kinds
-    assert kinds.index(("hold", "collision")) < len(kinds) - 1
+    details = bench.details()
+    assert details[-1][0] == "moving" and not (details[-1][1] or "").startswith("paused"), details
+    assert not any(k[0] == "hold" for k in bench.states()), bench.states()
     assert bench.near((c + [0.0, -0.05, 0.0]))
+
+
+def test_two_seconds_in_a_wall_end_the_stream_with_collision(bench):
+    d = bench.driver
+    kin, checker = d._follow_tools()
+    wall_y = float(bench.vol.center[1]) + 0.04
+    clear = checker.config_clear
+    checker.config_clear = lambda j: "kolizja: sciana" if kin.tcp(j)[1, 3] > wall_y else clear(j)
+    c = bench.vol.center
+    seq = bench.stream([c] * 10)
+    bench.stream([c + [0.0, 0.1, 0.0]] * 70, seq0=seq)                 # 3.5 s pressing into the wall
+    st = bench.state(STREAM, {"hold"})
+    assert st is not None and st["reason"] == "collision", bench.details()
+    kinds = bench.details()
+    assert ("moving", "paused: collision") in kinds and kinds.index(("moving", "paused: collision")) < \
+        kinds.index(("hold", st.get("detail")))
 
 
 def test_gripper_mid_stream_closes_and_the_stream_keeps_the_arm(bench):
@@ -319,6 +354,36 @@ def test_gripper_mid_stream_closes_and_the_stream_keeps_the_arm(bench):
     assert bench.twin.status.command["gripper"] < 1.0
 
 
+def test_gripper_during_a_stream_that_preempted_a_target_is_done(bench):
+    """A stream interrupting a target leaves the driver's `_cancel` set; a gripper command then must not
+    see it as its own interrupt (hold) while the jaws do move."""
+    c = bench.vol.center
+    ts = bench.relay.target(c + np.array([0.0, 0.08, -0.04]))
+    assert bench.pump(3.0, lambda: "moving" in bench.relay.states_for(ts)), bench.relay.states_for(ts)
+    seq = bench.stream([c] * 10)
+    assert bench.relay.states_for(ts)[-1] == "hold"
+    assert bench.states()[0] == ("accepted", None)
+    g = bench.relay.grip("close")
+    seq = bench.stream([c] * 40, seq0=seq)
+    assert bench.relay.grips_for(g) == ["accepted", "done"], bench.relay.grips_for(g)
+    assert bench.twin.status.command["gripper"] < 1.0
+    assert bench.states()[-1] == ("moving", None) and not any(k[0] == "hold" for k in bench.states())
+    assert bench.twin.owner == "specs"
+
+
+def test_a_grab_during_a_stream_ends_it_and_runs(bench):
+    c = bench.vol.center
+    bench.stream([c] * 10)
+    ts = bench.relay.grab_object([0.30, -0.05, 0.015], size=[0.03, 0.03])
+    st = bench.wait(STREAM, {"hold"}, 2.0)
+    assert st["reason"] == "retargeted"
+    done = {"held", "missed", "rejected", "hold", "backoff"}
+    assert bench.pump(30.0, lambda: bool(set(bench.relay.states_for(ts)) & done)), bench.relay.states_for(ts)
+    states = bench.relay.states_for(ts)
+    assert states[0] == "accepted" and states[-1] in ("held", "missed"), \
+        [(s["state"], s.get("reason"), s.get("detail")) for s in bench.relay.stream_states(ts)]
+
+
 def test_a_target_during_a_stream_ends_it_and_runs(bench):
     c = bench.vol.center
     bench.stream([c] * 10)
@@ -327,7 +392,7 @@ def test_a_target_during_a_stream_ends_it_and_runs(bench):
     st = bench.wait(STREAM, {"hold"}, 2.0)
     assert st["reason"] == "retargeted"
     assert bench.pump(15.0, lambda: bench.relay.states_for(ts)[-1:] in (["reached"], ["rejected"], ["hold"]))
-    assert bench.relay.states_for(ts)[-1] == "reached", bench.relay.states_for(ts)
+    assert bench.relay.states_for(ts)[-1] == "reached", [(s["state"], s.get("reason"), s.get("detail")) for s in bench.relay.states if s["ts"] == ts]
     assert np.linalg.norm(bench.tcp() - p) < 0.005
 
 

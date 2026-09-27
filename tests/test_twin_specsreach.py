@@ -23,7 +23,7 @@ from websockets.sync.server import serve  # noqa: E402
 
 from lerobot_mp.twin import runtime as rt  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
-from lerobot_mp.twin.reach import ReachVolume  # noqa: E402
+from lerobot_mp.twin.reach import GRAB_ZONES, ReachVolume  # noqa: E402
 from lerobot_mp.twin.scene import Box  # noqa: E402
 from lerobot_mp.twin.specsreach import SpecsReach  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -234,9 +234,16 @@ def test_hand_target_inside_volume_is_reached(twin, kin, vol, relay):
     try:
         first = relay.overlays[0]
         kinds = {o["id"]: o["kind"] for o in first["objects"]}
-        assert kinds == {"reach": "volume", "tcp": "sphere"}
+        assert kinds == {"reach": "volume", "grab": "volume", "tcp": "sphere"}
         vol_obj = next(o for o in first["objects"] if o["id"] == "reach")
         assert vol_obj["alpha"] == pytest.approx(0.35)
+        # The grab zone, drawn faintly by the glasses: marks inside it can be grabbed.
+        grab = next(o for o in first["objects"] if o["id"] == "grab")
+        lo, hi = (np.array(v) for v in GRAB_ZONES["a1x"])
+        assert grab["label"] == "grab" and grab["alpha"] == pytest.approx(0.12)
+        assert grab["pos"] == pytest.approx((lo + hi) / 2, abs=1e-4)
+        assert grab["size"] == pytest.approx(hi - lo, abs=1e-4)
+        assert len(grab["color"]) == 3
         p = vol.center + np.array([0.05, 0.08, -0.05])
         ts = relay.target(p)
         relay.wait_state(ts, {"moving", "rejected"}, 5.0)
