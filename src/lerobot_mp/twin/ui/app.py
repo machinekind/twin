@@ -812,7 +812,10 @@ class TwinApp:
         if st.connected and not self._gripper_drivable():
             parts.append("**chwytak wylaczony** (a1x.gripper_over_xcan: false) - rozkazy chwytaka odrzucane")
         elif st.connected and self._gripper_xcan_trial():
-            parts.append("chwytak przez XCAN (zmierzone 2026-09-27); bez sprzezenia panel pokazuje rozkaz")
+            measured = getattr(self.twin.backend, "gripper_measured", None)
+            blind = measured is not None and not measured()
+            parts.append("chwytak przez XCAN (zmierzone 2026-09-27)"
+                         + ("; bez sprzezenia panel pokazuje rozkaz" if blind else ""))
         if st.error:
             parts.append(f"**blad ramienia:** {st.error}")
         return " | ".join(parts)

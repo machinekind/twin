@@ -60,6 +60,14 @@ and waits `hold_off_s` after a hand target (and once at the start of a follow st
 the supervisor speed cap (`Twin.set_speed`) drops to ~1.5x the ramp speed + 5 deg/s (60 deg/s while
 following), and to 15 deg/s during backoff; it is restored afterwards. In `real`, losing the relay stops
 the motion (hold). The glasses have no STOP: use Enter/Ctrl-C in the console or STOP in the panel.
+
+Every wait for time goes through the twin's clock (`Twin.clock`): ramp ticks, arrival, the gripper
+wait, the hold-off, the backoff grace, a stream's timeout and release, the grab's waits, the worker's
+idle wake-ups, the reconnect back-off and the TCP sphere's cadence. In the app that is the wall clock,
+and the network thread's `recv` waits until the next TCP sphere is due (0.05 s at most while following),
+as before. Tests step the twin on a `VirtualClock`, so the driver and the loop share one simulated time
+axis; the network thread stays real and, on a virtual clock only, receives in short slices
+(`recv_slice_s`) so it notices a sphere fall due in simulated time.
 """
 
 from __future__ import annotations
@@ -69,7 +77,6 @@ import logging
 import math
 import queue
 import threading
-import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -79,6 +86,7 @@ from typing import Any, Literal, NamedTuple, get_args
 import numpy as np
 
 from . import scene as sc
+from .clock import Clock, WallClock
 from .collision import CollisionChecker
 from .follow import Follower, down_rotation, jaw_yaw, nearest_yaw, wrap
 from .impact import Impact, ImpactGuard
@@ -129,7 +137,7 @@ class Target:
     ts: Any                           # the glasses' clock: echoed back, never compared with ours
     depth: bool = False               # object depth was measured, not the 150 cm default
     label: str = ""
-    t_rx: float = 0.0                 # receive time, our monotonic clock
+    t_rx: float = 0.0                 # receive time, the driver's clock
     #: Objects: seconds since the glasses last saw the detection; None = not sent (fake glasses).
     age: float | None = None
 
@@ -274,15 +282,16 @@ class _Rejected(_Abort):
 
 
 class _LoopClock:
-    """Ramp time that stops while the twin's loop is frozen."""
+    """Ramp time on the driver's clock that stops while the twin's loop is frozen."""
 
-    def __init__(self, twin: Twin):
+    def __init__(self, twin: Twin, clock: Clock):
+        self._clock = clock
         self._frozen: Callable[[], bool] | None = getattr(twin, "_frozen", None)
-        self._start = self._last = time.monotonic()
+        self._start = self._last = clock.now()
         self._paused = 0.0
 
     def elapsed(self) -> float:
-        now = time.monotonic()
+        now = self._clock.now()
         if self._frozen is not None and self._frozen():
             self._paused += now - self._last
         self._last = now
@@ -452,6 +461,9 @@ class SpecsReach:
     tcp_period_s = 0.2
     target_linger_s = 2.0
     reconnect_s = 2.0
+    # On a virtual clock (tests) the network thread's `recv`, which waits in real time, returns at least this
+    # often, to notice the TCP sphere fall due on the driver's clock. The wall clock needs no slices.
+    recv_slice_s = 0.02
 
     ik_tol = 0.003                    # m
     approach_tol = 0.26               # rad, object targets only
@@ -542,9 +554,12 @@ class SpecsReach:
                  backoff_speed_deg_s: float = 8.0, max_jump_deg: float = 150.0, grasp: bool = False,
                  allow_untrusted: bool = False, real_ok: bool = False, hold_off_s: float = 1.0,
                  follow_speed: float | None = None, follow_floor_m: float = 0.01,
-                 on_state: Callable[[dict], None] | None = None):
+                 on_state: Callable[[dict], None] | None = None, clock: Clock | None = None):
         _check_mode(mode)
         self.twin = twin
+        # None = the twin's clock, read on every use (a twin without a loop thread gets a new one per
+        # connect).
+        self._clock = clock
         self.spec = twin.spec
         self.arm = tuple(j for j in self.spec.joints if j != self.spec.gripper)
         self.relay_url = relay_url
@@ -581,9 +596,9 @@ class SpecsReach:
         self._cause: Cause = ""
         self._phase: Phase = "idle"
 
-        # Read by `_on_tick` on the twin's loop thread.
+        # Read by `_on_tick` on the twin's loop thread. `_guard_from` is loop time (`TickSample.t`).
         self._guard: ImpactGuard | None = None
-        self._guard_from = 0.0
+        self._guard_from = -math.inf
         self._impact: Impact | None = None
 
         self._last_state: dict | None = None
@@ -629,6 +644,13 @@ class SpecsReach:
         self._f_kin: RobotKinematics | None = None
         self._f_version = -1
 
+    @property
+    def clock(self) -> Clock:
+        """The time axis of every wait: the twin's loop clock unless one was given."""
+        if self._clock is not None:
+            return self._clock
+        return getattr(self.twin, "clock", None) or WallClock()
+
     def start(self) -> None:
         if self._net is not None:
             return
@@ -641,7 +663,7 @@ class SpecsReach:
     def stop(self) -> None:
         """Stops both threads. A moving arm holds its measured pose, a running stream stops where its
         command is (the worker's exit), and the arm is released."""
-        self._stop.set()
+        self.clock.set(self._stop)
         self._interrupt("stop")
 
         ws = self._ws
@@ -729,7 +751,7 @@ class SpecsReach:
             else:
                 failures = 0
                 self._serve(ws)
-            self._stop.wait(self.reconnect_s)
+            self.clock.wait(self._stop, self.reconnect_s)
 
     def _connect(self, *, quiet: bool):
         from websockets.sync.client import connect
@@ -765,21 +787,23 @@ class SpecsReach:
                 ws.close()
 
     def _pump(self, ws) -> None:
-        """Receives messages, sending the TCP sphere every `tcp_period_s` in between."""
-        next_tcp = time.monotonic() + self.tcp_period_s
+        """Receives messages, sending the TCP sphere every `tcp_period_s` of the driver's clock in between."""
+        clock = self.clock
+        slice_s = self.recv_slice_s if getattr(clock, "virtual", False) else math.inf
+        next_tcp = clock.now() + self.tcp_period_s
         while not self._stop.is_set():
-            wait = max(0.0, next_tcp - time.monotonic())
+            wait = max(0.0, next_tcp - clock.now())
             if self._following():
                 wait = min(wait, 0.05)                  # stream reports come from the loop thread
             try:
-                text = ws.recv(timeout=wait)
+                text = ws.recv(timeout=min(wait, slice_s))
             except TimeoutError:
                 text = None
             if text is not None:
                 self._on_message(text)
             self._flush_follow_reports()
 
-            now = time.monotonic()
+            now = clock.now()
             if now >= next_tcp:
                 next_tcp = now + self.tcp_period_s
                 self._send_tcp(now)
@@ -861,14 +885,14 @@ class SpecsReach:
                 self._session = None
 
     def _on_target(self, msg: dict, text: str | bytes) -> None:
-        t = parse_target(msg, time.monotonic())
+        t = parse_target(msg, self.clock.now())
         if t is None:
             logger.warning("Zepsuty cel z okularow: %.200s", text)
             return
         self._queue_target(t)
 
     def _on_grab(self, msg: dict, text: str | bytes) -> None:
-        g = parse_grab(msg, time.monotonic())
+        g = parse_grab(msg, self.clock.now())
         if g is None:
             logger.warning("Zepsuty chwyt z okularow: %.200s", text)
             return
@@ -879,7 +903,7 @@ class SpecsReach:
         # A target or a grab ends a follow stream (its stop is queued first) and interrupts a move;
         # the worker continues from the current command.
         self._end_streams("retargeted")
-        self._queue.put(t)
+        self.clock.put(self._queue, t)
         if self._phase == "moving":
             self._interrupt("retarget")
 
@@ -911,19 +935,19 @@ class SpecsReach:
                     self._end_stream(st, "retargeted")
             st = _Stream(id=s.stream, sample=s, last_seq=s.seq)
             self._pending = st
-            self._queue.put(FollowStart(st))
+            self.clock.put(self._queue, FollowStart(st))
         # A new stream replaces a target in progress (not a gripper command: that one finishes first).
         if self._current is not None and self._phase == "moving":
             self._interrupt("retarget")
 
     def _on_gripper(self, msg: dict, text: str | bytes) -> None:
-        cmd = parse_grip(msg, time.monotonic())
+        cmd = parse_grip(msg, self.clock.now())
         if cmd is None:
             logger.warning("Zepsuty rozkaz chwytaka z okularow: %.200s", text)
             return
         # No interrupt: a gripper command from the glasses (a left-hand pinch) during a move closes the
         # gripper once the arm is at the point.
-        self._queue.put(cmd)
+        self.clock.put(self._queue, cmd)
 
     def _target_queued(self) -> bool:
         with self._queue.mutex:
@@ -935,7 +959,7 @@ class SpecsReach:
         with self._lock:
             if not self._cancel.is_set():
                 self._cause = cause
-                self._cancel.set()
+                self.clock.set(self._cancel)
 
     def _reset_cancel(self) -> None:
         with self._lock:
@@ -1004,7 +1028,7 @@ class SpecsReach:
         """Queues a stream's `targetState`. Call with `_follow_lock` held: the order is the order of events."""
         pos = _rounded(st.sample.pos) if st.sample.pos is not None else None
         self._outbox.put(_FollowReport(state, reason, detail, pos, st.id, st.sample.ts if ts is None else ts,
-                                       time.monotonic()))
+                                       self.clock.now()))
 
     def _end_stream(self, st: _Stream, reason: str | None, detail: str = "", *, ts: Any = None,
                     hit: Impact | None = None) -> bool:
@@ -1015,11 +1039,11 @@ class SpecsReach:
         st.ended, st.reason = True, reason or ""
         self._ended.append(st.id)
         self._emit_follow(st, "hold", reason, detail, ts=ts)
-        self._follow_stop.set()                         # the listener, or the start's hold-off, stops
+        self.clock.set(self._follow_stop)               # the listener, or the start's hold-off, stops
         if st is self._pending:
             self._pending = None
         if st is self._stream:
-            self._queue.put(FollowStop(st, hit))
+            self.clock.put(self._queue, FollowStop(st, hit))
         return True
 
     def _end_streams(self, reason: str) -> None:
@@ -1046,7 +1070,7 @@ class SpecsReach:
                 rep = self._outbox.get_nowait()
             except queue.Empty:
                 return
-            if time.monotonic() - rep.t > 5.0:
+            if self.clock.now() - rep.t > 5.0:
                 continue
             msg: dict[str, Any] = {"type": "targetState", "state": rep.state}
             if rep.reason:
@@ -1091,26 +1115,29 @@ class SpecsReach:
 
     def _hide_target_later(self) -> None:
         with self._lock:
-            self._target_shown_until = time.monotonic() + self.target_linger_s
+            self._target_shown_until = self.clock.now() + self.target_linger_s
 
     def _work_loop(self) -> None:
-        next_effort_log = 0.0
-        while not self._stop.is_set():
-            self._release_follow_when_due()
-            try:
-                t = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                if self.mode == "dry" and time.monotonic() >= next_effort_log:
-                    next_effort_log = time.monotonic() + self.dry_effort_period_s
-                    self._log_efforts("dry")
-                continue
-            self._run(self._latest(t))
-        # `stop()`: a running stream's `FollowStop` is left in the queue, so the arm stops here, where its
-        # command is, before it is released (else it would finish its way to the follower's last target).
-        running = self._stream is not None
-        self._drop_follow()
-        if running:
-            self._freeze()
+        clock = self.clock
+        next_effort_log = -math.inf
+        # A member of a virtual clock: its planning takes no simulated time (see `twin.clock`).
+        with clock.member():
+            while not self._stop.is_set():
+                self._release_follow_when_due()
+                try:
+                    t = clock.get(self._queue, 0.2)
+                except queue.Empty:
+                    if self.mode == "dry" and clock.now() >= next_effort_log:
+                        next_effort_log = clock.now() + self.dry_effort_period_s
+                        self._log_efforts("dry")
+                    continue
+                self._run(self._latest(t))
+            # `stop()`: a running stream's `FollowStop` is left in the queue, so the arm stops here, where its
+            # command is, before it is released (else it would finish its way to the follower's last target).
+            running = self._stream is not None
+            self._drop_follow()
+            if running:
+                self._freeze()
         self._holders.clear()
         self._release()
         self._restore_speed()
@@ -1190,7 +1217,7 @@ class SpecsReach:
             else:
                 self._report_busy(item)
         for stop in stops:
-            self._queue.put(stop)
+            self.clock.put(self._queue, stop)
 
     def _report_busy(self, item: Item) -> None:
         if isinstance(item, GripCommand):
@@ -1198,7 +1225,7 @@ class SpecsReach:
         elif isinstance(item, FollowStart):
             self._reject_stream(item.stream, "busy")
         elif isinstance(item, FollowStop):
-            self._queue.put(item)                       # never rejected: it runs from the queue
+            self.clock.put(self._queue, item)           # never rejected: it runs from the queue
         else:
             self._report(item, "rejected", "busy")
 
@@ -1224,7 +1251,7 @@ class SpecsReach:
         try:
             gen = self._take()
             self._command_arm({self.spec.gripper: value})
-            if self._cancel.wait(self._grip_wait()):
+            if self.clock.wait(self._cancel, self._grip_wait()):
                 return self._after_cancel_grip(cmd)
             self._check(gen)
         except _Abort as exc:
@@ -1307,7 +1334,7 @@ class SpecsReach:
     def _held_off(self, t: Target) -> bool:
         """In `real`, a hand target waits `hold_off_s` before moving. True = interrupted meanwhile."""
         if self.mode == "real" and t.source == "hand" and self.hold_off_s > 0:
-            return self._cancel.wait(self.hold_off_s)
+            return self.clock.wait(self._cancel, self.hold_off_s)
         return False
 
     def _drive(self, t: Target, legs: list[_Leg], gen: int) -> bool:
@@ -1368,7 +1395,7 @@ class SpecsReach:
                     self._emit_follow(st, "accepted")
                     self._end_stream(st, None)          # dry: checks only, nothing moves
             return None
-        if self.mode == "real" and self.hold_off_s > 0 and self._follow_stop.wait(self.hold_off_s):
+        if self.mode == "real" and self.hold_off_s > 0 and self.clock.wait(self._follow_stop, self.hold_off_s):
             return None                                 # ended meanwhile (exit, a target, STOP...)
 
         try:
@@ -1435,7 +1462,7 @@ class SpecsReach:
             self._freeze()
         if st.reason == "timeout":
             later = max(0.0, self.follow_release_s - self.follow_timeout_s)
-            self._follow_release_at = time.monotonic() + later
+            self._follow_release_at = self.clock.now() + later
             return
         self._release("follow")
         self._restore_speed()
@@ -1468,17 +1495,18 @@ class SpecsReach:
         # Until the status shows it (a tick in flight publishes its command after `hold_command`): the
         # next target's validation reads `status.command`.
         want = self._arm_joints(target)
-        deadline = time.monotonic() + self.freeze_wait_s
-        while time.monotonic() < deadline:
+        clock = self.clock
+        deadline = clock.now() + self.freeze_wait_s
+        while clock.now() < deadline:
             now = self._arm_joints(self._command())
             if all(abs(now.get(k, math.inf) - v) < 1e-3 for k, v in want.items()):
                 return
-            if self._stop.wait(0.005):
+            if clock.wait(self._stop, 0.005):
                 return
 
     def _release_follow_when_due(self) -> None:
         at = self._follow_release_at
-        if at is None or time.monotonic() < at or self._stream is not None:
+        if at is None or self.clock.now() < at or self._stream is not None:
             return
         self._follow_release_at = None
         self._release("follow")
@@ -1796,7 +1824,7 @@ class SpecsReach:
         above, down, lift = legs
         self._report(g, "moving", detail="open")
         self._command_arm({grip: self.grip_open})
-        if self._cancel.wait(self._grip_wait()):
+        if self.clock.wait(self._cancel, self._grip_wait()):
             return False
         self._check(gen)
 
@@ -1808,7 +1836,7 @@ class SpecsReach:
 
         self._report(g, "moving", detail="close")
         self._command_arm({grip: self.grip_closed})
-        if self._cancel.wait(self._grip_wait()):
+        if self.clock.wait(self._cancel, self._grip_wait()):
             return False
         self._check(gen)
 
@@ -1818,7 +1846,8 @@ class SpecsReach:
 
     def _verify_grab(self) -> tuple[State, str]:
         """`held` if the measured jaws stand still wider than empty-closed (`spec.jaw`), else `missed`.
-        A backend that doesn't measure the gripper (the A1X today): `held`, detail "assumed"."""
+        A backend that doesn't measure the gripper (an A1X with `gripper_fb_*` unset): `held`, detail
+        "assumed"."""
         measured_fn = getattr(self.twin.backend, "gripper_measured", None)
         if measured_fn is not None and not measured_fn():
             return "held", "assumed"
@@ -1827,7 +1856,7 @@ class SpecsReach:
         kin = self._kin_worker
         closed = float(kin.to_q({g: self.grip_closed})[k])
         first = float(kin.to_q(dict(self.twin.status.measured))[k])
-        self._stop.wait(0.1)
+        self.clock.wait(self._stop, 0.1)
         q = float(kin.to_q(dict(self.twin.status.measured))[k])
         jaw = self.spec.jaw
         if q - closed > jaw.margin and abs(q - first) < jaw.still:
@@ -2014,7 +2043,7 @@ class SpecsReach:
 
     def _close_gripper(self, gen: int) -> None:
         self.twin.set_target({self.spec.gripper: self.grip_closed}, owner=OWNER)
-        if self._cancel.wait(self._grip_wait()):
+        if self.clock.wait(self._cancel, self._grip_wait()):
             return
         if self.twin.preempt_gen != gen:
             raise _Abort("hold", self._lost_reason())
@@ -2082,6 +2111,10 @@ class SpecsReach:
         Call BEFORE `start()`, from the thread that then starts the driver. An impact holds the measured
         pose without backing off. Returns None on arrival, otherwise the reason.
         """
+        with self.clock.member():                       # like the worker: planning takes no simulated time
+            return self._start_center(speed_deg_s)
+
+    def _start_center(self, speed_deg_s: float) -> str | None:
         tw = self.twin
         if not tw.connected:
             return "not connected"
@@ -2181,7 +2214,7 @@ class SpecsReach:
             return self._settle(goal, gen, profile)
 
     def _sweep(self, start: Joints, goal: Joints, duration: float, gen: int) -> bool:
-        clock = _LoopClock(self.twin)
+        clock = _LoopClock(self.twin, self.clock)
         while True:
             if self._cancel.is_set():
                 return False
@@ -2192,7 +2225,7 @@ class SpecsReach:
             if s >= 1.0:
                 return True
 
-            if self._cancel.wait(self.tick_s):
+            if self.clock.wait(self._cancel, self.tick_s):
                 return False
 
     def _tighten_guard_for_arrival(self, arrive_lag_s: float | None) -> None:
@@ -2205,10 +2238,10 @@ class SpecsReach:
     def _settle(self, goal: Joints, gen: int, profile: Profile) -> bool:
         """Waits until every arm joint is within `arrive_deg` of the goal and still. After
         `arrive_timeout_s`: holds the measured pose and raises `_Abort("hold", "not arrived")`."""
-        deadline = time.monotonic() + self.arrive_timeout_s
+        deadline = self.clock.now() + self.arrive_timeout_s
         previous: _Sample | None = None
         while True:
-            if self._cancel.wait(0.05):
+            if self.clock.wait(self._cancel, 0.05):
                 return False
             self._check(gen)
 
@@ -2225,7 +2258,7 @@ class SpecsReach:
                     return True                         # no trim when descending: keep pressing on the object
                 return self._trim(goal, gen)
 
-            if time.monotonic() > deadline:
+            if self.clock.now() > deadline:
                 # A stalled joint must not keep pushing into the obstacle towards a goal it can't reach.
                 self.twin.hold_measured()
                 misses = ", ".join(f"{k} {sample.joints.get(k, math.nan) - goal[k]:+.1f} st." for k in far)
@@ -2257,7 +2290,7 @@ class SpecsReach:
             for k, v in error.items():
                 command[k] = float(np.clip(command[k] + v, goal[k] - self.trim_max_deg, goal[k] + self.trim_max_deg))
             self._command_arm(command)
-            if self._cancel.wait(0.4):
+            if self.clock.wait(self._cancel, 0.4):
                 return False
             self._check(gen)
         return True
@@ -2275,7 +2308,7 @@ class SpecsReach:
     def _on_tick(self, sample) -> None:
         """Runs on the twin's loop thread: only records the impact and interrupts the ramp."""
         guard = self._guard
-        if guard is None or self._cancel.is_set() or time.monotonic() < self._guard_from:
+        if guard is None or self._cancel.is_set() or sample.t < self._guard_from:
             return
         hit = guard.feed(sample.t, sample.sent, sample.measured, sample.fresh,
                          efforts=self._efforts(), velocities=self._velocities())
@@ -2342,10 +2375,14 @@ class SpecsReach:
     def _retreat(self, pose: Joints, gen: int) -> bool:
         """Ramps to the backoff pose under a fresh guard that starts late. False = interrupted."""
         self._guard = ImpactGuard(self.arm, effort_abs=self._effort_limits(False))
-        self._guard_from = time.monotonic() + self.backoff_grace_s
+        # Loop time, the axis of `TickSample.t` that `_on_tick` compares: the driver shares the twin's clock.
+        # (It compared the wall clock, which under the tests' virtual clock stretched the grace to many
+        # simulated seconds.)
+        self._guard_from = self.clock.now() + self.backoff_grace_s
         try:
             with self._listening():
-                if self._cancel.wait(0.06):             # ramp from the command AFTER the hold (next loop tick)
+                # Ramp from the command AFTER the hold (next loop tick).
+                if self.clock.wait(self._cancel, 0.06):
                     raise _Abort("hold", self._cancel_cause or "preempted")
                 return self._ramp(pose, self.backoff_speed, gen, guarded=False)
         finally:

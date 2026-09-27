@@ -1,14 +1,13 @@
 """Follow streams from the glasses (teleop): `SpecsReach` + `twin/follow.py` on the simulated A1X.
 
-The twin runs with `threaded=False` and the test ticks its loop (`Bench.pump`), so the follower (a tick
-listener, all times from the loop's clock) steps deterministically; the relay is the fake from
-`test_twin_specsreach.py`. The driver's network and worker threads are real, so samples are sent
-between pumps at wall-clock pace (20 Hz, as the glasses do).
+The twin runs without a loop thread on a `VirtualClock` that the driver shares (`twinbench.Bench`), and the
+test ticks its loop (`FollowBench.pump`), so the follower (a tick listener, all times from the loop's clock)
+steps deterministically. The relay is the fake from `twinbench`; the driver's network thread is real, and
+each sample is handled before the clock moves on. Samples go out every 50 ms of the shared clock (20 Hz,
+as the glasses send them).
 """
 
 from __future__ import annotations
-
-import time
 
 import numpy as np
 import pytest
@@ -16,9 +15,10 @@ import pytest
 pytest.importorskip("mujoco")
 pytest.importorskip("websockets")
 
-from test_twin_specsreach import FakeRelay  # noqa: E402
+from twinbench import Bench, FakeRelay  # noqa: E402
 
 from lerobot_mp.twin import runtime as rt  # noqa: E402
+from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.follow import Follower, Tracker, down_rotation, nearest_yaw  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
 from lerobot_mp.twin.reach import ReachVolume  # noqa: E402
@@ -30,17 +30,19 @@ PERIOD = 0.05                                          # the glasses' follow per
 STREAM = 1_000_000
 
 
-class Bench:
-    """Twin (threaded=False) with the arm parked above the box centre, a driver and the fake relay."""
+class FollowBench(Bench):
+    """A stepped twin on its own `VirtualClock` with the arm parked above the box centre, a driver (`drv`)
+    and the fake relay."""
 
     def __init__(self, relay: FakeRelay, **kw):
-        self.relay = relay
-        self.twin = rt.Twin(Workspace(robot="a1x"))
-        self.twin.connect("sim", threaded=False)
+        twin = rt.Twin(Workspace(robot="a1x"), clock=VirtualClock())
+        twin.connect("sim", threaded=False)
+        super().__init__(twin, relay)
         self.spec = self.twin.spec
         self.arm = tuple(j for j in self.spec.joints if j != self.spec.gripper)
         self.kin = RobotKinematics(self.spec)
         self.vol = ReachVolume.from_workspace(self.twin.workspace)
+        self.drv: SpecsReach | None = None
         self.pump(0.5)
         sol = self.kin.ik(self.vol.center, seed=self.spec.home, tol=0.003)
         assert sol.ok
@@ -50,40 +52,34 @@ class Bench:
         self.pump(2.0)
         self.twin.release("test")
         # What the follower asks for (arm joints, per tick), its tracker's point and velocity then, and
-        # what the loop sent (per tick).
+        # what the loop sent (per tick). (`sent` is the bench's record of the driver's messages.)
         self.asked: list[dict] = []
         self.points: list[tuple[np.ndarray, np.ndarray]] = []
-        self.sent: list[dict] = []
+        self.loop_sent: list[dict] = []
         real_set_target = self.twin.set_target
 
         def spy(joints, owner=None):
             real_set_target(joints, owner=owner)
-            st = self.driver._stream
+            st = self.drv._stream if self.drv is not None else None
             follower = st.follower if st is not None else None
             if owner == "specs" and set(joints) == set(self.arm) and follower is not None:
                 self.asked.append(dict(joints))
                 self.points.append((follower.point, follower.tracker.v.copy()))
         self.twin.set_target = spy
-        self.twin.add_tick_listener(lambda s: self.sent.append(dict(s.sent)))
+        self.twin.add_tick_listener(lambda s: self.loop_sent.append(dict(s.sent)))
         kw.setdefault("mode", "sim")
-        self.driver = SpecsReach(self.twin, relay_url=relay.url, **kw)
-        self.driver.start()
-        relay.wait_client()
+        self.drv = self.driver(**kw)
         self.pump(0.3)
 
-    def pump(self, secs: float, until=None) -> bool:
-        """Tick the loop for `secs` of wall time or until `until()`; True if `until` was met."""
-        t0 = time.monotonic()
-        n = 0
-        while time.monotonic() - t0 < secs:
-            if until is not None and until():
-                return True
-            self.twin.step(DT)
-            n += 1
-            ahead = t0 + n * DT - time.monotonic()
-            if ahead > 0:
-                time.sleep(ahead)
-        return until is not None and bool(until())
+    def pump(self, secs: float | None = None, until=None, **kw) -> bool:
+        """`pump(secs, until)`: tick the loop for `secs` simulated seconds or until `until()`; True if `until`
+        was met. With keywords only, `Bench.pump`."""
+        if secs is None:
+            return super().pump(until=until, **kw)
+        if until is None:
+            super().pump(sim_s=secs)
+            return False
+        return super().pump(until=until, max_sim_s=secs)
 
     def tcp(self) -> np.ndarray:
         return self.kin.tcp(self.twin.status.measured)[:3, 3]
@@ -95,15 +91,13 @@ class Bench:
         return bool(np.linalg.norm(asked - p) < tol and np.linalg.norm(self.tcp() - p) < 0.015)
 
     def states(self, stream: int = STREAM) -> list[tuple[str, str | None]]:
-        return [(s["state"], s.get("reason")) for s in self.relay.stream_states(stream)]
+        return [(s["state"], s.get("reason")) for s in self.stream_states(stream)]
 
     def details(self, stream: int = STREAM) -> list[tuple[str, str | None]]:
-        return [(s["state"], s.get("detail")) for s in self.relay.stream_states(stream)]
+        return [(s["state"], s.get("detail")) for s in self.stream_states(stream)]
 
     def state(self, stream: int, states: set[str], reason: str | None = None) -> dict | None:
-        hit = [s for s in self.relay.stream_states(stream)
-               if s["state"] in states and (reason is None or s.get("reason") == reason)]
-        return hit[-1] if hit else None
+        return self.saw_stream(stream, states, reason)
 
     def wait(self, stream: int, states: set[str], secs: float, reason: str | None = None) -> dict:
         assert self.pump(secs, lambda: self.state(stream, states, reason) is not None), self.states(stream)
@@ -113,19 +107,24 @@ class Bench:
 
     def stream(self, points, stream: int = STREAM, seq0: int = 0, yaw: float | None = None,
                check=None) -> int:
-        """Sends `points` as samples every 50 ms, pumping in between; returns the next seq."""
+        """Sends `points` as samples every 50 ms of the clock, pumping in between; returns the next seq."""
         seq = seq0
+        t = self.clock.now()
         for p in points:
-            self.relay.follow(stream, seq, p, yaw=yaw)
+            self.follow(stream, seq, p, yaw=yaw)
             seq += 1
-            self.pump(PERIOD)
+            t += PERIOD
+            self.pump_to(t)
             if check is not None:
                 check(p)
         return seq
 
     def close(self) -> None:
-        self.driver.stop()
-        self.twin.close()
+        try:
+            super().close()                             # stops the driver, fails on a late clock barrier
+        finally:
+            self.twin.close()
+            self.clock.close()
 
 
 @pytest.fixture
@@ -137,7 +136,7 @@ def relay():
 
 @pytest.fixture
 def bench(relay):
-    b = Bench(relay)
+    b = FollowBench(relay)
     yield b
     b.close()
 
@@ -245,13 +244,13 @@ def test_a_line_at_20_hz_is_followed_within_3_cm_with_bounded_joint_steps(bench)
     kinds = bench.states()
     assert kinds[0] == ("accepted", None) and ("moving", None) in kinds
     assert all(k[0] in ("accepted", "moving") for k in kinds), kinds
-    moving = [s for s in bench.relay.stream_states(STREAM) if s["state"] == "moving"]
+    moving = [s for s in bench.stream_states(STREAM) if s["state"] == "moving"]
     assert len(moving) <= 2 * 4 + 1                     # at most 2 Hz over ~4 s
     assert bench.asked and largest_step(bench.asked, bench.arm) <= ASK_DEG_PER_TICK
-    sent = [s for s in bench.sent if s]
+    sent = [s for s in bench.loop_sent if s]
     assert largest_step(sent[-200:], bench.arm) <= 60.0 * DT + 0.05     # the follower's speed cap
     assert bench.twin.owner == "specs"
-    st = bench.relay.stream_states(STREAM)[-1]
+    st = bench.stream_states(STREAM)[-1]
     assert list(st)[0] == "type" and st["stream"] == STREAM and st["mode"] == "sim" and "tcp" in st
 
 
@@ -304,7 +303,7 @@ def test_far_entry_point_is_a_ramp(bench):
 def test_active_false_holds_with_exit_and_the_arm_stays(bench):
     p = bench.vol.center + np.array([0.02, 0.05, 0.0])
     seq = bench.stream([p] * 20)
-    bench.relay.follow(STREAM, seq, active=False)
+    bench.follow(STREAM, seq, active=False)
     st = bench.wait(STREAM, {"hold"}, 2.0)
     assert st["reason"] == "exit" and st["ts"] == STREAM + seq
     assert bench.pump(1.0, lambda: bench.twin.owner is None)
@@ -320,7 +319,7 @@ def test_active_false_holds_with_exit_and_the_arm_stays(bench):
 def test_a_sample_10_cm_outside_ends_the_stream(bench):
     c = bench.vol.center
     seq = bench.stream([c] * 10)
-    bench.relay.follow(STREAM, seq, bench.vol.hi + [0.1, 0.0, 0.0])
+    bench.follow(STREAM, seq, bench.vol.hi + [0.1, 0.0, 0.0])
     st = bench.wait(STREAM, {"hold"}, 2.0)
     assert st["reason"] == "outside volume"
 
@@ -336,7 +335,7 @@ def test_start_outside_the_box_is_rejected_and_the_stream_stays_refused(bench):
 
 
 def test_a_wall_in_the_way_pauses_the_stream_then_it_resumes(bench):
-    d = bench.driver
+    d = bench.drv
     kin, checker = d._follow_tools()                    # the follower's own checker: add a wall at y > c.y + 4 cm
     wall_y = float(bench.vol.center[1]) + 0.04
     clear = checker.config_clear
@@ -356,7 +355,7 @@ def test_a_wall_in_the_way_pauses_the_stream_then_it_resumes(bench):
 
 
 def test_two_seconds_in_a_wall_end_the_stream_with_collision(bench):
-    d = bench.driver
+    d = bench.drv
     kin, checker = d._follow_tools()
     wall_y = float(bench.vol.center[1]) + 0.04
     clear = checker.config_clear
@@ -375,22 +374,22 @@ def test_gripper_mid_stream_closes_and_the_stream_keeps_the_arm(bench):
     c = bench.vol.center
     assert bench.twin.status.command["gripper"] > 95.0
     seq = bench.stream([c] * 10)
-    g = bench.relay.grip("close")
-    t0 = time.monotonic()
+    g = bench.grip("close")
+    t0 = bench.clock.now()
     line = [c + np.array([0.0, 0.004 * i, 0.0]) for i in range(30)]
     closed_at: list[float] = []
 
     def check(_):
         if not closed_at and bench.twin.status.command["gripper"] < 1.0:
-            closed_at.append(time.monotonic() - t0)
+            closed_at.append(bench.clock.now() - t0)
         assert bench.twin.owner == "specs"
     seq = bench.stream(line, seq0=seq, check=check)
     assert closed_at and closed_at[0] < 0.6, closed_at
-    assert bench.relay.grips_for(g) == ["accepted", "done"]
+    assert bench.grips_for(g) == ["accepted", "done"]
     assert bench.twin.status.command["gripper"] < 1.0
     assert bench.states()[-1] == ("moving", None) and not any(k[0] == "hold" for k in bench.states())
     assert np.linalg.norm(bench.tcp() - line[-1]) < 0.02            # the arm kept following meanwhile
-    bench.relay.follow(STREAM, seq, active=False)
+    bench.follow(STREAM, seq, active=False)
     bench.wait(STREAM, {"hold"}, 2.0, reason="exit")
     assert bench.pump(1.0, lambda: bench.twin.owner is None)
     assert bench.twin.status.command["gripper"] < 1.0
@@ -400,14 +399,14 @@ def test_gripper_during_a_stream_that_preempted_a_target_is_done(bench):
     """A stream interrupting a target leaves the driver's `_cancel` set; a gripper command then must not
     see it as its own interrupt (hold) while the jaws do move."""
     c = bench.vol.center
-    ts = bench.relay.target(c + np.array([0.0, 0.08, -0.04]))
-    assert bench.pump(3.0, lambda: "moving" in bench.relay.states_for(ts)), bench.relay.states_for(ts)
+    ts = bench.target(c + np.array([0.0, 0.08, -0.04]))
+    assert bench.pump(3.0, lambda: "moving" in bench.states_for(ts)), bench.states_for(ts)
     seq = bench.stream([c] * 10)
-    assert bench.relay.states_for(ts)[-1] == "hold"
+    assert bench.states_for(ts)[-1] == "hold"
     assert bench.states()[0] == ("accepted", None)
-    g = bench.relay.grip("close")
+    g = bench.grip("close")
     seq = bench.stream([c] * 40, seq0=seq)
-    assert bench.relay.grips_for(g) == ["accepted", "done"], bench.relay.grips_for(g)
+    assert bench.grips_for(g) == ["accepted", "done"], bench.grips_for(g)
     assert bench.twin.status.command["gripper"] < 1.0
     assert bench.states()[-1] == ("moving", None) and not any(k[0] == "hold" for k in bench.states())
     assert bench.twin.owner == "specs"
@@ -416,49 +415,49 @@ def test_gripper_during_a_stream_that_preempted_a_target_is_done(bench):
 def test_a_grab_during_a_stream_ends_it_and_runs(bench):
     c = bench.vol.center
     bench.stream([c] * 10)
-    ts = bench.relay.grab_object([0.30, -0.05, 0.015], size=[0.03, 0.03])
+    ts = bench.grab_object([0.30, -0.05, 0.015], size=[0.03, 0.03])
     st = bench.wait(STREAM, {"hold"}, 2.0)
     assert st["reason"] == "retargeted"
     done = {"held", "missed", "rejected", "hold", "backoff"}
-    assert bench.pump(30.0, lambda: bool(set(bench.relay.states_for(ts)) & done)), bench.relay.states_for(ts)
-    states = bench.relay.states_for(ts)
+    assert bench.pump(30.0, lambda: bool(set(bench.states_for(ts)) & done)), bench.states_for(ts)
+    states = bench.states_for(ts)
     assert states[0] == "accepted" and states[-1] in ("held", "missed"), \
-        [(s["state"], s.get("reason"), s.get("detail")) for s in bench.relay.stream_states(ts)]
+        [(s["state"], s.get("reason"), s.get("detail")) for s in bench.stream_states(ts)]
 
 
 def test_a_target_during_a_stream_ends_it_and_runs(bench):
     c = bench.vol.center
     bench.stream([c] * 10)
     p = c + np.array([0.04, -0.06, -0.03])
-    ts = bench.relay.target(p)
+    ts = bench.target(p)
     st = bench.wait(STREAM, {"hold"}, 2.0)
     assert st["reason"] == "retargeted"
-    assert bench.pump(15.0, lambda: bench.relay.states_for(ts)[-1:] in (["reached"], ["rejected"], ["hold"]))
-    assert bench.relay.states_for(ts)[-1] == "reached", [(s["state"], s.get("reason"), s.get("detail")) for s in bench.relay.states if s["ts"] == ts]
+    assert bench.pump(15.0, lambda: bench.states_for(ts)[-1:] in (["reached"], ["rejected"], ["hold"]))
+    assert bench.states_for(ts)[-1] == "reached", [(s["state"], s.get("reason"), s.get("detail")) for s in bench._sent("targetState") if s["ts"] == ts]
     assert np.linalg.norm(bench.tcp() - p) < 0.005
 
 
 def test_silence_ends_the_stream_with_timeout_and_releases_the_arm_later(bench):
     c = bench.vol.center
     bench.stream([c] * 10)
-    t_last = time.monotonic()
+    t_last = bench.clock.now()
     st = bench.wait(STREAM, {"hold"}, 2.0)
-    waited = time.monotonic() - t_last
+    waited = bench.clock.now() - t_last
     assert st["reason"] == "timeout" and 0.5 < waited < 1.2, waited
     assert bench.twin.owner == "specs"                  # released 2 s after the last sample
     assert bench.pump(3.0, lambda: bench.twin.owner is None)
-    assert 1.5 < time.monotonic() - t_last < 3.0
+    assert 1.5 < bench.clock.now() - t_last < 3.0
 
 
 def test_a_reordered_sample_is_ignored(bench):
     c = bench.vol.center
     seq = bench.stream([c] * 10)
-    bench.relay.follow(STREAM, seq + 5, c + [0.0, 0.05, 0.0])
+    bench.follow(STREAM, seq + 5, c + [0.0, 0.05, 0.0])
     bench.pump(0.1)
-    bench.relay.follow(STREAM, seq + 2, c + [0.0, -0.1, 0.0])           # older: dropped
+    bench.follow(STREAM, seq + 2, c + [0.0, -0.1, 0.0])           # older: dropped
     bench.pump(0.1)
     bench.stream([c + [0.0, 0.05, 0.0]] * 20, seq0=seq + 6)
-    assert bench.driver._stream is not None and bench.driver._stream.sample.seq == seq + 25
+    assert bench.drv._stream is not None and bench.drv._stream.sample.seq == seq + 25
     assert bench.near((c + [0.0, 0.05, 0.0]))
     ys = [bench.kin.tcp(q)[1, 3] for q in bench.asked]
     assert min(ys) > float(c[1]) - 0.01                 # never went towards the dropped sample
@@ -476,7 +475,7 @@ def test_a_new_stream_id_replaces_the_running_stream(bench):
 
 
 def test_dry_mode_accepts_then_holds_and_nothing_moves(relay):
-    b = Bench(relay, mode="dry")
+    b = FollowBench(relay, mode="dry")
     try:
         before = dict(b.twin.status.measured)
         b.stream([b.vol.center + [0.05, 0.05, 0.0]] * 10)
@@ -491,27 +490,27 @@ def test_dry_mode_accepts_then_holds_and_nothing_moves(relay):
 def test_an_error_in_a_stop_queued_behind_a_gripper_command_holds_and_the_worker_lives_on(bench):
     """A stream's stop found behind a queued gripper command runs inside `_run`'s error handling: an error
     there (here in the freeze) holds the arm, the overtaken command is rejected, the worker lives on."""
-    d = bench.driver
+    d = bench.drv
     c = bench.vol.center
     seq = bench.stream([c] * 10)
-    g1 = bench.relay.grip("close")                      # the worker sits in its settle wait
-    assert bench.pump(1.0, lambda: bench.relay.grips_for(g1) == ["accepted"]), bench.relay.grips_for(g1)
-    g2 = bench.relay.grip("open")                       # queued, then the stream's stop behind it
-    bench.relay.follow(STREAM, seq, active=False)
+    g1 = bench.grip("close")                      # the worker sits in its settle wait
+    assert bench.pump(1.0, lambda: bench.grips_for(g1) == ["accepted"]), bench.grips_for(g1)
+    g2 = bench.grip("open")                       # queued, then the stream's stop behind it
+    bench.follow(STREAM, seq, active=False)
     bench.wait(STREAM, {"hold"}, 2.0, reason="exit")
 
     def boom():
         raise RuntimeError("test")
     d._freeze = boom
-    assert bench.pump(4.0, lambda: bench.relay.grips_for(g2) != []), bench.relay.grips_for(g2)
-    assert bench.relay.grips_for(g1) == ["accepted", "done"]
-    assert bench.relay.grips_for(g2) == ["rejected"]
+    assert bench.pump(4.0, lambda: bench.grips_for(g2) != []), bench.grips_for(g2)
+    assert bench.grips_for(g1) == ["accepted", "done"]
+    assert bench.grips_for(g2) == ["rejected"]
     assert bench.pump(1.0, lambda: bench.twin.owner is None)
     assert d._worker is not None and d._worker.is_alive()
     assert d._phase == "idle" and d._stream is None and not d._holders
     del d._freeze
-    ts = bench.relay.target(c + np.array([0.0, 0.05, 0.0]))
-    assert bench.pump(6.0, lambda: "reached" in bench.relay.states_for(ts)), bench.relay.states_for(ts)
+    ts = bench.target(c + np.array([0.0, 0.05, 0.0]))
+    assert bench.pump(6.0, lambda: "reached" in bench.states_for(ts)), bench.states_for(ts)
 
 
 def test_stop_mid_stream_freezes_the_arm_where_its_command_is(bench):
@@ -525,18 +524,18 @@ def test_stop_mid_stream_freezes_the_arm_where_its_command_is(bench):
     before = dict(bench.twin.status.command)
     asked = bench.asked[-1]
     lead = max(abs(asked[k] - before[k]) for k in bench.arm)
-    bench.driver.stop()
+    bench.drv.stop()
     bench.pump(1.0)
     after = bench.twin.status.command
     moved = max(abs(after[k] - before[k]) for k in bench.arm)
     assert lead > 5.0, lead
     assert moved <= 10.0 * DT + 1e-6, (moved, lead)                 # one tick at the cap
-    assert bench.twin.owner is None and bench.driver._stream is None
+    assert bench.twin.owner is None and bench.drv._stream is None
 
 
 def test_mode_change_ends_the_stream(bench):
     bench.stream([bench.vol.center] * 10)
-    bench.driver.set_mode("dry", False)
+    bench.drv.set_mode("dry", False)
     st = bench.wait(STREAM, {"hold"}, 2.0)
     assert st["reason"] == "mode"
     assert bench.pump(1.0, lambda: bench.twin.owner is None)
