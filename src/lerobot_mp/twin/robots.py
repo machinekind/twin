@@ -215,7 +215,8 @@ A1X = RobotSpec(
     tcp_site="tcp",
     hand_body="gripper_link",
     base_body="base_link",
-    # Keyframe `home` modelu (1,0 / -1,6 / 0,6 rad); szczeka 0,03 m z 0,05 = 60.
+    # Keyframe `home` modelu (1,0 / -1,6 / 0,6 rad); chwytak zamkniety (0), jak dom stanowiska
+    # ("Ustaw dom = tu" zapisuje chwytak 0) i jak zglasza A1X bez pomiaru (`a1x.gripper_start`).
     home={
         "arm_joint1": 0.0,
         "arm_joint2": 57.3,
@@ -223,7 +224,7 @@ A1X = RobotSpec(
         "arm_joint4": 34.4,
         "arm_joint5": 0.0,
         "arm_joint6": 0.0,
-        "gripper": 60.0,
+        "gripper": 0.0,
     },
     # Site `tcp` jak z generatora galaxeo: x - podejscie, y - zamykanie szczek.
     tcp_approach=(1.0, 0.0, 0.0),

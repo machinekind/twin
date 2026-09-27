@@ -63,3 +63,38 @@ def test_a1x_home_goes_in_stages_elbow_first_and_stops_on_a_collision(monkeypatc
         assert abs(tw.status.measured["arm_joint3"] - rest["arm_joint3"]) < 2.0
     finally:
         tw.disconnect()
+
+
+def test_a1x_sim_starts_closed_and_set_home_here_closes_the_scene_gripper(tmp_path):
+    """Sim startuje z zamknietym chwytakiem (`A1X.home`), a "Ustaw dom = tu" zamyka chwytak sceny
+    od razu i nadzor rusza od 0 - jak na A1X bez pomiaru (dom = szczeki zamkniete)."""
+    from lerobot_mp.twin import runtime as rt
+
+    tw = rt.Twin(Workspace(robot="a1x", path=tmp_path / "twin.json"))
+    try:
+        tw.connect("sim", threaded=False)
+        assert A1X.home["gripper"] == 0.0
+        assert tw.joints()["gripper"] == pytest.approx(0.0, abs=0.5)
+        tw.claim("test")
+        tw.set_engaged(True, owner="test")
+        tw.set_target({"gripper": 60.0}, owner="test")
+        for _ in range(50):
+            tw.step(0.02)
+        assert tw.joints()["gripper"] == pytest.approx(60.0, abs=2.0)
+        arm_before = {k: v for k, v in tw.joints().items() if k != "gripper"}
+        home = tw.set_home_here()
+        assert home["gripper"] == 0.0 and tw.workspace.home["gripper"] == 0.0
+        assert tw.joints()["gripper"] == pytest.approx(0.0, abs=0.5)          # scena zamknieta od razu
+        assert tw._supervisor.command["gripper"] == 0.0
+        for _ in range(25):
+            tw.step(0.02)
+        assert tw.joints()["gripper"] == pytest.approx(0.0, abs=0.5)          # serwo trzyma 0, cel nie wraca
+        assert tw.status.command["gripper"] == pytest.approx(0.0, abs=0.5)
+        for k, v in arm_before.items():
+            assert tw.joints()[k] == pytest.approx(v, abs=0.5), k
+        # Nastepne "otworz" to rampa od 0.
+        tw.set_target({"gripper": 100.0}, owner="test")
+        tw.step(0.02)
+        assert 0.0 < tw.status.command["gripper"] < 10.0
+    finally:
+        tw.disconnect()
