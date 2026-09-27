@@ -1,8 +1,11 @@
 # A1X perception robustness protocol
 
-Status: simulation development only. Candidate 028 now demonstrates 1 mm
-translation and 0.5 degree rotation tolerance in separate signed-axis tests;
-combined errors and the reserved robustness holdout remain untested.
+Status: candidate 029 passes the frozen held-out simulation benchmark at 1 mm
+translation and 0.5 degree rotation, tested separately along signed axes; 318/320
+total trials pass across nominal, persistent bias, noise and delay. Combined errors
+and actual-camera/physical validation remain untested. The comparison package is
+[`artifacts/policies/a1x-lift-029`](../artifacts/policies/a1x-lift-029/README.md).
+The following reference history precedes the final qualification recorded below.
 The user explicitly requires persistent camera-to-arm translation and rotation
 errors as well as pose noise and delay. Frozen reference candidate 027 passed
 nominal qualification: 19/20 development and 20/20 first held-out lifts, full
@@ -313,3 +316,34 @@ demonstrate an incremental benefit. Preserve 030 as a rejected experiment.
 Candidate 029's all-direction tolerance is not established by these three
 conditions. Freeze it before evaluating the unused robustness holdout; publication
 will include exact code/checkpoint identity, evaluator commands, and physical limits.
+
+## Frozen 029 held-out qualification and comparison package, 2026-09-27
+
+After selection, checkpoint `3c0c29e22282050132ec119e67cfbe1a81724f22bfd8e8e3fe833e1f15b5c95e`
+and all 16 conditions were frozen before the first use of seeds 52000-52019.
+The publication branch incorporates `origin/a1x-twin` through `1ee666b`; source
+revision `0781f4c` reproduces all 60 prior development outcomes and final states
+exactly before qualification. No policy fitting or teacher interventions occur
+in qualification. Source and checkpoint hashes are verified after the run.
+
+`perception-heldout-029` completes 320 trials in 336.22 s: **318 successes**.
+Nominal and each +/-1 mm translation direction pass 20/20; +/-0.5 degree rotation
+directions pass 19-20/20. Independent 1 mm position jitter, 0.5 degree rotation
+jitter and requested 50 ms delay each pass 20/20. Actual non-warmup delay ages
+are 60 ms (1,414 frames) or 100 ms (1,394). All conditions exceed the predeclared
+18/20 minimum with zero prohibited contacts/numerical faults. Successful true
+holds span 2.080-2.440 s. Failures remain visible: seed 52006 at -0.5 degree Y and
+52013 at -0.5 degree Z trigger finger/cube guard rejection before grasp.
+
+The audit checks 44,537 input frames, trace hashes, paired true starting states,
+rigid-transform/noise calculations, delivered policy positions and causal delay
+sources. Prior training, validation and selection-development seeds are disjoint
+from qualification. These are 20 distinct starts repeated across 16 conditions,
+not 320 independent starting scenes. Wilson intervals are reported per condition.
+Future use of 52000-52019 is regression evidence, not a new held-out claim.
+
+The publication package includes policy, metadata, per-trial outcomes, the frozen
+protocol, audit, short-fit comparison and executable verification/comparison
+instructions. Its verifier handles Windows/Linux source line endings explicitly
+while checking checkpoint/evidence bytes exactly. Physical-arm access remains
+deferred; the synthetic result does not validate the real two-camera pipeline.

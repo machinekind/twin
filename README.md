@@ -102,6 +102,10 @@ performed physical calibration work; an end-to-end learned physical grasp has
 not been established here. Current commands, evidence and limitations are in
 [A1X_OFFLINE_VALIDATION.md](docs/A1X_OFFLINE_VALIDATION.md); remaining work is in
 [A1X_EXECUTION_PLAN.md](docs/A1X_EXECUTION_PLAN.md).
+The [A1X + G1 policy comparison package](artifacts/policies/a1x-lift-029/README.md)
+contains candidate 029, matching controller instructions and a frozen calibration
+benchmark: 318/320 simulated trials, full two-second holds, zero prohibited
+contacts. Physical and actual-camera validation remain pending.
 Decyzje, historia i pułapki: [HANDOFF.md](HANDOFF.md).
 
 ---

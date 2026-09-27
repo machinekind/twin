@@ -130,7 +130,7 @@ Exit: demonstrated A1X GPU compatibility, with logs and checkpoint replay.
 - [ ] Include measured actuator behavior and realistic perception delay/noise,
   plus persistent translation and rotation errors in camera-to-arm calibration.
   Keep contact-force protection and other runtime restrictions consistent with training.
-- [ ] Measure success versus perception-error magnitude and report the achieved
+- [x] Measure success versus perception-error magnitude and report the achieved
   tolerance using true simulated object/contact state; follow the separate
   [perception robustness protocol](A1X_PERCEPTION_ROBUSTNESS.md).
 - [x] Evaluate sustained holds, not momentary height/contact. Log failures and
@@ -175,9 +175,22 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **freeze candidate 029, verify the publication branch against
-its evaluated behavior, and run the reserved perception qualification before a
-comparison-package PR**. `calibration-correction-comparison-001` reproduces 028
+Current next action: **publish the verified comparison package for Marcin in a PR**.
+Candidate 029 (`3c0c29e2`) passes the first reserved perception qualification:
+**318/320** trials on 20 starts across 16 conditions. Nominal and every +/-1 mm
+translation direction pass 20/20; +/-0.5 degree rotation directions pass 19-20/20;
+1 mm position jitter, 0.5 degree rotation jitter and requested 50 ms delay each
+pass 20/20. Two guarded finger/cube rejections remain, with zero prohibited
+contacts or numerical faults. True holds are 2.080-2.440 s; 44,537 frames are audited.
+This proves only separately tested simulation tolerance, not combined errors or
+the actual two-camera pipeline. Seeds 52000-52019 are now used: future reuse is
+regression evidence. Physical access/testing remains deferred. The separate
+`codex/a1x-lift-comparison` worktree integrates team changes through `1ee666b`;
+all 60 selected development outcomes/final states reproduce exactly. Its
+`artifacts/policies/a1x-lift-029/` package contains the checkpoint, reports, source
+hashes and comparison commands. Earlier baselines remain preserved.
+
+Selection evidence: `calibration-correction-comparison-001` reproduces 028
 exactly and compares two matched 1,000-update fits (3.66/3.52 s). Control 029 uses
 the previous examples with one explicitly re-encoded/relabelled orientation frame;
 corrective 030 adds 19 successful training recoveries. Both use identical old plus
@@ -186,8 +199,7 @@ At zero / +2 mm Y / -0.5 degree Z, autonomous development scores are 028: 19/17/
 029: **20/20/19**, 030: 19/19/16 (out of 20 each). All prohibited-contact and
 numerical-fault counts are zero. Both new fits recover training seed 53076; only
 029 meets the predeclared no-regression promotion rule. No improvement can be
-attributed to the added corrective examples. Broader tolerance and fresh held-out
-qualification for 029 are pending; the following 028 evidence remains historical.
+attributed to the added corrective examples. The following 028 evidence is historical.
 Nominal development is 19/20; the first fixed held-out nominal qualification is
 **20/20**, with true holds of 2.005-2.055 s, zero guard rejections, prohibited
 contacts or numerical faults for reference 027. Preferred development candidate
@@ -897,6 +909,7 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Fresh training screen isolates a recoverable biased-grasp failure | 40 initial and 40 targeted trials; seed 53076 passes nominally but rejects +2 mm Y. Teacher from start or after 48 learner steps succeeds; takeover at 56 fails. All labels replay from actor inputs | Teach early corrections; retain targeted-screen duplicate-close cleanup failure and reconciled evidence |
 | 2026-09-27 | Calibration corrective examples and runtime-compatible refinement verified | `calibration-teaching-001`: 19/20 training and 18/20 validation assisted successes; all 40 attempts retained. Prior 33,397 frames keep split roles; one orientation frame explicitly converted and relabelled. 95 distinct focused checks pass, three PPO training cases excluded | Compare matched short fits before scaling; no teacher intervention in policy evaluation |
 | 2026-09-27 | Short control fit outperforms added corrective data | `calibration-correction-comparison-001`: 183 autonomous trials, 235.27 s total; 029 scores 20/20 nominal, 20/20 at +2 mm Y, 19/20 at -0.5 degree Z versus 028 at 19/17/18 and corrective 030 at 19/19/16. Baseline reproduced exactly; zero prohibited contacts/numerical faults | Freeze 029; reserved perception qualification and user-authorized comparison PR; physical validation still deferred |
+| 2026-09-27 | Frozen 029 qualifies on reserved calibration cases | Publication worktree: `perception-heldout-029`, 318/320 in 336.22 s; every condition >=19/20, zero prohibited contacts/numerical faults, true holds 2.080-2.440 s. Two rotation-induced grasp rejections retained. All 44,537 input frames and dataset separation audited | Publish the 1.2 MB comparison package; holdout reuse is now regression; actual cameras/arm and combined errors remain unvalidated |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the
