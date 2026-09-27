@@ -472,3 +472,49 @@ def test_follow_stream_into_a_wall_ends_in_impact_and_backs_off_without_a_fault(
     assert not any("gluche" in f for f in rig.faults), rig.faults
     assert rig.twin.safety_state.value != "estop"
     assert d._stream is None and d._follow_handle is None
+
+
+def test_follow_stream_with_the_gripper_loaded_ends_in_impact_and_stops_advancing(rig):
+    """2026-09-27: the fingertips pressed into the table during a stream and the gripper motor overheated,
+    with no gripper command sent. The gripper's effort above its rest + `gripper_force` ends the stream."""
+    d = rig.connect_driver()
+    assert d.follow_floor_m == pytest.approx(0.01)                  # the floor stays at 1 cm on the real arm
+    c = rig.vol.center
+    far = c + np.array([0.0, 0.15, -0.02])
+    trip: dict = {}
+    real_hold_now = d._hold_now
+
+    def spy():
+        cmd = rig.twin.status.command
+        trip.setdefault("dist", float(np.linalg.norm(rig.kin.tcp(cmd)[:3, 3] - d.volume.clamp(far))))
+        real_hold_now()
+    d._hold_now = spy
+    seq = send_stream(rig, [far] * 6)
+    st = d._stream
+    assert st is not None and st.grip_rest == pytest.approx(0.0, abs=0.01)
+    floor = st.follower.setpoint(np.array([c[0], c[1], rig.vol.lo[2]]))
+    assert floor[2] == pytest.approx(rig.vol.lo[2] + 0.01)
+    assert stream_states(rig)[-1][0] in ("accepted", "moving"), stream_states(rig)
+    rig.bus.grip_effort = 3.0                                       # the jaws press on the table
+
+    def ended():
+        return any(k[0] == "hold" for k in stream_states(rig))
+    send_stream(rig, [far] * 40, seq0=seq, until=ended)
+    kinds = stream_states(rig)
+    assert kinds[-1] == ("hold", "impact", "gripper load"), kinds
+    assert "dist" in trip
+    # The command never gets closer to the stream's point after the hold (the backoff goes back).
+    closest = np.inf
+
+    def track():
+        nonlocal closest
+        cmd = rig.twin.status.command
+        closest = min(closest, float(np.linalg.norm(rig.kin.tcp(cmd)[:3, 3] - d.volume.clamp(far))))
+        return rig.twin.owner is None
+    rig.bus.grip_effort = 0.0
+    assert rig.pump(8.0, track)
+    assert closest > trip["dist"] - 0.005, (closest, trip["dist"])
+    assert rig.twin.safety_state.value != "estop"
+    assert d._stream is None and d._follow_handle is None
+    # No gripper frame went out.
+    assert not any(i == P.GRIP_ID for i, _, _ in rig.bus.tx)

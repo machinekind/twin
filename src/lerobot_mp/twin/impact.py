@@ -162,6 +162,10 @@ class ImpactGuard:
             return dict(self._good[0][1])
         return dict(measured) if measured else None
 
+    def backoff_pose(self, t: float, measured: Mapping[str, float]) -> dict[str, float] | None:
+        """The back-off pose for an impact found elsewhere (e.g. the gripper's load), by the same rule."""
+        return self._backoff(t, {j: float(measured[j]) for j in self.joints if j in measured})
+
     @property
     def lagging(self) -> list[str]:
         """Joints the lag rule is timing after the last fed sample: more than `lag_deg` behind the command

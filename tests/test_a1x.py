@@ -674,6 +674,18 @@ def test_efforts_and_velocities_come_from_fresh_feedback_for_the_six_arm_joints(
     assert arm.efforts()["arm_joint3"] == pytest.approx(30.0, abs=1.0 / P.EFF_SCALE)
 
 
+def test_gripper_effort_is_the_absolute_group_7_effort_or_none_without_fresh_feedback():
+    arm, bus, clock = make_arm()
+    assert arm.gripper_effort() is None                                          # before connect
+    arm, bus, clock = connected()
+    bus.grip_effort = -3.0
+    run(arm, bus, clock, 0.05)
+    assert arm.gripper_effort() == pytest.approx(3.0, abs=1.0 / P.EFF_SCALE)
+    assert arm.gripper_force == pytest.approx(1.2)
+    bus.silent = True
+    run(arm, bus, clock, 0.2)                                                    # > stale_ms
+    assert arm.gripper_effort() is None
+
 def test_efforts_and_velocities_are_none_without_fresh_feedback():
     arm, bus, clock = make_arm()
     assert arm.efforts() is None and arm.velocities() is None                   # before connect

@@ -194,6 +194,8 @@ class _Stream:
     fail_since: float = 0.0
     last_report: float = -math.inf
     last_sig: tuple = ()
+    grip_rest: float | None = None    # the gripper's |effort| when the stream started (None = not yet)
+    grip_over: int = 0                # consecutive ticks above rest + gripper_force
 
 
 @dataclass
@@ -489,6 +491,11 @@ class SpecsReach:
     follow_speed_sim = 0.20
     follow_speed_real = 0.10
     follow_cap_deg_s = 60.0
+    # The gripper's |effort| (backends with `gripper_effort`, the A1X) above its value at the stream's start
+    # by more than the backend's `gripper_force` for this many ticks ends the stream (`impact`, "gripper
+    # load"): the jaws press on something, e.g. the fingertips on the table (2026-09-27: the gripper motor
+    # overheated and the bus went error-passive although the twin never commanded the gripper).
+    follow_grip_ticks = 3
     # A stream may start within this distance outside the box (the glasses' smoothed cursor lags the
     # entry), and ends when a sample is farther outside than `follow_outside_m`; in between it is clamped.
     follow_margin_m = 0.02
@@ -528,7 +535,8 @@ class SpecsReach:
                  hover: float = 0.08, touch_dz: float = 0.01, speed_deg_s: float = 20.0,
                  backoff_speed_deg_s: float = 8.0, max_jump_deg: float = 150.0, grasp: bool = False,
                  allow_untrusted: bool = False, real_ok: bool = False, hold_off_s: float = 1.0,
-                 follow_speed: float | None = None, on_state: Callable[[dict], None] | None = None):
+                 follow_speed: float | None = None, follow_floor_m: float = 0.01,
+                 on_state: Callable[[dict], None] | None = None):
         _check_mode(mode)
         self.twin = twin
         self.spec = twin.spec
@@ -546,6 +554,8 @@ class SpecsReach:
         self.allow_untrusted = bool(allow_untrusted)
         self.hold_off_s = float(hold_off_s)
         self.follow_speed = None if follow_speed is None else float(follow_speed)
+        #: Setpoints stay this far above the box floor, in every mode (the follower's `z_floor`).
+        self.follow_floor_m = float(follow_floor_m)
         self.grab_zone = grab_zone(self.spec)
         self.on_state = on_state
 
@@ -1364,7 +1374,7 @@ class SpecsReach:
             kin, checker = self._follow_tools()
             follower = Follower(kin, checker, self.spec, limits=self.twin.joint_limits(),
                                 joints=self._command(), volume=self.volume, v_max=self.follow_v_max,
-                                ik_tol=self.ik_tol)
+                                z_floor=self.follow_floor_m, ik_tol=self.ik_tol)
             guard = ImpactGuard(self.arm)
             self._tune_guard(guard, "normal")
             if not self.twin.status.simulated:
@@ -1541,6 +1551,11 @@ class SpecsReach:
             self._hold_now()
             self._end_follow(st, "impact", f"{hit.kind} {hit.joint}", hit=hit)
             return
+        hit = self._gripper_load(st, t, s.measured)
+        if hit is not None:
+            self._hold_now()
+            self._end_follow(st, "impact", "gripper load", hit=hit)
+            return
 
         advance = bool(s.sent)                          # the loop sent nothing (link frozen): don't run ahead
         if not self.twin.status.simulated and st.guard.lagging:
@@ -1570,6 +1585,39 @@ class SpecsReach:
         tilt = math.degrees(out.tilt)
         detail = f"tilt {tilt:.0f} deg" if tilt > self.follow_tilt_deg else ""
         self._follow_report(st, t, "moving", None, detail)
+
+    def _gripper_load(self, st: _Stream, t: float, measured) -> Impact | None:
+        """The gripper's load during a stream: an `Impact` when its |effort| stays above the stream's rest
+        + `gripper_force` for `follow_grip_ticks` ticks. Backends without `gripper_effort`: never. While a
+        gripper command runs (closing on an object loads the jaws on purpose) the rest is taken again."""
+        b = self.twin.backend
+        read = getattr(b, "gripper_effort", None)
+        if b is None or read is None:
+            return None
+        if self._current_grip is not None:
+            st.grip_rest, st.grip_over = None, 0
+            return None
+        try:
+            eff = read()
+        except Exception:
+            return None
+        if eff is None:
+            return None
+        eff = float(eff)
+        if st.grip_rest is None:
+            st.grip_rest = eff
+            logger.info("Sledzenie: wysilek chwytaka w spoczynku %.2f", eff)
+            return None
+        limit = st.grip_rest + float(getattr(b, "gripper_force", 1.2))
+        st.grip_over = st.grip_over + 1 if eff > limit else 0
+        if st.grip_over < self.follow_grip_ticks:
+            return None
+        logger.warning("Sledzenie: obciazenie chwytaka %.2f > %.2f (spoczynek %.2f) przez %d tickow: stop",
+                       eff, limit, st.grip_rest, st.grip_over)
+        st.grip_over = 0
+        assert st.guard is not None
+        return Impact(t=t, joint=str(self.spec.gripper), kind="gripper", value=eff,
+                      backoff_pose=st.guard.backoff_pose(t, dict(measured or {})))
 
     def _hold_now(self) -> None:
         """Impact while following: hold the measured pose on the loop thread, right now. The backoff

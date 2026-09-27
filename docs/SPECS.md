@@ -81,7 +81,7 @@ would both send commands and the arm would follow neither.
 ```bash
 lerobot-twin specs [--relay URL] [--mode dry|sim|real] [--i-know] [--start-center]
                    [--backend NAME] [--port PORT] [--trusted-only] [--max-jump-deg DEG] [--hold-off S]
-                   [--grasp] [--follow-speed M_S] [--workspace FILE] [--seconds S] [--config FILE]
+                   [--grasp] [--follow-speed M_S] [--follow-floor M] [--workspace FILE] [--seconds S] [--config FILE]
 ```
 
 | flag | what it does |
@@ -97,6 +97,7 @@ lerobot-twin specs [--relay URL] [--mode dry|sim|real] [--i-know] [--start-cente
 | `--hold-off S` | Seconds to wait after accepting a hand target in `real` mode before the arm moves. Default 1; 0 means at once. |
 | `--grasp` | Object targets: go down, close the gripper and come back up. Without it the arm only stops above the object. A `grab` message does not need it. |
 | `--follow-speed M_S` | Follow streams: the fastest the followed TCP point moves, in m/s; its acceleration is 4 times that per second. Default 0.20 in `sim` (and `dry`), 0.10 in `real`. |
+| `--follow-floor M` | Follow streams: the followed TCP point stays at least this many metres above the reach box floor, in every mode. Default 0.01. |
 | `--workspace FILE` | The workspace file. Default `workspace/twin.json`. |
 | `--seconds S` | Stop after S seconds (used by tests). |
 | `--config FILE` | YAML config such as `configs/local.yaml` (A1X joint offsets and gripper settings). Also accepted before the command: `lerobot-twin --config FILE specs ...`. |
@@ -468,7 +469,9 @@ runs once per stream. Then the driver takes the arm, caps the supervisor at
 loop's clock):
 
 - The received point is clamped to the box and to at least 1 cm above its
-  floor (tool down, the tips are then at least 27 mm above the table). A
+  floor (`--follow-floor`, in every mode; tool down, the tips are then at
+  least 27 mm above the table, less with a tilted tool or a registration
+  error). A
   sample more than 5 cm outside the box ends the stream (`outside volume`).
 - The commanded TCP point starts at the forward kinematics of the arm's
   command and moves towards the point with its speed bounded by
@@ -489,6 +492,13 @@ loop's clock):
   not run ahead of a stalled joint; 0.3 s of it is an impact (`impact`, detail
   `lag arm_joint1`). The servo's steady-state error under load (1 to 2
   degrees) or a joint that is still moving does not stop it.
+- Gripper load (backends that read the gripper's effort: the A1X, frame
+  0x052 `eff[6]`, also on macOS XCAN where the gripper can't be commanded):
+  the effort is sampled on the stream's first tick (its rest). Above rest +
+  `gripper_force` (config, default 1.2) for 3 ticks in a row is an impact
+  (`impact`, detail `gripper load`): the jaws press on something, such as the
+  fingertips on the table. While a gripper command runs the rest is taken
+  again afterwards, since closing on an object loads the jaws on purpose.
 
 **Pauses are not holds.** A failed tick (IK or collision) pauses the stream:
 the twin keeps answering `moving` with `detail` `paused: ik` or `paused:
@@ -510,7 +520,7 @@ the sample it answers.
 | `outside volume` | a sample more than 5 cm outside the box |
 | `ik` | 1 s of IK failures |
 | `collision` | 2 s of collision |
-| `impact` | the impact guard tripped (effort, or lag: a stalled joint); the arm holds its measured pose at once and backs off as after a target (`detail` gives the rule and joint) |
+| `impact` | the impact guard tripped (effort, or lag: a stalled joint), or the gripper's load (`detail` `gripper load`); the arm holds its measured pose at once and backs off as after a target (`detail` gives the rule and joint) |
 | `retargeted` | a new stream id, a `target` or a `grab` arrived; the new one runs |
 | `stop`, `preempted`, `mode`, `relay` | as for a target |
 
