@@ -17,8 +17,9 @@ from __future__ import annotations
 import mujoco
 import numpy as np
 
-#: Grupy geomow, ktore rysujemy: 0-2 to wizualne (MJCF ramienia, stol, karta, obiekty).
-VISUAL_GROUPS = (0, 1, 2)
+#: Grupy geomow, ktore rysujemy: 0-2 to wizualne (MJCF ramienia, stol, karta, obiekty), 4 - schowane przed
+#: kamerami sceny, ale nie przed patrzacym (kopia mrowki w demo, `scene.HIDDEN_GROUP`).
+VISUAL_GROUPS = (0, 1, 2, 4)
 
 
 def mat_to_wxyz(R: np.ndarray) -> np.ndarray:

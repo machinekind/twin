@@ -293,7 +293,7 @@ def _demo(a: argparse.Namespace) -> int:
         print("+ mrowka RealAnt w symulacji (tagi 2 na grzbiecie, 1 na maszcie), blat 1,6 x 1,2 m, kamery "
               "sym-mrowka-przod i sym-mrowka-bok.")
         print(f"Dalej: lerobot-twin ui{ws_flag}  ->  zakladka Mrowka: Ucz ukladu (kilka kadrow), Poziom z blatu, "
-              f"Uruchom mrowke, Kalibruj kierunek, potem WSAD.")
+              f"Sledz mrowke (demo), Uruchom mrowke udajaca prawdziwa, WSAD - kopia kalibruje sie sama.")
         return 0
     if a.robot == "so101":
         print(f"Dalej: lerobot-twin ui{ws_flag}  ->  Ramie: sim, Polacz  ->  Polityka: lift-v3,"

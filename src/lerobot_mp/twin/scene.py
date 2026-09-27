@@ -33,6 +33,12 @@ from .robots import RobotSpec
 PREFIX = "robot/"
 #: Mrowka RealAnt (`AntPlacement`) wchodzi do sceny pod tym prefiksem: `ant/torso`, `ant/hip_1`...
 ANT_PREFIX = "ant/"
+#: Tylko symulacja: mrowka udajaca prawdziwa (chodzi na wlasnej polityce, tagi widza kamery symulowane).
+STANDIN_PREFIX = "antprawda/"
+#: Grupa geomow niewidocznych dla kamer sceny (render MuJoCo pokazuje 0-2), a rysowanych w panelu 3D.
+HIDDEN_GROUP = 4
+#: Kolor kopii mrowki schowanej przed kamerami (demo: widac ja obok mrowki udajacej prawdziwa).
+GHOST_RGBA = (0.25, 0.65, 1.0, 0.55)
 #: Korpus modelu RealAnt w ukladzie mrowki: model ma nogi 1..4 na +x+y, -x+y, -x-y, +x-y korpusu
 #: i startuje obrocony o 180 st. wokol z, zeby "do przodu" bylo +x swiata (realant-rl) - uklad
 #: mrowki to wlasnie ten "przod = +x".
@@ -106,8 +112,9 @@ class Panel:
 class AntPlacement:
     """Mrowka RealAnt w scenie (`twin.ant.Ant.placement`): gdzie stoi, jak ma nogi i gdzie ma tagi.
 
-    Prawdziwa mrowka ma korpus jako cialo mocap - poza przychodzi z kamer, nie z fizyki; symulowana
-    (`free`) chodzi w fizyce sceny. Nogi to zawsze stawy z serwami AX-12A z modelu, trzymajace `joints`. Uklad mrowki: srodek
+    Mrowka blizniaka (`ant/`) chodzi w fizyce sceny: nogi to stawy z serwami AX-12A z modelu, a ich cele
+    przychodza z odczytow serw prawdziwej mrowki (`antmirror`); tagi tylko dociagaja jej poze. W symulacji
+    obok stoi mrowka udajaca prawdziwa (`antprawda/`, `SceneConfig.ant_standin`). Uklad mrowki: srodek
     w polowie stosu plyt korpusu, x do przodu (kierunek chodu z realant-rl), z do gory.
     """
 
@@ -117,9 +124,13 @@ class AntPlacement:
     joints: dict[str, float] = field(default_factory=dict)
     #: [(id taga, T_tag2ant, bok czarnego kwadratu [m])] - tagi naklejone na mrowke.
     tags: list[tuple[int, np.ndarray, float]] = field(default_factory=list)
-    #: True: korpus na wolnym stawie `ant/root` - mrowka chodzi w fizyce (symulowana); `T_ant2base` to
-    #: tylko start. False: korpus mocap - poza z kamer (prawdziwa mrowka).
-    free: bool = False
+    #: True: korpus na wolnym stawie `<prefiks>root` - mrowka chodzi w fizyce, `T_ant2base` to start.
+    #: False: korpus mocap (poza ustawiana z zewnatrz).
+    free: bool = True
+    prefix: str = ANT_PREFIX
+    #: Schowana przed kamerami sceny (grupa `HIDDEN_GROUP`, polprzezroczysta, bez tagow) - kopia w demo,
+    #: ktorej kamery symulowane nie moga widziec obok mrowki udajacej prawdziwa.
+    hidden: bool = False
 
 
 @dataclass
@@ -138,8 +149,10 @@ class SceneConfig:
     #: `<obiekt>_jaw0` (stala) i `<obiekt>_jaw1` (ruchoma), 1 gdy sie stykaja.
     grasp_sensors: list[str] = field(default_factory=list)
     panels: list[Panel] = field(default_factory=list)
-    #: Mrowka RealAnt z tagami (`twin.ant`); None = bez mrowki.
+    #: Mrowka RealAnt blizniaka (`twin.ant`, prefiks `ant/`); None = bez mrowki.
     ant: AntPlacement | None = None
+    #: Tylko symulacja: mrowka udajaca prawdziwa (prefiks `antprawda/`, z tagami, na wlasnej polityce).
+    ant_standin: AntPlacement | None = None
     #: Oswietlenie: lista (pozycja swiatla nad blatem, jasnosc).
     lights: list[tuple[tuple[float, float, float], float]] = field(
         default_factory=lambda: [((0.4, -0.6, 1.6), 0.55), ((-0.5, 0.3, 1.4), 0.35)]
@@ -160,8 +173,8 @@ class Scene:
         mujoco.mj_forward(model, self.data)
         base = model.body(PREFIX + spec.base_body).id
         self.T_base2world = pose(self.data.xmat[base].reshape(3, 3), self.data.xpos[base])
-        if cfg.ant is not None:
-            self.place_ant()
+        for ant in self.ants().values():
+            self.place_ant(prefix=ant.prefix)
 
     # ------------------------------------------------------------ ramie
     def set_joints(self, joints: dict[str, float], *, hold: bool = True) -> None:
@@ -182,15 +195,23 @@ class Scene:
         return self.kin.from_q(self.data.qpos[self.kin.qadr])
 
     # ------------------------------------------------------------ mrowka
-    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None) -> None:
-        """Mrowka w nowej pozie (mocap) i/albo z nowymi katami nog [st.] - natychmiast, bez dynamiki.
+    def ants(self) -> dict[str, AntPlacement]:
+        """{prefiks: mrowka} w tej scenie."""
+        return {a.prefix: a for a in (self.cfg.ant, self.cfg.ant_standin) if a is not None}
 
-        Bez argumentow: to, co mowi `cfg.ant` (po przebudowie sceny `_copy_state` przenosi stan
-        nog ze starej sceny, a mrowka ma stac tam, gdzie kaze stanowisko).
-        """
-        ant = self.cfg.ant
+    def _ant(self, prefix: str) -> AntPlacement:
+        ant = self.ants().get(prefix)
         if ant is None:
-            raise RuntimeError("scena bez mrowki")
+            raise RuntimeError(f"scena bez mrowki {prefix!r}")
+        return ant
+
+    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None,
+                  prefix: str = ANT_PREFIX) -> None:
+        """Mrowka w nowej pozie i/albo z nowymi katami nog [st.] - natychmiast, bez dynamiki.
+
+        Bez argumentow: to, co mowi jej `AntPlacement` (start z pliku stanowiska).
+        """
+        ant = self._ant(prefix)
         if T_ant2base is not None:
             ant.T_ant2base = np.asarray(T_ant2base, float)
         if joints is not None:
@@ -198,43 +219,56 @@ class Scene:
         m, d = self.model, self.data
         T = self.T_base2world @ ant.T_ant2base @ ANT_TORSO_IN_ANT
         if ant.free:
-            j = m.joint(ANT_PREFIX + "root")
+            j = m.joint(prefix + "root")
             qa, va = m.jnt_qposadr[j.id], m.jnt_dofadr[j.id]
             d.qpos[qa:qa + 3], d.qpos[qa + 3:qa + 7] = T[:3, 3], _quat(T[:3, :3])
             d.qvel[va:va + 6] = 0.0
         else:
-            k = int(m.body_mocapid[m.body(ANT_PREFIX + "torso").id])
+            k = int(m.body_mocapid[m.body(prefix + "torso").id])
             d.mocap_pos[k] = T[:3, 3]
             d.mocap_quat[k] = _quat(T[:3, :3])
         for name, deg in ant.joints.items():
-            j = m.joint(ANT_PREFIX + name)
-            a = m.actuator(ANT_PREFIX + name).id
+            j = m.joint(prefix + name)
+            a = m.actuator(prefix + name).id
             q = float(np.clip(np.radians(deg), *m.jnt_range[j.id]))
             d.qpos[m.jnt_qposadr[j.id]] = q
             d.qvel[m.jnt_dofadr[j.id]] = 0.0
             d.ctrl[a] = float(np.clip(q, *m.actuator_ctrlrange[a]))
         mujoco.mj_forward(m, d)
 
-    def ant_joints(self) -> tuple[np.ndarray, np.ndarray]:
+    def ant_joints(self, prefix: str = ANT_PREFIX) -> tuple[np.ndarray, np.ndarray]:
         """(katy [rad], predkosci [rad/s]) nog w kolejnosci `twin.ant.JOINTS`."""
         m, d = self.model, self.data
-        ids = [m.joint(ANT_PREFIX + n).id for n in ANT_JOINTS]
+        ids = [m.joint(prefix + n).id for n in ANT_JOINTS]
         return (np.array([d.qpos[m.jnt_qposadr[j]] for j in ids]), np.array([d.qvel[m.jnt_dofadr[j]] for j in ids]))
 
-    def command_ant(self, ctrl: np.ndarray) -> None:
+    def command_ant(self, ctrl: np.ndarray, prefix: str = ANT_PREFIX) -> None:
         """Cel serw nog [rad] w kolejnosci `twin.ant.JOINTS` (obciety do zakresu serw modelu)."""
         m = self.model
         for name, q in zip(ANT_JOINTS, ctrl):
-            a = m.actuator(ANT_PREFIX + name).id
+            a = m.actuator(prefix + name).id
             self.data.ctrl[a] = float(np.clip(q, *m.actuator_ctrlrange[a]))
 
-    def ant_pose(self) -> np.ndarray | None:
-        """Poza mrowki wzgledem podstawy wyczytana z MODELU (None bez mrowki)."""
-        if self.cfg.ant is None:
+    def ant_pose(self, prefix: str = ANT_PREFIX) -> np.ndarray | None:
+        """Poza mrowki wzgledem podstawy wyczytana z MODELU (None bez tej mrowki)."""
+        if prefix not in self.ants():
             return None
-        b = self.model.body(ANT_PREFIX + "torso").id
+        b = self.model.body(prefix + "torso").id
         T = pose(self.data.xmat[b].reshape(3, 3), self.data.xpos[b])
         return inverse(self.T_base2world) @ T @ inverse(ANT_TORSO_IN_ANT)
+
+    def set_ant_pose(self, T_ant2base: np.ndarray, prefix: str = ANT_PREFIX) -> None:
+        """Nowa poza korpusu mrowki na wolnym stawie; predkosc liniowa obraca sie razem z nia (korekta z tagow)."""
+        m, d = self.model, self.data
+        j = m.joint(prefix + "root")
+        qa, va = m.jnt_qposadr[j.id], m.jnt_dofadr[j.id]
+        R_old = np.zeros(9)
+        mujoco.mju_quat2Mat(R_old, d.qpos[qa + 3:qa + 7])
+        T = self.T_base2world @ np.asarray(T_ant2base, float) @ ANT_TORSO_IN_ANT
+        dR = T[:3, :3] @ R_old.reshape(3, 3).T
+        d.qpos[qa:qa + 3], d.qpos[qa + 3:qa + 7] = T[:3, 3], _quat(T[:3, :3])
+        d.qvel[va:va + 3] = dR @ d.qvel[va:va + 3]
+        mujoco.mj_kinematics(m, d)
 
     def step(self, seconds: float) -> None:
         n = max(1, int(round(seconds / self.model.opt.timestep)))
@@ -405,11 +439,11 @@ CARDBOARD_RGBA = [0.72, 0.58, 0.40, 1.0]
 
 
 def _add_ant(spec: mujoco.MjSpec, ant: AntPlacement, T_base2world: np.ndarray) -> None:
-    """Mrowka RealAnt z pliku modelu: korpus jako mocap, nogi ze stawami i serwami, nasze tagi.
+    """Mrowka RealAnt z pliku modelu: korpus na wolnym stawie (albo mocap), nogi ze stawami i serwami, tagi.
 
-    Z modelu wypadaja podloga, swiatla i niebo (`attach_body` bierze tylko drzewo korpusu),
-    wolny staw (poze daje mocap) oraz wydrukowana plytka z tagami ArUco oryginalnej RealAnt -
-    na tej mrowce sa AprilTagi 36h11 na tekturze, dodawane tu w nauczonym ukladzie.
+    Z modelu wypadaja podloga, swiatla i niebo (`attach_body` bierze tylko drzewo korpusu) oraz wydrukowana
+    plytka z tagami ArUco oryginalnej RealAnt - na tej mrowce sa AprilTagi 36h11 na tekturze, dodawane tu
+    w nauczonym ukladzie. Schowana (`hidden`): bez tagow, geomy w grupie `HIDDEN_GROUP`, polprzezroczyste.
     """
     from .robots import resolve_asset
 
@@ -433,12 +467,16 @@ def _add_ant(spec: mujoco.MjSpec, ant: AntPlacement, T_base2world: np.ndarray) -
         for g in b.geoms:
             if g.contype:
                 g.priority = 1
+            elif ant.hidden and g.group in (0, 1, 2):
+                g.group = HIDDEN_GROUP
+                g.material = ""
+                g.rgba = list(GHOST_RGBA)
     T = T_base2world @ np.asarray(ant.T_ant2base, float) @ ANT_TORSO_IN_ANT
     torso.pos, torso.quat = T[:3, 3], _quat(T[:3, :3])
 
     to_torso = inverse(ANT_TORSO_IN_ANT)
     top = 0.0244                                         # gorna plyta korpusu nad srodkiem stosu plyt
-    for tag_id, T_tag2ant, size in ant.tags:
+    for tag_id, T_tag2ant, size in ([] if ant.hidden else ant.tags):
         plate = size / MARKER_FRACTION
         mesh = f"tag_plate{tag_id}"
         _add_tag_plate_mesh(child, plate, mesh)
@@ -481,7 +519,7 @@ def _add_ant(spec: mujoco.MjSpec, ant: AntPlacement, T_base2world: np.ndarray) -
             mast.rgba = CARDBOARD_RGBA
             mast.contype = mast.conaffinity = 0
             mast.mass, mast.group = 0.0, 1
-    spec.worldbody.add_frame().attach_body(torso, ANT_PREFIX, "")
+    spec.worldbody.add_frame().attach_body(torso, ant.prefix, "")
 
 
 def _rotmat(quat) -> np.ndarray:
@@ -546,8 +584,9 @@ def build(cfg: SceneConfig) -> Scene:
     mount.pos = T_base2world[:3, 3]
     mount.quat = _quat(R_base)
     spec.attach(robot, prefix=PREFIX, frame=mount)
-    if cfg.ant is not None:
-        _add_ant(spec, cfg.ant, T_base2world)
+    for ant in (cfg.ant, cfg.ant_standin):
+        if ant is not None:
+            _add_ant(spec, ant, T_base2world)
 
     for obj in cfg.objects:
         p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.size[2], 1.0])

@@ -1,38 +1,30 @@
-"""Petla mrowki 20 Hz: WSAD -> kierunek chodu, ta sama polityka, poza z tagow; niezalezna od ramienia.
+"""Wlasny sterownik mrowki udajacej prawdziwa (demo): WSAD -> kierunek chodu, ta sama polityka, 20 Hz.
 
-    drive = AntDrive(twin, ant_getter)                  # symulowana (scena blizniaka) albo RealAnt (ZeroMQ)
+    drive = AntDrive(twin, ant_getter)                  # mrowka `antprawda/` w scenie symulowanej
     drive.start()                                       # watek; w testach: drive.tick() krok po kroku
     drive.keys("w")                                     # pulpit WSAD (`antpad`) - co 0,1 s, puszczenie = ""
     drive.stop("STOP w panelu")                         # stoi w pozie startowej, klawisze ignorowane do clear()
 
-Jak realant-rl `robot_teleop.py` (20a6d0d), z jedna roznica - skad poza korpusu:
+Prawdziwa mrowka jezdzi na wlasnej polityce - realant-rl `robot_teleop.py` po jej stronie - i blizniak jej
+niczego nie wysyla (rozkazy z dwoch miejsc naraz sie gryzly). Blizniak ma jej kopie w fizyce, napedzana
+odczytami serw i dociagana tagami (`antmirror`). W demo tej prawdziwej mrowki nie ma, wiec udaje ja druga
+mrowka w scenie (`scene.STANDIN_PREFIX`), a ten modul to jej `robot_teleop.py`, przeniesiony wiernie (20a6d0d):
 
 **WSAD nie zmienia polityki.** Mrowka jest symetryczna co 90 st., wiec chod w bok albo w tyl to ta sama
 polityka "do przodu" z przemianowanymi nogami (adresowanie serw, `antwalk.DIRECTIONS`) i z obserwacja
 obrocona o ten sam kat - polityka widzi "swoj" przod w kierunku jazdy. Q / E = obrot w miejscu (otwarta petla,
-skalibrowana na robocie). Dwa klawisze naraz - pierwszy.
+skalibrowana na robocie). Dwa klawisze naraz - pierwszy. Przejscia, regulator wysokosci, czuwak jak w oryginale.
 
 Kierunki (`frame`): "widok" (domyslnie) - W = od patrzacego w glab widoku 3D panelu, S = do niego, A / D = w lewo /
-w prawo ekranu; przy wcisnieciu klawisza wybierany jest ten z czterech kierunkow mrowki, ktory lezy najblizej
-(`view_dir` - kierunek patrzenia kamery panelu na blacie). Wybor trzyma sie, dopoki klawisz jest wcisniety -
-obracanie widoku w trakcie jazdy nie przelacza nog. "mrowka" - W / S / A / D = przod / tyl / lewo / prawo mrowki
-(realant-rl: przod miedzy nogami 2 i 3). Bez widoku albo bez pozy mrowki - jak "mrowka".
+w prawo ekranu; przy wcisnieciu wybierany jest ten z czterech kierunkow mrowki, ktory lezy najblizej
+(`view_dir`), i trzymany do puszczenia klawisza. "mrowka" - W / S / A / D = przod / tyl / lewo / prawo mrowki
+(realant-rl: przod miedzy nogami 2 i 3).
 
-**Poza z tagow.** Mrowka nie zna swojej orientacji; obserwacja polityki (przesuniecie, wysokosc, przechyl,
-pochylenie, kurs wzgledem kursu jazdy) liczy sie z pozy z kamer stanowiska (`ant.locate`), z chwila kadru
-(`camera="tagi"`). `robot_teleop.py` jezdzi domyslnie na "kamerze nominalnej" (idealny przejazd, bez kamery),
-a tryb `live` ma nietestowany - tu tym trybem sa tagi. Kursem odniesienia jest kierunek, w ktorym mrowka stala
-przy starcie jazdy: polityka, nagradzana w treningu za trzymanie kursu i jazde prosto, koryguje sie do niego.
-Bez pozy z kamer polityka nie rusza (bez niej jest slepa); "nominal" zostaje do porownania i do kalibracji.
+Poza w obserwacji polityki (`camera`): "nominal" (domyslnie, jak `robot_teleop.py` - idealny przejazd, mrowka
+nie ma kamery), "prawda" (z fizyki) albo "tagi" (kamery stanowiska - tryb `live` z robot_policy.py).
 
-Bezpieczenstwo (wazne dla prawdziwej mrowki): klawisze to czuwak - brak odswiezenia przez `DEADMAN` = puszczone;
-STOP (`stop`) trzyma poze startowa i ignoruje klawisze do `clear`; przewrocona (os z mrowki > 50 st. od pionu)
-= STOP. Ramie i mrowka maja osobne petle i osobnych "wlascicieli" - Spectacles na ramieniu i WSAD na mrowce
-jada naraz; STOP w panelu zatrzymuje oba.
-
-Kalibracja kierunku (`calibrate_heading`) - dokalibrowanie mrowki wzgledem stolu: gdzie jest jej przod wzgledem
-taga na grzbiecie (odchylenie montazu). Przejazd W i S z kamera nominalna (jazda nie zalezy od nieznanego
-odchylenia), a kierunek przejazdu i kurs taga mierza kamery. Wysokosc i pochylenie taga - z blatu (`ant.level_mount`).
+Bezpieczenstwo: klawisze to czuwak - brak odswiezenia przez `DEADMAN` = puszczone; STOP (`stop`) trzyma poze
+startowa i ignoruje klawisze do `clear`; przewrocona (os z mrowki > 50 st. od pionu) = STOP.
 """
 
 from __future__ import annotations
@@ -41,12 +33,13 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 import numpy as np
 
 from . import antwalk as aw
-from .ant import Ant, locate, mount_matrix, zyx
+from .ant import Ant, locate
+from .scene import STANDIN_PREFIX
 
 #: Klawisz -> tryb: W S A D - ta sama polityka w czterech kierunkach, Q E - obrot w miejscu (robot_teleop.py).
 KEYS = {"w": "przod", "s": "tyl", "a": "lewo", "d": "prawo", "q": "obrot_lewo", "e": "obrot_prawo"}
@@ -73,8 +66,9 @@ class SimAnt:
 
     kind = "sim"
 
-    def __init__(self, twin):
+    def __init__(self, twin, prefix: str = STANDIN_PREFIX):
         self.twin = twin
+        self.prefix = prefix
         self._pending: np.ndarray | None = None
         self._t_seen: float | None = None
         self._q_prev: np.ndarray | None = None
@@ -87,11 +81,9 @@ class SimAnt:
 
     def ready(self) -> str:
         with self.twin.lock:
-            ant = self.twin.scene.cfg.ant
-        if ant is None:
-            return "w scenie nie ma mrowki (stanowisko bez pozy mrowki)"
-        if not ant.free:
-            return "mrowka w scenie jest prawdziwa (poza z kamer) - polacz sie z nia przez ZeroMQ"
+            ants = self.twin.scene.ants()
+        if self.prefix not in ants:
+            return "w scenie nie ma mrowki udajacej prawdziwa (lerobot-twin demo --ant)"
         return ""
 
     def startup(self) -> None:
@@ -108,13 +100,13 @@ class SimAnt:
             if stalled:
                 s.step(0.02)
                 if self._pending is not None:
-                    s.command_ant(self._pending)
+                    s.command_ant(self._pending, self.prefix)
                 s.step(aw.DT - 0.02)
             elif self._pending is not None:
-                s.command_ant(self._pending)
+                s.command_ant(self._pending, self.prefix)
             self._pending = None
             self._t_seen = float(s.data.time)
-            q, _ = s.ant_joints()
+            q, _ = s.ant_joints(self.prefix)
         # Predkosci z roznic katow, jak na robocie (tam serwa podaja tylko kat).
         self._qd = np.zeros(8) if self._q_prev is None else (q - self._q_prev) / aw.DT
         self._q_prev = q
@@ -122,62 +114,22 @@ class SimAnt:
     def joints(self) -> tuple[np.ndarray, np.ndarray] | None:
         if self._q_prev is None:
             with self.twin.lock:
-                q, _ = self.twin.scene.ant_joints()
+                q, _ = self.twin.scene.ant_joints(self.prefix)
             return q, np.zeros(8)
         return self._q_prev.copy(), self._qd.copy()
 
     def truth(self) -> np.ndarray | None:
         with self.twin.lock:
-            return self.twin.scene.ant_pose()
+            return self.twin.scene.ant_pose(self.prefix)
 
     def close(self) -> None:
         pass
-
-
-class RealAnt:
-    """Prawdziwa mrowka: `antwalk.ZmqAnt` (antproxy + ant_server z realant-hw)."""
-
-    kind = "real"
-
-    def __init__(self, zmq_ant: aw.ZmqAnt):
-        self.io = zmq_ant
-
-    @staticmethod
-    def now() -> float:
-        return time.monotonic()
-
-    def ready(self) -> str:
-        j = self.io.joints()
-        if j is None:
-            return "brak odczytow serw z ant_server (antproxy.py i ant_server.py uruchomione?)"
-        if j[2] > 1.0:
-            return f"odczyt serw sprzed {j[2]:.1f} s - lacze z mrowka stoi"
-        return ""
-
-    def startup(self) -> None:
-        self.io.startup()
-
-    def command(self, action: np.ndarray) -> None:
-        self.io.command(action)
-
-    def advance(self) -> None:
-        pass
-
-    def joints(self) -> tuple[np.ndarray, np.ndarray] | None:
-        j = self.io.joints()
-        return None if j is None else (j[0], j[1])
-
-    def truth(self) -> np.ndarray | None:
-        return None
-
-    def close(self) -> None:
-        self.io.close()
 
 
 # ------------------------------------------------------------------ petla
 @dataclass
 class AntStatus:
-    #: wylaczona / stoi / przejscie / jazda / obrot / kalibracja / STOP
+    #: wylaczona / stoi / przejscie / jazda / obrot / STOP
     mode: str = "wylaczona"
     direction: str = ""
     note: str = ""
@@ -200,7 +152,7 @@ def nominal_pose(psi: float, theta: float, p0: np.ndarray, v: float, t: float, z
 
 
 class AntDrive:
-    """Jedna petla mrowki: klawisze, poza z tagow, polityka, przejscia, regulator wysokosci, STOP.
+    """Jedna petla mrowki: klawisze, polityka, przejscia, regulator wysokosci, STOP.
 
     Przejscia jak `robot_teleop.Teleop.set_mode`: stoi -> jazda od razu z pozy startowej; jazda -> inny kierunek:
     restart obserwatora z nowym przypisaniem nog, bez rampy; obrot -> jazda, cokolwiek -> obrot albo stop: rampa
@@ -208,7 +160,7 @@ class AntDrive:
     """
 
     def __init__(self, twin, get_ant: Callable[[], Ant | None], io=None, policy: aw.WalkPolicy | None = None,
-                 camera: str = "tagi", clock: Callable[[], float] = time.monotonic,
+                 camera: str = "nominal", clock: Callable[[], float] = time.monotonic,
                  on_pose: Callable[[np.ndarray], None] | None = None, hold_height: bool = True,
                  frame: str = "widok", view_dir: Callable[[], np.ndarray | None] | None = None):
         self.twin = twin
@@ -241,10 +193,7 @@ class AntDrive:
         self._turn_i = 0
         self._psi = 0.0
         self._nominal: tuple[np.ndarray, float] | None = None     # (start, chwila) przejazdu nominalnego
-        self._pose: tuple[float, np.ndarray] | None = None        # ostatnia poza z tagow / prawdy (chwila, T)
-        self._script: deque[tuple[float, str]] = deque()           # kalibracja: (do chwili, klawisz)
-        self._calib: dict[str, Any] | None = None
-        self.last_calibration: dict[str, Any] | None = None
+        self._pose: tuple[float, np.ndarray] | None = None        # ostatnia poza (chwila, T)
         self._thread: threading.Thread | None = None
         self._run = threading.Event()
         self._started = False
@@ -259,11 +208,6 @@ class AntDrive:
     def stop(self, reason: str = "STOP") -> None:
         with self._lock:
             self._stopped = reason or "STOP"
-            if self._calib is not None:
-                self.camera = self._calib.pop("camera", self.camera)
-                self._calib["error"] = f"przerwana: {self._stopped}"
-                self.last_calibration, self._calib = self._calib, None
-            self._script.clear()
 
     def clear(self) -> None:
         with self._lock:
@@ -272,10 +216,6 @@ class AntDrive:
     @property
     def stopped(self) -> str:
         return self._stopped
-
-    @property
-    def calibrating(self) -> bool:
-        return self._calib is not None
 
     # ---------------------------------------------------------------- watek
     def start(self) -> None:
@@ -309,9 +249,9 @@ class AntDrive:
 
     # ---------------------------------------------------------------- poza
     def _measure(self, now: float) -> None:
-        """Nowa poza mrowki: z kamer (tagi) albo - tylko symulacja - prawda z fizyki."""
+        """Nowa poza mrowki: z kamer (tryb "tagi") albo z fizyki (pozostale - do WSAD wzgledem widoku i przewrocenia)."""
         T, t = None, now
-        if self.camera == "prawda":
+        if self.camera != "tagi":
             T = self.io.truth()
         else:
             ant = self.get_ant()
@@ -364,29 +304,19 @@ class AntDrive:
         with self._lock:
             keys = self._keys if wall - self._keys_t < DEADMAN else ""
             stopped = self._stopped
-            while self._script and self._script[0][0] <= now:
-                self._script.popleft()
-            scripted = self._script[0][1] if self._script else None
         if self._pose is not None:
             tilt = float(np.degrees(np.arccos(np.clip(self._pose[1][2, 2], -1, 1))))
             if tilt > FALL_TILT_DEG and not stopped:
                 self.stop(f"mrowka przewrocona ({tilt:.0f} st. od pionu)")
                 stopped = self._stopped
-        if self._calib is not None:
-            want = KEYS[scripted] if scripted else None
-            self._calib_track(now, scripted or "")
-            if scripted is None:
-                self._calib_finish()
-        else:
-            want = None if stopped else self._resolve(keys[:1])
-            if want in aw.DIRECTIONS and self.camera == "tagi" and not self._pose_fresh(now):
-                self.status.note = "brak pozy mrowki z kamer - polityka bez niej jest slepa; stoi"
-                want = None
+        want = None if stopped else self._resolve(keys[:1])
+        if want in aw.DIRECTIONS and self.camera == "tagi" and not self._pose_fresh(now):
+            self.status.note = "brak pozy mrowki z kamer - polityka bez niej jest slepa; stoi"
+            want = None
         self._set_mode(want)
         self._step(now)
         st = self.status
-        st.mode = ("STOP" if stopped else "kalibracja" if self._calib is not None else
-                   "przejscie" if self._queue else "stoi" if self._mode is None else
+        st.mode = ("STOP" if stopped else "przejscie" if self._queue else "stoi" if self._mode is None else
                    "obrot" if self._mode in self.cycles else "jazda")
         st.direction = self._mode or ""
         st.keys = keys
@@ -493,62 +423,3 @@ class AntDrive:
     def _feed_nominal(self, now: float, theta: float) -> None:
         p0, t0 = self._nominal
         self.observer.add_pose(now, nominal_pose(self._psi, theta, p0, self.policy.cfg["v_cmd"], now - t0))
-
-    # ---------------------------------------------------------------- kalibracja kierunku
-    def calibrate_heading(self, seconds: float = 3.0) -> None:
-        """Postoj, W przez `seconds`, postoj, S przez `seconds`, postoj - z kamera nominalna; wynik w `last_calibration`.
-
-        Obserwacja nominalna nie zalezy od montazu taga, wiec przejazd jest ten sam przy kazdym bledzie
-        odchylenia; kierunek przejazdu i kurs taga na grzbiecie mierza kamery.
-        """
-        with self._lock:
-            if self._stopped:
-                raise RuntimeError(f"mrowka zatrzymana ({self._stopped}) - najpierw Skasuj STOP")
-            if not self._started:
-                raise RuntimeError(self.io.ready() or "petla mrowki jeszcze nie ruszyla")
-            if self._calib is not None:
-                raise RuntimeError("kalibracja kierunku juz trwa")
-            now = self.io.now()
-            s = float(seconds)
-            self._calib = {"camera": self.camera, "tracks": {"w": [], "s": []}, "seconds": s, "error": ""}
-            self.camera = "nominal"
-            self._script = deque([(now + 1.0, ""), (now + 1.0 + s, "w"), (now + 2.0 + s, ""),
-                                  (now + 2.0 + 2 * s, "s"), (now + 3.0 + 2 * s, "")])
-
-    def _calib_track(self, now: float, key: str) -> None:
-        c = self._calib
-        if key in c["tracks"] and self._mode in aw.DIRECTIONS and not self._queue and self._pose_fresh(now):
-            ant = self.get_ant()
-            if ant is not None:
-                c["tracks"][key].append(self._pose[1] @ mount_matrix(ant.mount))   # tag na grzbiecie w bazie
-
-    def _calib_finish(self) -> None:
-        c = self._calib
-        self.camera = c.pop("camera")
-        c.update(heading_from_tracks([c["tracks"]["w"], c["tracks"]["s"]]))
-        self.last_calibration, self._calib = c, None
-
-
-def heading_from_tracks(tracks: list[list[np.ndarray]]) -> dict[str, Any]:
-    """Odchylenie montazu z torow taga na grzbiecie: kurs taga minus kurs przejazdu (tyl: przejazd + 180 st.)."""
-    est, dists = [], []
-    for k, track in enumerate(tracks):
-        if len(track) < 10:
-            dists.append(0.0)
-            continue
-        p = np.array([T[:3, 3] for T in track])
-        d = p[-1] - p[0]
-        dist = float(np.hypot(d[0], d[1]))
-        dists.append(dist)
-        if dist < 0.03:
-            continue
-        travel = np.arctan2(d[1], d[0]) + (np.pi if k == 1 else 0.0)
-        tag_yaw = np.angle(np.mean([np.exp(1j * np.radians(zyx(T[:3, :3])[0])) for T in track]))
-        est.append(np.angle(np.exp(1j * (tag_yaw - travel))))
-    if not est:
-        return {"yaw_deg": None, "spread_deg": None, "dists": dists,
-                "error": "mrowka nie przejechala pod okiem kamer (przejazdy "
-                         + ", ".join(f"{d:.2f}" for d in dists) + " m) - tagi widoczne przez caly przejazd?"}
-    yaw = float(np.degrees(np.angle(np.mean(np.exp(1j * np.array(est))))))
-    spread = float(np.degrees(abs(np.angle(np.exp(1j * (est[0] - est[1])))))) if len(est) > 1 else 0.0
-    return {"yaw_deg": yaw, "spread_deg": spread, "dists": dists, "error": ""}

@@ -48,7 +48,7 @@ import numpy as np
 
 from .kinematics import inverse, pose
 from .robots import resolve_asset
-from .scene import ANT_JOINTS, AntPlacement
+from .scene import ANT_JOINTS, STANDIN_PREFIX, AntPlacement
 from .tagbody import BodyFix, TagBody
 from .tagbody import locate as locate_body
 
@@ -237,25 +237,34 @@ class Ant:
         return self.sim is not None
 
     def scene_pose(self) -> np.ndarray | None:
-        """Gdzie mrowka stoi w scenie: start w symulacji (dalej chodzi w fizyce), inaczej ostatnia poza z kamer."""
-        return self.sim["T_ant2base"] if self.sim is not None else self.T_ant2base
+        """Gdzie mrowka blizniaka startuje w scenie: ostatnia poza z kamer, a bez niej - w symulacji - start mrowki
+        udajacej prawdziwa (dalej chodzi w fizyce, a tagi ja dociagaja)."""
+        if self.T_ant2base is not None:
+            return self.T_ant2base
+        return self.sim["T_ant2base"] if self.sim is not None else None
 
     def placement(self) -> AntPlacement | None:
-        """Mrowka do `SceneConfig.ant`; None, gdy nie wiadomo, gdzie stoi.
+        """Mrowka blizniaka do `SceneConfig.ant` (fizyka, nogi z odczytow serw, poza dociagana tagami).
 
-        Symulowana nosi PRAWDZIWE tagi (`sim`: montaz i uklad), prawdziwa - to, co o nich wiadomo.
+        None, gdy nie wiadomo, gdzie stoi. Nosi tagi takie, jakie o nich wiadomo (panel 3D, Sim-Real); w symulacji
+        jest schowana przed kamerami - te maja widziec tylko mrowke udajaca prawdziwa (`standin_placement`).
         """
         T = self.scene_pose()
         if T is None:
             return None
-        if self.sim is not None:
-            T0 = mount_matrix(self.sim["mount"])
-            layout = {self.tags.ref: np.eye(4), **self.sim["layout"]}
-            tags = {i: T0 @ layout[i] for i in self.tags.ids if i in layout}
-        else:
-            tags = self.tag_poses()
         return AntPlacement(MJCF, T.copy(), dict(self.joints),
-                            [(i, T_tag, self.tags.tag_size) for i, T_tag in tags.items()], free=self.simulated)
+                            [(i, T_tag, self.tags.tag_size) for i, T_tag in self.tag_poses().items()],
+                            hidden=self.simulated)
+
+    def standin_placement(self) -> AntPlacement | None:
+        """Tylko symulacja: mrowka udajaca prawdziwa (`SceneConfig.ant_standin`) - z PRAWDZIWYMI tagami (`sim`)."""
+        if self.sim is None:
+            return None
+        T0 = mount_matrix(self.sim["mount"])
+        layout = {self.tags.ref: np.eye(4), **self.sim["layout"]}
+        tags = {i: T0 @ layout[i] for i in self.tags.ids if i in layout}
+        return AntPlacement(MJCF, self.sim["T_ant2base"].copy(), dict(self.joints),
+                            [(i, T_tag, self.tags.tag_size) for i, T_tag in tags.items()], prefix=STANDIN_PREFIX)
 
     def rest_height(self) -> float:
         return rest_height(self.joints)

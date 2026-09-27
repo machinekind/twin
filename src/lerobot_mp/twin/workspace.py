@@ -253,7 +253,8 @@ class Workspace:
         ant = self.ant_obj() if with_ant else None
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
                           card=self.card_obj() if with_card else None,
-                          ant=ant.placement() if ant is not None else None)
+                          ant=ant.placement() if ant is not None else None,
+                          ant_standin=ant.standin_placement() if ant is not None else None)
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg

@@ -1,19 +1,20 @@
-"""Zakladka "Mrowka": kalibracja mrowki RealAnt z kamerami i jazda WSAD polityka chodu.
+"""Zakladka "Mrowka": kopia mrowki RealAnt w bliznaku - tagi, samokalibracja wzgledem stolu, sledzenie; demo WSAD.
 
     self.antp = AntTab(self, gui)                      # w zakladce Mrowka
     self.antp.tick(frames)                             # z taktu panelu
-    self.antp.stop("STOP z panelu")                    # STOP panelu zatrzymuje tez mrowke
+    self.antp.stop("STOP z panelu")                    # STOP panelu zatrzymuje mrowke udajaca prawdziwa (demo)
 
-Osobny modul, zeby app.py zmienil sie o kilka linii (jak `specs_panel`). Kolejnosc pracy, od gory zakladki:
+Osobny modul, zeby app.py zmienil sie o kilka linii (jak `specs_panel`). Prawdziwa mrowka jezdzi na wlasnej
+polityce (realant-rl `robot_teleop.py` po jej stronie) - blizniak niczego jej nie wysyla. Kolejnosc pracy:
 
-1. **Tagi**: numery (2 na grzbiecie, 1 na maszcie) i bok taga; **Ucz ukladu** - kadry, na ktorych kamery
-   widza oba tagi naraz (poza kamer niepotrzebna, wystarczy K).
-2. **Dokalibrowanie wzgledem stolu**: **Poziom z blatu** (mrowka lezy albo stoi na blacie: wysokosc
-   i pochylenie taga wzgledem korpusu), **Kalibruj kierunek** (przejazd W i S: gdzie jest przod mrowki
-   wzgledem taga). Przesuniecie taga na grzbiecie (x, y) - linijka, kilka mm, dla chodu bez znaczenia.
-3. **Jazda**: mrowka symulowana (w scenie) albo prawdziwa (ZeroMQ do antproxy / ant_server z realant-hw),
-   pulpit WSAD w zakladce i pod wlasnym adresem. Mrowka ma wlasna petle - Spectacles na ramieniu i WSAD na
-   mrowce jada naraz; STOP u gory panelu zatrzymuje oba.
+1. **Tagi**: numery (2 na grzbiecie, 1 na maszcie) i bok taga; **Ucz ukladu** - kadry z oboma tagami naraz.
+2. **Wzgledem stolu**: kalibruje sie samo w trakcie sledzenia (kierunek przodu z porownania ruchu kopii na
+   odczytach serw z ruchem z tagow; wysokosc i pochylenie taga z korpusu kopii stojacego na nogach). Recznie:
+   **Poziom z blatu** i pola montazu.
+3. **Sledzenie**: kopia w fizyce sceny - nogi z odczytow serw (ZeroMQ, tylko nasluch ant_server), poza dociagana
+   tagami. W demo odczyty serw daje mrowka udajaca prawdziwa.
+4. **Demo**: mrowka udajaca prawdziwa jezdzi na polityce chodu z WSAD (jej `robot_teleop.py`), pulpit w zakladce
+   i pod wlasnym adresem. Wlasna petla - Spectacles na ramieniu i WSAD naraz.
 """
 
 from __future__ import annotations
@@ -25,16 +26,16 @@ from typing import Any
 import numpy as np
 import viser
 
-from ..ant import LEG_POSES, Ant, level_mount, locate, snap_yaw, square_layout
+from ..ant import LEG_POSES, Ant, level_mount, locate, square_layout
 from ..tagbody import TagBody, learn_layout, observe
 
 logger = logging.getLogger(__name__)
 
 LEGS = {"lezy na brzuchu (serwa wylaczone)": "lezy", "stoi na palcach (start polityki)": "stoi"}
 FRAMES = {"wzgledem widoku 3D (W = w glab ekranu)": "widok", "wzgledem mrowki (W = jej przod)": "mrowka"}
-CAMERAS = {"tagi z kamer stanowiska": "tagi", "prawda z fizyki (tylko symulacja)": "prawda",
-           "nominalna (bez kamery, jak robot_teleop)": "nominal"}
-SOURCES = ("symulowana (w scenie)", "prawdziwa (ZeroMQ)")
+CAMERAS = {"nominalna (bez kamery, jak robot_teleop)": "nominal", "tagi z kamer stanowiska": "tagi",
+           "prawda z fizyki": "prawda"}
+SOURCES = ("prawdziwa: odczyty serw z ant_server (ZeroMQ)", "demo: mrowka udajaca prawdziwa")
 PAD_PORT = 8091
 
 
@@ -43,13 +44,14 @@ class AntTab:
         self.app = app
         self.ant: Ant = app.ws.ant_obj() or Ant()
         self._obs: list = []
+        self.mirror = None
         self.drive = None
         self.pad = None
-        self._last_calib = None
         self._t_md = 0.0
         self._t_rebuild = -1e9
-        g.add_markdown("Mrowka RealAnt z AprilTagami 36h11: **2** plasko na grzbiecie (uklad), **1** na maszcie. "
-                       "Kamery stanowiska daja jej poze - sama nie wie, jak jest obrocona.")
+        self._mount_shown: dict[str, float] = {}
+        g.add_markdown("Mrowka RealAnt z AprilTagami 36h11: **2** plasko na grzbiecie, **1** na maszcie. Mrowka "
+                       "jezdzi na wlasnej polityce; blizniak ma jej kopie - nogi z odczytow serw, poza z tagow.")
         with g.add_folder("1. Tagi", expand_by_default=True):
             self.ids = g.add_text("id tagow", " ".join(map(str, self.ant.tags.ids)),
                                   hint="Numery AprilTag 36h11 po spacji. PIERWSZY lezy plasko na grzbiecie - to uklad tagow. "
@@ -66,64 +68,78 @@ class AntTab:
                                               "wyuczony obrot przyciagany do najblizszego prostopadlego (do 15 st.); "
                                               "odchylka w opisie ponizej to sprawdzian naklejenia.")
         with g.add_folder("2. Wzgledem stolu", expand_by_default=True):
-            self.legs = g.add_dropdown("Mrowka teraz", tuple(LEGS), initial_value=self._legs_label(),
-                                       hint="Jak stoi przy Poziom z blatu - od tego wysokosc korpusu nad blatem "
-                                            "(na brzuchu 24 mm, na palcach 78 mm).")
-            level = g.add_button("Poziom z blatu", icon=viser.Icon.RULER_MEASURE,
-                                 hint="Mrowka na blacie: wysokosc taga nad srodkiem korpusu i jego pochylenie z kamer.")
-            self.mx = g.add_number("Tag na grzbiecie: x [mm]", round(self.ant.mount["x"] * 1000, 1), step=0.5,
-                                   hint="Przesuniecie srodka taga od srodka korpusu do przodu mrowki (linijka).")
-            self.my = g.add_number("Tag na grzbiecie: y [mm]", round(self.ant.mount["y"] * 1000, 1), step=0.5,
-                                   hint="Przesuniecie w lewo mrowki (linijka).")
-            self.myaw = g.add_number("Obrot taga wzgledem przodu [st.]", round(self.ant.mount["yaw"], 1), step=0.5,
-                                     hint="Osie taga wzdluz nog = 45 st. (+ k * 90) od przodu mrowki (przod miedzy "
-                                          "nogami 2 i 3). Kalibruj kierunek wybiera, ktora noga; mozna poprawic recznie.")
+            self.auto_yaw = g.add_checkbox("Sam: kierunek przodu", True,
+                                           hint="W trakcie sledzenia: dokad kopia idzie na odczytach serw vs dokad mrowka "
+                                                "wedlug tagow -> obrot taga wzgledem przodu mrowki.")
             self.snap = g.add_checkbox("Tag wzdluz nog (45 + k * 90 st.)", True,
-                                       hint="Kalibracja kierunku przyciaga wynik do 45 + k * 90 st. (krawedzie taga "
-                                            "rownolegle do plyty korpusu); przejazd W/S ma kilka stopni dryfu.")
-            calib = g.add_button("Kalibruj kierunek (jazda W i S)", icon=viser.Icon.ARROWS_MOVE_VERTICAL,
-                                 color="orange",
-                                 hint="RUSZA mrowka: ~3 s do przodu, ~3 s do tylu (polityka z kamera nominalna), "
-                                      "kamery mierza kierunek przejazdu -> gdzie jest przod wzgledem taga. Wymaga "
-                                      "uruchomionej mrowki (ponizej) i miejsca 30 cm przed i za nia.")
-            find = g.add_button("Znajdz mrowke w kamerach", icon=viser.Icon.TARGET,
-                                hint="Poza mrowki z kamer z poza -> mrowka w 3D. Mrowka nie rusza.")
-            self.follow = g.add_checkbox("Sledz na zywo", False, hint="Poza z kamer w kazdym takcie panelu.")
+                                       hint="Krawedzie taga rownolegle do plyty korpusu: obrot przyciagany do "
+                                            "45 + k * 90 st.; wtedy odcinki ruchu wybieraja tylko, ktora noga.")
+            self.auto_level = g.add_checkbox("Sam: wysokosc i pochylenie taga", True,
+                                             hint="W trakcie sledzenia: tag wzgledem korpusu kopii, ktora stoi na nogach "
+                                                  "z odczytow serw (wysokosc i pochylenie z fizyki).")
+            with g.add_folder("Recznie", expand_by_default=False):
+                self.legs = g.add_dropdown("Mrowka teraz", tuple(LEGS), initial_value=self._legs_label(),
+                                           hint="Jak stoi przy Poziom z blatu - od tego wysokosc korpusu nad blatem "
+                                                "(na brzuchu 24 mm, na palcach 78 mm).")
+                level = g.add_button("Poziom z blatu", icon=viser.Icon.RULER_MEASURE,
+                                     hint="Mrowka stoi na blacie: wysokosc taga nad srodkiem korpusu i jego pochylenie.")
+                self.mx = g.add_number("Tag na grzbiecie: x [mm]", round(self.ant.mount["x"] * 1000, 1), step=0.5,
+                                       hint="Przesuniecie srodka taga od srodka korpusu do przodu mrowki (linijka).")
+                self.my = g.add_number("Tag na grzbiecie: y [mm]", round(self.ant.mount["y"] * 1000, 1), step=0.5,
+                                       hint="Przesuniecie w lewo mrowki (linijka).")
+                self.myaw = g.add_number("Obrot taga wzgledem przodu [st.]", round(self.ant.mount["yaw"], 1), step=0.5,
+                                         hint="Osie taga wzdluz nog = 45 st. (+ k * 90) od przodu (przod miedzy nogami "
+                                              "2 i 3). Sledzenie przestawia go samo.")
             save = g.add_button("Zapisz do stanowiska", icon=viser.Icon.DEVICE_FLOPPY, color="green",
                                 hint="Tagi, uklad, montaz i ostatnia poza do twin.json (sekcja ant).")
             self.calib_md = g.add_markdown("")
-        with g.add_folder("3. Jazda (WSAD)", expand_by_default=True):
-            self.source = g.add_dropdown("Mrowka", SOURCES, initial_value=SOURCES[0 if self.ant.simulated else 1],
-                                         hint="Symulowana chodzi w fizyce sceny (demo z mrowka); prawdziwa - rozkazy do "
-                                              "antproxy.py / ant_server.py (realant-hw) po ZeroMQ.")
-            self.host = g.add_text("Adres antproxy", "127.0.0.1",
-                                   hint="Maszyna z antproxy.py i ant_server.py (porty 3001 i 3002).")
-            self.camera = g.add_dropdown("Poza dla polityki", tuple(CAMERAS), initial_value=tuple(CAMERAS)[0],
-                                         hint="Tagi - jak na prawdziwej mrowce; prawda - porownanie w symulacji; "
-                                              "nominalna - idealny przejazd bez kamery (robot_teleop.py).")
+        with g.add_folder("3. Sledzenie (kopia w bliznaku)", expand_by_default=True):
+            self.source = g.add_dropdown("Odczyty serw", SOURCES, initial_value=SOURCES[1 if self.ant.simulated else 0],
+                                         hint="Prawdziwa: nasluch pomiarow ant_server.py przez antproxy.py (port 3001) - "
+                                              "blizniak nic mrowce nie wysyla. Demo: mrowka udajaca prawdziwa w scenie.")
+            self.host = g.add_text("Adres antproxy", "127.0.0.1", hint="Maszyna z antproxy.py (port 3001).")
+            track = g.add_button("Sledz mrowke", icon=viser.Icon.PLAYER_PLAY, color="green",
+                                 hint="Kopia w fizyce: nogi z odczytow serw, poza dociagana tagami, montaz kalibruje sie sam.")
+            untrack = g.add_button("Zatrzymaj sledzenie", icon=viser.Icon.PLAYER_STOP, color="gray")
+            self.mirror_md = g.add_markdown("Kopia: nie sledzi")
+        self.demo_box = g.add_folder("4. Demo: mrowka udajaca prawdziwa (WSAD)", expand_by_default=True,
+                                     visible=self.ant.simulated)
+        with self.demo_box:
+            g.add_markdown("Tu jezdzi mrowka udajaca prawdziwa - jej wlasna polityka chodu (jak `robot_teleop.py` na "
+                           "prawdziwej). Kopia w bliznaku (niebieska) sledzi ja tylko z tagow i odczytow serw.")
             self.frame = g.add_dropdown("Kierunki WSAD", tuple(FRAMES), initial_value=tuple(FRAMES)[0],
                                         hint="Widok: W jedzie w glab widoku 3D panelu, A / D w lewo / prawo ekranu - "
-                                             "mrowka wybiera ten z czterech kierunkow (przemianowanie nog), ktory "
-                                             "lezy najblizej. Mrowka: W = przod mrowki z realant-rl.")
-            run = g.add_button("Uruchom mrowke", icon=viser.Icon.PLAYER_PLAY, color="green",
-                               hint="Petla mrowki 20 Hz i pulpit WSAD. Mrowka wstaje do pozy startowej polityki.")
-            halt = g.add_button("Zatrzymaj mrowke", icon=viser.Icon.PLAYER_STOP, color="gray",
-                                hint="Konczy petle i pulpit; prawdziwa mrowka zostaje w ostatniej pozie (serwa trzymaja).")
+                                             "wybierany najblizszy z czterech kierunkow mrowki. Mrowka: W = jej przod.")
+            self.camera = g.add_dropdown("Poza dla jej polityki", tuple(CAMERAS), initial_value=tuple(CAMERAS)[0],
+                                         hint="Nominalna - jak prawdziwa mrowka z robot_teleop.py (bez kamery); tagi - "
+                                              "tryb live z robot_policy.py; prawda - z fizyki.")
+            run = g.add_button("Uruchom mrowke udajaca prawdziwa", icon=viser.Icon.PLAYER_PLAY, color="green",
+                               hint="Jej petla 20 Hz i pulpit WSAD. Wstaje do pozy startowej polityki.")
+            halt = g.add_button("Zatrzymaj ja", icon=viser.Icon.PLAYER_STOP, color="gray")
             unstop = g.add_button("Skasuj STOP mrowki", icon=viser.Icon.HAND_STOP, color="yellow",
-                                  hint="Po STOP-ie (panelu, przewroceniu, bledzie) mrowka stoi i ignoruje klawisze, "
-                                       "dopoki go tu nie skasujesz.")
+                                  hint="Po STOP-ie (panelu, przewroceniu) mrowka stoi i ignoruje klawisze, dopoki go "
+                                       "tu nie skasujesz.")
             self.pad_html = g.add_html("")
-            self.drive_md = g.add_markdown("Mrowka: niewlaczona")
+            self.drive_md = g.add_markdown("Mrowka udajaca prawdziwa: niewlaczona")
 
         for handle in (self.mx, self.my, self.myaw):
             @handle.on_update
             def _(event):
+                if event.client is None:
+                    return                                # z kodu (samokalibracja) - montaz juz ustawiony
                 self.ant.mount = {**self.ant.mount, "x": float(self.mx.value) / 1000.0,
                                   "y": float(self.my.value) / 1000.0, "yaw": float(self.myaw.value)}
 
         @self.legs.on_update
         def _(event):
             self.ant.joints = dict(LEG_POSES[LEGS[self.legs.value]])
+
+        for handle in (self.auto_yaw, self.snap, self.auto_level):
+            @handle.on_update
+            def _(event):
+                if self.mirror is not None:
+                    self.mirror.auto_yaw, self.mirror.snap = bool(self.auto_yaw.value), bool(self.snap.value)
+                    self.mirror.auto_level = bool(self.auto_level.value)
 
         @self.frame.on_update
         def _(event):
@@ -132,17 +148,17 @@ class AntTab:
 
         @self.camera.on_update
         def _(event):
-            if self.drive is not None and not self.drive.calibrating:
+            if self.drive is not None:
                 self.drive.camera = CAMERAS[self.camera.value]
 
         self._button(learn, self.learn)
         self._button(forget, self.forget)
         self._button(level, self.level)
-        self._button(calib, self.calibrate)
-        self._button(find, lambda: self.find(self.app._grab()))
         self._button(save, self.save)
-        self._button(run, self.start)
-        self._button(halt, self.halt)
+        self._button(track, self.start_tracking)
+        self._button(untrack, self.stop_tracking)
+        self._button(run, self.start_standin)
+        self._button(halt, self.halt_standin)
         self._button(unstop, self.clear)
         self._note("")
 
@@ -199,7 +215,7 @@ class AntTab:
         """Mrowka z zakladki do stanowiska w pamieci (scena przebudowuje sie z niego); bez zapisu na dysk."""
         before = self.app.ws.ant
         self.app.ws.ant = self.ant.to_dict()
-        if rebuild or before is None or self.app.twin.scene.cfg.ant is None:
+        if rebuild or before is None or "ant/" not in self.app.twin.scene.ants():
             self.app._dirty_rebuild = time.monotonic()
 
     # ---------------------------------------------------------------- kalibracja
@@ -225,7 +241,7 @@ class AntTab:
         seen = "; ".join(f"{o.camera}: {', '.join(map(str, o.ids))}" for o in obs)
         text = f"kadr {len(self._obs)}: {seen}. Pary naraz: {pairs or 'brak'}. "
         text += (f"**Bez pozy: tag {', '.join(map(str, missing))}** - pokaz go kamerze razem z tagiem na grzbiecie."
-                 if missing else "Uklad kompletny - teraz Poziom z blatu.") + squared
+                 if missing else "Uklad kompletny - teraz Sledz mrowke.") + squared
         self._note(text)
         self._publish(rebuild=True)
 
@@ -235,51 +251,15 @@ class AntTab:
         self._obs = []
         self._note("nauka ukladu od nowa - kadry z oboma tagami naraz")
 
-    def _fix(self, frames=None):
-        self._sync_tags()
-        fix = locate(frames if frames is not None else self.app._grab(), self.app.ws.cameras, self.ant)
-        if fix is None:
-            posed = [c.name for c in self.app.ws.cameras if c.enabled and c.T_cam2base is not None]
-            raise RuntimeError(f"tagi {', '.join(map(str, self.ant.tags.known()))} nie widziane przez kamery z poza "
-                               f"({', '.join(posed) or 'brak - najpierw Kalibracja'})")
-        return fix
-
     def level(self) -> None:
-        fix = self._fix()
+        self._sync_tags()
+        fix = locate(self.app._grab(), self.app.ws.cameras, self.ant)
+        if fix is None:
+            raise RuntimeError("tagi nie widziane przez kamery z poza")
         self.ant.joints = dict(LEG_POSES[LEGS[self.legs.value]])
         self.ant.mount = level_mount(fix.tags.T_body2base, self.ant)
         self._note(f"poziom z blatu: {len(fix.tags.per_camera)} kamer, rozrzut {fix.tags.spread_mm:.1f} mm")
-        self._publish(rebuild=True)
-
-    def find(self, frames) -> None:
-        fix = self._fix(frames)
-        self._show_pose(fix.T_ant2base)
-        p = fix.position
-        cams = "; ".join(f"{n}: tagi {', '.join(map(str, fix.tags.tags_seen[n]))}, {r:.2f} px"
-                         for n, r in fix.tags.reproj_px.items())
-        above = p[2] - self.ant.rest_height()
-        self._note(f"mrowka: x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, kurs {fix.heading_deg:+.1f} st., "
-                   f"pochylenie {fix.tilt_deg:.1f} st., {above * 1000:+.0f} mm wzgledem pozy "
-                   f"'{self.legs.value}'; {cams}; rozrzut kamer {fix.tags.spread_mm:.1f} mm")
-
-    def _show_pose(self, T: np.ndarray) -> None:
-        """Poza z kamer -> mrowka w scenie. Symulowana chodzi w fizyce - jej nie przestawiamy."""
-        self.ant.T_ant2base = np.asarray(T, float)
-        if self.ant.simulated:
-            return
-        if not self.app.twin.place_ant(T) and time.monotonic() - self._t_rebuild > 3.0:
-            # Scena jeszcze bez mrowki - jedna przebudowa (panel czeka na 1 s spokoju, wiec nie co takt).
-            self._t_rebuild = time.monotonic()
-            self._publish(rebuild=True)
-
-    def calibrate(self) -> None:
-        if self.drive is None:
-            raise RuntimeError("najpierw Uruchom mrowke (3. Jazda) - kalibracja kierunku jedzie mrowka")
-        if len(self.ant.tags.known()) < 1:
-            raise RuntimeError("najpierw uklad tagow (1. Tagi)")
-        self.drive.calibrate_heading(3.0)
-        self._last_calib = None
-        self._note("kalibracja kierunku: mrowka jedzie ~3 s do przodu i ~3 s do tylu...")
+        self._publish()
 
     def save(self) -> None:
         self._sync_tags()
@@ -287,28 +267,56 @@ class AntTab:
         self.app._save()
         self._note(f"zapisano do {self.app.ws_path.name if self.app.ws_path else 'twin.json'} (sekcja ant)")
 
-    # ---------------------------------------------------------------- jazda
-    def start(self) -> None:
-        from ..antdrive import AntDrive, RealAnt, SimAnt
-        from ..antpad import AntPad
+    # ---------------------------------------------------------------- sledzenie
+    def start_tracking(self) -> None:
+        from ..antmirror import AntMirror, StandInServos
         from ..antwalk import ZmqAnt, ZmqAntConfig
 
-        if self.drive is not None:
-            raise RuntimeError("mrowka juz uruchomiona")
+        if self.mirror is not None:
+            raise RuntimeError("sledzenie juz dziala")
         self._sync_tags()
-        if self.source.value == SOURCES[0]:
+        if self.source.value == SOURCES[1]:
             if not self.ant.simulated:
-                raise RuntimeError("stanowisko nie ma mrowki symulowanej (lerobot-twin demo --ant) - wybierz prawdziwa")
-            io = SimAnt(self.app.twin)
+                raise RuntimeError("stanowisko bez mrowki udajacej prawdziwa (lerobot-twin demo --ant)")
+            servos = StandInServos(self.app.twin)
         else:
             try:
-                io = RealAnt(ZmqAnt(ZmqAntConfig(host=str(self.host.value).strip() or "127.0.0.1")))
+                servos = ZmqAnt(ZmqAntConfig(host=str(self.host.value).strip() or "127.0.0.1"))
             except ImportError:
                 raise RuntimeError("brak pyzmq: pip install -e .[ant]") from None
-        drive = AntDrive(self.app.twin, lambda: self.ant, io=io, camera=CAMERAS[self.camera.value],
-                         on_pose=self._on_drive_pose, frame=FRAMES[self.frame.value], view_dir=self._view_dir)
+        self.mirror = AntMirror(self.app.twin, lambda: self.ant, servos, auto_yaw=bool(self.auto_yaw.value),
+                                snap=bool(self.snap.value), auto_level=bool(self.auto_level.value),
+                                on_missing=self._on_missing)
+        self.mirror.start()
+        self.mirror_md.content = "Kopia: startuje"
+
+    def _on_missing(self, T: np.ndarray) -> None:
+        """Pierwsza poza z tagow, a w scenie nie ma jeszcze kopii - stanowisko dostaje poze, scena sie przebudowuje."""
+        if time.monotonic() - self._t_rebuild > 3.0:
+            self._t_rebuild = time.monotonic()
+            self.ant.T_ant2base = np.asarray(T, float)
+            self._publish(rebuild=True)
+
+    def stop_tracking(self) -> None:
+        m, self.mirror = self.mirror, None
+        if m is not None:
+            m.close()
+        self.mirror_md.content = "Kopia: nie sledzi"
+
+    # ---------------------------------------------------------------- demo: mrowka udajaca prawdziwa
+    def start_standin(self) -> None:
+        from ..antdrive import AntDrive, SimAnt
+        from ..antpad import AntPad
+
+        if self.drive is not None:
+            raise RuntimeError("mrowka udajaca prawdziwa juz jezdzi")
+        if not self.ant.simulated:
+            raise RuntimeError("to tylko demo (lerobot-twin demo --ant) - prawdziwa mrowka jezdzi na robot_teleop.py")
+        self._sync_tags()
+        drive = AntDrive(self.app.twin, lambda: self.ant, io=SimAnt(self.app.twin), camera=CAMERAS[self.camera.value],
+                         frame=FRAMES[self.frame.value], view_dir=self._view_dir)
         if self.app._estop_active():
-            drive.stop("STOP panelu aktywny - Skasuj STOP")
+            drive.stop("STOP panelu aktywny - Skasuj STOP mrowki")
         drive.start()
         try:
             pad = AntPad(drive, port=PAD_PORT, host=self.app.host).start()
@@ -316,7 +324,7 @@ class AntTab:
             pad = AntPad(drive, port=0, host=self.app.host).start()     # zajety port - dowolny wolny
         self.drive, self.pad = drive, pad
         self.pad_html.content = pad.html_embed()
-        self.drive_md.content = f"Mrowka: startuje; pulpit WSAD takze pod http://{self.app.host}:{pad.port}/"
+        self.drive_md.content = f"Mrowka udajaca prawdziwa: startuje; pulpit takze pod http://{self.app.host}:{pad.port}/"
 
     def _view_dir(self) -> np.ndarray | None:
         """Kierunek patrzenia kamery 3D panelu na blacie, w ukladzie podstawy (najnowszy klient)."""
@@ -329,10 +337,7 @@ class AntTab:
         n = float(np.hypot(d[0], d[1]))
         return None if n < 1e-6 else d[:2] / n
 
-    def _on_drive_pose(self, T: np.ndarray) -> None:
-        self._show_pose(T)
-
-    def halt(self) -> None:
+    def halt_standin(self) -> None:
         drive, pad = self.drive, self.pad
         self.drive, self.pad = None, None
         self.pad_html.content = ""
@@ -340,7 +345,7 @@ class AntTab:
             pad.close()
         if drive is not None:
             drive.close()
-        self.drive_md.content = "Mrowka: niewlaczona"
+        self.drive_md.content = "Mrowka udajaca prawdziwa: niewlaczona"
 
     def stop(self, reason: str) -> None:
         if self.drive is not None:
@@ -351,48 +356,48 @@ class AntTab:
             self.drive.clear()
 
     def close(self) -> None:
-        self.halt()
+        self.halt_standin()
+        self.stop_tracking()
 
     # ---------------------------------------------------------------- takt
     def tick(self, frames: dict[str, np.ndarray]) -> None:
-        if self.follow.value and self.drive is None:
-            try:
-                self.find(frames)
-            except RuntimeError as exc:
-                self._note(str(exc))
-        d = self.drive
-        if d is None:
-            return
-        res = d.last_calibration
-        if res is not None and res is not self._last_calib:
-            self._last_calib = res
-            if res.get("error"):
-                self._note(f"kalibracja kierunku: **{res['error']}**")
-            else:
-                raw = float(res["yaw_deg"])
-                yaw, off = snap_yaw(raw) if self.snap.value else (raw, 0.0)
-                self.ant.mount = {**self.ant.mount, "yaw": yaw}
-                self.myaw.value = round(yaw, 1)
-                how = (f"przejazd {raw:+.1f} st., przyciagniety do {yaw:+.0f} (odchylka {off:+.1f})" if yaw != raw
-                       else f"{raw:+.1f} st." + (" - **daleko od 45 + k * 90, bez przyciagania**" if self.snap.value
-                                                  else ""))
-                self._note(f"kalibracja kierunku: obrot taga {how}; przod / tyl zgodne co do {res['spread_deg']:.1f} st., "
-                           f"przejazdy {', '.join(f'{x:.2f}' for x in res['dists'])} m. Zapisz do stanowiska, zeby zostalo.")
-                self._publish()
         now = time.monotonic()
         if now - self._t_md < 0.3:
             return
         self._t_md = now
-        st = d.status
-        lines = [f"**Mrowka: {st.mode}**" + (f" - {st.direction}" if st.direction else "")
-                 + (f", klawisze {st.keys}" if st.keys else "")]
-        if st.note:
-            lines.append(st.note)
-        if st.T_ant2base is not None:
-            p = st.T_ant2base[:3, 3]
-            age = "" if st.pose_age is None else f", poza sprzed {st.pose_age:.2f} s"
-            lines.append(f"x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, kurs {st.heading_deg:+.0f} st.{age}")
-        if st.height:
-            lines.append(f"wysokosc: {st.height}")
-        lines.append(f"poza dla polityki: {d.camera}; polityka {d.policy.name}")
-        self.drive_md.content = "  \n".join(lines)
+        m = self.mirror
+        if m is not None:
+            st = m.status
+            lines = [f"**Kopia: {st.mode}**" + (f" - {st.note}" if st.note else "")]
+            if st.T_ant2base is not None:
+                p = st.T_ant2base[:3, 3]
+                heading = float(np.degrees(np.arctan2(st.T_ant2base[1, 0], st.T_ant2base[0, 0])))
+                lines.append(f"x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, kurs {heading:+.0f} st.")
+            ages = []
+            if st.servo_age is not None:
+                ages.append(f"serwa sprzed {st.servo_age:.2f} s")
+            if st.tag_age is not None:
+                ages.append(f"tagi sprzed {st.tag_age:.2f} s")
+            if st.err_mm is not None:
+                ages.append(f"ostatnia poprawka z tagow {st.err_mm:.0f} mm / {st.err_deg:+.1f} st.")
+            if ages:
+                lines.append(", ".join(ages))
+            if st.calib:
+                lines.append(st.calib)
+            self.mirror_md.content = "  \n".join(lines)
+            mount = {k: round(v, 4) for k, v in self.ant.mount.items()}
+            if mount != self._mount_shown:                # samokalibracja przestawila montaz - pola i opis
+                self._mount_shown = mount
+                self.myaw.value = round(self.ant.mount["yaw"], 1)
+                self._note(st.calib)
+        d = self.drive
+        if d is not None:
+            st = d.status
+            lines = [f"**Mrowka udajaca prawdziwa: {st.mode}**" + (f" - {st.direction}" if st.direction else "")
+                     + (f", klawisze {st.keys}" if st.keys else "")]
+            if st.note:
+                lines.append(st.note)
+            if st.height:
+                lines.append(f"wysokosc: {st.height}")
+            lines.append(f"poza dla jej polityki: {d.camera}; polityka {d.policy.name}")
+            self.drive_md.content = "  \n".join(lines)

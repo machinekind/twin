@@ -314,28 +314,13 @@ class HeightHold:
                                       self.BIAS_MIN, self.BIAS_MAX))
 
 
-# ------------------------------------------------------------------ prawdziwa mrowka (ZeroMQ)
-#: Serwo (0..7 = s1..s8) kazdego stawu w kolejnosci polityki - rollout_server.apply_controls / get_obs.
+# ------------------------------------------------------------------ odczyty serw prawdziwej mrowki (ZeroMQ)
+#: Serwo (0..7 = s1..s8) kazdego stawu w kolejnosci polityki - rollout_server.get_obs / apply_controls.
 SERVO_OF_JOINT = (2, 3, 0, 1, 6, 7, 4, 5)
-#: Jednostki AX-12A (0..1023, 512 = srodek) dla akcji: biodro -1 / 0 / +1 (nogi 1-2 maja srodek 510),
-#: kostka -1 (w dol) / +1 (poziomo) - rollout_server.map_actions_to_joints.
-HIP_UNITS = ((350.0, 510.0, 663.0), (350.0, 510.0, 663.0), (350.0, 512.0, 663.0), (350.0, 512.0, 663.0))
-ANKLE_UNITS = (287.0, 511.0)
-#: Odczyt serw -> kat (map_joints_measurements_to_network, przeskalowane do zakresu modelu v2).
+#: Odczyt serw -> kat (map_joints_measurements_to_network, przeskalowane do zakresu modelu v2): biodro
+#: 350 / 510 / 661 -> -+ zakres, kostka 288 (w dol) / 511 (poziomo).
 HIP_UNITS_MEAS = (350.0, 510.0, 661.0)
 ANKLE_UNITS_MEAS = (288.0, 511.0)
-
-
-def action_to_units(a: np.ndarray) -> list[int]:
-    """Akcja w kolejnosci polityki -> nastawy s1..s8 w jednostkach serw."""
-    a = np.clip(np.asarray(a, float), -1, 1)
-    out = [0] * 8
-    for k in range(8):
-        leg = k // 2
-        u = (np.interp(a[k], (-1.0, 0.0, 1.0), HIP_UNITS[leg]) if k % 2 == 0
-             else np.interp(a[k], (-1.0, 1.0), ANKLE_UNITS))
-        out[SERVO_OF_JOINT[k]] = int(round(u))
-    return out
 
 
 def units_to_joints(units: list[float]) -> np.ndarray:
@@ -352,16 +337,16 @@ def units_to_joints(units: list[float]) -> np.ndarray:
 @dataclass
 class ZmqAntConfig:
     host: str = "127.0.0.1"
-    #: antproxy.py: XSUB (tu publikujemy rozkazy "cmd") i XPUB (stad pomiary JSON z ant_server.py).
-    pub_port: int = 3002
+    #: antproxy.py: XPUB, z ktorego ant_server.py (przez proxy) rozsyla pomiary JSON.
     sub_port: int = 3001
 
 
 class ZmqAnt:
-    """Prawdziwa mrowka przez antproxy / ant_server (realant-hw): rozkazy "s1 X ... s8 Y", pomiary z serw.
+    """Odczyty serw prawdziwej mrowki z antproxy / ant_server (realant-hw) - TYLKO nasluch.
 
-    NIETESTOWANE na mrowce z tego stanowiska - mapy serw sa z rollout_server.py (tam oznaczone "TODO validate");
-    pierwszy test: przycisk "Test nog" w panelu rusza po kolei jednym stawem.
+    Mrowka jezdzi na wlasnej polityce (realant-rl `robot_teleop.py` / `robot_policy.py` po jej stronie); blizniak
+    niczego jej nie wysyla - rozkazy z dwoch miejsc naraz sie gryzly. Subskrybent obok rollout_server: PUB/SUB
+    antproxy rozsyla te same pomiary kazdemu. Katy z mapy rollout_server.py (`units_to_joints`, tam "TODO validate").
     """
 
     def __init__(self, cfg: ZmqAntConfig | None = None, context=None):
@@ -370,8 +355,6 @@ class ZmqAnt:
         self.cfg = cfg or ZmqAntConfig()
         self._zmq = zmq
         self.ctx = context or zmq.Context.instance()
-        self.pub = self.ctx.socket(zmq.PUB)
-        self.pub.connect(f"tcp://{self.cfg.host}:{self.cfg.pub_port}")
         self.sub = self.ctx.socket(zmq.SUB)
         self.sub.connect(f"tcp://{self.cfg.host}:{self.cfg.sub_port}")
         self.sub.setsockopt(zmq.SUBSCRIBE, b"{")
@@ -381,7 +364,7 @@ class ZmqAnt:
         self._prev: tuple[np.ndarray, float] | None = None
         self._vel = np.zeros(8)
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._rx, name="mrowka-zmq", daemon=True)
+        self._thread = threading.Thread(target=self._rx, name="mrowka-serwa", daemon=True)
         self._thread.start()
 
     def _rx(self) -> None:
@@ -409,22 +392,6 @@ class ZmqAnt:
                 self._prev = (q, t_ms)
                 self._last = (time.monotonic(), q, t_ms)
 
-    def send(self, text: str) -> None:
-        self.pub.send_multipart([b"cmd", text.encode() + (b"" if text.endswith("\n") else b"\n")])
-
-    def startup(self) -> None:
-        """Jak robot_policy.py: reset, wylaczenie i wlaczenie serw, reset (serwa jada do pozy resetu)."""
-        self.send("reset")
-        time.sleep(0.3)
-        self.send("detach_servos")
-        time.sleep(0.5)
-        self.send("attach_servos")
-        self.send("reset")
-
-    def command(self, action: np.ndarray) -> None:
-        u = action_to_units(action)
-        self.send(" ".join(f"s{i + 1} {v}" for i, v in enumerate(u)))
-
     def joints(self) -> tuple[np.ndarray, np.ndarray, float] | None:
         """(katy [rad], predkosci [rad/s], wiek odczytu [s]) albo None przed pierwszym odczytem."""
         with self._lock:
@@ -433,14 +400,22 @@ class ZmqAnt:
             t, q, _ = self._last
             return q.copy(), self._vel.copy(), time.monotonic() - t
 
-    def detach(self) -> None:
-        self.send("detach_servos")
-
     def close(self) -> None:
         self._stop.set()
         self._thread.join(timeout=1.0)
-        self.pub.close(0)
         self.sub.close(0)
+
+
+def joints_to_units(q: np.ndarray) -> list[int]:
+    """Katy stawow [rad] (kolejnosc polityki) -> odczyt s1..s8 w jednostkach serw - odwrotnosc `units_to_joints`,
+    z zaokragleniem do jednostki AX-12A (0,29 st.) jak prawdziwy odczyt."""
+    q = np.asarray(q, float)
+    out = [0] * 8
+    for k in range(8):
+        u = (np.interp(q[k], (-HIP_CTRL, 0.0, HIP_CTRL), HIP_UNITS_MEAS) if k % 2 == 0
+             else np.interp(q[k], (0.0, ANKLE_CTRL), ANKLE_UNITS_MEAS[::-1]))
+        out[SERVO_OF_JOINT[k]] = int(round(u))
+    return out
 
 
 # ------------------------------------------------------------------ czasomierz

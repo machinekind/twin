@@ -378,26 +378,27 @@ class Twin:
             with self.lock:
                 old = self.scene
                 _copy_state(old, new)
-                # Mrowka tam, gdzie mowi stanowisko, nie stara scena - chyba ze symulowana juz chodzi
-                # w fizyce: wtedy jej wolny staw przeniosl `_copy_state`.
-                if new.cfg.ant is not None and not (new.cfg.ant.free and old.cfg.ant is not None
-                                                    and old.cfg.ant.free):
-                    new.place_ant()
+                # Mrowka nowa w scenie staje tam, gdzie mowi stanowisko; ta, ktora juz chodzila w fizyce,
+                # idzie dalej - jej wolny staw przeniosl `_copy_state`.
+                for prefix, ant in new.ants().items():
+                    if not (ant.free and prefix in old.ants()):
+                        new.place_ant(prefix=prefix)
                 old.close()
                 self.scene = new
                 self._view = None
                 self.version += 1
         self.renderer.call(job)
 
-    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None) -> bool:
-        """Mrowka w scenie w nowej pozie / z nowymi nogami, bez przebudowy (sledzenie z kamer).
+    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None,
+                  prefix: str = sc.ANT_PREFIX) -> bool:
+        """Mrowka w scenie w nowej pozie / z nowymi nogami, bez przebudowy.
 
-        False, gdy scena jest bez mrowki (stanowisko jej nie mialo przy budowie) - wtedy `rebuild`.
+        False, gdy scena jest bez tej mrowki (stanowisko jej nie mialo przy budowie) - wtedy `rebuild`.
         """
         with self.lock:
-            if self.scene.cfg.ant is None:
+            if prefix not in self.scene.ants():
                 return False
-            self.scene.place_ant(T_ant2base, joints)
+            self.scene.place_ant(T_ant2base, joints, prefix=prefix)
             return True
 
     def configure(self, **extras) -> None:
