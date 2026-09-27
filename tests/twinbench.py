@@ -107,10 +107,39 @@ class FakeRelay:
         return ts
 
     def grip(self, action: str, *, ts: int | None = None) -> int:
-        """A fist in the glasses."""
+        """A gripper command from the glasses (a left-hand pinch)."""
         ts = ts if ts is not None else next(self._ts)
         self._broadcast({"type": "gripper", "action": action, "session": self.session, "ts": ts})
         return ts
+
+    def send(self, msg: dict) -> None:
+        self._broadcast(msg)
+
+    def follow(self, stream: int, seq: int, pos=None, *, active: bool = True, yaw: float | None = None,
+               ts: int | None = None, session: str = "s1") -> int:
+        """One sample of a follow stream (teleop): `stream` = ts of its first sample, `seq` from 0."""
+        ts = ts if ts is not None else stream + seq
+        msg = {"type": "follow", "ts": ts, "session": session, "trusted": True, "stream": stream, "seq": seq,
+               "active": active}
+        if active:
+            msg["pos"] = [round(float(v), 4) for v in pos]
+            msg["yaw"] = yaw
+        self._broadcast(msg)
+        return ts
+
+    def grab_object(self, pos, *, size=None, yaw=None, label: str = "cup", depth: bool = True, age: float = 0.1,
+                    ts: int | None = None, session: str = "s1") -> int:
+        """A pinch on a detection in the grab zone."""
+        ts = ts if ts is not None else next(self._ts)
+        obj = {"pos": [float(v) for v in pos], "surface": [float(v) for v in pos], "ray": [1.0, 0.0, 0.0],
+               "size": size, "yaw": yaw, "label": label, "id": 7}
+        self._broadcast({"type": "grab", "ts": ts, "session": session, "trusted": True, "stream": ts,
+                         "policy": "topdown", "object": obj, "depthMeasured": depth, "age": age})
+        return ts
+
+    def stream_states(self, stream: int) -> list[dict]:
+        with self.cond:
+            return [s for s in self.states if s.get("stream") == stream]
 
     def saw(self, ts: int, states) -> dict | None:
         """The last targetState for `ts` in `states` that reached the relay, or None (never blocks)."""
@@ -189,8 +218,17 @@ class Bench:
 
     # ------------------------------------------------------------ time
     def step(self, dt: float = DT) -> None:
-        """One loop tick of `dt` (the clock first, then the loop)."""
+        """One loop tick of `dt` (the clock first, then the loop), then the drivers' stream reports go out."""
         self.twin.step(dt)
+        self.flush_reports()
+
+    def flush_reports(self) -> None:
+        """Sends the attached drivers' queued follow-stream reports now, from this thread.
+
+        The driver queues a stream's `targetState` on the loop or worker thread and its network thread sends
+        it within a receive slice of real time; flushing here puts it in `sent` on the tick it happened."""
+        for d in self.drivers:
+            d._flush_follow_reports()
 
     def pump(self, *, until: Callable[[], object] | None = None, sim_s: float | None = None,
              max_sim_s: float = 10.0, dt: float = DT) -> bool:
@@ -292,8 +330,23 @@ class Bench:
             with self._lock:
                 self.handled.append(msg if isinstance(msg, dict) else {"type": "?", "raw": msg})
 
+        # The bench flushes stream reports from its own thread (`flush_reports`): one at a time with the network
+        # thread, and the network thread's kinematics (`_tcp_now`) under the same lock.
+        real_flush, real_tcp_now = d._flush_follow_reports, d._tcp_now
+        net_lock = threading.RLock()
+
+        def flush() -> None:
+            with net_lock:
+                real_flush()
+
+        def tcp_now(kin=None):
+            with net_lock:
+                return real_tcp_now(kin)
+
         d._send = send
         d._on_message = on_message
+        d._flush_follow_reports = flush
+        d._tcp_now = tcp_now
         self.drivers.append(d)
         return d
 
@@ -328,6 +381,38 @@ class Bench:
         ts = self.relay.grip(action, **kw)
         self.wait_real(lambda: self._was_handled("gripper", ts), what=f"chwytak {ts} u kierowcy")
         return ts
+
+    def follow(self, stream: int, seq: int, pos=None, **kw) -> int:
+        """Sends a follow-stream sample and waits (real time) until the driver has handled it."""
+        assert self.relay is not None
+        ts = self.relay.follow(stream, seq, pos, **kw)
+        self.wait_real(lambda: self._was_handled("follow", ts), what=f"punkt {stream}/{seq} u kierowcy")
+        return ts
+
+    def grab_object(self, pos, **kw) -> int:
+        """Sends a grab and waits (real time) until the driver has handled it."""
+        assert self.relay is not None
+        ts = self.relay.grab_object(pos, **kw)
+        self.wait_real(lambda: self._was_handled("grab", ts), what=f"chwyt {ts} u kierowcy")
+        return ts
+
+    def stream_states(self, stream: int) -> list[dict]:
+        """targetState messages for a follow stream or a grab (`stream` = the grab's ts), in the order sent."""
+        return [m for m in self._sent("targetState") if m.get("stream") == stream]
+
+    def saw_stream(self, stream: int, states, reason: str | None = None) -> dict | None:
+        hit = [m for m in self.stream_states(stream)
+               if m["state"] in states and (reason is None or m.get("reason") == reason)]
+        return hit[-1] if hit else None
+
+    def wait_stream(self, stream: int, states, *, max_sim_s: float = 10.0, reason: str | None = None) -> dict:
+        """Pumps until the driver sends a targetState for `stream` in `states` (and `reason`); returns it."""
+        ok = self.pump(until=lambda: self.saw_stream(stream, states, reason), max_sim_s=max_sim_s)
+        assert ok, f"brak stanu {set(states)} strumienia {stream} w {max_sim_s} s: " \
+                   f"{[(m['state'], m.get('reason'), m.get('detail')) for m in self.stream_states(stream)]}"
+        found = self.saw_stream(stream, states, reason)
+        assert found is not None
+        return found
 
     def _sent(self, kind: str) -> list[dict]:
         with self._lock:
