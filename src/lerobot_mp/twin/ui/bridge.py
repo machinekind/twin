@@ -22,6 +22,19 @@ import numpy as np
 VISUAL_GROUPS = (0, 1, 2, 4)
 
 
+#: glTF is y-up with -z forward; the scene is z-up: (x, y, z)_glTF -> (x, -z, y).
+R_GLTF_TO_ZUP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+
+
+def room_pose(offset, yaw_deg: float) -> np.ndarray:
+    """4x4 room (glTF) -> base frame: y-up to z-up, then `yaw_deg` about z, then `offset` [m]."""
+    c, s = np.cos(np.radians(yaw_deg)), np.sin(np.radians(yaw_deg))
+    T = np.eye(4)
+    T[:3, :3] = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]) @ R_GLTF_TO_ZUP
+    T[:3, 3] = np.asarray(offset, float)
+    return T
+
+
 def mat_to_wxyz(R: np.ndarray) -> np.ndarray:
     q = np.zeros(4)
     mujoco.mju_mat2Quat(q, np.asarray(R, float).ravel())
@@ -54,7 +67,9 @@ def decimate(vertices: np.ndarray, faces: np.ndarray, cell: float) -> tuple[np.n
 
 
 class SceneMirror:
-    def __init__(self, server, model: mujoco.MjModel, root: str = "/scena", mesh_cell: float | None = 0.0012):
+    def __init__(self, server, model: mujoco.MjModel, root: str = "/scena", mesh_cell: float | None = 0.0012,
+                 skip: tuple[str, ...] | set[str] = ()):
+        """`skip` - geom names not drawn (e.g. "floor", "table" when the room GLB replaces them)."""
         self.server, self.model, self.root = server, model, root
         self.triangles = 0
         self.bodies: dict[int, object] = {}
@@ -64,6 +79,8 @@ class SceneMirror:
         sc = server.scene
         for g in range(m.ngeom):
             if m.geom_group[g] not in VISUAL_GROUPS:
+                continue
+            if skip and mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) in skip:
                 continue
             rgba = m.mat_rgba[m.geom_matid[g]] if m.geom_matid[g] >= 0 else m.geom_rgba[g]
             if rgba[3] < 0.05:

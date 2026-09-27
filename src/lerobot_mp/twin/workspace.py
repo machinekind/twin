@@ -43,6 +43,40 @@ def default_path() -> Path:
     """Domyslny plik stanowiska liczony w chwili uzycia (katalog biezacy moze sie zmienic)."""
     return data_path(DEFAULT_REL)
 
+
+#: Room backdrop in the panel (`Workspace.room`): a glTF binary drawn behind the twin, view only.
+#: Default placement of `assets/rooms/pokoj.glb` in the BASE frame: the room's desk (the dark one by the
+#: window, top at glTF y = 0.743, x 0.72..1.57, z -1.79..-0.15) lands on the twin's table: desk top at
+#: base z = 0, desk centre (x 1.145, z -0.97) on the table centre (base x 0.45, y 0), the desk's long
+#: side along base y and the window wall (glTF +x) behind the reach box (base +x). glTF y-up maps to
+#: z-up as (x, y, z) -> (x, -z, y), then `yaw_deg` about z, then `offset`.
+ROOM_GLB = "assets/rooms/pokoj.glb"
+ROOM_OFFSET = (-0.695, -0.97, -0.743)
+ROOM_YAW_DEG = 0.0
+
+
+def room_config(glb: str | Path = ROOM_GLB, current: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`Workspace.room` for this GLB; the placement of `current` (if any) is kept, only the file changes."""
+    room = {"glb": str(glb), "offset": list(ROOM_OFFSET), "yaw_deg": ROOM_YAW_DEG,
+            "hide_table": True, "hide_floor": True}
+    if current:
+        room.update({k: v for k, v in current.items() if k != "glb"})
+    return room
+
+
+def room_path(room: dict[str, Any]) -> Path:
+    """The room's GLB on disk: absolute as given, relative to the repo root in a clone (`data_path`)."""
+    return data_path(Path(room["glb"]).expanduser())
+
+
+def room_placement(room: dict[str, Any]) -> str:
+    """One log line: file, offset and yaw."""
+    x, y, z = (float(v) for v in room.get("offset", ROOM_OFFSET))
+    return (f"pokoj {room['glb']}: przesuniecie ({x:+.3f}, {y:+.3f}, {z:+.3f}) m w ukladzie podstawy, "
+            f"obrot {float(room.get('yaw_deg', ROOM_YAW_DEG)):+.1f} st., "
+            f"stol {'schowany' if room.get('hide_table', True) else 'widoczny'}, "
+            f"podloga {'schowana' if room.get('hide_floor', True) else 'widoczna'}")
+
 #: Poziome pole widzenia typowej kamerki internetowej - tylko do nominalnych
 #: intrynsyk, zanim kamera zobaczy szachownice.
 NOMINAL_HFOV_DEG = 65.0
@@ -196,6 +230,9 @@ class Workspace:
     #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
     #: None = nie wybrano, `load` wgrywa najnowszy.
     calib_preset: str | None = None
+    #: Room backdrop in the panel's 3D view (`room_config`): {"glb", "offset" [m, base frame],
+    #: "yaw_deg", "hide_table", "hide_floor"}. View only - physics never sees it. None = no room, not written.
+    room: dict[str, Any] | None = None
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -365,7 +402,7 @@ class Workspace:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("path", None)
-        for key in ("reach", "pmd", "ant"):
+        for key in ("reach", "pmd", "ant", "room"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data

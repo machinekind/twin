@@ -117,6 +117,24 @@ lerobot-twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJ
 (`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2, uEye) —
 dlatego podgląd siedzi w procesie panelu.
 
+**Pokój jako tło widoku 3D** (`--room`): plik glTF (`.glb`) rysowany za bliźniakiem — tylko widok,
+fizyka go nie widzi. `lerobot-twin ui --room assets/rooms/pokoj.glb` na ten start (log podaje
+położenie jedną linią), `lerobot-twin workspace --room assets/rooms/pokoj.glb` zapisuje go w
+stanowisku (pole `room`: `glb` względem korzenia repozytorium albo bezwzględnie, `offset` [m, układ
+podstawy], `yaw_deg`, `hide_table`, `hide_floor`), `--no-room` usuwa. Z pokojem panel nie rysuje
+podłogi-siatki ani stołu sceny (`hide_floor`, `hide_table`; w pliku da się je wyłączyć) — ramię,
+pudełko zasięgu, kamery, mrówka i obiekty zostają. Domyślnie ciemne biurko pod oknem z
+`pokoj.glb` (blat na y = 0,743, x 0,72…1,57, z −1,79…−0,15 w glTF) ląduje na stole bliźniaka:
+blat na z = 0, środek na środku stołu (x 0,45, y 0), dłuższy bok wzdłuż y, ściana z oknem za
+pudełkiem zasięgu (+x) — `offset` (−0,695, −0,97, −0,743), obrót 0°. Dopasowanie: *Ramię >
+Stanowisko (stół)*, suwaki *Pokój: przesunięcie x/y/z* i *Pokój: obrót* (na żywo, zapis w
+stanowisku). Pokój jest względem podstawy, więc idzie za nią po zmianie stołu. Klient visera
+nie ma dekodera meshopt ani Draco: skompresowany plik (np. eksport „web”) najpierw rozpakuj
+narzędziem gltf-transform (`npx @gltf-transform/cli dequantize in.glb out.glb`, które czyta
+meshopt) i sprawdź, że w `extensionsUsed` wyniku nie ma `EXT_meshopt_compression`,
+`KHR_mesh_quantization` ani `KHR_draco_mesh_compression` — `pokoj.glb` to tak rozpakowany
+`pokoj-web.glb`. glTF jest y-w-górę, panel obraca go do z-w-górę sam.
+
 Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
 nim żółty **Skasuj STOP** (tylko przy aktywnym STOP-ie), plakietka stanu ramienia
 (ROZŁĄCZONE / ROZBROJONE / UZBROJONE / STERUJE: … / STOP AKTYWNY) i **Przewodnik**:
@@ -1018,6 +1036,7 @@ mrówkę v1 (inne uchwyty bioder) — rozjazd dociągają tagi.
 | `lerobot-twin eval <policy.pt> --rand` | ewaluacja polityki w zwykłym MuJoCo |
 | `lerobot-twin policies` | zapisane polityki i ich wyniki |
 | `lerobot-twin workspace` | co wiadomo o stanowisku |
+| `lerobot-twin workspace --room assets/rooms/pokoj.glb` | pokój jako tło widoku 3D panelu (`--no-room` usuwa; na jeden start: `ui --room`) |
 | `lerobot-twin specs --mode dry` | cele z okularów Spectacles przez przekaźnik; `--mode sim`, `--mode real --i-know` — [Spectacles](#spectacles-pudełko-zasięgu-i-pinch) |
 
 ```bash

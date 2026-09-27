@@ -764,3 +764,61 @@ def test_ui_specs_real_without_i_know_refuses_before_the_panel(capsys):
     with pytest.raises(SystemExit) as exc:
         ui_app.main(["--port", str(free_port()), "--specs", "real"])
     assert exc.value.code == 2
+
+
+def _mirror_names(app) -> set[str]:
+    import mujoco
+    m = app.twin.scene.model
+    drawn = {h.name for h in app.mirror.geoms}
+    return {mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) for g in range(m.ngeom)
+            if any(n.endswith(f"/g{g}") for n in drawn)}
+
+
+def test_room_glb_is_the_backdrop_and_replaces_the_floor_and_table_in_the_view(app):
+    from lerobot_mp.twin.workspace import room_config
+
+    assert app.room_node is None and app.ws.room is None                 # no room: nothing changes
+    assert {"floor", "table"} <= _mirror_names(app)
+    nbody, ngeoms = app.twin.scene.model.nbody, len(app.mirror.geoms)
+    try:
+        app.ws.room = room_config()
+        app._place_room()
+        app._mirror_version = -1
+        app._sync_mirror()
+        assert app.room_node is not None and app.room_node.name == "/pokoj"
+        names = _mirror_names(app)
+        assert "floor" not in names and "table" not in names
+        assert len(app.mirror.geoms) == ngeoms - 2                           # the arm, box, ant... stay
+        assert app.twin.scene.model.nbody == nbody                           # physics untouched
+        # Offset in the base frame: +x on the room moves the node +x in the world (base yaw 0).
+        x0 = np.array(app.room_node.position)
+        app.ws.room["offset"][0] += 0.1
+        app._place_room()
+        assert np.array(app.room_node.position) - x0 == pytest.approx([0.1, 0.0, 0.0], abs=1e-9)
+    finally:
+        app.ws.room = None
+        app._place_room()
+        app._mirror_version = -1
+        app._sync_mirror()
+    assert app.room_node is None and {"floor", "table"} <= _mirror_names(app)
+
+
+def test_ui_room_flag_loads_the_glb_places_it_and_the_sliders_save_it(tmp_path, caplog):
+    import logging
+
+    from lerobot_mp.twin.ui.app import TwinApp
+    from lerobot_mp.twin.workspace import ROOM_OFFSET, Workspace
+
+    caplog.set_level(logging.INFO)
+    app = TwinApp(tmp_path / "twin.json", host="127.0.0.1", port=free_port(), room="assets/rooms/pokoj.glb")
+    try:
+        assert app.room_node is not None and "floor" not in _mirror_names(app)
+        assert any("pokoj assets/rooms/pokoj.glb" in r.getMessage() for r in caplog.records)
+        assert [h.value for h in app.room_sliders[:3]] == pytest.approx(list(ROOM_OFFSET))
+        x_slider = app.room_sliders[0]
+        x_slider.value = 0.25                       # from code: moves the room, no save
+        assert app.ws.room["offset"][0] == pytest.approx(0.25)
+        app._save()
+        assert Workspace.load(tmp_path / "twin.json").room["offset"][0] == pytest.approx(0.25)
+    finally:
+        app.close()

@@ -42,10 +42,10 @@ from ..calib import tags as aptags
 from ..pmd import is_pmd
 from ..tagbody import OPTICAL_AXES, TagBody, learn_layout, locate, observe
 from ...paths import REPO_ROOT
-from ..workspace import CameraRecord, Workspace, nominal_K
+from ..workspace import CameraRecord, Workspace, nominal_K, room_config, room_path, room_placement
 from . import guide as gd
 from . import jobs
-from .bridge import SceneMirror, mat_to_wxyz
+from .bridge import SceneMirror, mat_to_wxyz, room_pose
 from .ant_panel import AntTab
 from .specs_panel import add_specs_folder
 from .stream import FrameServer
@@ -470,7 +470,10 @@ def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240))
 
 class TwinApp:
     def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080,
-                 stream_port: int | None = None, stream_host: str = "0.0.0.0", startup: dict | None = None):
+                 stream_port: int | None = None, stream_host: str = "0.0.0.0", startup: dict | None = None,
+                 room: str | Path | None = None):
+        """`room` - GLB drawn as the 3D view's backdrop (`lerobot-twin ui --room`); overrides the file's room
+        for this run, keeping its placement (the room sliders save it)."""
         self.host = host
         #: Podglad kamer po HTTP (MJPEG) na osobnym porcie - tylko do odczytu, wiec domyslnie cala siec.
         self.stream: FrameServer | None = None
@@ -478,6 +481,10 @@ class TwinApp:
             self.stream = FrameServer(self.stream_frames, host=stream_host, port=stream_port)
         self.ws = Workspace.load(workspace)
         self.ws_path = Path(self.ws.path).resolve() if self.ws.path else None
+        if room is not None:
+            self.ws.room = room_config(room, self.ws.room)
+        self.room_node = None
+        self._room_bytes: tuple[Path, bytes] | None = None
         self.twin = Twin(self.ws)
         self.watch = CameraWatch()
         self.frames: dict[str, np.ndarray] = {}
@@ -599,6 +606,9 @@ class TwinApp:
         s.scene.add_light_directional("/swiatlo/gora", intensity=1.4, position=(0.6, -0.8, 2.5), cast_shadow=True)
         self.base_frame = s.scene.add_frame("/podstawa", axes_length=0.08, axes_radius=0.003,
                                             position=T[:3, 3], wxyz=mat_to_wxyz(T[:3, :3]))
+        if self.ws.room:
+            logger.info("Widok 3D: %s", room_placement(self.ws.room))
+        self._guard("pokoj", self._place_room)
         self.mirror = None
         self._mirror_version = -1
         self._sync_mirror()
@@ -1350,10 +1360,13 @@ class TwinApp:
             self.twin.rebuild()
             T_new = self.twin.scene.T_base2world
             self.base_frame.position, self.base_frame.wxyz = T_new[:3, 3], mat_to_wxyz(T_new[:3, :3])
+            self._place_room()                          # pokoj jest wzgledem podstawy - idzie za nia
             self._refresh_cameras()
             if self._goal_base is not None:           # cel reach jest w ukladzie podstawy - kula za nia
                 self._set_goal(self._goal_base)
             self._notify(event, "Stanowisko", "Stol zapisany, scena przebudowana.")
+
+        self._build_room()
 
         self.tcp_gizmo = self.server.scene.add_transform_controls("/uchwyt_tcp", scale=0.12, disable_rotations=True,
                                                                   visible=False)
@@ -3850,11 +3863,65 @@ class TwinApp:
         if v != self._mirror_version:
             if self.mirror is not None:
                 self.mirror.remove()
-            self.mirror = SceneMirror(self.server, model)
+            self.mirror = SceneMirror(self.server, model, skip=self._mirror_skip())
             self._mirror_version = v
         with self.twin.lock:
             if self.twin.version == self._mirror_version:
                 self.mirror.update(self.twin.scene.data)
+
+    def _mirror_skip(self) -> set[str]:
+        """Scene geoms the room GLB replaces in the view (its floor and desk); physics keeps them."""
+        room = self.ws.room or {}
+        return ({"floor"} if room and room.get("hide_floor", True) else set()) | \
+            ({"table"} if room and room.get("hide_table", True) else set())
+
+    def _place_room(self) -> None:
+        """Room GLB in the view at `ws.room` (base frame -> world through `T_base2world`); no room = no node."""
+        room = self.ws.room
+        if not room:
+            if self.room_node is not None:
+                self.room_node.remove()
+                self.room_node = None
+            return
+        T = self.T_b2w @ room_pose(room.get("offset", (0.0, 0.0, 0.0)), float(room.get("yaw_deg", 0.0)))
+        pos, wxyz = T[:3, 3], mat_to_wxyz(T[:3, :3])
+        if self.room_node is None:
+            path = room_path(room)
+            if self._room_bytes is None or self._room_bytes[0] != path:
+                self._room_bytes = (path, path.read_bytes())
+            self.room_node = self.server.scene.add_glb("/pokoj", glb_data=self._room_bytes[1], position=pos,
+                                                       wxyz=wxyz, cast_shadow=False, receive_shadow=True)
+        else:
+            self.room_node.position, self.room_node.wxyz = pos, wxyz
+
+    def _build_room(self) -> None:
+        """Room sliders (table folder): move the GLB live and save to the workspace."""
+        g = self.server.gui
+        room = self.ws.room
+        if not room:
+            g.add_markdown("Pokoj (tlo widoku 3D): brak - `lerobot-twin ui --room assets/rooms/pokoj.glb`.")
+            self.room_sliders = None
+            return
+        off = [float(v) for v in room.get("offset", (0.0, 0.0, 0.0))]
+        self.room_sliders = [
+            g.add_slider(f"Pokoj: przesuniecie {axis} [m]", min=-3.0, max=3.0, step=0.005, initial_value=off[k],
+                         hint=f"Gdzie laduje poczatek ukladu pokoju, os {axis} ukladu podstawy [m]. Tylko widok.")
+            for k, axis in enumerate("xyz")]
+        self.room_sliders.append(g.add_slider("Pokoj: obrot [st.]", min=-180.0, max=180.0, step=0.5,
+                                              initial_value=float(room.get("yaw_deg", 0.0)),
+                                              hint="Obrot pokoju wokol osi pionowej [st.]. Tylko widok."))
+
+        def _moved(event) -> None:
+            if not self.ws.room:
+                return
+            self.ws.room["offset"] = [float(h.value) for h in self.room_sliders[:3]]
+            self.ws.room["yaw_deg"] = float(self.room_sliders[3].value)
+            self._place_room()
+            if event.client is not None:
+                self._save()
+
+        for h in self.room_sliders:
+            h.on_update(self._safe(_moved))
 
     def _record_joints(self, now: float) -> None:
         """Historia katow do masek ramienia w chwili kadru (`_arm_masks`)."""
@@ -3957,6 +4024,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--relay", default=None, help="adres przekaznika (domyslnie SPECS_RELAY)")
     ap.add_argument("--follow-speed", type=float, default=None, help="sledzenie dloni [m/s]")
     ap.add_argument("--hold-off", type=float, default=None, help="odczekanie przed ruchem [s]")
+    ap.add_argument("--room", default=None, help="GLB pokoju jako tlo widoku 3D (np. assets/rooms/pokoj.glb)")
     a = ap.parse_args(argv)
     if a.specs == "real" and not a.i_know:
         ap.error("--specs real rusza prawdziwym ramieniem - dodaj --i-know")
@@ -3967,5 +4035,5 @@ def main(argv: list[str] | None = None) -> int:
     startup = dict(arm=a.arm, specs=a.specs, i_know=a.i_know, relay=a.relay, follow_speed=a.follow_speed,
                    hold_off=a.hold_off)
     TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host,
-            startup=startup).run()
+            startup=startup, room=a.room).run()
     return 0

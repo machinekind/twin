@@ -256,11 +256,26 @@ def _workspace(a: argparse.Namespace) -> int:
         print(f"+ mrowka RealAnt w symulacji na koncu blatu: x = {T[0][3]:.3f} m, y = {T[1][3]:.3f} m (uklad podstawy), "
               f"kamery sym-mrowka-przod i sym-mrowka-bok -> {path}")
     ws = Workspace.load(a.path)
+    if a.room or a.no_room:
+        from .workspace import room_config, room_path, room_placement
+
+        if a.no_room:
+            ws.room = None
+            print(f"- pokoj usuniety -> {ws.save()}")
+        else:
+            ws.room = room_config(a.room, ws.room)
+            if not room_path(ws.room).is_file():
+                print(f"Brak pliku {room_path(ws.room)}.", file=sys.stderr)
+                return 1
+            print(f"+ {room_placement(ws.room)} -> {ws.save()}")
     exists = ws.path is not None and Path(ws.path).is_file()
     where = Path(ws.path).resolve() if ws.path is not None else "-"
     print(f"Stanowisko: {where} {'' if exists else '(jeszcze nie zapisane - wartosci domyslne)'}")
     print(f"  ramie: {ws.robot}, backend: {ws.backend}, port: {ws.port or '-'}")
     print(f"  karta: tag {ws.card_obj().tag_size * 1000:.1f} mm")
+    if ws.room:
+        from .workspace import room_placement
+        print(f"  {room_placement(ws.room)}")
     if not ws.cameras:
         print("  kamery: brak  (przyklad w symulacji z dwiema kamerami: lerobot-twin demo)")
     for cam in ws.cameras:
@@ -473,7 +488,10 @@ def _ui_startup_line(a: argparse.Namespace) -> str:
                    f"{'tak' if a.i_know else 'nie'}, sledzenie "
                    f"{a.follow_speed if a.follow_speed is not None else 'domyslne'} m/s, odczekanie "
                    f"{a.hold_off if a.hold_off is not None else 'domyslne'} s")
-    return f"Start panelu: ramie {arm}; okulary {glasses}"
+    line = f"Start panelu: ramie {arm}; okulary {glasses}"
+    if getattr(a, "room", None):
+        line += f"; pokoj {a.room}"
+    return line
 
 
 def _ui(a: argparse.Namespace) -> int:
@@ -503,6 +521,8 @@ def _ui(a: argparse.Namespace) -> int:
         argv += ["--follow-speed", str(a.follow_speed)]
     if a.hold_off is not None:
         argv += ["--hold-off", str(a.hold_off)]
+    if a.room:
+        argv += ["--room", a.room]
     return ui_main(argv)
 
 
@@ -694,6 +714,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default=None)
     p.add_argument("--ant", action="store_true",
                    help="dodaj symulowana mrowke RealAnt na dalekim koncu blatu (plik zmieniany w miejscu)")
+    room = p.add_mutually_exclusive_group()
+    room.add_argument("--room", default=None, metavar="GLB",
+                      help="zapisz GLB pokoju jako tlo widoku 3D panelu (np. assets/rooms/pokoj.glb)")
+    room.add_argument("--no-room", action="store_true", help="usun pokoj ze stanowiska")
     p.set_defaults(fn=_workspace)
 
     p = sub.add_parser("train", help="naucz polityke PPO na GPU (MuJoCo Warp)")
@@ -747,6 +771,9 @@ def parser() -> argparse.ArgumentParser:
                    help="adres przekaznika okularow (domyslnie SPECS_RELAY albo ws://127.0.0.1:8080/twin)")
     p.add_argument("--follow-speed", type=float, default=None, help="sledzenie dloni [m/s], np. 0.10")
     p.add_argument("--hold-off", type=float, default=None, help="odczekanie przed ruchem w trybie real [s]")
+    p.add_argument("--room", default=None, metavar="GLB",
+                   help="GLB pokoju jako tlo widoku 3D na ten start (np. assets/rooms/pokoj.glb); "
+                        "na stale: lerobot-twin workspace --room")
     p.set_defaults(fn=lambda a: _ui(a))
 
     p = sub.add_parser("specs", help="okulary Spectacles: pudelko zasiegu, pinch -> ruch ramienia (przez przekaznik)")
