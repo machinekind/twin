@@ -25,11 +25,20 @@ import mujoco
 import numpy as np
 
 from .calib.card import Card
+from .calib.tags import MARKER_FRACTION
 from .calib.tags import render as render_tag
 from .kinematics import RobotKinematics, inverse, pose
 from .robots import RobotSpec
 
 PREFIX = "robot/"
+#: Mrowka RealAnt (`AntPlacement`) wchodzi do sceny pod tym prefiksem: `ant/torso`, `ant/hip_1`...
+ANT_PREFIX = "ant/"
+#: Korpus modelu RealAnt w ukladzie mrowki: model ma nogi 1..4 na +x+y, -x+y, -x-y, +x-y korpusu
+#: i startuje obrocony o 180 st. wokol z, zeby "do przodu" bylo +x swiata (realant-rl) - uklad
+#: mrowki to wlasnie ten "przod = +x".
+ANT_TORSO_IN_ANT = np.diag([-1.0, -1.0, 1.0, 1.0])
+#: Stawy nog w kolejnosci realant-rl (akcja polityki, serwa po mapie z rollout_server).
+ANT_JOINTS = ("hip_1", "ankle_1", "hip_2", "ankle_2", "hip_3", "ankle_3", "hip_4", "ankle_4")
 #: MuJoCo kamera patrzy wzdluz -z z y w gore; OpenCV wzdluz +z z y w dol.
 CV_TO_MJ = np.diag([1.0, -1.0, -1.0])
 
@@ -94,6 +103,26 @@ class Panel:
 
 
 @dataclass
+class AntPlacement:
+    """Mrowka RealAnt w scenie (`twin.ant.Ant.placement`): gdzie stoi, jak ma nogi i gdzie ma tagi.
+
+    Prawdziwa mrowka ma korpus jako cialo mocap - poza przychodzi z kamer, nie z fizyki; symulowana
+    (`free`) chodzi w fizyce sceny. Nogi to zawsze stawy z serwami AX-12A z modelu, trzymajace `joints`. Uklad mrowki: srodek
+    w polowie stosu plyt korpusu, x do przodu (kierunek chodu z realant-rl), z do gory.
+    """
+
+    mjcf: str
+    T_ant2base: np.ndarray
+    #: {staw modelu ("hip_1", "ankle_1", ...): kat [st.]}; brakujace = 0.
+    joints: dict[str, float] = field(default_factory=dict)
+    #: [(id taga, T_tag2ant, bok czarnego kwadratu [m])] - tagi naklejone na mrowke.
+    tags: list[tuple[int, np.ndarray, float]] = field(default_factory=list)
+    #: True: korpus na wolnym stawie `ant/root` - mrowka chodzi w fizyce (symulowana); `T_ant2base` to
+    #: tylko start. False: korpus mocap - poza z kamer (prawdziwa mrowka).
+    free: bool = False
+
+
+@dataclass
 class SceneConfig:
     robot: RobotSpec
     table: Table = field(default_factory=Table)
@@ -109,6 +138,8 @@ class SceneConfig:
     #: `<obiekt>_jaw0` (stala) i `<obiekt>_jaw1` (ruchoma), 1 gdy sie stykaja.
     grasp_sensors: list[str] = field(default_factory=list)
     panels: list[Panel] = field(default_factory=list)
+    #: Mrowka RealAnt z tagami (`twin.ant`); None = bez mrowki.
+    ant: AntPlacement | None = None
     #: Oswietlenie: lista (pozycja swiatla nad blatem, jasnosc).
     lights: list[tuple[tuple[float, float, float], float]] = field(
         default_factory=lambda: [((0.4, -0.6, 1.6), 0.55), ((-0.5, 0.3, 1.4), 0.35)]
@@ -129,6 +160,8 @@ class Scene:
         mujoco.mj_forward(model, self.data)
         base = model.body(PREFIX + spec.base_body).id
         self.T_base2world = pose(self.data.xmat[base].reshape(3, 3), self.data.xpos[base])
+        if cfg.ant is not None:
+            self.place_ant()
 
     # ------------------------------------------------------------ ramie
     def set_joints(self, joints: dict[str, float], *, hold: bool = True) -> None:
@@ -147,6 +180,61 @@ class Scene:
     def joints(self) -> dict[str, float]:
         """Zmierzone katy stawow w jednostkach aplikacji."""
         return self.kin.from_q(self.data.qpos[self.kin.qadr])
+
+    # ------------------------------------------------------------ mrowka
+    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None) -> None:
+        """Mrowka w nowej pozie (mocap) i/albo z nowymi katami nog [st.] - natychmiast, bez dynamiki.
+
+        Bez argumentow: to, co mowi `cfg.ant` (po przebudowie sceny `_copy_state` przenosi stan
+        nog ze starej sceny, a mrowka ma stac tam, gdzie kaze stanowisko).
+        """
+        ant = self.cfg.ant
+        if ant is None:
+            raise RuntimeError("scena bez mrowki")
+        if T_ant2base is not None:
+            ant.T_ant2base = np.asarray(T_ant2base, float)
+        if joints is not None:
+            ant.joints = {**ant.joints, **{k: float(v) for k, v in joints.items()}}
+        m, d = self.model, self.data
+        T = self.T_base2world @ ant.T_ant2base @ ANT_TORSO_IN_ANT
+        if ant.free:
+            j = m.joint(ANT_PREFIX + "root")
+            qa, va = m.jnt_qposadr[j.id], m.jnt_dofadr[j.id]
+            d.qpos[qa:qa + 3], d.qpos[qa + 3:qa + 7] = T[:3, 3], _quat(T[:3, :3])
+            d.qvel[va:va + 6] = 0.0
+        else:
+            k = int(m.body_mocapid[m.body(ANT_PREFIX + "torso").id])
+            d.mocap_pos[k] = T[:3, 3]
+            d.mocap_quat[k] = _quat(T[:3, :3])
+        for name, deg in ant.joints.items():
+            j = m.joint(ANT_PREFIX + name)
+            a = m.actuator(ANT_PREFIX + name).id
+            q = float(np.clip(np.radians(deg), *m.jnt_range[j.id]))
+            d.qpos[m.jnt_qposadr[j.id]] = q
+            d.qvel[m.jnt_dofadr[j.id]] = 0.0
+            d.ctrl[a] = float(np.clip(q, *m.actuator_ctrlrange[a]))
+        mujoco.mj_forward(m, d)
+
+    def ant_joints(self) -> tuple[np.ndarray, np.ndarray]:
+        """(katy [rad], predkosci [rad/s]) nog w kolejnosci `twin.ant.JOINTS`."""
+        m, d = self.model, self.data
+        ids = [m.joint(ANT_PREFIX + n).id for n in ANT_JOINTS]
+        return (np.array([d.qpos[m.jnt_qposadr[j]] for j in ids]), np.array([d.qvel[m.jnt_dofadr[j]] for j in ids]))
+
+    def command_ant(self, ctrl: np.ndarray) -> None:
+        """Cel serw nog [rad] w kolejnosci `twin.ant.JOINTS` (obciety do zakresu serw modelu)."""
+        m = self.model
+        for name, q in zip(ANT_JOINTS, ctrl):
+            a = m.actuator(ANT_PREFIX + name).id
+            self.data.ctrl[a] = float(np.clip(q, *m.actuator_ctrlrange[a]))
+
+    def ant_pose(self) -> np.ndarray | None:
+        """Poza mrowki wzgledem podstawy wyczytana z MODELU (None bez mrowki)."""
+        if self.cfg.ant is None:
+            return None
+        b = self.model.body(ANT_PREFIX + "torso").id
+        T = pose(self.data.xmat[b].reshape(3, 3), self.data.xpos[b])
+        return inverse(self.T_base2world) @ T @ inverse(ANT_TORSO_IN_ANT)
 
     def step(self, seconds: float) -> None:
         n = max(1, int(round(seconds / self.model.opt.timestep)))
@@ -202,10 +290,10 @@ def _quat(R: np.ndarray) -> np.ndarray:
     return q
 
 
-def _add_tag_plate_mesh(spec: mujoco.MjSpec, plate: float) -> None:
+def _add_tag_plate_mesh(spec: mujoco.MjSpec, plate: float, name: str = "tag_plate") -> None:
     """Kwadratowa plytka z UV, wspolna dla wszystkich tagow - jak w galaxeo."""
     m = spec.add_mesh()
-    m.name = "tag_plate"
+    m.name = name
     m.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
     h = plate / 2
     m.uservert = np.array([-h, -h, 0, h, -h, 0, h, h, 0, -h, h, 0], np.float32)
@@ -312,6 +400,90 @@ def _add_panel(spec: mujoco.MjSpec, panel: Panel, T_base2world: np.ndarray) -> N
     g.group = 1
 
 
+#: Tektura pod tagami mrowki i jej maszt (tak sa naklejone na prawdziwej).
+CARDBOARD_RGBA = [0.72, 0.58, 0.40, 1.0]
+
+
+def _add_ant(spec: mujoco.MjSpec, ant: AntPlacement, T_base2world: np.ndarray) -> None:
+    """Mrowka RealAnt z pliku modelu: korpus jako mocap, nogi ze stawami i serwami, nasze tagi.
+
+    Z modelu wypadaja podloga, swiatla i niebo (`attach_body` bierze tylko drzewo korpusu),
+    wolny staw (poze daje mocap) oraz wydrukowana plytka z tagami ArUco oryginalnej RealAnt -
+    na tej mrowce sa AprilTagi 36h11 na tekturze, dodawane tu w nauczonym ukladzie.
+    """
+    from .robots import resolve_asset
+
+    child = mujoco.MjSpec.from_file(str(resolve_asset(ant.mjcf)))
+    # Opcje fizyki zostaja z ramienia (scena je juz przejela) - bez tego `attach` ostrzega przy kazdej budowie.
+    for name in ("timestep", "integrator", "cone", "impratio", "iterations", "ls_iterations"):
+        setattr(child.option, name, getattr(spec.option, name))
+    torso = child.body("torso")
+    if not ant.free:
+        for j in list(torso.joints):
+            child.delete(j)
+        torso.mocap = True
+    for g in list(torso.geoms):
+        if g.material == "ink" or g.meshname == "tag_plate":
+            child.delete(g)
+    # Tarcie stop jak w treningu (0,6): kontakt bierze parametry geomu o wyzszym priorytecie, a stol ma 1,0.
+    stack = [child.worldbody]
+    while stack:
+        b = stack.pop()
+        stack.extend(b.bodies)
+        for g in b.geoms:
+            if g.contype:
+                g.priority = 1
+    T = T_base2world @ np.asarray(ant.T_ant2base, float) @ ANT_TORSO_IN_ANT
+    torso.pos, torso.quat = T[:3, 3], _quat(T[:3, :3])
+
+    to_torso = inverse(ANT_TORSO_IN_ANT)
+    top = 0.0244                                         # gorna plyta korpusu nad srodkiem stosu plyt
+    for tag_id, T_tag2ant, size in ant.tags:
+        plate = size / MARKER_FRACTION
+        mesh = f"tag_plate{tag_id}"
+        _add_tag_plate_mesh(child, plate, mesh)
+        _add_tag_material(child, tag_id)
+        Tt = to_torso @ np.asarray(T_tag2ant, float)
+        R, p = Tt[:3, :3], Tt[:3, 3]
+        g = torso.add_geom()
+        g.name = f"tag{tag_id}"
+        g.type = mujoco.mjtGeom.mjGEOM_MESH
+        g.meshname, g.material = mesh, f"tag{tag_id}"
+        g.pos, g.quat = p + R[:, 2] * 0.0003, _quat(R)   # 0,3 mm nad tektura - bez migotania
+        g.contype = g.conaffinity = 0
+        g.mass, g.group = 0.0, 1
+        card = torso.add_geom()                          # tektura pod tagiem, 2 mm, z zapasem wokol
+        card.name = f"tag{tag_id}_karton"
+        card.type = mujoco.mjtGeom.mjGEOM_BOX
+        card.size = [plate * 0.6, plate * 0.6, 0.001]
+        card.pos, card.quat = p - R[:, 2] * 0.001, _quat(R)
+        card.rgba = CARDBOARD_RGBA
+        card.contype = card.conaffinity = 0
+        card.mass, card.group = 0.0, 1
+        # Tag stojacy (normalna w poziomie, w ukladzie mrowki) siedzi na maszcie z tektury: pasek od
+        # gornej plyty do srodka taga, za nim.
+        n_ant = np.asarray(T_tag2ant, float)[:3, 2]
+        centre_ant = np.asarray(T_tag2ant, float)[:3, 3]
+        if abs(n_ant[2]) < 0.5 and centre_ant[2] > top + 0.01:
+            n = np.array([n_ant[0], n_ant[1], 0.0])
+            n /= np.linalg.norm(n)
+            side = np.cross([0.0, 0.0, 1.0], n)
+            h = (centre_ant[2] - top) / 2
+            c = centre_ant - n * 0.0035
+            c[2] = top + h
+            Rm = np.column_stack([side, -n, [0.0, 0.0, 1.0]])   # prawoskretny: z x (z x n) = -n
+            Tm = to_torso @ pose(Rm, c)
+            mast = torso.add_geom()
+            mast.name = f"tag{tag_id}_maszt"
+            mast.type = mujoco.mjtGeom.mjGEOM_BOX
+            mast.size = [plate * 0.3, 0.0015, h]
+            mast.pos, mast.quat = Tm[:3, 3], _quat(Tm[:3, :3])
+            mast.rgba = CARDBOARD_RGBA
+            mast.contype = mast.conaffinity = 0
+            mast.mass, mast.group = 0.0, 1
+    spec.worldbody.add_frame().attach_body(torso, ANT_PREFIX, "")
+
+
 def _rotmat(quat) -> np.ndarray:
     R = np.zeros(9)
     q = np.asarray(quat, float)
@@ -374,6 +546,8 @@ def build(cfg: SceneConfig) -> Scene:
     mount.pos = T_base2world[:3, 3]
     mount.quat = _quat(R_base)
     spec.attach(robot, prefix=PREFIX, frame=mount)
+    if cfg.ant is not None:
+        _add_ant(spec, cfg.ant, T_base2world)
 
     for obj in cfg.objects:
         p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.size[2], 1.0])

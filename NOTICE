@@ -41,6 +41,21 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    w galaxeo i nie jest tu kopiowany ani rozpowszechniany; czy projekt
    Apache-2.0 może na nim polegać - do decyzji (HANDOFF.md, sekcja 5).
 
+6. assets/robots/realant/  (realant.xml, siatki STL w meshes/)
+   Model fizyczny mrówki RealAnt v2 z repozytorium semberecki/realant-rl
+   (gałąź mjx-v2-walk, commit 599042c: realant_sim/realant_v2.xml, generator
+   realant_sim/build_realant_v2.py) - licencja MIT (Aalto University, Ote
+   Robotics Ltd): assets/robots/realant/LICENSE_realant-rl. Siatki STL części
+   OteRobotics/realant (licencja MIT: LICENSE_OteRobotics_realant). realant.xml
+   różni się od oryginału tylko ścieżką meshdir.
+
+7. assets/policies/ant/exp004_smooth2/  (params_*.pkl, config.json, analysis_*.json)
+   Polityka chodu mrówki (brax PPO, MJX) z semberecki/realant-rl
+   (policies/exp004_smooth2), licencja MIT jak wyżej. Wczytanie bez JAX,
+   obserwacja, mapy serw i chód w czterech kierunkach przeniesione z
+   robot_policy.py / robot_teleop.py (gałąź new_policies, 20a6d0d) do
+   src/lerobot_mp/twin/antwalk.py i antdrive.py.
+
 Polityki assets/policies/*/policy.pt zostały wytrenowane w tym projekcie
 (lerobot-twin train) i są objęte licencją projektu.
 

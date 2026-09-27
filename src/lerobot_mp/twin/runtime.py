@@ -313,7 +313,7 @@ class Twin:
         #: Zwiekszany przy kazdej przebudowie - widoki (panel) wiedza, ze trzeba odswiezyc siatki.
         self.version = 0
         self.renderer = RenderWorker()
-        self.scene: sc.Scene = sc.build(workspace.scene_config())
+        self.scene: sc.Scene = sc.build(workspace.scene_config(with_ant=True))
         with self.lock:
             self.scene.set_joints(self.spec.home)
         #: (scena zrodlowa, kopia do renderu) - kopia ma wlasne MjData, render idzie poza blokada.
@@ -371,18 +371,34 @@ class Twin:
         # Cala przebudowa w watku renderujacym: kontekst GL zamyka watek, ktory go
         # stworzyl. Blokada brana DOPIERO tam - czekanie na watek renderujacy
         # z blokada w reku zakleszczyloby sie z renderem, ktory czeka na blokade.
-        cfg = self.workspace.scene_config(**self.extras)
+        cfg = self.workspace.scene_config(with_ant=True, **self.extras)
 
         def job():
             new = sc.build(cfg)
             with self.lock:
                 old = self.scene
                 _copy_state(old, new)
+                # Mrowka tam, gdzie mowi stanowisko, nie stara scena - chyba ze symulowana juz chodzi
+                # w fizyce: wtedy jej wolny staw przeniosl `_copy_state`.
+                if new.cfg.ant is not None and not (new.cfg.ant.free and old.cfg.ant is not None
+                                                    and old.cfg.ant.free):
+                    new.place_ant()
                 old.close()
                 self.scene = new
                 self._view = None
                 self.version += 1
         self.renderer.call(job)
+
+    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None) -> bool:
+        """Mrowka w scenie w nowej pozie / z nowymi nogami, bez przebudowy (sledzenie z kamer).
+
+        False, gdy scena jest bez mrowki (stanowisko jej nie mialo przy budowie) - wtedy `rebuild`.
+        """
+        with self.lock:
+            if self.scene.cfg.ant is None:
+                return False
+            self.scene.place_ant(T_ant2base, joints)
+            return True
 
     def configure(self, **extras) -> None:
         """Nowe dodatki sceny (np. `with_card=True` albo kostka) i przebudowa."""
