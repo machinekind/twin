@@ -15,9 +15,10 @@ import pytest
 pytest.importorskip("mujoco")
 pytest.importorskip("websockets")
 
-from twinbench import Bench, FakeRelay  # noqa: E402
+from twinbench import Bench, FakeRelay, ant_workspace  # noqa: E402
 
 from lerobot_mp.twin import runtime as rt  # noqa: E402
+from lerobot_mp.twin import scene as sc  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.follow import Follower, Tracker, down_rotation, nearest_yaw  # noqa: E402
 from lerobot_mp.twin.kinematics import RobotKinematics  # noqa: E402
@@ -34,8 +35,8 @@ class FollowBench(Bench):
     """A stepped twin on its own `VirtualClock` with the arm parked above the box centre, a driver (`drv`)
     and the fake relay."""
 
-    def __init__(self, relay: FakeRelay, **kw):
-        twin = rt.Twin(Workspace(robot="a1x"), clock=VirtualClock())
+    def __init__(self, relay: FakeRelay, ws: Workspace | None = None, **kw):
+        twin = rt.Twin(ws if ws is not None else Workspace(robot="a1x"), clock=VirtualClock())
         twin.connect("sim", threaded=False)
         super().__init__(twin, relay)
         self.spec = self.twin.spec
@@ -352,6 +353,22 @@ def test_a_wall_in_the_way_pauses_the_stream_then_it_resumes(bench):
     assert details[-1][0] == "moving" and not (details[-1][1] or "").startswith("paused"), details
     assert not any(k[0] == "hold" for k in bench.states()), bench.states()
     assert bench.near((c + [0.0, -0.05, 0.0]))
+
+
+def test_the_ant_at_the_table_end_does_not_shadow_the_box_wall_nearest_it(relay):
+    b = FollowBench(relay, ws=ant_workspace())
+    try:
+        b.drv._follow_tools()
+        assert sc.ANT_PREFIX in b.drv._f_scene.ants()      # the follower's checker sees the ant
+        c = b.vol.center
+        wall = np.array([b.vol.hi[0], c[1], c[2]])
+        b.stream([wall + [0.02, 0.0, 0.0]] * 60)           # 3 s at 2 cm beyond the wall: clamped onto it
+        assert all(k in (("accepted", None), ("moving", None)) for k in b.states()), b.states()
+        assert all("collision" not in (d or "") for _, d in b.details()), b.details()
+        assert b.states()[-1][0] == "moving"
+        assert b.near(wall), (b.kin.tcp(b.asked[-1])[:3, 3], wall)
+    finally:
+        b.close()
 
 
 def test_two_seconds_in_a_wall_end_the_stream_with_collision(bench):

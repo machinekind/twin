@@ -64,11 +64,16 @@ of a 5 x 5 grid over the zone solves with the tool pointing down (tilt under
 0.26 rad) and without collision, at TCP heights 0.045, 0.125 and 0.173 m.
 
 **What the collision check sees.** The checker builds its own MuJoCo scene
-from the workspace: the floor, the table and the arm. It does not see task
-objects in the twin scene, the placed cameras (they have no body in the
-scene) or anything else on the table. Contacts that already exist in the home
-pose (the base on the table top) are allowed. Every new contact is a
-collision. The scene is rebuilt when the twin's scene changes.
+from the workspace: the floor, the table, the arm and the RealAnt, if the
+workspace has one (`lerobot-twin workspace --ant` places it at the far end of
+the table). The ant counts as an obstacle. A target inside it is `rejected`
+with `collision`, and a follow stream heading into it pauses (`paused:
+collision`) and ends after 2 s. The checker moves its copy of the ant to where
+the ant stands in the twin at most every 0.2 s. It does not see task objects
+in the twin scene, the placed cameras (they have no body in the scene) or
+anything else on the table. Contacts that already exist in the home pose (the
+base on the table top) are allowed. Every new contact is a collision. The
+scene is rebuilt when the twin's scene changes.
 
 ## 2. Run it
 
@@ -218,7 +223,7 @@ The first check that fails ends the target with `rejected` and this reason:
 | `stale` | an object target from a detection older than 0.5 s (`detail` gives the age) |
 | `ik` | IK found no joint angles within 3 mm, or, for an object, the gripper would point more than about 15 degrees (0.26 rad) away from straight down |
 | `jump` | a joint would turn more than `--max-jump-deg` on one leg |
-| `collision` | the straight joint-space path from the current command to the goal hits the arm itself or the table |
+| `collision` | the straight joint-space path from the current command to the goal hits the arm itself, the table or the ant |
 
 `ik`, `jump` and `collision` carry a `detail` (IK error in mm, the jump in
 degrees, the colliding pair and how far along the path).
@@ -712,7 +717,7 @@ read it. Other message types are ignored. For the full relay protocol see the sp
 | `session` | The Lens restarted, so its session changed, and the twin still holds the old registration. Look at the markers again: `register.py` starts over for the new session and the twin picks it up. |
 | `not armed` | `real` without `--i-know` or the consent box; or `sim` while the twin is connected to the real arm. |
 | `busy` | The panel is armed, or a policy or wave holds the arm. Disarm the panel. |
-| `collision` near an object | The checker does not know about objects on the table, so this is the arm or the table. Check `detail` for the pair. |
+| `collision` near an object | The checker does not know about objects on the table, so this is the arm, the table or the ant. Check `detail` for the pair. |
 | The driver keeps printing `Przekaznik ws://... niedostepny` | The rig machine cannot reach the relay. Use the Mac's IP address, not `127.0.0.1` (that is the rig machine itself). A `.local` name may not resolve on Linux; use the IP printed in the relay's `Lens serverUrl:` line. Allow incoming connections for `node` in the Mac's firewall. Both machines on the same network, not a guest network. |
 | Connecting to the arm fails: no `0x052` frames | The arm has no power, the CAN cable or adapter is out, or another process owns the adapter (a panel, `jog_a1x.py`, the `python -m galaxeo.xcan_usb` check). Close the other process. On Linux bring `can0` up again after replugging. See docs/TWIN.md, Galaxea A1X. |
 | The box drifts or sits in the wrong place | The registration is off. Registration error of 1 to 2 cm is expected. Look at the markers from about 40 to 50 cm, check that the plate and tags have not moved, and compare the TCP sphere with the gripper in `dry` before moving anything. |

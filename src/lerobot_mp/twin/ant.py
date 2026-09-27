@@ -362,30 +362,86 @@ def demo_layout() -> dict[int, np.ndarray]:
     return {1: pose(MAST_IN_BACK_TAG, np.array([0.095, -0.005, 0.075]))}
 
 
-def add_demo_ant(data: dict[str, Any]) -> dict[str, Any]:
-    """Stanowisko z pliku przykladowego + symulowana mrowka z tagami i dwie kamery patrzace na nia.
-
-    Blat powiekszony do 1,6 x 1,2 m (mrowka chodzi 10 cm/s). Kamery symulowane maja zaufana poze
-    (prawda) - tak jak te z przykladu; uklad tagow, montaz i kurs mrowki zostaja do wyznaczenia z kadrow.
-    """
+def _sim_ant(data: dict[str, Any], xy: tuple[float, float]) -> dict[str, Any]:
+    """`data` + symulowana mrowka stojaca w `xy` (uklad podstawy) i dwie kamery symulowane patrzace na nia."""
     from .calib.simulate import look_at
 
     out = dict(data)
-    out["table"] = {**dict(data.get("table", {})), "size": [1.6, 1.2]}
     joints = dict(LEG_POSES["stoi"])
-    T = pose(np.eye(3), np.array([DEMO_ANT_XY[0], DEMO_ANT_XY[1], rest_height(joints)]))
+    T = pose(np.eye(3), np.array([xy[0], xy[1], rest_height(joints)]))
     ant = Ant(joints=joints, sim={"T_ant2base": T, "mount": DEMO_MOUNT, "layout": demo_layout()})
     out["ant"] = ant.to_dict()
     W, H, fovy = 960, 720, 60.0
     f = (H / 2) / np.tan(np.radians(fovy) / 2)
     K = [[f, 0.0, (W - 1) / 2], [0.0, f, (H - 1) / 2], [0.0, 0.0, 1.0]]
-    target = np.array([DEMO_ANT_XY[0], DEMO_ANT_XY[1], 0.03])
+    target = np.array([xy[0], xy[1], 0.03])
     cams = [c for c in data.get("cameras", []) if not str(c.get("name", "")).startswith("sym-mrowka")]
-    for name, eye in (("sym-mrowka-przod", (1.05, 0.40, 0.50)), ("sym-mrowka-bok", (0.45, -0.20, 0.55))):
-        Tc = look_at(np.array(eye), target).tolist()
+    # Kamery wzgledem mrowki jak w demo (mrowka w DEMO_ANT_XY, kamery w (1,05, 0,40, 0,50) i (0,45, -0,20, 0,55)).
+    for name, off in (("sym-mrowka-przod", (0.50, 0.10, 0.50)), ("sym-mrowka-bok", (-0.10, -0.50, 0.55))):
+        eye = np.array([xy[0] + off[0], xy[1] + off[1], off[2]])
+        Tc = look_at(eye, target).tolist()
         cams.append({"name": name, "source": "sim", "width": W, "height": H, "fps": 30, "K": K, "dist": None,
                      "T_cam2base": Tc, "intrinsics_from": "symulacja",
                      "calibration": {"trusted": True, "reason": "przyklad: poza prawdziwa z symulacji", "rms_px": 0.0},
                      "enabled": True, "sim_pose": Tc, "intrinsics_info": {}})
     out["cameras"] = cams
     return out
+
+
+def add_demo_ant(data: dict[str, Any]) -> dict[str, Any]:
+    """Stanowisko z pliku przykladowego + symulowana mrowka z tagami i dwie kamery patrzace na nia.
+
+    Blat powiekszony do 1,6 x 1,2 m (mrowka chodzi 10 cm/s). Kamery symulowane maja zaufana poze
+    (prawda) - tak jak te z przykladu; uklad tagow, montaz i kurs mrowki zostaja do wyznaczenia z kadrow.
+    """
+    out = dict(data)
+    out["table"] = {**dict(data.get("table", {})), "size": [1.6, 1.2]}
+    return _sim_ant(out, DEMO_ANT_XY)
+
+
+# ------------------------------------------------------------------ mrowka na koncu blatu
+#: Mrowka w `add_ant`: srodek tyle przed daleka krawedzia blatu [m].
+TABLE_END_INSET = 0.20
+#: Polowa obrysu kolizyjnego mrowki z nogami na boki [m] (caly obrys ~0,30 m).
+FOOTPRINT_HALF = 0.15
+#: Najblizsza krawedz obrysu co najmniej tyle za pudelkiem zasiegu okularow (`reach.ReachVolume.hi[0]`) [m].
+REACH_CLEARANCE = 0.15
+
+
+def table_far_x(table: Mapping[str, Any]) -> float:
+    """Gdzie os +x podstawy wychodzi z blatu [m, uklad podstawy] (`scene.Table`: rozmiar, base_xy, base_yaw)."""
+    from .scene import Table
+
+    t = Table()
+    size = np.asarray(table.get("size", t.size), float)
+    p = np.asarray(table.get("base_xy", t.base_xy), float)
+    yaw = np.radians(float(table.get("base_yaw", t.base_yaw)))
+    d = np.array([np.cos(yaw), np.sin(yaw)])
+    hits = [((np.sign(d[k]) * size[k] / 2) - p[k]) / d[k] for k in range(2) if abs(d[k]) > 1e-9]
+    return float(min(hits))
+
+
+def ant_xy_at_table_end(data: Mapping[str, Any]) -> tuple[float, float]:
+    """(x, y) mrowki na dalekim koncu blatu w ukladzie podstawy; ValueError, gdy wypadlaby za blisko pudelka zasiegu
+    (albo poza blatem)."""
+    from .reach import ReachVolume
+    from .robots import get_spec
+
+    far = table_far_x(dict(data.get("table") or {}))
+    x = far - TABLE_END_INSET
+    reach = data.get("reach")
+    vol = ReachVolume.from_dict(reach) if reach else ReachVolume.from_spec(get_spec(str(data.get("robot", "so101"))))
+    need = float(vol.hi[0]) + REACH_CLEARANCE
+    if x - FOOTPRINT_HALF < need:
+        raise ValueError(
+            f"mrowka na koncu blatu stalaby w x = {x:.2f} m: jej obrys ({x - FOOTPRINT_HALF:.2f}..{x + FOOTPRINT_HALF:.2f} m)"
+            f" zaczyna sie blizej niz {REACH_CLEARANCE:.2f} m za pudelkiem zasiegu (x do {vol.hi[0]:.2f} m, "
+            f"potrzeba >= {need:.2f} m) - dluzszy blat albo mniejsze pudelko (`reach`)")
+    return x, 0.0
+
+
+def add_ant(data: dict[str, Any], xy: tuple[float, float] | None = None) -> dict[str, Any]:
+    """Stanowisko + symulowana mrowka stojaca na ISTNIEJACYM blacie, domyslnie na jego dalekim koncu
+    (`ant_xy_at_table_end`: 20 cm przed krawedzia, y = 0, obrys >= 15 cm za pudelkiem zasiegu), i dwie kamery
+    symulowane patrzace na nia. Blat bez zmian (`add_demo_ant` go powieksza)."""
+    return _sim_ant(data, ant_xy_at_table_end(data) if xy is None else (float(xy[0]), float(xy[1])))

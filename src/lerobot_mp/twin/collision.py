@@ -53,6 +53,13 @@ class CollisionChecker:
                 out.add((min(g1, g2), max(g1, g2)))
         return out
 
+    def set_world(self, data: mujoco.MjData) -> None:
+        """Stan swiata (obiekty, mrowka: qpos i mocap) z `data` tego samego modelu; ramie i tak ustawia kazde
+        sprawdzenie. Dozwolone kontakty zostaja z budowy."""
+        self.data.qpos[:] = data.qpos
+        self.data.mocap_pos[:] = data.mocap_pos
+        self.data.mocap_quat[:] = data.mocap_quat
+
     def _describe(self, pair: tuple[int, int]) -> str:
         m = self.model
         names = []
