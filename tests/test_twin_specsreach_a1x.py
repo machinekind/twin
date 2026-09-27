@@ -523,35 +523,28 @@ def test_follow_at_rest_with_a_steady_state_error_still_turns_the_wrist(rig, bia
     whether the error stays above the lag threshold (2.7 deg) or crosses it with noise (2.4 +- 0.3)."""
     d = rig.connect_driver()
     c = rig.vol.center + np.array([0.0, 0.0, -0.02])
-    seq = 0
-    for _ in range(20):                                             # settle at the point, default yaw
-        rig.relay.follow(STREAM, seq, c)
-        seq += 1
-        rig.pump(FOLLOW_PERIOD)
+    seq = send_stream(rig, [c] * 20)                                # settle at the point, default yaw
     rig.bus.bias = {1: np.radians(bias_deg)}                        # arm_joint2 sags under load
     rig.bus.jitter = np.radians(jitter_deg)
-    for _ in range(20):
-        rig.relay.follow(STREAM, seq, c)
-        seq += 1
-        rig.pump(FOLLOW_PERIOD)
+    seq = send_stream(rig, [c] * 20, seq0=seq)
     assert stream_states(rig)[-1][0] == "moving", stream_states(rig)
-    st = d._stream
-    assert st is not None
+    assert d._stream is not None
     j6 = rig.twin.status.command["arm_joint6"]
     closing = rig.kin.tcp(rig.twin.status.command)[:3, :3] @ np.asarray(rig.twin.spec.tcp_closing, float)
     yaw = float(np.arctan2(closing[1], closing[0])) + np.radians(40.0)
-    t0 = time.monotonic()
+    t0 = t = rig.clock.now()
     turned = None
-    while time.monotonic() - t0 < 3.0:
-        rig.relay.follow(STREAM, seq, c, yaw=yaw)
+    while t - t0 < 3.0:
+        rig.follow(STREAM, seq, c, yaw=yaw)
         seq += 1
-        rig.pump(FOLLOW_PERIOD)
+        t += FOLLOW_PERIOD
+        rig.pump_to(t)
         if abs(rig.twin.status.command["arm_joint6"] - j6) > 30.0:
-            turned = time.monotonic() - t0
+            turned = rig.clock.now() - t0
             break
     kinds = stream_states(rig)
     assert turned is not None, (j6, rig.twin.status.command["arm_joint6"], kinds[-3:])
     assert all(k[0] in ("accepted", "moving") for k in kinds), kinds
     assert any(k[2] and "yaw" in k[2] for k in kinds), kinds
-    rig.relay.follow(STREAM, seq, active=False)
-    assert rig.pump(2.0, lambda: rig.twin.owner is None)
+    rig.follow(STREAM, seq, active=False)
+    assert rig.pump(until=lambda: rig.twin.owner is None, max_sim_s=2.0)
