@@ -123,15 +123,17 @@ Exit: demonstrated A1X GPU compatibility, with logs and checkpoint replay.
   runtime path. Development sets reached 19/20 through the guarded controller;
   a fresh frozen-policy holdout reached 20/20 with no actual contacts. This is
   simulation evidence only.
-- [ ] Train A1X `lift` for the agreed object/workspace. SO-101 weights are not an
-  A1X starting checkpoint. Freeze each experiment's scope, budget, and stop rule.
+- [x] Train and qualify nominal A1X `lift` for the configured 30 mm simulated cube
+  and workspace. Frozen candidate 027 passes the first 20-case held-out evaluation
+  at 20/20 with full holds and zero prohibited contacts. Actual object/workspace
+  agreement remains part of physical validation; SO-101 weights were not used.
 - [ ] Include measured actuator behavior and realistic perception delay/noise,
   plus persistent translation and rotation errors in camera-to-arm calibration.
   Keep contact-force protection and other runtime restrictions consistent with training.
 - [ ] Measure success versus perception-error magnitude and report the achieved
   tolerance using true simulated object/contact state; follow the separate
   [perception robustness protocol](A1X_PERCEPTION_ROBUSTNESS.md).
-- [ ] Evaluate sustained holds, not momentary height/contact. Log failures and
+- [x] Evaluate sustained holds, not momentary height/contact. Log failures and
   report learned-policy results separately from scripted demonstrations.
 
 Proposed simulation acceptance: at least 18/20 held-out lifts, each with a 2 s
@@ -171,29 +173,33 @@ limitations, startup/stop instructions, and operator handoff recorded.
 
 ## Progress and resumption
 
-Current next action: **screen the next 20 already assigned training cases with
-frozen candidates 022/023 for closing/approach failures before joint arm/gripper
-teaching**. Preserve the original roles and select actual learner failures before
-collecting more examples. Add an explicit matching demonstration convention
-before fitting a continuous-yaw candidate. Candidate 022 improves the
-development score to 17/20 and solves all three previously targeted training
-failures. Its remaining development traces show a closing stall (50007), an
-approach rejection with closed jaws (50009), and a late grasp with only 1.59 s
-hold (50015). Those development traces remain diagnostic only. The 50008 guard
-is consistent with its 3 mm clearance; keep it unchanged. Coordinated arm/gripper
-correction improved this case where isolated gripper fits did not.
-Keep validation, development and reserved holdout roles fixed. Both candidate
-022 (17/20, one rejection) and reference 011 (16/20, zero rejections) are frozen.
-Observation-only variant 023 also scores 17/20 development, and improves the
-paired training subset from 33/34 to 34/34. It is preserved separately; it does
-not resolve the three development failures or establish calibration tolerance.
-Do not aggregate original and replacement variants of the same training episode,
-lengthen fitting, or start qualification below the 18/20 nominal development gate.
+Current next action: **implement and validate a policy-pose corruption wrapper,
+then start bounded perception-robustness measurements with frozen candidate 027**.
+Nominal development is 19/20; the first fixed held-out nominal qualification is
+**20/20**, with true holds of 2.005-2.055 s, zero guard rejections, prohibited
+contacts or numerical faults. Freeze a separate robustness evaluation set before
+any robustness fitting. Inject persistent translation AND rotation bias before
+the policy's yaw convention, alongside separately controlled noise and delay;
+score only true simulated object/contact state. Calibration tolerance is still
+unmeasured and the actual two-camera pipeline remains unvalidated.
+
+Keep the successful checkpoint and its action/observation conventions fixed:
+`workspace/validation/baselines/lift-imitation-027/policy.pt`, SHA256 `22d79622`,
+`cube_yaw_mode=continuous`, `gripper_decoder=a1x-templates-v1`. Its actor and
+normalizer are identical to 024/026; the decoder selects the nearest supported
+gripper action using the learned output and measured jaw, with no teacher phase
+logic or intervention. Preserve all earlier baselines, including 024/026 at
+17/20 with zero development guard rejections and their training regression.
+The remaining 027 development failure is 50009 (approach guard rejection).
+The 51000-51019 set has now been used once for qualification: future reuse is
+regression evidence, never fresh held-out proof. Keep it excluded from training.
+Do not aggregate original and replacement variants of a training episode or
+silently drop saved action/observation conventions during refinement.
 The user explicitly requests scripted demonstrations -> imitation -> corrective
 teaching, short diagnostic comparisons, no return to PPO and no new long run.
 Physical access and tests remain deferred. No training job is running.
 
-Candidate 022 has the highest development success at **17/20 autonomous guarded
+Historical candidate 022 reached **17/20 autonomous guarded
 lifts**, with one guard rejection and zero actual prohibited contacts/numerical
 failures. Its frozen bundle is `workspace/validation/baselines/lift-imitation-022/`;
 SHA256 starts `a701802f`. This is a modest development improvement, not held-out
@@ -201,7 +207,7 @@ qualification or evidence of calibration-error tolerance.
 Candidate 011 remains the **16/20 zero-rejection reference**, with zero
 prohibited contacts or numerical failures. Its frozen bundle is
 `workspace/validation/baselines/lift-imitation-011/`; SHA256 starts `e7975d9b`.
-Both remain below the 18/20 development gate; qualification remains deferred.
+Both were below the 18/20 development gate; neither was used for qualification.
 Candidate 007 is the preserved reference at **13/20 guarded lifts**. It is copied with its
 metadata, training report and controller evaluation under
 `workspace/validation/baselines/lift-imitation-007/`; SHA256 starts `b3b196c3`.
@@ -645,15 +651,79 @@ but does not explain the remaining development closing/clearance/late-grasp fail
 checks; `cube-yaw-environment-contracts-001.log` passes 48 CPU evaluation,
 guarded-demonstration and NumPy/Torch checks. The source overlay is archived
 under `cube-yaw-source-001/` against commit `90f4391`. No PPO, corrective-data
-collection, held-out evaluation, calibration sweep or physical test was run.
+collection, held-out evaluation, calibration sweep or physical test was run in
+that yaw-only cycle.
+
+### Targeted recovery, gripper action decoding and nominal qualification
+
+`joint-training-screen-002` selects the next 20 original-source training seeds
+not previously screened. Frozen 022 and 023 both score **18/20**, with identical
+closing stalls at 44026/44034, no bilateral grasp, and no rejection/contact/fault.
+Those two full traces are identical between observation modes. The screen takes
+100.64 s for 40 trials; no validation/development/held-out seeds enter the data.
+
+`joint-training-recovery-002` runs the learner to steps 85/83 (20 steps beyond
+the first slow-closing observation), then the observation-only teacher controls
+both arm and gripper. Both recover with full holds, zero rejection/contact/fault.
+All **328 labels** replay exactly from saved actor inputs; **45 frames** cover
+the diagnosed slow-closing range. The replacement `lift-demos-targeted-joint-002`
+changes only these two training episodes; every other episode and all validation
+arrays remain byte-identical, and all source/split roles are retained.
+
+`joint-recovery-fit-002` compares two 3,000-update, at-most-60-second full-actor
+refinements from frozen 022, with unchanged normalization, seed, learning rate
+and four-source split. Existing-data control **024** takes 18.13 s, selects update
+2600, and scores **17/20 guarded with zero rejections/contacts/faults**. Targeted
+candidate **025** takes 9.90 s, selects update 2500, but regresses to **15/20**,
+with two rejections and zero actual contacts/faults. The targeted fit has lower
+whole-episode validation prediction loss (0.002581 vs 0.002633), showing again
+that this metric does not establish autonomous success. Reject 025 as a replacement.
+
+Both fits solve the two new training stalls without intervention. In the six-case
+training replay, 024 scores 5/6 (44006 has only 1.80 s hold), while 025 scores 4/6
+(44013 stalls and 44016 hits the canonical-yaw guard failure). `joint-recovery-audit-002`
+verifies matched settings, unchanged validation, frozen normalizers and all prior
+baseline hashes. Continuous-yaw variant **026** has identical 024 tensors and
+also scores 17/20 development with zero rejections and 5/6 selected training cases.
+Both are preserved separately, with their regression recorded. The 026 traces show
+50007 under-closing, 50009 stalled in approach with closed jaws, and 50014 first
+grasping at step 146 with only 1.125 s final hold. Inspected development traces
+remain excluded from training.
+
+`gripper-template-audit-001` finds that **all 26,795 training and 6,602 validation
+gripper labels** match exactly one of three observation-derived targets: open to
+30 mm single-jaw coordinate, close 1 mm from the measured jaw, or command fully
+closed. Maximum normalized residual is 6.62e-8; there are no unmatched or ambiguous
+labels. `gripper-template-probe-001` projects only the learned gripper output to
+its nearest supported target. Arm outputs and network weights are unchanged;
+there is no online teacher/phase lookup. In a paired 41.90 s runtime comparison,
+the original scores **17/20**, while decoding scores **19/20**. Only 50009 fails
+with a guard rejection; both modes have zero prohibited contacts/faults.
+
+The decoder is now an explicit saved `PolicyMeta.gripper_decoder` option, default
+`identity` for old checkpoints. `a1x-templates-v1` is restricted to the audited
+A1X cube-lift/jaw contract, preserves arm outputs, clips decoded actions to their
+range, and rejects nonfinite inputs. Unsupported refinement fails before training
+instead of discarding the mode. `gripper-decoder-contracts-001.log` passes 68
+initial checks; the final bounds correction and runner suite pass 23 checks in
+`gripper-decoder-contracts-002.log`. This is action decoding, not another fit.
+
+Saved and reloaded **027** reproduces the probe's **19/20** through the actual
+evaluator, including exact true hold durations (`gripper-decoder-package-audit-001`).
+It is frozen before first use of the reserved seeds. `lift-heldout-027.json` then
+records **20/20** on 51000-51019: every controller finishes, independent true holds
+span 2.005-2.055 s, and there are zero guard rejections, prohibited contacts or
+numerical faults. `lift-heldout-027-audit.json` verifies the exact seed set, frozen
+checkpoint/bundle/runtime hashes and the complete success conditions. This passes
+the nominal simulation gate only; no perception-error tolerance or physical result
+is implied. Source/diagnostic overlay: `gripper-decoder-source-001/` on `e10acf2`.
 
 `configs/a1x_lift_evaluation.json` fixes development seeds **50000-50019** and
-reserved held-out seeds **51000-51019**. The artifact audit found no prior use of
-the held-out seeds. Keep them out of demonstrations, fitting and development
-tuning; run only after freezing a candidate that meets the proposed 18/20 nominal
-development gate. Every success requires the full 2 s hold through the guarded
-controller, without teacher intervention, prohibited contacts or numerical faults.
-If qualification fails, subsequent reuse is regression evidence, not a fresh holdout.
+held-out seeds **51000-51019**. A preflight found no prior use before frozen 027's
+first qualification above. Keep them out of demonstrations, fitting and development
+tuning. Every success requires the full 2 s hold through the guarded controller,
+without teacher intervention, prohibited contacts or numerical faults. Subsequent
+reuse is regression evidence, not a fresh holdout, even after a successful first run.
 
 After nominal qualification, perform short comparisons of persistent calibration
 translation/rotation bias, camera-pose noise and delay before robustness training.
@@ -771,6 +841,9 @@ rejection and zero actual contacts per set. Learned lift is still unproven.
 | 2026-09-27 | Grasp-clearance inspection supports earlier coordinated corrections without weakening the guard | `grasp-clearance-inspection-002`: requested 2.83 mm versus 3 mm margin, measured 6.05 mm; `closing-clearance-channels-001`: early arm correction avoids rejection, gripper-only does not; all six assisted probes remain below full hold | Keep guard unchanged; test joint arm/gripper refinement on existing training data, never the inspected development traces |
 | 2026-09-27 | Joint refinement improves nominal development success and all targeted training recoveries | `joint-grasp-refinement-comparison-001`: 022 17/20, one rejection, zero actual contacts; 3/3 training recoveries; 10.83 s fit; frozen bundle SHA256 `a701802f` | Preserve 022 alongside zero-rejection 011; screen existing training cases for remaining failure coverage; held-out, calibration tolerance and physical validation remain pending |
 | 2026-09-27 | Continuous cube-yaw input fixes a boundary failure with identical learned weights | `cube-yaw-comparison-001`: 023 ties 022 at 17/20 development and improves 33/34 to 34/34 assigned training cases; zero actual contacts; legacy results reproduce exactly; 96 tests pass; separate frozen 023 bundle | Screen the next bounded training subset for remaining closing/approach failures; require matching observation conventions before further teaching/fitting; calibration tolerance remains unmeasured |
+| 2026-09-27 | Two training stalls are recovered, but targeted fitting regresses autonomous development | `joint-training-screen-002`: both 18/20; `joint-training-recovery-002`: 2/2 assisted, 328 labels replayed; matched fits 024/025: 17/20 vs 15/20; validation unchanged | Reject 025; preserve 024/026 with zero development rejections and their 44006 training regression; inspect action representation instead of scaling fitting |
+| 2026-09-27 | Explicit learned-output gripper decoding raises nominal development success | `gripper-template-audit-001`: all 33,397 labels match three supported commands; paired probe and saved 027: 19/20 versus 17/20, one rejection, zero actual contacts; compatibility and controller checks pass | Freeze 027 before first held-out use; no teacher intervention, new fitting, guard relaxation or deadline change |
+| 2026-09-27 | Frozen 027 passes first nominal held-out qualification | `lift-heldout-027-audit.json`: 20/20, true holds 2.005-2.055 s, zero rejections/contacts/faults; frozen source/checkpoint hashes verified | Begin separate perception-robustness stage with persistent translation/rotation bias, noise and delay; tolerance and physical validation remain pending |
 
 On resumption: check the current commit and team changes, read this log, and
 continue from the first unfinished stage. After meaningful progress, update the

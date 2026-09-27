@@ -82,6 +82,8 @@ class PolicyMeta:
     gripper_residual: str = "none"
     #: Square-cube orientation convention, applied before constructing observations.
     cube_yaw_mode: str = "canonical"
+    #: Optional finite gripper action set; the actor chooses via nearest output.
+    gripper_decoder: str = "identity"
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,
@@ -137,6 +139,16 @@ class Policy(nn.Module):
             with torch.no_grad():
                 self.gripper_residual[-1].weight.zero_()
                 self.gripper_residual[-1].bias.zero_()
+        if meta.gripper_decoder != "identity":
+            if (meta.gripper_decoder != "a1x-templates-v1" or meta.robot != "a1x"
+                    or meta.task.get("name") != "lift" or meta.obs_dim != 36 or meta.act_dim != 7
+                    or meta.task.get("cube_half") != .015 or meta.gripper_residual != "none"):
+                raise ValueError("Unsupported A1X gripper decoder contract")
+            from ..kinematics import RobotKinematics
+            from ..robots import A1X
+            limits = tk.Limits.of(self.feature_encoder.kin if self.feature_encoder else RobotKinematics(A1X))
+            if limits.lo[-1] != 0 or limits.hi[-1] != .05:
+                raise ValueError("A1X gripper decoder requires the measured 0..50 mm jaw coordinate")
         #: Wagi krytyka z treningu (tylko do douczania; do jazdy niepotrzebne). Polityki
         #: zapisane przed jego dodaniem go nie maja - douczanie grzeje wtedy krytyka od zera.
         self.critic_state: dict | None = None
@@ -167,6 +179,19 @@ class Policy(nn.Module):
         x = torch.as_tensor(np.asarray(obs, np.float32), device=self.norm.mean.device)
         single = x.ndim == 1
         a = self(x[None] if single else x).clamp(-1.0, 1.0).cpu().numpy()
+        if self.meta.gripper_decoder == "a1x-templates-v1":
+            values = np.asarray(obs, np.float32)
+            if (values.ndim not in (1, 2) or values.shape[-1] != 36
+                    or not np.isfinite(values).all() or not np.isfinite(a).all()):
+                raise ValueError("Gripper decoding requires finite A1X observations and actor outputs")
+            measured = (values[None] if single else values)[:, 6].astype(float)
+            # Normalized absolute targets: 30 mm open, 1 mm inward from measured
+            # jaw, fully closed. Match the audited teacher action vocabulary;
+            # select only from the learned output, never from teacher phase logic.
+            templates = np.column_stack((np.full(len(measured), .2),
+                np.clip(measured - .04, -1., 1.), np.full(len(measured), -1.))).astype(np.float32)
+            chosen = np.abs(templates - a[:, 6:7]).argmin(axis=1)
+            a[:, 6] = templates[np.arange(len(a)), chosen]
         return a[0] if single else a
 
     @property

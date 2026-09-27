@@ -111,6 +111,8 @@ def train(task: str | tk.TaskConfig, cfg: PPOConfig | None = None, *, workspace:
     spec = (workspace or Workspace()).spec()
     tsk = task if isinstance(task, tk.TaskConfig) else tk.make_task(task, spec)
     if init is not None:
+        if init.meta.gripper_decoder != "identity":
+            raise ValueError("Batch training does not support a decoded gripper action contract")
         if init.meta.cube_yaw_mode != "canonical":
             raise ValueError("Batch training does not support continuous cube yaw observations")
         if init.meta.robot != spec.name:

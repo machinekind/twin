@@ -1,9 +1,14 @@
 # A1X perception robustness protocol
 
-Status: planned, simulation only; no calibration-error tolerance measured yet.
+Status: next active stage, simulation only; no calibration-error tolerance measured yet.
 The user explicitly requires persistent camera-to-arm translation and rotation
-errors as well as pose noise and delay. Begin the performance campaign after
-nominal qualification. Continue nominal development in the meantime.
+errors as well as pose noise and delay. Frozen candidate 027 has now passed
+nominal qualification: 19/20 development and 20/20 first held-out lifts, full
+true two-second holds and zero prohibited contacts. Use its preserved checkpoint
+(`workspace/validation/baselines/lift-imitation-027/policy.pt`, SHA256 `22d79622`),
+continuous cube yaw and explicit `a1x-templates-v1` gripper decoder. Reserve a
+separate robustness evaluation set before corruption fitting. The previously
+used nominal held-out set is now regression evidence, never fresh qualification.
 
 ## Injection and independent truth
 
