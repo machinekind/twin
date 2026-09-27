@@ -828,7 +828,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--camera", default=None,
                    help="zrodlo kamery na nadgarstku, gdy plik --rig go nie podaje")
     p.add_argument("--episodes", type=int, default=1, help="ile epizodow (domyslnie 1)")
-    p.add_argument("--seed", type=int, default=0, help="ziarno losowania kostki w symulacji (domyslnie 0)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="ziarno losowania kostki w symulacji (domyslnie z zegara, wypisane na starcie)")
     p.add_argument("--outside-training", action="store_true",
                    help="pozwol na punkt chwytu poza obszarem treningu (z ostrzezeniem)")
     p.add_argument("--floor", choices=("bench", "training"), default="bench",

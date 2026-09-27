@@ -96,18 +96,19 @@ def _hex(value: str, what: str) -> str:
 
 
 def find_checkpoint(explicit: str | Path | None = None) -> Path | None:
-    """First existing file of: `explicit`, `$LEROBOT_GRASP_STUDENT`, `workspace/policies/grasp/student.pt`."""
+    """`explicit` if it is a file, else None; without it the first existing of
+    `$LEROBOT_GRASP_STUDENT` and `workspace/policies/grasp/student.pt`."""
+    if explicit is not None and str(explicit) != "":
+        p = Path(explicit).expanduser()
+        return p if p.is_file() else None
     env = os.environ.get(CHECKPOINT_ENV, "").strip()
-    for cand, where in ((explicit, "given"), (env or None, CHECKPOINT_ENV),
-                        (data_path(DEFAULT_CHECKPOINT), "default")):
-        if cand is None or str(cand) == "":
-            continue
-        p = Path(cand).expanduser()
+    if env:
+        p = Path(env).expanduser()
         if p.is_file():
             return p
-        if where != "default":
-            log.warning("checkpoint %s (%s) does not exist; looking further", p, where)
-    return None
+        log.warning("checkpoint %s (%s) does not exist; looking further", p, CHECKPOINT_ENV)
+    p = data_path(DEFAULT_CHECKPOINT)
+    return p if p.is_file() else None
 
 
 def _download(url: str, dest: Path, *, sha256: str | None, timeout_s: float) -> Path:
@@ -396,8 +397,11 @@ def _model_fetch(a: argparse.Namespace) -> int:
 
 
 def _find_for_cli(a: argparse.Namespace) -> Path | None:
-    path = find_checkpoint(getattr(a, "checkpoint", None))
-    if path is None:
+    given = getattr(a, "checkpoint", None)
+    path = find_checkpoint(given)
+    if path is None and given:
+        print(f"Nie ma pliku --checkpoint {given}", file=sys.stderr)
+    elif path is None:
         print(f"Brak modelu. Pobierz: lerobot-twin grasp-model fetch  "
               f"(albo --checkpoint PATH, {CHECKPOINT_ENV})", file=sys.stderr)
     return path

@@ -22,22 +22,22 @@ class RobotInfo:
 
 @dataclass(frozen=True)
 class GripperState:
-    """Read-only snapshot of the gripper as the backend streams and measures it (`gripper_state()`).
+    """Migawka chwytaka tylko do odczytu, tak jak backend go steruje i mierzy (`gripper_state()`).
 
-    Openings are in application units, 0 = closed, 100 = open.
+    Rozwarcia w jednostkach aplikacji: 0 = zamkniety, 100 = otwarty.
     """
 
-    commanded: float | None        # last command that passed the backend's gate; None before the first
-    target: float | None           # where the stream is heading (differs from `commanded` after a freeze)
-    streamed: float | None         # opening really sent last; the best proxy for the jaw
-    position: float | None         # measured opening; None when the backend has no measurement
+    commanded: float | None        # ostatni rozkaz przepuszczony przez backend; None przed pierwszym
+    target: float | None           # dokad idzie strumien (inny niz `commanded` po zamrozeniu)
+    streamed: float | None         # rozwarcie naprawde wyslane ostatnio; najlepsze przyblizenie szczeki
+    position: float | None         # zmierzone rozwarcie; None, gdy backend go nie mierzy
     frozen: bool
-    effort: float | None           # backend units; None when the reading is missing, stale or frozen
-    t: float                       # backend clock at the reading (frame drain time on the A1X)
-    age_s: float | None            # backend clock now minus `t`; None when the backend has no feedback frames
-    rate: float | None             # units per second of the stream
-    force_threshold: float | None  # effort above which a closing jaw freezes; None = no such rule
-    measured: bool                 # whether `position` is a measurement
+    effort: float | None           # jednostki backendu; None przy braku, starym albo zamrozonym odczycie
+    t: float                       # zegar backendu w chwili odczytu (A1X: chwila oprozniania kolejki)
+    age_s: float | None            # zegar backendu teraz minus `t`; None bez ramek odczytu
+    rate: float | None             # jednostki na sekunde strumienia
+    force_threshold: float | None  # wysilek, powyzej ktorego zamykajaca sie szczeka staje; None = brak reguly
+    measured: bool                 # czy `position` to pomiar
 
 
 class RobotBackend(ABC):
@@ -136,14 +136,14 @@ class RobotBackend(ABC):
         return None
 
     def gripper_state(self) -> GripperState | None:
-        """Read-only gripper state; None when the backend does not expose one.
+        """Stan chwytaka tylko do odczytu; None, gdy backend go nie udostepnia.
 
-        Must not raise and must not change anything: the grasp loop polls it every tick.
+        Nie moze rzucac ani niczego zmieniac: petla chwytu pyta o niego co takt.
         """
         return None
 
     def foreign_frames(self) -> int:
-        """Command frames of another sender seen on the link since connect; 0 when the backend cannot tell."""
+        """Ramki rozkazu innego nadawcy na laczu od polaczenia; 0, gdy backend tego nie rozpozna."""
         return 0
 
     def step(self, dt: float) -> None:  # noqa: B027 - domyslnie nic nie robi

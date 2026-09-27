@@ -15,7 +15,7 @@ from galaxeo import protocol as P  # noqa: E402
 from galaxeo.bus import Frame  # noqa: E402
 from test_a1x import ARM, STEP, Clock, FakeA1XBus, connected, make_arm, run  # noqa: E402
 
-from lerobot_mp.robot.a1x import ECHO_KEEP, FOREIGN_WINDOW_S, A1XArm  # noqa: E402
+from lerobot_mp.robot.a1x import ECHO_KEEP, ECHO_WINDOW_S, FOREIGN_WINDOW_S, A1XArm  # noqa: E402
 from lerobot_mp.robot.base import GripperState, RobotBackend, RobotInfo  # noqa: E402
 
 FOREIGN = "inny nadawca na laczu CAN (ramki rozkazu spoza blizniaka)"
@@ -238,28 +238,38 @@ def test_a_command_frame_the_backend_never_sent_is_counted_and_reported_for_half
 
 
 def test_an_echo_of_the_backends_own_payloads_is_not_another_sender():
-    assert ECHO_KEEP == 16
+    assert ECHO_KEEP == 16 and ECHO_WINDOW_S == 0.05
     arm, bus, clock = connected()
     arm.enable()                                                                 # FF 1, 5, 6 went out
+    run(arm, bus, clock, 1.0)
+    # The same function codes a second later are another sender, not an echo.
+    bus.rx.extend([Frame(P.FF_ID, P.encode_ff(5)), Frame(P.FF_ID, P.encode_ff(6))])
+    run(arm, bus, clock, STEP)
+    assert arm.foreign_frames() == 2 and arm.faults() == [FOREIGN]
+    run(arm, bus, clock, FOREIGN_WINDOW_S + 0.05)
+    assert arm.faults() == []
+
     arm.send_joints({"arm_joint1": 40.0, "gripper": 0.0})
     run(arm, bus, clock, 0.2)                                                    # moving: payloads differ
     cmd, grip = bus.frames(P.CMD_ID), bus.frames(P.GRIP_ID)
     assert len(set(cmd[-ECHO_KEEP - 1:])) == ECHO_KEEP + 1
     echoes = [
-        (P.CMD_ID, cmd[-1]), (P.GRIP_ID, grip[-1]), (P.FF_ID, b"\x06"), (P.FF_ID, b"\x01"),
-        (P.CMD_ID, cmd[-ECHO_KEEP]),                                             # oldest one still remembered
-        (P.CMD_ID, cmd[-1] + bytes(64 - len(cmd[-1]))),                          # padded to an FD length
-        (P.GRIP_ID, grip[-1] + bytes(12 - len(grip[-1]))),
+        (P.CMD_ID, cmd[-1]), (P.GRIP_ID, grip[-1]),
+        (P.CMD_ID, cmd[-2] + bytes(64 - len(cmd[-2]))),                          # padded to an FD length
+        (P.GRIP_ID, grip[-2] + bytes(12 - len(grip[-2]))),
     ]
     bus.rx.extend(Frame(i, d) for i, d in echoes)
     run(arm, bus, clock, STEP)
-    assert arm.foreign_frames() == 0 and arm.faults() == []
-    # Older than the remembered payloads, or padded with anything but zeros: another sender.
-    cmd = bus.frames(P.CMD_ID)
-    bus.rx.append(Frame(P.CMD_ID, cmd[-ECHO_KEEP - 1]))
-    bus.rx.append(Frame(P.GRIP_ID, bus.frames(P.GRIP_ID)[-1] + b"\x00\x01"))
+    assert arm.foreign_frames() == 2 and arm.faults() == []
+    # A second copy of an echoed payload, one sent more than the echo window ago, or one padded
+    # with anything but zeros: another sender.
+    stale = bus.frames(P.CMD_ID)[-12]                                            # 60 ms old at the next drain
+    bus.rx.extend([
+        Frame(P.CMD_ID, cmd[-1]), Frame(P.CMD_ID, stale),
+        Frame(P.GRIP_ID, bus.frames(P.GRIP_ID)[-1] + b"\x00\x01"),
+    ])
     run(arm, bus, clock, STEP)
-    assert arm.foreign_frames() == 2 and arm.faults() == [FOREIGN]
+    assert arm.foreign_frames() == 5 and arm.faults() == [FOREIGN]
 
 
 def test_through_the_twin_a_foreign_command_frame_ends_in_stop(monkeypatch):

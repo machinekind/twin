@@ -7,8 +7,8 @@
     report = drv.episode(hover)        # blocks the caller until an ending
     drv.close()
 
-Each 20 Hz tick reads the newest fresh joint sample, the newest wrist frame and the joint sample
-nearest the frame's exposure time, raises the floor from the measured tool height, builds the
+Each 20 Hz tick reads the newest fresh joint sample, raises the floor from the measured tool
+height, reads the newest wrist frame and the joint sample nearest the frame's exposure time, builds the
 19-vector, asks the policy, moves the command by one bookkeeping step, accepts it through one
 warm IK step and one collision question, and sends all seven joints. A soft guard (stale feedback,
 camera, pairing, lag) skips a tick and sends the previous target again; five in a row (ten for
@@ -73,7 +73,6 @@ from .observer import GraspObserver
 from .rig import Rig
 
 if TYPE_CHECKING:
-    from ...robot.base import GripperState
     from .policy import GraspStudentPolicy
 
 logger = logging.getLogger(__name__)
@@ -129,12 +128,12 @@ class TickRecord:                     # one JSON line per tick
     tick_ms: float
 
 
-@dataclass(frozen=True)
+@dataclass
 class DryInputs:                      # what a dry tick scored, for the dump
-    frame: Frame | None
-    pair_joints: dict[str, float] | None
-    inputs: np.ndarray | None         # (4, 120, 160) float32, policy.inputs(frame.image, uv)
-    obs: np.ndarray | None            # (19,) float32, not normalised
+    frame: Frame | None = None
+    pair_joints: dict[str, float] | None = None
+    inputs: np.ndarray | None = None  # (4, 120, 160) float32, policy.inputs(frame.image, uv)
+    obs: np.ndarray | None = None     # (19,) float32, not normalised
 
 
 @dataclass
@@ -170,14 +169,6 @@ class _Skip(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
-
-
-@dataclass
-class _Seen:
-    frame: Frame | None = None
-    pair_joints: dict[str, float] | None = None
-    inputs: np.ndarray | None = None
-    obs: np.ndarray | None = None
 
 
 @dataclass
@@ -309,15 +300,15 @@ class GraspDriver:
     def _mode_refusal(self) -> str | None:
         tw = self.twin
         if self.mode == "sim" and not tw.status.simulated:
-            self.detail = "sim mode on a real backend"
+            self.detail = "tryb sim na prawdziwym backendzie"
             return "not armed"
         if self.mode in ("shadow", "real") and not self.real_ok:
-            self.detail = f"{self.mode} mode without consent"
+            self.detail = f"tryb {self.mode} bez zgody (--i-know)"
             return "not armed"
         if self.mode != "dry":
             b = tw.backend
             if b is None or b.gripper_state() is None:
-                self.detail = "backend has no gripper state"
+                self.detail = "backend nie podaje stanu chwytaka"
                 return "not armed"
         return None
 
@@ -405,15 +396,15 @@ class GraspDriver:
         r.n += 1
         return rec
 
-    # ------------------------------------------------------------------ steps 3 to 12
+    # ------------------------------------------------------------------ one tick's scoring
     @staticmethod
     def _guard_end(ending: str, detail: str, dry: bool) -> None:
         if dry:
             raise _Skip(ending)
         raise Ended(ending, detail)
 
-    def _score(self, r: _Run, rec: TickRecord, seen: _Seen, *, dry: bool) -> np.ndarray:
-        """Joints, frame, pairing, lag, floor, gap, observation, policy, bookkeeping, IK.
+    def _score(self, r: _Run, rec: TickRecord, seen: DryInputs, *, dry: bool) -> np.ndarray:
+        """Joints, floor, frame, pairing, lag, gap, observation, policy, bookkeeping, IK.
 
         Returns the measured TCP.
 
@@ -422,7 +413,7 @@ class GraspDriver:
         tw, arm, names = self.twin, self.arm, self.names
         now = self.clock()
 
-        # 3. Joints: the newest fresh sample; the feedback age by the backend's own clock.
+        # The newest fresh joint sample; the feedback age by the backend's own clock.
         js = arm.history.newest()
         b = tw.backend
         gs = b.gripper_state() if b is not None else None
@@ -444,7 +435,13 @@ class GraspDriver:
             raise _Skip("stale feedback")
         assert js is not None
 
-        # 4. Frame.
+        # Before the frame, pairing and lag guards: a skip streak must not switch off the floor and
+        # the table ending while the arm trails a descending command.
+        if self.floor != "training":
+            opening = None if self.grip is None else self.arm.widest_opening(js.joints.get(self.grip))
+            self._measured_floor(r, tcp_m, self._tool_low(js.joints, float(tcp_m[2]), opening), dry)
+        rec.floor_z, rec.sag = float(r.cmd.floor_z), float(r.sag_used)
+
         fr: Frame | None = None
         try:
             fr = self.frames.latest()
@@ -460,7 +457,7 @@ class GraspDriver:
         if fr is None or frame_age > FRAME_AGE_MAX_S:
             raise _Skip("camera")
 
-        # 5. Pairing at the exposure time: the frame's stamp is taken after read and decode.
+        # Pairing at the exposure time: the frame's stamp is taken after read and decode.
         t_exp = float(fr.t) - self.camera_latency_s
         rec.t_exp = t_exp
         jp = arm.history.nearest(t_exp)
@@ -471,26 +468,20 @@ class GraspDriver:
         if rec.pair_gap_s > PAIR_GAP_MAX_S:
             raise _Skip("pairing")
 
-        # 6. Tracking lag. Nothing commands the arm in dry mode, so there is no lag to hold for.
+        # Nothing commands the arm in dry mode, so there is no lag to hold for.
         if not dry and rec.lag_deg > LAG_HOLD_DEG:
             raise _Skip("lag")
 
-        # 7. Measured floor.
-        if self.floor != "training":
-            low = self._tool_low(js.joints, float(tcp_m[2]), self._widest_opening(r, js.joints, gs))
-            self._measured_floor(r, tcp_m, low, dry)
-        rec.floor_z, rec.sag = float(r.cmd.floor_z), float(r.sag_used)
-
-        # 8. Gap: never from status.command or status.measured.
+        # The gap: never from status.command or status.measured.
         if self.mode == "shadow":
             gap = r.est.update(self.clock(), 100.0 * r.cmd.state.g_cmd, None)
         else:
             gap = r.est.update(self.clock(), r.grip_cmd, gs)
         r.gap = rec.gap = float(gap)
 
-        # 9. Observation and the believed pixel at the exposure time.
         obs = self.observer.build(js.joints, gap, r.cmd)
         seen.obs = obs
+        # The believed pixel from the joints at the exposure time, not the newest ones.
         uv = self.camera.believed_uv(self.kin, jp.joints, r.hover.believed)
         rec.uv = [float(v) for v in uv]
         if dry:
@@ -498,7 +489,6 @@ class GraspDriver:
         if not np.all(np.isfinite(obs)):
             self._guard_end("non-finite", f"observation {obs.tolist()}", dry)
 
-        # 10. Policy; nothing is sent.
         t_inf = perf_counter()
         a = np.asarray(self.policy.act(fr.image, obs, uv), np.float32)
         rec.infer_ms = (perf_counter() - t_inf) * 1000.0
@@ -506,13 +496,13 @@ class GraspDriver:
         if a.shape != (5,) or not np.all(np.isfinite(a)):
             self._guard_end("non-finite", f"action {a.tolist()}", dry)
 
-        # 11. Bookkeeping: clips to the floor of step 7.
+        # Bookkeeping clips to the measured floor.
         prop = r.cmd.propose(a)
         rec.box_hit, rec.floor_hit, rec.ceiling_hit = prop.box_hit, prop.floor_hit, prop.ceiling_hit
         r.box_hits += int(prop.box_hit)
         r.floor_hits += int(prop.floor_hit)
 
-        # 12. IK and collision; a refusal holds the command, as in training.
+        # A refusal holds the command, as in training.
         q, step, why = arm.accept(prop.p, prop.R, r.cmd.state.q_cmd, collision=self.floor != "training")
         r.cmd.commit(prop, q)
         rec.ik_ok, rec.ik_why = q is not None, why
@@ -528,17 +518,6 @@ class GraspDriver:
             float(s.g_cmd), int(s.attempts)
         rec.kind = "policy"
         return tcp_m
-
-    def _widest_opening(self, r: _Run, joints: Mapping[str, float], gs: GripperState | None) -> float | None:
-        """The widest jaw opening that can be true now: on the A1X the reported opening is the last
-        command, which leads the jaw by up to 1.3 s."""
-        if self.grip is None:
-            return None
-        values = [joints.get(self.grip), r.target.get(self.grip)]
-        if gs is not None:
-            values += [gs.streamed, gs.position]
-        known = [float(v) for v in values if v is not None]
-        return max(known) if known else None
 
     def _tool_low(self, joints: Mapping[str, float], tcp_z: float, opening: float | None = None) -> float:
         """The measured tool height as a TCP height: the lower of the TCP and the lowest fingertip
@@ -562,7 +541,7 @@ class GraspDriver:
         return min(tcp_z, low + TIP_AHEAD)
 
     def _measured_floor(self, r: _Run, tcp_m: np.ndarray, low: float, dry: bool) -> None:
-        """Step 7. `low` is the measured tool height as a TCP height (`_tool_low`)."""
+        """`low` is the measured tool height as a TCP height (`_tool_low`)."""
         # (a) Sag grows with reach; estimated only while the arm is nearly still (tracking lag is not sag).
         # Nothing commands the arm in dry mode: the difference would be its distance from the hover.
         speed = self.arm.history.speed_deg_s()
@@ -642,11 +621,9 @@ class GraspDriver:
         try:
             self.arm.check_arm()
             self.arm.guard(lag_deg=3.0, lag_s=0.15)
-            self.twin.set_speed(None)
-            limits = self.twin.speed_limits()
-            slow = {j: limits.get(j, 0.0) for j in self.names if limits.get(j, 0.0) < ARM_SPEED_DEG_S - 1e-6}
+            slow = self.arm.slow_joints()
             if slow:
-                return "speed limited", ", ".join(f"{j} {v:.0f} deg/s" for j, v in slow.items())
+                return "speed limited", slow
             # The ticks run capped at exactly 90: the lag and tracking rules compare against this slew.
             self.twin.set_speed(ARM_SPEED_DEG_S)
         except Ended as e:
@@ -681,7 +658,7 @@ class GraspDriver:
         now = self.clock()
         prev = self._judge(r)
 
-        # 1. Hard checks, 2. caps. An ending here holds before the previous record is written.
+        # An ending here holds before the previous record is written.
         try:
             self.arm.check_arm()
             if r.cmd.state.ticks + r.skipped >= self.max_ticks:
@@ -696,7 +673,7 @@ class GraspDriver:
 
         rec = self._record(r, now)
         try:
-            tcp_m = self._score(r, rec, _Seen(), dry=False)
+            tcp_m = self._score(r, rec, DryInputs(), dry=False)
         except _Skip as s:
             rec.kind, rec.skip = "skipped", s.reason
             r.skipped += 1
@@ -723,7 +700,7 @@ class GraspDriver:
         if rec.infer_ms is not None:
             r.infer_ms.append(rec.infer_ms)
 
-        # 13. Gripper command, slewed at the measured jaw speed when asked; the shadow jaw stays open.
+        # The gripper command, slewed at the measured jaw speed when asked; the shadow jaw stays open.
         opening = 100.0 * r.cmd.state.g_cmd
         if self.jaw_stroke_s is not None:
             step = 100.0 / self.jaw_stroke_s * TICK_S
@@ -732,7 +709,6 @@ class GraspDriver:
             r.grip_cmd = opening
         grip = GRIP_OPEN if self.mode == "shadow" else r.grip_cmd
 
-        # 14. Send all seven joints.
         target = {j: math.degrees(float(v)) for j, v in zip(self.names, r.cmd.state.q_cmd, strict=True)}
         if self.grip is not None:
             target[self.grip] = float(grip)
@@ -740,7 +716,7 @@ class GraspDriver:
             raise Ended("non-finite", f"target {target}")
         self._send(r, rec, target, t_perf)
 
-        # 15. Success (sim, training's condition) or lift (real arm).
+        # Success in sim (training's condition), a lift on a real arm.
         if self.mode == "shadow":
             return
         g = r.cmd.state.g_cmd
@@ -752,7 +728,7 @@ class GraspDriver:
                                   f"lowest {r.min_tcp_z * 1000:.1f} mm")
 
     def _send(self, r: _Run, rec: TickRecord, target: dict[str, float], t_perf: float) -> None:
-        """Step 14's write, after one more look at the hard checks: an impact or a STOP that came while
+        """The write, after one more look at the hard checks: an impact or a STOP that came while
         the tick computed ends it here, not one policy target further into whatever was hit."""
         r.pending, r.pending_target = rec, None
         rec.tick_ms = (perf_counter() - t_perf) * 1000.0
@@ -772,7 +748,7 @@ class GraspDriver:
 
     def _judge(self, r: _Run) -> TickRecord | None:
         """Takes the previous tick's pending record and sets its rate-limit verdict from the twin's
-        command now (step 16); `_emit` then writes it."""
+        command now; `_emit` then writes it."""
         rec, target = r.pending, r.pending_target
         if rec is None:
             return None
@@ -827,7 +803,7 @@ class GraspDriver:
 
     # ------------------------------------------------------------------ dry mode
     def dry_tick(self, hover: Hover) -> tuple[TickRecord, DryInputs]:
-        """Steps 3 to 12 on a fresh tick-0 command at the hover; sends nothing, ends nothing."""
+        """One tick's scoring on a fresh tick-0 command at the hover; sends nothing, ends nothing."""
         self.arm.listen()
         now = self.clock()
         if now - self._effort_t >= DRY_EFFORT_PERIOD_S:
@@ -839,11 +815,10 @@ class GraspDriver:
         r.n = self._dry_ticks
         self._dry_ticks += 1
         rec = self._record(r, now)
-        seen = _Seen()
+        seen = DryInputs()
         try:
             self._score(r, rec, seen, dry=True)
         except _Skip as s:
             rec.kind, rec.skip = "skipped", s.reason
         rec.tick_ms = (perf_counter() - t_perf) * 1000.0
-        return rec, DryInputs(frame=seen.frame, pair_joints=seen.pair_joints, inputs=seen.inputs,
-                              obs=seen.obs)
+        return rec, seen

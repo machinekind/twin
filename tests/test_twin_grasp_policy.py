@@ -280,7 +280,7 @@ def test_a_non_finite_network_output_is_returned_as_it_is(toy_policy: GraspStude
 
 # ---------------------------------------------------------------- finding the checkpoint
 
-def test_find_checkpoint_takes_the_first_existing_of_explicit_environment_and_default(
+def test_find_checkpoint_takes_explicit_alone_else_the_first_existing_of_environment_and_default(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     explicit, env = tmp_path / "explicit.pt", tmp_path / "env.pt"
     monkeypatch.setattr(P, "data_path", lambda rel: tmp_path / "data" / rel)
@@ -294,7 +294,7 @@ def test_find_checkpoint_takes_the_first_existing_of_explicit_environment_and_de
     env.write_bytes(b"e")
     monkeypatch.setenv(P.CHECKPOINT_ENV, str(env))
     assert find_checkpoint() == env
-    assert find_checkpoint(explicit) == env
+    assert find_checkpoint(explicit) is None
     explicit.write_bytes(b"x")
     assert find_checkpoint(explicit) == explicit
     assert find_checkpoint(str(explicit)) == explicit
@@ -643,6 +643,18 @@ def test_grasp_model_check_and_time_without_a_checkpoint_name_the_fetch_command(
     assert P.main_model(argparse.Namespace(what="check", checkpoint=None, n=200)) == 1
     assert "lerobot-twin grasp-model fetch" in capsys.readouterr().err
     assert P.main_model(_namespace("train")) == 2
+
+
+def test_grasp_model_check_with_a_missing_checkpoint_names_the_file_not_the_fetch(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+        no_network: None) -> None:
+    env = tmp_path / "student_v4.pt"
+    env.write_bytes(b"e")
+    monkeypatch.setenv(P.CHECKPOINT_ENV, str(env))
+    missing = tmp_path / "student_v5.pt"
+    assert P.main_model(_namespace("check", missing)) == 1
+    err = capsys.readouterr().err
+    assert f"Nie ma pliku --checkpoint {missing}" in err and "fetch" not in err
 
 
 def test_grasp_model_time_prints_the_numbers_and_the_verdict(

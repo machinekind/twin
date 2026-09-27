@@ -84,10 +84,13 @@ GRIP_REOPEN_PDES = 0.3
 GRIP_LIVE_FRAMES = 4
 #: Zapas na czas pelnego skoku chwytaka [s] (`gripper_travel_s`).
 GRIP_TRAVEL_MARGIN_S = 0.2
-#: `faults()` reports another sender for this long after its last command frame [s].
+#: Tyle `faults()` zglasza innego nadawce po jego ostatniej ramce rozkazu [s].
 FOREIGN_WINDOW_S = 0.5
-#: Payloads remembered per CAN id, so an adapter's echo of our own frame is not taken for another sender.
+#: Ostatnie ladunki pamietane na kazdy CAN id - echo adaptera to nie inny nadawca.
 ECHO_KEEP = 16
+#: Echo przychodzi w tym czasie po wysylce albo wcale [s]; pozniejsza kopia to inny nadawca
+#: (np. drugi backend trzymajacy te sama poze z tymi samymi wzmocnieniami).
+ECHO_WINDOW_S = 0.05
 
 INSTALL_HINT = 'pip install -e ".[a1x]"  (pakiet galaxeo z repozytorium galaxeo-manipulators)'
 
@@ -174,7 +177,7 @@ class A1XArm(RobotBackend):
         self._link_silent = False
         self._stale: list[str] = []
         self.tx_frames = 0
-        self._sent: dict[int, deque[bytes]] = {}
+        self._sent: dict[int, deque[tuple[bytes, float]]] = {}
         self._foreign = 0
         self._foreign_t = -math.inf
         self._gripper_state_failed = False
@@ -314,7 +317,7 @@ class A1XArm(RobotBackend):
             if f is None:
                 return got
             if f.can_id in (P.CMD_ID, P.GRIP_ID, P.FF_ID):
-                if not self._own_payload(f.can_id, bytes(f.data)):
+                if not self._own_payload(f.can_id, bytes(f.data), now):
                     if now - self._foreign_t >= FOREIGN_WINDOW_S:
                         logger.warning("A1X: ramka 0x%03X spoza blizniaka - inny nadawca na laczu CAN",
                                        f.can_id)
@@ -404,17 +407,20 @@ class A1XArm(RobotBackend):
         return self._g_rest is not None and abs(self._fb.eff[6]) > self._g_rest + self.acfg.gripper_force
 
     def _send(self, can_id: int, data: bytes, fd: bool = True) -> None:
-        self._sent.setdefault(can_id, deque(maxlen=ECHO_KEEP)).append(bytes(data))
+        self._sent.setdefault(can_id, deque(maxlen=ECHO_KEEP)).append((bytes(data), self._clock()))
         self._bus.send(can_id, data, fd=fd)
         self.tx_frames += 1
 
-    def _own_payload(self, can_id: int, data: bytes) -> bool:
-        """Whether `data` is one of our last payloads on `can_id` (an adapter echo, not another sender)."""
-        for sent in self._sent.get(can_id, ()):
-            if data == sent:
-                return True
-            # XCAN pads FD payloads with zeros to the next legal length (0x050: 60 -> 64, 0x051: 10 -> 12).
-            if len(data) > len(sent) and data.startswith(sent) and not any(data[len(sent):]):
+    def _own_payload(self, can_id: int, data: bytes, now: float) -> bool:
+        """Czy `data` to echo naszej swiezej ramki na `can_id`; jedna wysylka tlumaczy jedno echo."""
+        sent = self._sent.get(can_id, ())
+        for i, (payload, t) in enumerate(sent):
+            if now - t > ECHO_WINDOW_S:
+                continue
+            # XCAN dopelnia ramki FD zerami do dozwolonej dlugosci (0x050: 60 -> 64, 0x051: 10 -> 12).
+            if data == payload or (len(data) > len(payload) and data.startswith(payload)
+                                   and not any(data[len(payload):])):
+                del sent[i]
                 return True
         return False
 
@@ -545,10 +551,10 @@ class A1XArm(RobotBackend):
             return {name: math.degrees(fb.vel[i]) for i, name in enumerate(self.arm)}
 
     def gripper_state(self) -> GripperState | None:
-        """The jaw's command, stream, freeze and effort, read under the lock; openings in 0..100.
+        """Rozkaz, strumien, zamrozenie i wysilek szczeki, czytane pod blokada; rozwarcia 0..100.
 
-        Changes no field and sends nothing. None when not connected, and on any error (logged once),
-        because the grasp loop calls it every tick.
+        Niczego nie zmienia i nic nie wysyla. None bez polaczenia i przy kazdym bledzie
+        (zapisanym raz), bo petla chwytu wola to co takt.
         """
         try:
             with self._lock:
@@ -582,7 +588,7 @@ class A1XArm(RobotBackend):
             return None
 
     def foreign_frames(self) -> int:
-        """Command frames (0x050, 0x051, FF) of another sender received since connect."""
+        """Ramki rozkazu (0x050, 0x051, FF) innego nadawcy odebrane od polaczenia."""
         with self._lock:
             return self._foreign
 
@@ -611,7 +617,7 @@ class A1XArm(RobotBackend):
                 if state in ("bus-off", "error-passive"):
                     out.append(f"magistrala CAN: {state}")
                 if now - self._foreign_t < FOREIGN_WINDOW_S:
-                    # No joint named, so the twin takes it as an arm fault and STOPs.
+                    # Bez nazwy stawu - blizniak bierze to za blad ramienia i robi STOP.
                     out.append("inny nadawca na laczu CAN (ramki rozkazu spoza blizniaka)")
                 return out
         except Exception as exc:               # pragma: no cover - wolane co cykl petli, nie moze jej wysypac

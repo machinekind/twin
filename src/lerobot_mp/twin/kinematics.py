@@ -80,18 +80,18 @@ class IKSolution:
 
 @dataclass
 class IKStep:
-    """One warm step of the training solver (`RobotKinematics.ik_step`), in app units."""
+    """Jeden cieply krok solvera z treningu (`RobotKinematics.ik_step`), w jednostkach aplikacji."""
 
-    #: Every spec joint; the gripper is copied from the seed.
+    #: Wszystkie stawy specyfikacji; chwytak skopiowany z `seed`.
     joints: dict[str, float]
-    #: TCP position [m] and rotation [rad] error at the RETURNED joints, never one update stale.
+    #: Blad pozycji TCP [m] i obrotu [rad] w ZWROCONYCH stawach, nigdy sprzed ostatniej poprawki.
     pos_err: float
     rot_err: float
-    #: Largest arm joint change from the seed as given (before clipping) [deg].
+    #: Najwieksza zmiana stawu ramienia od `seed` jak podany (przed przycieciem) [st.].
     jump_deg: float
-    #: Updates applied; 0 when the seed already met the tolerances.
+    #: Wykonane poprawki; 0, gdy `seed` juz miesci sie w tolerancjach.
     iters: int
-    #: Training's `ok`: True only when the loop left through its tolerance test.
+    #: `ok` z treningu: True tylko, gdy petla wyszla przez test tolerancji.
     converged: bool
 
 
@@ -340,20 +340,20 @@ class RobotKinematics:
         tol_rot: float = 5e-3,
         limits: Mapping[str, tuple[float, float]] | None = None,
     ) -> IKStep:
-        """One warm start of the grasp training solver (galaxeo `a1x_control.Arm.ik`), transcribed.
+        """Jeden cieply start solvera z treningu chwytu (galaxeo `a1x_control.Arm.ik`), przepisany.
 
-        6-D damped least squares, 0.3 rad step cap, no restarts, no randomness: the joints,
-        residual included, are the ones the grasp student was trained on. `ik` lands elsewhere
-        and takes about 40 ms.
+        Tlumione najmniejsze kwadraty 6-D, krok najwyzej 0,3 rad, bez restartow i losowosci:
+        stawy, razem z resztkowym bledem, sa te, na ktorych uczyl sie student chwytu. `ik`
+        laduje gdzie indziej i trwa ok. 40 ms.
 
-        `seed` must hold every arm joint (`to_q` would silently fill a missing one from home).
-        `limits` [app units], e.g. `Twin.joint_limits()`, narrow the MJCF ranges of the arm
-        joints, so a step the supervisor would clamp comes back not converged. Base frame.
+        `seed` musi miec kazdy staw ramienia (`to_q` po cichu wstawilby brakujacy z domu).
+        `limits` [jednostki aplikacji], np. `Twin.joint_limits()`, zawezaja zakresy MJCF stawow
+        ramienia, wiec krok, ktory nadzor by przycial, wraca jako niezbiezny. Uklad bazy.
 
-        The tolerance test runs before each update, as in training. When the loop runs out,
-        the errors are recomputed at the final joints, but `converged` stays False even if they
-        are inside the tolerances: training refuses that step, and taking it would move the
-        command away from what the policy saw.
+        Test tolerancji idzie przed kazda poprawka, jak w treningu. Gdy petla sie skonczy,
+        bledy sa liczone od nowa w koncowych stawach, ale `converged` zostaje False, nawet gdy
+        mieszcza sie w tolerancjach: trening odrzuca taki krok, a wziecie go odsunaloby rozkaz
+        od tego, co widziala polityka.
         """
         missing = [name for name, arm in zip(self.spec.joints, self.arm) if arm and name not in seed]
         if missing:

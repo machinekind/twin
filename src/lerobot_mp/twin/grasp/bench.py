@@ -1,6 +1,6 @@
 """Bench measurements for the grasp student: jaw, table, grasp point, latency, dot, and a summary.
 
-    lerobot-twin grasp-bench gripper --backend a1x --i-know        # jaw stroke and effort at 200 Hz
+    lerobot-twin grasp-bench gripper --backend a1x --i-know        # jaw stroke and effort at >= 150 Hz
     lerobot-twin grasp-bench gripper --set-freeze 100              # record the freeze decision
     lerobot-twin grasp-bench gripper --gap-mm 0:3 --gap-mm 100:103 # ruler readings of the tip gap
     lerobot-twin grasp-bench table --backend a1x --i-know --xy 0 0.33      # fingertips on the table
@@ -40,9 +40,9 @@ from typing import Any, Literal
 import numpy as np
 
 from ...paths import data_path
-from .. import scene as sc
 from ..kinematics import RobotKinematics
 from ..runtime import Twin, smoothstep
+from . import evaluate
 from .camera import (
     CameraError,
     FrameSource,
@@ -53,13 +53,10 @@ from .camera import (
 )
 from .contract import (
     DOT_MAX_PX,
-    FOVY_DEG,
     FREEZE_DISABLED,
     GAP_CLOSED,
     GAP_PER_UNIT,
     HOVER,
-    IMG_H,
-    IMG_W,
     JOG_BACKOFF,
     JOG_CONTACT_MIN_DROP,
     JOG_LAG_DEG,
@@ -69,7 +66,6 @@ from .contract import (
     OWNER,
     PREPOSITION_SPEED_DEG_S,
     SAG_LIMIT,
-    T_GRIPPER_CAMERA,
     TABLE_TOUCH_FAR,
     TEACH_MAX_AGE_S,
     TIP_CLEAR,
@@ -81,8 +77,9 @@ from .contract import (
 )
 from .hover import Hover, HoverError, from_rig, from_scene, solve_hover
 from .keys import Keys
-from .motion import ArmSession, Ended, enable_refusal, load_workspace, stop_now
+from .motion import ArmSession, Ended, enable_refusal, stop_now
 from .rig import OBJECT_HEIGHT_RANGE, Rig, RigError
+from .run import RIG_REJECTED, backend_offsets, first_frame, load_site, refuse
 
 logger = logging.getLogger(__name__)
 
@@ -139,18 +136,12 @@ LATENCY_MIN_GOOD = 3
 #: Grey levels. Identical still renders (sim) give sigma 0; a larger floor hides a slow start of
 #: the motion in a flat scene (the twin's: 3 deg of J6 change the mean by only 1.1 grey levels).
 MAD_SIGMA_MIN = 0.01
-FIRST_FRAME_S = 3.0
-
-#: The simulated bench: the table of the sim evaluation (under training's whole region) and the
-#: wrist camera. No cube: nothing here grasps.
-SIM_TABLE = sc.Table(size=(1.2, 1.2), base_xy=(0.0, -0.20), base_yaw=0.0)
-WRIST_CAMERA = "wrist"
 
 
 def configure_sim(twin: Twin) -> None:
-    """The simulated bench scene: a table under the grasp region and the hand camera."""
-    twin.configure(table=SIM_TABLE,
-                   hand_cameras=[sc.HandCamera(WRIST_CAMERA, T_GRIPPER_CAMERA, FOVY_DEG, IMG_W, IMG_H)])
+    """The simulated bench scene: the sim evaluation's table and hand camera; no cube, nothing grasps."""
+    extras = evaluate.sim_extras()
+    twin.configure(table=extras["table"], hand_cameras=extras["hand_cameras"])
 
 
 def _now_iso() -> str:
@@ -159,11 +150,6 @@ def _now_iso() -> str:
 
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-
-def _refuse(reason: str, hint: str = "") -> int:
-    print(f"Odmowa: {reason}" + (f" - {hint}" if hint else ""), file=sys.stderr, flush=True)
-    return 2
 
 
 #: Endings of taking or pre-positioning the arm that are failures (exit 1), not refusals (exit 2).
@@ -176,7 +162,7 @@ def _not_started(why: str, detail: str, keys: Keys) -> int:
         print(f"Koniec: {why}" + (f" ({detail})" if detail else "") + " - ramie trzyma poze.",
               file=sys.stderr, flush=True)
         return 1
-    return _refuse(why, detail)
+    return refuse(why, detail)
 
 
 # ====================================================================== the connected bench
@@ -205,25 +191,16 @@ def _open(a: argparse.Namespace, *, moves: bool) -> Bench | int:
         print(f"lerobot-twin grasp-bench {tool} --backend {backend} rusza prawdziwym ramieniem - "
               f"dodaj --i-know.", file=sys.stderr)
         return 2
-    try:
-        ws = load_workspace(getattr(a, "workspace", None))
-    except (OSError, ValueError, TypeError) as exc:
-        print(f"Nie wczytano pliku stanowiska: {exc}", file=sys.stderr)
-        return 2
-    if ws is None:
-        return _refuse("not a1x", "plik stanowiska opisuje inne ramie; narzedzia chwytu dzialaja tylko "
-                                  "na A1X")
+    site = load_site(a)
+    if isinstance(site, int):
+        return site
+    ws, rig = site
     rig_arg = getattr(a, "rig", None)
-    try:
-        rig = Rig.load(rig_arg)
-    except RigError as exc:
-        print(f"Plik wartosci stanowiska chwytu jest bledny: {exc}", file=sys.stderr)
-        return 2
     port = getattr(a, "port", None)
     why = enable_refusal(ws, backend, port)
     if why is not None:
-        return _refuse(why, "a1x.enable_on_connect wlacza silniki przy polaczeniu (na chwile je puszcza); "
-                            "wlacz ramie z panelu i ustaw enable_on_connect: false")
+        return refuse(why, "a1x.enable_on_connect wlacza silniki przy polaczeniu (na chwile je puszcza); "
+                           "wlacz ramie z panelu i ustaw enable_on_connect: false")
     twin = Twin(ws)
     try:
         twin.connect(backend, port=port, go_home=False, threaded=True)
@@ -309,13 +286,6 @@ def _release(session: ArmSession | None) -> None:
         session.close()
     except Exception:
         logger.exception("closing the arm session failed")
-
-
-def _session_sleep(session: ArmSession) -> Callable[[float], None]:
-    """The session's sleep (its injected one, else a wait on its cancel event), as a plain callable."""
-    def sleep(dt: float) -> None:
-        session.wait(dt)
-    return sleep
 
 
 def _arm_lost(session: ArmSession) -> str | None:
@@ -532,7 +502,7 @@ def _record_gripper_notes(a: argparse.Namespace, gap: Mapping[str, float], freez
     try:
         rig = Rig.load(getattr(a, "rig", None))
     except RigError as exc:
-        print(f"Plik wartosci stanowiska chwytu jest bledny: {exc}", file=sys.stderr)
+        print(f"{RIG_REJECTED}: {exc}", file=sys.stderr)
         return 2
     if gap:
         merged = dict(rig.gripper.get("gap_mm") or {})
@@ -623,7 +593,7 @@ def _gripper_refusal(b: Bench) -> int | None:
     backend = twin.backend
     gs = backend.gripper_state() if backend is not None else None
     if gs is None:
-        return _refuse("not armed", "backend nie podaje stanu chwytaka")
+        return refuse("not armed", "backend nie podaje stanu chwytaka")
     if b.simulated:
         return None
     measured, limits = twin.status.measured, twin.joint_limits()
@@ -631,13 +601,13 @@ def _gripper_refusal(b: Bench) -> int | None:
                for k in twin.spec.arm_joints
                if k in measured and k in limits and not limits[k][0] <= measured[k] <= limits[k][1]]
     if outside:
-        return _refuse("arm outside limits",
-                       "sprzeglo sprowadziloby staw w granice ruchem (" + "; ".join(outside) + "). "
-                       "Najpierw ustaw ramie w pozie domowej albo nad punktem (panel albo grasp-bench point)")
+        return refuse("arm outside limits",
+                      "sprzeglo sprowadziloby staw w granice ruchem (" + "; ".join(outside) + "). "
+                      "Najpierw ustaw ramie w pozie domowej albo nad punktem (panel albo grasp-bench point)")
     if gs.force_threshold is not None and gs.force_threshold < FREEZE_DISABLED:
-        return _refuse("freeze active",
-                       f"prog zamrozenia szczek {gs.force_threshold:g} skrocilby swobodny ruch; "
-                       f"na czas pomiaru ustaw a1x.gripper_force: {FREEZE_DISABLED:g} w konfiguracji YAML")
+        return refuse("freeze active",
+                      f"prog zamrozenia szczek {gs.force_threshold:g} skrocilby swobodny ruch; "
+                      f"na czas pomiaru ustaw a1x.gripper_force: {FREEZE_DISABLED:g} w konfiguracji YAML")
     return None
 
 
@@ -663,7 +633,7 @@ def bench_gripper(a: argparse.Namespace, keys: Keys) -> int:
         if not b.simulated and not keys.confirm(
                 "Enter = pomiar szczek (99, 100, 0, 100, 0, 100, potem z kostka 0, 100); ramie stoi; "
                 "Ctrl-C = koniec. "):
-            return _refuse("not confirmed", "bez potwierdzenia Enter (potrzebny terminal)")
+            return refuse("not confirmed", "bez potwierdzenia Enter (potrzebny terminal)")
         keys.arm()
         watch = _StopWatch(keys, twin).start()
         session = b.session()
@@ -671,7 +641,7 @@ def bench_gripper(a: argparse.Namespace, keys: Keys) -> int:
         if why is not None:
             return _not_started(why, session.detail, keys)
         session.guard(lag_deg=MOVE_GUARD_LAG_DEG, lag_s=JOG_GUARD_LAG_S)
-        clock, sleep = session.clock, _session_sleep(session)
+        clock, sleep = session.clock, session.wait
         arm_joints = {k: float(twin.status.measured[k]) for k in twin.spec.arm_joints}
         print("Szczeki bez niczego miedzy nimi. Gdy szczeki stana, wpisz s i Enter (pomiar na oko); "
               "sam Enter = STOP.", flush=True)
@@ -1000,10 +970,14 @@ class Jog:
     def _contact(self) -> str:
         """Hold the measured pose, back off `JOG_BACKOFF` straight up, report "contact".
 
-        The backoff is commanded from the measured pose, so it adds the free-air sag: a servo
+        The backoff is commanded from the measured height, so it adds the free-air sag: a servo
         that sags 4.5 mm (the twin's arm at 0.33 m) would otherwise leave the tips on the table.
+        It keeps the commanded reach, since the sag also pulls the tool towards the base and
+        from the measured reach every contact would creep that way, but the measured bearing, so
+        a blocked joint 1 or 6 is not pushed again.
         """
         s = self.session
+        reach = float(np.hypot(self.p[0], self.p[1]))
         joints = self._hold_measured()
         self._d_hist.clear()
         self._d_cmd.clear()
@@ -1014,7 +988,9 @@ class Jog:
         why = self._rearm()
         if why is not None:
             return why
-        p_back = p_m + np.array([0.0, 0.0, JOG_BACKOFF + self.sag])
+        bearing = math.atan2(p_m[1], p_m[0])
+        p_back = np.array([reach * math.cos(bearing), reach * math.sin(bearing),
+                           p_m[2] + JOG_BACKOFF + self.sag])
         q, _ik, why = s.accept(p_back, grasp_R(self.yaw), self.q, collision=False)
         if q is None:
             s.disarm()
@@ -1061,13 +1037,6 @@ def _default_xy(rig: Rig, what: str) -> tuple[float, float]:
     if isinstance(tcp, (list, tuple)) and len(tcp) == 3:
         return float(tcp[0]), float(tcp[1])
     return START_XY_DEFAULT
-
-
-def _joint_offsets(twin: Twin) -> list[float]:
-    offsets = getattr(getattr(twin.backend, "acfg", None), "joint_offsets_deg", None)
-    if offsets is None:
-        return [0.0] * 6
-    return [float(v) for v in offsets]
 
 
 def store_table(path: Path | None, pos: np.ndarray, joints: Mapping[str, float], *,
@@ -1201,7 +1170,7 @@ def teach_lines(jog: Jog, keys: Keys, what: Literal["table", "point"], *, rig_pa
                     continue
                 return 0
             rig = store_point(rig_path, pos, yaw, joints, object_height=object_height,
-                              joint_offsets_deg=_joint_offsets(jog.twin))
+                              joint_offsets_deg=backend_offsets(jog.twin).tolist())
             _explain_point(rig, jog.kin, jog.twin.joint_limits())
             return 0
         if cmd not in ("d", "u", "x", "y", "r", "g") or len(parts) != 2:
@@ -1273,7 +1242,7 @@ def bench_teach(a: argparse.Namespace, keys: Keys, what: Literal["table", "point
             hover = solve_hover(b.kin, np.array([x, y, start_z - HOVER]), yaw, limits=twin.joint_limits(),
                                 source="taught")
         except HoverError as exc:
-            return _refuse(exc.reason, f"punkt startowy ({x:.3f}, {y:.3f}, {start_z:.3f}) m: {exc.detail}")
+            return refuse(exc.reason, f"punkt startowy ({x:.3f}, {y:.3f}, {start_z:.3f}) m: {exc.detail}")
         print(f"Start: TCP ({x * 1000:.0f}, {y * 1000:.0f}, {start_z * 1000:.0f}) mm, narzedzie w dol, "
               f"obrot {math.degrees(hover.yaw):.0f} st.", flush=True)
         if what == "table":
@@ -1283,7 +1252,7 @@ def bench_teach(a: argparse.Namespace, keys: Keys, what: Literal["table", "point
                   f"opuszki tuz nad stolem.", flush=True)
         if not b.simulated and not keys.confirm(
                 "Enter = ramie jedzie nad punkt startowy (20 st./s); Ctrl-C = koniec. "):
-            return _refuse("not confirmed", "bez potwierdzenia Enter (potrzebny terminal)")
+            return refuse("not confirmed", "bez potwierdzenia Enter (potrzebny terminal)")
         keys.arm()
         watch = _StopWatch(keys, twin).start()
         jog = Jog(b.session())
@@ -1321,7 +1290,7 @@ def measure_latency(session: ArmSession, frames: FrameSource, hover: Hover, *, s
     from the still frames exceeds 4 sigma of theirs. Medians over the steps that saw both.
     """
     twin = session.twin
-    clock, sleep = session.clock, _session_sleep(session)
+    clock, sleep = session.clock, session.wait
     arm = tuple(twin.spec.arm_joints)
     j6 = arm[-1]
     grip = twin.spec.gripper
@@ -1437,28 +1406,13 @@ def measure_latency(session: ArmSession, frames: FrameSource, hover: Hover, *, s
     }
 
 
-def _checkpoint(a: argparse.Namespace) -> Path | None:
-    """The checkpoint the run would use; None (after a message naming the fetch command) without one."""
-    from .policy import find_checkpoint
-
-    path = find_checkpoint(getattr(a, "checkpoint", None))
-    if path is None:
-        print("Brak modelu. Pobierz: lerobot-twin grasp-model fetch  (albo --checkpoint PATH, "
-              "LEROBOT_GRASP_STUDENT)", file=sys.stderr)
-    return path
-
-
 def _inference_p95_s(a: argparse.Namespace) -> float | None:
     """p95 of one policy call on this machine, with the twin and the camera running [s]; None on failure."""
-    from .policy import CheckpointError, GraspStudentPolicy
+    from . import policy as policy_mod
 
-    path = _checkpoint(a)
-    if path is None:
-        return None
-    try:
-        policy = GraspStudentPolicy.load(path)
-    except CheckpointError as exc:
-        print(f"Model odrzucony: {exc}", file=sys.stderr)
+    path = policy_mod._find_for_cli(a)
+    policy = policy_mod._load_for_cli(path) if path is not None else None
+    if policy is None:
         return None
     t = policy.time()
     print(f"Inferencja: mediana {t['median_ms']:.1f} ms, p95 {t['p95_ms']:.1f} ms", flush=True)
@@ -1468,13 +1422,13 @@ def _inference_p95_s(a: argparse.Namespace) -> float | None:
 def _open_frames(b: Bench, a: argparse.Namespace) -> FrameSource | int:
     if b.simulated:
         try:
-            return SimWristSource(b.twin, name=WRIST_CAMERA, clock=b.clock)
+            return SimWristSource(b.twin, clock=b.clock)
         except CameraError as exc:
             print(f"Kamera na nadgarstku (symulacja): {exc}", file=sys.stderr)
             return 1
     source = b.rig.wrist_source() or getattr(a, "camera", None)
     if not source:
-        return _refuse("wrist camera not set", "podaj wrist.source w pliku --rig albo --camera")
+        return refuse("wrist camera not set", "podaj wrist.source w pliku --rig albo --camera")
     try:
         return LiveWristSource(str(source), WristCamera(wrist_intrinsics(b.rig)))
     except CameraError as exc:
@@ -1482,24 +1436,11 @@ def _open_frames(b: Bench, a: argparse.Namespace) -> FrameSource | int:
         return 1
 
 
-def _first_frame(frames: FrameSource, session: ArmSession) -> bool:
-    """Waits up to `FIRST_FRAME_S` for the wrist camera's first frame, before anything moves."""
-    t_end = session.clock() + FIRST_FRAME_S
-    while session.clock() < t_end:
-        try:
-            if frames.latest() is not None:
-                return True
-        except CameraError as exc:
-            print(f"Kamera na nadgarstku: {exc}", file=sys.stderr)
-            return False
-        if session.wait(0.02):
-            return False
-    return False
-
-
 def bench_latency(a: argparse.Namespace, keys: Keys) -> int:
     """Arm and camera latency at the hover, and the total a policy tick adds up to."""
-    if _checkpoint(a) is None:
+    from . import policy as policy_mod
+
+    if policy_mod._find_for_cli(a) is None:
         return 2
     b = _open(a, moves=True)
     if isinstance(b, int):
@@ -1518,15 +1459,14 @@ def bench_latency(a: argparse.Namespace, keys: Keys) -> int:
             else:
                 hover = from_rig(b.kin, b.rig, limits=limits)
         except HoverError as exc:
-            return _refuse(exc.reason, exc.detail)
+            return refuse(exc.reason, exc.detail)
         opened = _open_frames(b, a)
         if isinstance(opened, int):
             return opened
         frames = opened
         session = b.session()
         # A silent camera is found before the arm moves.
-        if not _first_frame(frames, session):
-            print("Kamera na nadgarstku milczy (wrist camera silent).", file=sys.stderr)
+        if not first_frame(frames, session.clock, session.wait):
             return 1
         # Timed with the twin loop and the camera running, as in a run.
         infer = _inference_p95_s(a)
@@ -1535,7 +1475,7 @@ def bench_latency(a: argparse.Namespace, keys: Keys) -> int:
         if not b.simulated and not keys.confirm(
                 "Enter = ramie jedzie nad punkt chwytu (20 st./s), potem 5 krokow J6 o 3 st.; "
                 "Ctrl-C = koniec. "):
-            return _refuse("not confirmed", "bez potwierdzenia Enter (potrzebny terminal)")
+            return refuse("not confirmed", "bez potwierdzenia Enter (potrzebny terminal)")
         keys.arm()
         watch = _StopWatch(keys, twin).start()
         why = session.check() or session.take()
@@ -1603,7 +1543,7 @@ def bench_dot(a: argparse.Namespace) -> int:
     try:
         rig = _update_rig(Rig.load(getattr(a, "rig", None)).path, "wrist", {"dot_error_px": value})
     except RigError as exc:
-        print(f"Plik wartosci stanowiska chwytu jest bledny: {exc}", file=sys.stderr)
+        print(f"{RIG_REJECTED}: {exc}", file=sys.stderr)
         return 2
     if value <= DOT_MAX_PX:
         print(f"Blad kropki {value:g} px - w granicy {DOT_MAX_PX:g} px. Zapisano do {rig.path}.", flush=True)
@@ -1618,7 +1558,7 @@ def bench_show(a: argparse.Namespace) -> int:
     try:
         rig = Rig.load(getattr(a, "rig", None))
     except RigError as exc:
-        print(f"Plik wartosci stanowiska chwytu jest bledny: {exc}", file=sys.stderr)
+        print(f"{RIG_REJECTED}: {exc}", file=sys.stderr)
         return 2
     exists = rig.path is not None and Path(rig.path).is_file()
     print(f"Plik: {rig.path}" + ("" if exists else " (brak - nic nie zmierzono)"))
@@ -1653,6 +1593,14 @@ def main_bench(a: argparse.Namespace) -> int:
         return bench_show(a)
     if what == "dot":
         return bench_dot(a)
+    if what in ("gripper", "latency") and getattr(a, "seconds", None) is not None:
+        print("--seconds tylko w grasp-bench table i point.", file=sys.stderr)
+        return 2
+    if (what == "latency" and str(getattr(a, "backend", None) or "sim").lower() != "sim"
+            and (getattr(a, "xy", None) is not None or getattr(a, "yaw_deg", None))):
+        print("--xy i --yaw-deg nie dzialaja w grasp-bench latency na prawdziwym ramieniu: "
+              "punkt chwytu jest z pliku stanowiska (grasp-bench point).", file=sys.stderr)
+        return 2
     keys = Keys()
     keys.start()
     try:
