@@ -207,6 +207,13 @@ def _stepper(twin: rt.Twin):
     (dict(mode="dry", jaw_stroke_s=1.3), "--jaw-stroke-s"),
     (dict(mode="sim", jaw_stroke_s=0.0), "--jaw-stroke-s"),
     (dict(mode="shadow", i_know=True, backend="a1x", gap="scene"), "--gap scene"),
+    (dict(mode="sim", seconds=1.0), "--seconds"),
+    (dict(mode="sim", object_height=0.03), "--object-height"),
+    (dict(mode="sim", dump_every=5), "--dump-every"),
+    (dict(mode="dry", object_height=5.0), "--object-height"),
+    (dict(mode="dry", dump_every=0), "--dump-every"),
+    (dict(mode="sim", episodes=0), "--episodes"),
+    (dict(mode="sim", episodes=-1), "--episodes"),
 ])
 def test_flag_refusals_return_2_before_anything_connects(kw, needle, monkeypatch, capsys, no_connect):
     def fail(*a, **k):
@@ -217,14 +224,21 @@ def test_flag_refusals_return_2_before_anything_connects(kw, needle, monkeypatch
     assert needle in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("kw", [dict(jaw="sim", stroke_s=1.3), dict(jaw="measured", stroke_s=-1.0)])
-def test_evaluation_stroke_flags_refuse_before_anything_connects(kw, monkeypatch, capsys, no_connect):
+@pytest.mark.parametrize("kw, needle", [
+    (dict(jaw="sim", stroke_s=1.3), "--stroke-s"),
+    (dict(jaw="measured", stroke_s=-1.0), "--stroke-s"),
+    (dict(episodes=0), "--episodes"),
+    (dict(episodes=-2), "--episodes"),
+])
+def test_evaluation_flags_refuse_before_anything_connects(kw, needle, monkeypatch, capsys, no_connect,
+                                                          hermetic):
     def fail(*a, **k):
         raise AssertionError("the checkpoint was looked for although the flags refuse")
 
     monkeypatch.setattr(policy_mod, "find_checkpoint", fail)
     assert ev.main_eval(eval_args(**kw)) == 2
-    assert "--stroke-s" in capsys.readouterr().err
+    assert needle in capsys.readouterr().err
+    assert not list(hermetic.rglob("*.json"))
 
 
 def test_a_missing_checkpoint_names_the_fetch_command(monkeypatch, capsys, hermetic, no_connect):
@@ -741,6 +755,33 @@ def test_an_enter_50_ms_after_a_tick_cap_ending_ends_the_series_and_no_set_targe
     assert code == 0
     assert keys.stop.is_set() and s.stopped
     assert targets and max(targets) <= t_end[0]
+
+
+@pytest.mark.parametrize("during", ["preposition", "episode"])
+def test_a_bare_enter_while_the_arm_moves_ends_the_series_with_1(during, monkeypatch, scripted, tmp_path):
+    keys = Keys(io.StringIO(""))
+    s = run.open_session(grasp_args(mode="sim", episodes=3, rig=str(tmp_path / "grasp.json")), keys)
+    assert isinstance(s, run.Session)
+    episodes = []
+
+    def preposition(self, hover, *a, **k):
+        if during == "preposition":
+            keys.stop.set()
+        return None
+
+    def episode(self, hover):
+        episodes.append(hover)
+        keys.stop.set()
+        return self._empty_report("tick cap", "")
+
+    monkeypatch.setattr(GraspDriver, "preposition", preposition)
+    monkeypatch.setattr(GraspDriver, "episode", episode)
+    try:
+        code = run.run_series(s, keys, 3)
+    finally:
+        run._shutdown(s.twin, s.driver, s.frames, stopped=s.stopped, worker=s.worker)
+    assert code == 1 and s.stopped
+    assert len(episodes) == (0 if during == "preposition" else 1)
 
 
 def test_a_prepositioning_refusal_on_a_real_backend_ends_the_series_as_a_refusal(monkeypatch, scripted,

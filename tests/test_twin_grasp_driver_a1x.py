@@ -29,9 +29,10 @@ from lerobot_mp.control.safety import SafetyState  # noqa: E402
 from lerobot_mp.robot.a1x import A1XArm  # noqa: E402
 from lerobot_mp.twin import robots  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
+from lerobot_mp.twin.grasp import driver as driver_mod  # noqa: E402
 from lerobot_mp.twin.grasp import motion  # noqa: E402
 from lerobot_mp.twin.grasp.camera import Frame, WristCamera  # noqa: E402
-from lerobot_mp.twin.grasp.contract import TOUCH_EXPECTED_Z  # noqa: E402
+from lerobot_mp.twin.grasp.contract import FB_AGE_END_S, TOUCH_EXPECTED_Z  # noqa: E402
 from lerobot_mp.twin.grasp.driver import GraspDriver, TickRecord  # noqa: E402
 from lerobot_mp.twin.grasp.hover import Hover, from_scene  # noqa: E402
 from lerobot_mp.twin.grasp.rig import Rig as GraspRig  # noqa: E402
@@ -355,6 +356,45 @@ def test_feedback_frames_0_2_s_old_skip_with_stale_feedback_although_the_twin_sa
     assert all(r.fb_age_s > 0.1 and r.joint_age_s <= 0.1 for r in stale)
 
 
+def test_feedback_that_stays_silent_ends_stale_feedback_at_0_3_s_without_a_target_after(monkeypatch):
+    rig = Rig(monkeypatch, stale_ms=1000.0)
+    monkeypatch.setattr(driver_mod, "SKIPS_END", 100)  # only the hard guard can end it
+    recs: list[TickRecord] = []
+    n_sent: list[int] = []
+
+    def on_tick(rec: TickRecord) -> None:
+        recs.append(rec)
+        n_sent.append(len(calls["set_target"]))
+        if len(recs) == 5:
+            rig.bus.silent = True
+
+    with spying(rig.twin) as calls:
+        drv = rig.driver(segments((60, STILL)), max_ticks=60, on_tick=on_tick)
+        try:
+            run(rig, drv)
+            rep = drv.episode(rig.hover)
+        finally:
+            drv.close()
+            rig.close()
+    assert rep.ending == "stale feedback", rep
+    assert recs[-1].skip == "stale feedback" and recs[-1].fb_age_s > FB_AGE_END_S, recs[-1]
+    assert all(r.fb_age_s <= FB_AGE_END_S for r in recs[:-1])
+    assert n_sent[-1] == n_sent[-2]                    # the ending tick sent nothing
+
+
+def test_a_frozen_twin_loop_skips_with_stale_feedback_and_ends_after_five(rig, monkeypatch):
+    recs: list[TickRecord] = []
+    drv = rig.driver(segments((40, STILL)), max_ticks=40, on_tick=recs.append)
+    try:
+        run(rig, drv)
+        monkeypatch.setattr(rig.twin, "_frozen", lambda: True)
+        rep = drv.episode(rig.hover)
+    finally:
+        drv.close()
+    assert rep.ending == "stale feedback", rep
+    assert [r.skip for r in recs] == ["stale feedback"] * driver_mod.SKIPS_END
+
+
 def test_a_backend_slew_under_90_refuses_in_take_before_any_target(monkeypatch):
     rig = Rig(monkeypatch, max_step_deg_s=45.0)
     try:
@@ -363,7 +403,7 @@ def test_a_backend_slew_under_90_refuses_in_take_before_any_target(monkeypatch):
             try:
                 assert drv.check() is None
                 assert drv.take() == "speed limited"
-                assert "45 deg/s" in drv.detail
+                assert "45 st./s" in drv.detail
             finally:
                 drv.close()
         assert calls["set_target"] == []
@@ -414,7 +454,7 @@ def test_a_foreign_0x050_frame_during_the_listen_makes_check_return_busy(rig):
     drv = rig.driver(segments((1, STILL)), sleep=listen)
     try:
         assert drv.check() == "busy"
-        assert drv.detail == "another sender on the CAN link"
+        assert drv.detail == "inny nadawca na laczu CAN"
         assert injected[0]
     finally:
         drv.close()

@@ -246,10 +246,11 @@ def test_the_model_source_follows_the_streamed_opening_limited_to_the_jaw_speed(
     est.update(20.10, 100.0, state(streamed=100.0, position=0.0, measured=True, commanded=100.0))
     assert est.opening == 100.0
 
-    # A long pause counts as at most 0.2 s, and time going backwards moves nothing.
+    # Skipped ticks still count: the jaw moved all the while. Time going backwards moves nothing.
     est.reset(100.0, 30.0)
-    est.update(31.0, 0.0, state(streamed=0.0))
-    assert est.opening == pytest.approx(100.0 - units * 0.2)
+    est.update(30.1, 0.0, state(streamed=0.0))
+    est.update(30.6, 0.0, state(streamed=0.0))
+    assert est.opening == pytest.approx(100.0 - units * 0.6)
     before = est.opening
     est.update(30.5, 0.0, state(streamed=0.0))
     assert est.opening == before
@@ -395,6 +396,7 @@ def test_trainings_hovers_solve_from_home_with_j5_at_zero_and_j6_clear_of_its_li
         other = wrap_deg(j["arm_joint6"] + 180.0)
         assert hv.j6_margin_deg >= min(other - lo6, hi6 - other) - 0.05
         assert hv.source == "taught"
+        assert hv.outside_training == [], (i, hv.outside_training)
     print(f"{len(h['yaw'])} hovers, {flipped} solved at yaw + pi, "
           f"{(time.perf_counter() - t0) / len(h['yaw']) * 1000:.0f} ms per hover")
 
@@ -439,7 +441,7 @@ def test_a_point_in_front_of_the_arm_is_flagged_outside_training(kin):
     assert training_envelope({"arm_joint1": 12.0}, np.array([0.19, 0.0, 0.15])) == [
         "joint1 12.0 deg outside 40..139",
         "radius 0.19 m outside 0.22..0.44",
-        "hover z 0.150 m outside 0.05..0.13",
+        "hover z 0.150 m outside 0.05..0.14",
     ]
 
 

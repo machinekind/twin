@@ -305,7 +305,7 @@ class ArmSession:
         if self._estopped():
             return "stop"
         if tw.owner not in (None, OWNER):
-            self.detail = f"the arm is held by {tw.owner}"
+            self.detail = f"ramie trzyma {tw.owner}"
             return "busy"
         return None
 
@@ -323,7 +323,7 @@ class ArmSession:
             if self.wait(min(left, POLL_S)):
                 return self.ending_of_cause()
         if b.foreign_frames() != n0:
-            self.detail = "another sender on the CAN link"
+            self.detail = "inny nadawca na laczu CAN"
             return "busy"
         return None
 
@@ -372,18 +372,25 @@ class ArmSession:
         if not self._took:
             self._prev_cap = getattr(tw, "_speed_cap", None)
             self._took = True
-        tw.set_speed(None)
-        limits = tw.speed_limits()
-        slow = {j: limits.get(j, 0.0) for j in self.arm if limits.get(j, 0.0) < ARM_SPEED_DEG_S - 1e-6}
+        slow = self.slow_joints()
         tw.set_speed(PREPOSITION_SPEED_DEG_S)
         if slow:
-            self.detail = ", ".join(f"{j} {v:.0f} deg/s" for j, v in slow.items())
+            self.detail = slow
             logger.warning("speed limited below %.0f deg/s: %s", ARM_SPEED_DEG_S, self.detail)
             self._let_go()
             return "speed limited"
         self._ever_took = True
         self._build_checker()
         return None
+
+    def slow_joints(self) -> str | None:
+        """The arm joints the backend lets move slower than ARM_SPEED_DEG_S, for the operator; None when
+        none. Leaves the twin's speed cap off."""
+        tw = self.twin
+        tw.set_speed(None)
+        limits = tw.speed_limits()
+        slow = {j: limits.get(j, 0.0) for j in self.arm if limits.get(j, 0.0) < ARM_SPEED_DEG_S - 1e-6}
+        return ", ".join(f"{j} {v:.0f} st./s" for j, v in slow.items()) or None
 
     def _let_go(self) -> None:
         tw = self.twin
@@ -530,12 +537,14 @@ class ArmSession:
     def _last_opening(self) -> float:
         return self._last_grip if self._last_grip is not None else GRIP_OPEN
 
-    def _widest_opening(self) -> float:
-        """The widest jaw opening that can be true now, for the collision question.
+    def widest_opening(self, extra: float | None = None) -> float:
+        """The widest jaw opening that can be true now, `extra` included when given.
 
         On the A1X the command leads the jaw by up to 1.3 s: while a close is commanded the fingers
-        are still open, and an open finger is what meets the arm's base."""
+        are still open, and an open finger is what meets the arm's base or sits lowest over the table."""
         values = [self._last_opening()]
+        if extra is not None:
+            values.append(float(extra))
         b = self.twin.backend
         gs = b.gripper_state() if b is not None else None
         if gs is not None:
@@ -550,7 +559,7 @@ class ArmSession:
         """
         seed = {j: math.degrees(float(q)) for j, q in zip(self.arm, np.asarray(q_seed, float), strict=True)}
         if self.grip is not None:
-            seed[self.grip] = self._widest_opening() if collision else self._last_opening()
+            seed[self.grip] = self.widest_opening() if collision else self._last_opening()
         step = self.kin.ik_step(np.asarray(p, float), np.asarray(R, float), seed,
                                 limits=self.twin.joint_limits())
         if not step.converged:

@@ -25,6 +25,7 @@ pytest.importorskip("mujoco")
 from lerobot_mp.twin import runtime as rt  # noqa: E402
 from lerobot_mp.twin import scene as sc  # noqa: E402
 from lerobot_mp.twin.grasp import bench  # noqa: E402
+from lerobot_mp.twin.grasp import policy as policy_mod  # noqa: E402
 from lerobot_mp.twin.grasp.contract import (  # noqa: E402
     HOVER,
     OWNER,
@@ -559,6 +560,25 @@ def test_jog_steps_down_in_1_mm_until_contact_and_the_table_touch_it_saves_is_th
     assert sim.twin.owner is None
 
 
+def test_repeated_contacts_back_off_at_the_commanded_reach_so_the_tool_does_not_creep_to_the_base(sim):
+    session = sim.session()
+    jog = bench.Jog(session)
+    assert jog.start(sim.hover()) is None, session.detail
+    reach0 = float(np.hypot(*jog.p[:2]))
+    reach_measured = []
+    for _ in range(200):
+        if jog.step(dz=-0.005) == "contact":
+            assert "cofniecie" not in jog.note, jog.note
+            assert float(np.hypot(*jog.p[:2])) == pytest.approx(reach0, abs=1e-9)
+            reach_measured.append(float(np.hypot(*jog.measured_tcp()[0][:2])))
+            if len(reach_measured) == 4:
+                break
+    assert len(reach_measured) == 4
+    # The measured tool still sags towards the base, but the sag does not add up contact after contact.
+    assert max(reach_measured) - min(reach_measured) < 0.001, reach_measured
+    jog.close()
+
+
 def test_an_impact_during_a_step_holds_the_measured_pose_and_backs_off_2_mm(sim):
     session = sim.session()
     jog = bench.Jog(session)
@@ -705,7 +725,7 @@ def test_ctrl_c_while_jogging_is_a_stop_through_stop_now(sim, monkeypatch, tmp_p
 @pytest.mark.render
 def test_the_latency_tool_on_the_sim_backend_stores_finite_numbers(sim, monkeypatch, tmp_path):
     if CKPT is None:
-        monkeypatch.setattr(bench, "_checkpoint", lambda a: Path("student.pt"))
+        monkeypatch.setattr(policy_mod, "_find_for_cli", lambda a: Path("student.pt"))
         monkeypatch.setattr(bench, "_inference_p95_s", lambda a: 0.012)
     rig_path = tmp_path / "grasp.json"
     monkeypatch.setattr(bench, "_open", lambda a, moves: sim.bench(rig_path))
@@ -731,7 +751,7 @@ def test_a_silent_wrist_camera_ends_the_latency_tool_before_the_arm_is_taken(sim
 
         def close(self) -> None:
             Silent.closed = True
-    monkeypatch.setattr(bench, "_checkpoint", lambda a: Path("student.pt"))
+    monkeypatch.setattr(policy_mod, "_find_for_cli", lambda a: Path("student.pt"))
     monkeypatch.setattr(bench, "_inference_p95_s", lambda a: pytest.fail("timed the policy without a camera"))
     monkeypatch.setattr(bench, "_open_frames", lambda b, a: Silent())
     monkeypatch.setattr(ArmSession, "take", lambda self: pytest.fail("took the arm without a camera"))
@@ -778,10 +798,22 @@ def test_the_latency_tool_without_a_checkpoint_refuses_before_connecting(monkeyp
     monkeypatch.delenv(policy.CHECKPOINT_ENV, raising=False)
     monkeypatch.setattr(policy, "DEFAULT_CHECKPOINT", tmp_path / "absent" / "student.pt")
     monkeypatch.setattr(bench, "_open", lambda a, moves: pytest.fail("connected without a checkpoint"))
-    code = bench.bench_latency(ns(action="latency", checkpoint=str(tmp_path / "missing.pt")), FakeKeys())
+    code = bench.bench_latency(ns(action="latency"), FakeKeys())
     assert code == 2
     assert "grasp-model fetch" in capsys.readouterr().err
 
 
 def test_main_bench_refuses_an_unknown_tool():
     assert bench.main_bench(ns(action="nothing")) == 2
+
+
+@pytest.mark.parametrize("kw, needle", [
+    (dict(action="latency", backend="a1x", i_know=True, xy=[0.0, 0.33]), "--xy"),
+    (dict(action="latency", backend="a1x", i_know=True, yaw_deg=10.0), "--yaw-deg"),
+    (dict(action="latency", seconds=1.0), "--seconds"),
+    (dict(action="gripper", seconds=1.0), "--seconds"),
+])
+def test_main_bench_refuses_flags_the_tool_would_ignore_before_connecting(kw, needle, monkeypatch, capsys):
+    monkeypatch.setattr(rt.Twin, "connect", lambda *a, **k: pytest.fail("connected despite the flags"))
+    assert bench.main_bench(ns(**kw)) == 2
+    assert needle in capsys.readouterr().err

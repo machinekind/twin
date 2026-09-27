@@ -474,6 +474,33 @@ def test_stop_mid_episode_ends_stop_and_the_arm_stands(twin, kin, frames):
     assert max(abs(a[j] - b[j]) for j in ARM) < 0.5
 
 
+@pytest.mark.parametrize("callback", [True, False], ids=["callback", "no-callback"])
+def test_a_panel_taking_the_arm_mid_episode_ends_preempted_and_sends_nothing_after(
+        twin, kin, frames, monkeypatch, callback):
+    hover = hover_at(twin, kin, (0.0, 0.33))
+    ready(twin, hover)
+    at: list[int] = []
+
+    def on_tick(rec: TickRecord) -> None:
+        calls["order"].append("record")
+        if calls["order"].count("record") == 8:
+            if not callback:                           # lost without being told: the generation check
+                monkeypatch.setattr(drv.arm, "interrupt", lambda cause: None)
+            at.append(len(calls["order"]))
+            twin.preempt("panel")
+
+    with spying(twin) as calls:
+        drv = make(twin, segments((40, [1.0, 0.0, 0.0, 0.0, 1.0])), frames=frames, on_tick=on_tick)
+        try:
+            start(drv, hover)
+            rep = drv.episode(hover)
+        finally:
+            drv.close()
+    assert rep.ending == "preempted", rep
+    assert twin.safety_state != SafetyState.ESTOP
+    assert at and "set_target" not in calls["order"][at[0]:]
+
+
 def test_after_an_impact_ending_the_target_is_the_measured_pose(twin, kin, frames):
     hover = hover_at(twin, kin, (0.0, 0.33))
     ready(twin, hover)
@@ -710,6 +737,46 @@ def test_a_scripted_press_below_the_touch_height_ends_table(twin, kin, frames, m
     assert recs[-1].kind == "skipped" and recs[-1].skip == "table"      # the ending's tick is logged
     # In sim the touch height is TIP_AHEAD: the measured tool came within 0.5 mm of the table.
     assert watch.lowest < TABLE_END_BELOW + 0.0005, watch.lowest
+
+
+class FramesStaleBelow:
+    """Fresh frames until the measured tool first reaches `line`, then frames 0.2 s old for good."""
+
+    def __init__(self, twin: rt.Twin, kin: RobotKinematics, line: float) -> None:
+        self.src, self.twin, self.kin, self.line = SimWristSource(twin), twin, kin, line
+        self.drv: GraspDriver | None = None
+        self.stale = False
+
+    def latest(self) -> Frame:
+        f = self.src.latest()
+        if not self.stale:
+            assert self.drv is not None
+            m = dict(self.twin.status.measured)
+            self.stale = self.drv._tool_low(m, float(tcp_of(self.kin, m)[2])) < self.line
+        return Frame(f.image, time.monotonic() - 0.2, f.seq) if self.stale else f
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_camera_skip_streak_does_not_switch_off_the_table_ending(twin, kin, monkeypatch):
+    hover = hover_at(twin, kin, (0.0, 0.33))
+    ready(twin, hover)
+    recs: list[TickRecord] = []
+    touch = Rig.for_sim().touch_tcp_z()
+    frames = FramesStaleBelow(twin, kin, touch + TABLE_END_BELOW)
+    drv = frames.drv = make(twin, segments((60, DOWN)), frames=frames, on_tick=recs.append)
+    drv._floor_of = lambda *a, **k: touch - 0.015
+    monkeypatch.setattr(driver_mod, "MEASURED_FLOOR_START", -1.0)
+    try:
+        start(drv, hover)
+        rep = drv.episode(hover)
+    finally:
+        drv.close()
+    assert frames.stale
+    assert rep.ending == "table", rep
+    skips = [r.skip for r in recs[recs.index(next(r for r in recs if r.skip == "camera")):]]
+    assert skips[-1] == "table" and 1 <= skips.count("camera") <= 2, skips
 
 
 def test_the_measured_floor_sees_a_tilted_open_finger_and_rises_by_the_deficit_from_the_floor(twin, kin):
@@ -1057,9 +1124,11 @@ def test_an_ik_refusal_holds_the_command(twin, kin, frames):
     # Towards the nearer J6 limit until the step no longer converges.
     turn = 1.0 if hover.joints[j6] < 0.0 else -1.0
     recs: list[TickRecord] = []
+    sent_by: list[dict[str, float]] = []               # per record: the newest target, its own but for the last
 
     def on_tick(rec: TickRecord) -> None:
         recs.append(rec)
+        sent_by.append(targets(calls)[-1])
         if sum(r.ik_why == "ik" for r in recs) >= 4:
             drv.stop("enough refusals")
 
@@ -1075,10 +1144,12 @@ def test_an_ik_refusal_holds_the_command(twin, kin, frames):
     assert rep.ending == "enough refusals", rep
     assert rep.ik_refused >= 4, rep
     assert rep.jump_refused == sum(r.ik_why == "jump" for r in recs)
-    scored = [r for r in recs if r.kind == "policy"]
-    for prev, cur in zip(scored, scored[1:]):
-        if cur.ik_why:
-            assert cur.p_cmd == prev.p_cmd and cur.yaw_cmd == prev.yaw_cmd
+    scored = [i for i, r in enumerate(recs[:-1]) if r.kind == "policy"]
+    for i, k in zip(scored, scored[1:]):
+        if recs[k].ik_why:
+            assert recs[k].p_cmd == recs[i].p_cmd and recs[k].yaw_cmd == recs[i].yaw_cmd
+            for j in ARM:
+                assert sent_by[k][j] == pytest.approx(sent_by[i][j], abs=1e-9), (k, j)
     sent = targets(calls)[n0:]
     limit = twin.joint_limits()[j6]
     assert all(limit[0] <= t[j6] <= limit[1] for t in sent)

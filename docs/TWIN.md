@@ -860,50 +860,12 @@ przekaźnik, symulacja A1X, uderzenie w ścianę z wysiłku i z opóźnienia),
 
 Opublikowana polityka chwytu `student.pt` (`hvsr-robotics/a1x-wrist-grasp-sim`,
 uczona w symulacji galaxeo-manipulators) prowadzi ostatnie centymetry chwytu
-z góry: od punktu 6 cm nad zaproponowanym chwytem do uniesienia kostki. 20 razy
-na sekundę dostaje kadr kamery na nadgarstku 160×120 z czwartym kanałem
-(piksel, w który rzutuje się zakładany punkt chwytu) i 19 liczb: stawy,
-szczelinę szczęk, punkt chwytu względem TCP i księgowanie rozkazu. Zwraca krok
-TCP (do 8 mm), krok obrotu (do 5°) i cel chwytaka. Bliźniak prowadzi ją jako
-jeszcze jednego właściciela ruchu (`chwyt`), przez `Twin.set_target`, nadzór
-i backend `a1x`. Sprawdzona w symulacji bliźniaka, na symulowanej magistrali
-CAN i na nagraniach ze środowiska treningu. **Prawdziwym ramieniem jeszcze nie
-ruszała.** Opis po angielsku, z instrukcją na stanowisku krok po kroku:
-[GRASP.md](GRASP.md).
-
-- **Model:** `lerobot-twin grasp-model fetch` pobiera go do
-  `workspace/policies/grasp/student.pt` i sprawdza sha256. Żaden tryb nie
-  pobiera niczego sam.
-- **Tryby, w tej kolejności:** `dry` — nic nie rusza, polityka liczy akcje
-  z żywej kamery i stawów, a zrzuty kadrów z narysowanym punktem chwytu służą
-  do sprawdzenia kropki (do 8 px); `shadow` — prawdziwe ramię wykonuje ruchy
-  polityki z otwartą szczęką i podłogą 10 mm nad kostką; `real` — pełny chwyt.
-  `sim` robi to samo na symulowanym ramieniu z kostką w scenie. `shadow`
-  i `real` wymagają `--backend` i `--i-know`.
-- **Pomiary stanowiska** (`lerobot-twin grasp-bench`): effort i czas ruchu
-  szczęk, stół i punkt chwytu uczone dotykiem, źródło kamery, kropka,
-  opóźnienie. Trafiają do osobnego pliku `workspace/grasp.json`, bo starsze
-  wersje bliźniaka odrzucają `twin.json` z nieznanym kluczem. Bez nich
-  polecenie na prawdziwym ramieniu odmawia i podaje powód.
-- **Kostka po lewej stronie ramienia**, ok. 0,33 m od osi podstawy: trening
-  widział obiekt tylko tam. Stół w `workspace/twin.json` musi sięgać 8 cm poza
-  punkt chwytu z każdej strony.
-- **Jeden nadawca na CAN.** Przed poleceniem zamknij panel, `jog_a1x.py`, most
-  i sterownik ROS. Backend `a1x` zauważa obcą ramkę rozkazu: przed ruchem
-  polecenie odmawia (`busy`), w ruchu bliźniak robi STOP („inny nadawca na
-  laczu CAN”).
-- **STOP:** sam Enter zawsze zatrzymuje, Ctrl-C też. Na prawdziwym ramieniu
-  następny epizod rusza dopiero po wpisaniu `d` i Enter; Enter w ciągu 1 s od
-  końca epizodu to STOP.
-- **Ewaluacja w symulacji:** `lerobot-twin grasp-eval`, 50 epizodów. Od 70 %
-  wynik jest dobry. Poniżej 50 % przyczyną może być ścieżka obserwacji, fizyka
-  kontaktu albo render sceny bliźniaka.
-
-Kod: `twin/grasp/` (drzewo [niżej](#jak-to-jest-zbudowane)). Zmiany
-w istniejącym kodzie: `RobotKinematics.ik_step` (jeden ciepły krok IK jak
-w treningu), `gripper_state()` i licznik obcych ramek w backendzie `a1x`,
-`Twin.speed_limits()`, `Twin.hold_measured(gripper=...)`, odmowa celu NaN
-w `Twin.set_target` i kamera na dłoni w scenie (`HandCamera`).
+z góry, od punktu 6 cm nad chwytem do uniesienia kostki. Bliźniak prowadzi ją
+jako właściciela ruchu `chwyt`, przez `Twin.set_target`, nadzór i backend
+`a1x`. **Prawdziwym ramieniem jeszcze nie ruszała.** Polecenia `grasp`,
+`grasp-bench`, `grasp-eval`, `grasp-model`, plik `workspace/grasp.json`
+i instrukcja na stanowisku (po angielsku): [GRASP.md](GRASP.md). Kod:
+`twin/grasp/` (drzewo [niżej](#jak-to-jest-zbudowane)).
 
 ---
 

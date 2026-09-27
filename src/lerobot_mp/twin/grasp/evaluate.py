@@ -30,7 +30,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -45,7 +45,7 @@ from ..scene import Box, HandCamera, HandCameraJitter, Light, Table
 from . import driver as driver_mod
 from . import motion
 from . import policy as policy_mod
-from .camera import Frame, SimWristSource, WristCamera
+from .camera import SimWristSource, WristCamera
 from .contract import (
     FOVY_DEG,
     HOVER,
@@ -60,7 +60,8 @@ from .contract import (
 )
 from .driver import EpisodeReport, TickRecord
 from .hover import Hover, HoverError, from_scene, training_envelope
-from .rig import Rig, RigError
+from .rig import Rig
+from .run import jsonable, load_site, refuse
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,6 @@ GOOD_RATE = 0.70
 BAD_RATE = 0.50
 TICK_P99_MAX_MS = 40.0
 OUT_DIR = Path("workspace") / "grasp" / "eval"
-NOT_A1X = "polecenia chwytu dzialaja tylko na ramieniu A1X (robot w pliku stanowiska)"
 #: Refusals after which nothing more can move in this evaluation.
 HARD_REFUSALS = ("stop", "preempted", "not connected", "busy")
 #: Pre-positioning refused this many times in a row: the arm cannot leave where it stands, and
@@ -296,51 +296,12 @@ def _draw_jitter(rng: np.random.Generator) -> HandCameraJitter:
     )
 
 
-class _EpisodeFrames:
-    """The driver's frame source; each episode gets a fresh `SimWristSource` carrying its jitter."""
-
-    def __init__(self, twin: Twin, clock: Callable[[], float] = time.monotonic) -> None:
-        self.twin = twin
-        self.clock = clock
-        self.src = SimWristSource(twin, clock=clock)
-
-    def use(self, jitter: HandCameraJitter | None) -> None:
-        self.src = SimWristSource(self.twin, jitter=jitter, clock=self.clock)
-
-    def latest(self) -> Frame | None:
-        return self.src.latest()
-
-    def close(self) -> None:
-        self.src.close()
-
-
 # ---------------------------------------------------------------------- reports
 def _stats(values: list[float], qs: dict[str, float]) -> dict[str, float]:
     v = np.asarray([x for x in values if x is not None and math.isfinite(x)], float)
     if v.size == 0:
         return {}
     return {name: float(np.percentile(v, q)) for name, q in qs.items()}
-
-
-def refused_report(ending: str, detail: str = "") -> EpisodeReport:
-    """An `EpisodeReport` for an episode that never ran its ticks (pre-positioning refused)."""
-    values: dict[str, Any] = {}
-    for f in fields(EpisodeReport):
-        kind = f.type if isinstance(f.type, str) else getattr(f.type, "__name__", str(f.type))
-        if kind.startswith("str"):
-            values[f.name] = ""
-        elif kind.startswith("int"):
-            values[f.name] = 0
-        elif kind.startswith("float"):
-            values[f.name] = math.nan if f.name.startswith("min_") else 0.0
-        elif kind.startswith("list"):
-            values[f.name] = []
-        elif kind.startswith("dict"):
-            values[f.name] = {}
-        else:
-            values[f.name] = None
-    values.update(ending=ending, detail=detail)
-    return EpisodeReport(**values)
 
 
 def _mm(v: float | None) -> str:
@@ -410,22 +371,6 @@ def verdicts(res: EvalResult) -> list[str]:
     return out
 
 
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, np.ndarray):
-        return _jsonable(value.tolist())
-    if isinstance(value, (np.floating, np.integer)):
-        return value.item()
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, Path):
-        return str(value)
-    return value
-
-
 def episode_log_dir(out: Path) -> Path:
     """Directory of the episode logs next to the result file `out`: its name without the suffix."""
     out = Path(out)
@@ -438,7 +383,7 @@ def write_result(res: EvalResult, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(_jsonable(asdict(res)), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(jsonable(asdict(res)), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path
 
@@ -528,7 +473,7 @@ def evaluate(twin: Twin, policy: policy_mod.GraspStudentPolicy, *, episodes: int
 
     twin.configure(**sim_extras())
     kin = RobotKinematics(twin.spec)
-    frames = _EpisodeFrames(twin, clock)
+    frames = SimWristSource(twin, clock=clock)
     # The first render builds the hand camera's renderer (about 0.1 s): not inside a tick.
     frames.latest()
     ticks: list[TickRecord] = []
@@ -565,7 +510,7 @@ def evaluate(twin: Twin, policy: policy_mod.GraspStudentPolicy, *, episodes: int
             raise EvalRefused(why, getattr(drv, "detail", "") or "driver take")
         for k in range(int(episodes)):
             draw = draw_hover(kin, rng, limits=twin.joint_limits())
-            frames.use(_draw_jitter(jitter_rng) if jitter else None)
+            frames.jitter = _draw_jitter(jitter_rng) if jitter else None
             info: dict[str, Any] = {"episode": k + 1, "cube_xy": draw.xy, "cube_yaw": draw.yaw,
                                     "hover": draw.hover.p, "hover_yaw": draw.hover.yaw,
                                     "believed": draw.hover.believed, "redraws": draw.redraws}
@@ -574,7 +519,7 @@ def evaluate(twin: Twin, policy: policy_mod.GraspStudentPolicy, *, episodes: int
             refused_in_row = refused_in_row + 1 if why is not None else 0
             if why is not None:
                 detail = getattr(drv, "detail", "")
-                rep = refused_report(why, f"pre-positioning: {detail}" if detail else "pre-positioning")
+                rep = drv._empty_report(why, f"pre-positioning: {detail}" if detail else "pre-positioning")
                 ok = False
             else:
                 centre = place_cube(twin, draw.xy, draw.yaw)
@@ -620,11 +565,6 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
-def _refuse(code: str, detail: str = "") -> int:
-    print(f"Odmowa: {code}" + (f" - {detail}" if detail else ""), file=sys.stderr, flush=True)
-    return 2
-
-
 def _fmt_ms(stats: dict[str, float]) -> str:
     return ", ".join(f"{k} {v:.1f}" for k, v in stats.items()) + " ms" if stats else "brak danych"
 
@@ -634,6 +574,9 @@ def main_eval(a: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     episodes = getattr(a, "episodes", None)
     episodes = 50 if episodes is None else int(episodes)
+    if episodes < 1:
+        print(f"--episodes musi byc >= 1, jest {episodes}.", file=sys.stderr)
+        return 2
     seed = getattr(a, "seed", None)
     seed = 50000 if seed is None else int(seed)
     jaw = getattr(a, "jaw", None) or "sim"
@@ -647,24 +590,14 @@ def main_eval(a: argparse.Namespace) -> int:
         print(f"--stroke-s musi byc dodatnia liczba sekund, jest {stroke_arg}.", file=sys.stderr)
         return 2
 
-    path = policy_mod.find_checkpoint(getattr(a, "checkpoint", None))
-    if path is None:
-        print(f"Brak modelu. Pobierz: lerobot-twin grasp-model fetch  (albo --checkpoint PATH, "
-              f"{policy_mod.CHECKPOINT_ENV})", file=sys.stderr)
+    path = policy_mod._find_for_cli(a)
+    policy = policy_mod._load_for_cli(path) if path is not None else None
+    if policy is None:
         return 2
-    try:
-        policy = policy_mod.GraspStudentPolicy.load(path)
-    except policy_mod.CheckpointError as exc:
-        print(f"Model odrzucony: {exc}", file=sys.stderr)
-        return 2
-    ws = motion.load_workspace(getattr(a, "workspace", None))
-    if ws is None:
-        return _refuse("not a1x", NOT_A1X)
-    try:
-        rig = Rig.load(getattr(a, "rig", None))
-    except RigError as exc:
-        print(f"Plik stanowiska chwytu odrzucony: {exc}", file=sys.stderr)
-        return 2
+    site = load_site(a)
+    if isinstance(site, int):
+        return site
+    ws, rig = site
 
     out = Path(a.out) if getattr(a, "out", None) else data_path(OUT_DIR / f"{_stamp()}.json")
     twin = Twin(ws)
@@ -677,7 +610,7 @@ def main_eval(a: argparse.Namespace) -> int:
         return 1
     if not twin.status.simulated:
         twin.close()
-        return _refuse("not simulated", f"backend {twin.status.backend}")
+        return refuse("not simulated", f"backend {twin.status.backend}")
 
     print(f"Ewaluacja w symulacji: {episodes} epizodow, ziarno {seed}, szczeka {jaw}, podloga {floor}, "
           f"model {path}", flush=True)
@@ -692,7 +625,7 @@ def main_eval(a: argparse.Namespace) -> int:
                        gap=getattr(a, "gap", None), floor=floor, jitter=bool(getattr(a, "jitter", False)),
                        out=out, on_episode=show, rig=rig)
     except EvalRefused as exc:
-        code = _refuse(exc.reason, exc.detail)
+        code = refuse(exc.reason, exc.detail)
     except HoverError as exc:
         print(f"Nie wylosowano punktu nad kostka: {exc}", file=sys.stderr)
         code = 1

@@ -3,7 +3,7 @@ the scene's gripper state, and holding with an explicit jaw opening.
 
 The sim tests run the MuJoCo twin. The jaw tests run the twin on the fake A1X bus from
 `test_a1x.py` (`threaded=False`, one virtual clock), where the measured opening is the last
-command, so a plain hold lets a closing jaw finish its stroke.
+command, so a hold must take the streamed opening or a closing jaw finishes its stroke.
 """
 
 from __future__ import annotations
@@ -273,11 +273,20 @@ def test_holding_with_the_streamed_opening_after_estop_stops_the_jaw_and_keeps_t
     assert a1x.twin.safety_state.value == "ESTOP"
 
 
-def test_holding_without_the_keyword_lets_the_a1x_jaw_finish_its_stroke_as_before(a1x):
-    a1x.close_jaw_to(63.5)
-    a1x.twin.hold_measured()
+@pytest.mark.parametrize("how", ["hold", "stop"])
+def test_a_hold_or_stop_without_the_keyword_stops_a_closing_a1x_jaw_at_the_stream(a1x, how):
+    # The A1X's "measured" opening is its last command (0): held as is, the jaw closed fully.
+    g = a1x.close_jaw_to(63.5)
+    n = len(a1x.bus.tx)
+    if how == "hold":
+        a1x.twin.hold_measured()
+    else:
+        a1x.twin.estop("STOP w tescie")
     a1x.run(1.5)
-    assert a1x.openings()[-1] == pytest.approx(0.0, abs=0.5)
+    opens = a1x.openings(n)
+    assert len(opens) >= 250
+    assert max(abs(o - g) for o in opens) <= 8.0
+    assert a1x.streamed() == pytest.approx(g, abs=8.0)
 
 
 def test_hold_with_a_gripper_value_changes_only_the_gripper_entry(sim):

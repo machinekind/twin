@@ -129,7 +129,7 @@ def test_the_module_docstring_shows_how_to_call_the_four_grasp_commands():
 def test_grasp_defaults_are_those_of_the_specification():
     assert _ns(["grasp"]) == {
         "config": None, "cmd": "grasp", "mode": "dry", "backend": None, "port": None, "i_know": False,
-        "checkpoint": None, "rig": None, "workspace": None, "camera": None, "episodes": 1, "seed": 0,
+        "checkpoint": None, "rig": None, "workspace": None, "camera": None, "episodes": 1, "seed": None,
         "outside_training": False, "floor": "bench", "gap": None, "jaw_stroke_s": None, "dump_every": 20,
         "seconds": None, "object_height": None,
     }

@@ -50,7 +50,7 @@ from .contract import (
     TIP_AHEAD,
 )
 from .keys import Keys
-from .rig import Rig, RigError
+from .rig import MODES, OBJECT_HEIGHT_RANGE, Rig, RigError
 
 if TYPE_CHECKING:
     from ..kinematics import RobotKinematics
@@ -63,17 +63,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MODES = ("dry", "sim", "shadow", "real")
 OUT_ROOT = Path("workspace") / "grasp"
 FIRST_FRAME_S = 3.0                    # s, the wrist camera must deliver a frame within this
 POLL_S = 0.05                          # s, the main thread watches the keys and the link this often
 JOIN_S = 5.0                           # s, longest wait for a worker after a STOP
 FREEZE_TOL = 1e-6
+DUMP_EVERY_DEFAULT = 20
 INFER_MEDIAN_MAX_MS = 30.0
 INFER_P95_MAX_MS = 45.0
 #: Pre-positioning refusals of the arm's own checks (exit 2); anything else that ends a move is a failure.
 MOVE_REFUSALS = ("ik", "collision", "not arrived", "j5 offset", "speed limited")
 
+NOT_A1X = "polecenia chwytu dzialaja tylko na ramieniu A1X (robot w pliku stanowiska)"
+RIG_REJECTED = "Plik wartosci stanowiska chwytu odrzucony"
 STOP_KEYS = "STOP z klawiatury (chwyt)"
 STOP_CTRL_C = "Ctrl-C (chwyt)"
 CONFIRM_PROMPT = "Enter = ramie jedzie nad punkt chwytu (20 st./s); Ctrl-C = koniec. "
@@ -123,9 +125,73 @@ def out_dir(kind: str) -> Path:
     return data_path(OUT_ROOT / kind / datetime.now().strftime("%Y%m%d-%H%M%S"))
 
 
-def _refuse(code: str, detail: str = "") -> int:
+def refuse(code: str, detail: str = "") -> int:
     print(f"Odmowa: {code}" + (f" - {detail}" if detail else ""), file=sys.stderr, flush=True)
     return 2
+
+
+def jsonable(value: Any) -> Any:
+    """`value` with numpy values, paths and non-finite floats turned into what JSON takes."""
+    if isinstance(value, Mapping):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return jsonable(value.tolist())
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def load_site(a: argparse.Namespace) -> tuple[Workspace, Rig] | int:
+    """The workspace (an A1X one) and the per-rig file; 2, after the message, when either is refused."""
+    from . import motion
+
+    try:
+        ws = motion.load_workspace(getattr(a, "workspace", None))
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"Nie wczytano pliku stanowiska: {exc}", file=sys.stderr)
+        return 2
+    if ws is None:
+        return refuse("not a1x", NOT_A1X)
+    try:
+        rig = Rig.load(getattr(a, "rig", None))
+    except RigError as exc:
+        print(f"{RIG_REJECTED}: {exc}", file=sys.stderr)
+        return 2
+    return ws, rig
+
+
+def first_frame(frames: FrameSource, clock: Callable[[], float], wait: Callable[[float], bool]) -> bool:
+    """Waits up to `FIRST_FRAME_S` for the wrist camera's first frame; `wait(dt)` returns True to give up.
+
+    On False the reason is printed already.
+    """
+    from .camera import CameraError
+
+    t_end = clock() + FIRST_FRAME_S
+    while clock() < t_end:
+        try:
+            if frames.latest() is not None:
+                return True
+        except CameraError as exc:
+            print(f"Kamera na nadgarstku: {exc}", file=sys.stderr)
+            return False
+        if wait(POLL_S):
+            return False
+    print(f"Blad: wrist camera silent - brak klatki z kamery na nadgarstku przez {FIRST_FRAME_S:.0f} s",
+          file=sys.stderr)
+    return False
+
+
+def backend_offsets(twin: Twin) -> np.ndarray:
+    """The running backend's joint zero offsets [deg]; a backend without them applies none."""
+    offs = getattr(getattr(twin.backend, "acfg", None), "joint_offsets_deg", None)
+    return np.zeros(6) if offs is None else np.asarray(offs, float).reshape(6)
 
 
 def _age(seconds: float | None) -> str:
@@ -147,12 +213,6 @@ def _table_holds(ws: Workspace, xy: np.ndarray) -> bool:
     return abs(wx) <= t.size[0] / 2.0 - BOX_XY and abs(wy) <= t.size[1] / 2.0 - BOX_XY
 
 
-def _backend_offsets(twin: Twin) -> np.ndarray:
-    # A backend without per-joint zero offsets applies none.
-    offs = getattr(getattr(twin.backend, "acfg", None), "joint_offsets_deg", None)
-    return np.zeros(6) if offs is None else np.asarray(offs, float).reshape(6)
-
-
 def rig_refusals(rig: Rig, mode: str, simulated: bool, *, camera: str | None = None,
                  now: float | None = None) -> list[str]:
     """`rig.missing`, with `--camera` standing in for a wrist camera source the per-rig file lacks."""
@@ -170,7 +230,7 @@ def site_refusals(ws: Workspace, rig: Rig, twin: Twin, mode: str) -> list[str]:
     believed = rig.believed()
     if believed is not None and not _table_holds(ws, believed[:2]):
         out.append("table not under grasp")
-    offs = _backend_offsets(twin)
+    offs = backend_offsets(twin)
     taught = rig.grasp.get("joint_offsets_deg")
     if taught is None or float(np.max(np.abs(offs - np.asarray(taught, float)))) > JOINT_OFFSET_TOL_DEG:
         out.append("joint offsets changed")
@@ -295,35 +355,24 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
     from .hover import HoverError, from_rig
 
     mode = a.mode
-    path = policy_mod.find_checkpoint(getattr(a, "checkpoint", None))
-    if path is None:
-        print(f"Brak modelu. Pobierz: lerobot-twin grasp-model fetch  (albo --checkpoint PATH, "
-              f"{policy_mod.CHECKPOINT_ENV})", file=sys.stderr)
+    path = policy_mod._find_for_cli(a)
+    policy = policy_mod._load_for_cli(path) if path is not None else None
+    if policy is None:
         return 2
-    try:
-        policy = policy_mod.GraspStudentPolicy.load(path)
-    except policy_mod.CheckpointError as exc:
-        print(f"Model odrzucony: {exc}", file=sys.stderr)
-        return 2
-
-    ws = motion.load_workspace(getattr(a, "workspace", None))
-    if ws is None:
-        return _refuse("not a1x", evaluate.NOT_A1X)
-    try:
-        rig = Rig.load(getattr(a, "rig", None))
-    except RigError as exc:
-        print(f"Plik stanowiska chwytu odrzucony: {exc}", file=sys.stderr)
-        return 2
+    site = load_site(a)
+    if isinstance(site, int):
+        return site
+    ws, rig = site
     # Dry and sim never take the backend from the workspace file: on the rig that is the real arm.
     backend = str(a.backend or "sim").lower()
     port = getattr(a, "port", None)
     if backend != "sim":
         if mode == "sim":
-            return _refuse("not armed", f"tryb sim na prawdziwym backendzie {backend!r}")
+            return refuse("not armed", f"tryb sim na prawdziwym backendzie {backend!r}")
         why = motion.enable_refusal(ws, backend, port)
         if why is not None:
-            return _refuse(why, "a1x.enable_on_connect wlacza silniki przy laczeniu (ramie bez hamulcow "
-                                "na chwile puszcza) - wlacz ramie z panelu i ustaw enable_on_connect: false")
+            return refuse(why, "a1x.enable_on_connect wlacza silniki przy laczeniu (ramie bez hamulcow "
+                               "na chwile puszcza) - wlacz ramie z panelu i ustaw enable_on_connect: false")
 
     twin = Twin(ws)
     parts["twin"] = twin
@@ -336,13 +385,13 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
     print(f"Ramie: {twin.status.backend} ({'symulacja' if simulated else 'prawdziwe'}), tryb {mode}",
           flush=True)
     if mode == "sim" and not simulated:
-        return _refuse("not armed", "tryb sim tylko na ramieniu symulowanym")
+        return refuse("not armed", "tryb sim tylko na ramieniu symulowanym")
     missing = rig_refusals(rig, mode, simulated, camera=getattr(a, "camera", None), now=time.time())
     if missing:
-        return _refuse(", ".join(missing), f"plik {rig.path}: lerobot-twin grasp-bench show")
+        return refuse(", ".join(missing), f"plik {rig.path}: lerobot-twin grasp-bench show")
     site = site_refusals(ws, rig, twin, mode)
     if site:
-        return _refuse(", ".join(site))
+        return refuse(", ".join(site))
 
     if simulated:
         twin.configure(**evaluate.sim_extras())
@@ -367,20 +416,8 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
             print(f"Kamera na nadgarstku: {exc}", file=sys.stderr)
             return 1
     parts["frames"] = frames
-    deadline = time.monotonic() + FIRST_FRAME_S
-    first = None
-    while first is None:
-        try:
-            first = frames.latest()
-        except CameraError as exc:
-            print(f"Kamera na nadgarstku: {exc}", file=sys.stderr)
-            return 1
-        if first is None:
-            if time.monotonic() > deadline:
-                print(f"Blad: wrist camera silent - brak klatki z kamery na nadgarstku przez "
-                      f"{FIRST_FRAME_S:.0f} s", file=sys.stderr)
-                return 1
-            time.sleep(POLL_S)
+    if not first_frame(frames, time.monotonic, lambda dt: time.sleep(dt) or False):
+        return 1
 
     kin = RobotKinematics(twin.spec)
     seed = getattr(a, "seed", None)
@@ -398,17 +435,17 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
         else:
             hover = from_rig(kin, rig, limits=twin.joint_limits())
     except HoverError as exc:
-        return _refuse(exc.reason, exc.detail)
+        return refuse(exc.reason, exc.detail)
     if hover.outside_training:
         if not getattr(a, "outside_training", False):
-            return _refuse("outside training", "; ".join(hover.outside_training)
+            return refuse("outside training", "; ".join(hover.outside_training)
                            + " (--outside-training nadpisuje)")
         print(f"UWAGA: nad punktem poza obszarem treningu ({'; '.join(hover.outside_training)}) - "
               f"--outside-training.", file=sys.stderr, flush=True)
     inside = _reach_filter(ws)
     if inside is not None and not inside(hover.p):
-        return _refuse("outside volume",
-                       f"nad punktem {np.round(hover.p, 3).tolist()} poza pudelkiem zasiegu")
+        return refuse("outside volume",
+                      f"nad punktem {np.round(hover.p, 3).tolist()} poza pudelkiem zasiegu")
     print(f"Nad punktem: {np.round(hover.p, 4).tolist()} m, obrot {math.degrees(hover.yaw):.1f} st., "
           f"zapas J6 {hover.j6_margin_deg:.0f} st.", flush=True)
 
@@ -421,7 +458,7 @@ def _open(a: argparse.Namespace, keys: Keys, parts: dict[str, Any]) -> Session |
     parts["driver"] = drv
     why = drv.check()
     if why is not None:
-        return _refuse(why, getattr(drv, "detail", ""))
+        return refuse(why, getattr(drv, "detail", ""))
     return Session(twin=twin, driver=drv, policy=policy, frames=frames, rig=rig, mode=mode, camera=camera,
                    hover=hover, ws=ws, kin=kin, simulated=simulated, rng=s_rng, cube=cube)
 
@@ -478,7 +515,7 @@ def run_series(s: Session, keys: Keys, episodes: int) -> int:
     keys.arm()
     why = drv.take()
     if why is not None:
-        return _refuse(why, getattr(drv, "detail", ""))
+        return refuse(why, getattr(drv, "detail", ""))
     code = 0
     refused_in_row = 0
     for k in range(episodes):
@@ -496,8 +533,11 @@ def run_series(s: Session, keys: Keys, episodes: int) -> int:
         hover = s.hover
         assert hover is not None
         why = _watch(s, keys, lambda: drv.preposition(hover), "przed-epizodem")
+        # A STOP while the arm moves ends with 1, as Ctrl-C does; only the one at the prompt
+        # between episodes is the normal end of a series.
         if keys.stop.is_set() or s.stopped:
             _stop(s, STOP_KEYS)
+            code = 1
             break
         if why is not None:
             keys.note_end()
@@ -519,12 +559,14 @@ def run_series(s: Session, keys: Keys, episodes: int) -> int:
                 drv.success = evaluate.scene_success(twin, float(centre[2]))
         if keys.stop.is_set():
             _stop(s, STOP_KEYS)
+            code = 1
             break
         rep: EpisodeReport = _watch(s, keys, lambda: drv.episode(hover), "epizod")
         keys.note_end()
         print(evaluate.episode_line(k, episodes, rep, shadow=s.mode == "shadow"), flush=True)
         if keys.stop.is_set() or s.stopped:
             _stop(s, STOP_KEYS)
+            code = 1
             break
         if not twin.connected:
             print(f"Ramie rozlaczone: {twin.status.error}", file=sys.stderr)
@@ -545,22 +587,6 @@ def run_series(s: Session, keys: Keys, episodes: int) -> int:
 
 
 # ---------------------------------------------------------------------- dry run
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, np.ndarray):
-        return _jsonable(value.tolist())
-    if isinstance(value, (np.floating, np.integer)):
-        return value.item()
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, Path):
-        return str(value)
-    return value
-
-
 def _dump(out: Path, n: int, rec: TickRecord, inp: DryInputs, camera: WristCamera, kin: RobotKinematics,
           believed: np.ndarray, top_z: float) -> None:
     import cv2
@@ -623,7 +649,7 @@ def dry_run(session: Session, keys: Keys, *, seconds: float | None, dump_every: 
     kin = RobotKinematics(twin.spec)
     believed = np.asarray(hover.believed, float)
     top_z = touch - TIP_AHEAD + float(object_height)
-    every = max(1, int(dump_every))
+    every = int(dump_every)
     print(f"Tryb dry: ramie stoi, nic nie jest wysylane. Zrzuty co {every} tikow do {out}. "
           f"Enter albo Ctrl-C = koniec.", flush=True)
 
@@ -647,7 +673,7 @@ def dry_run(session: Session, keys: Keys, *, seconds: float | None, dump_every: 
             starts.append(now)
             rec, inp = drv.dry_tick(hover)
             recs.append(rec)
-            log.write(json.dumps(_jsonable(asdict(rec))) + "\n")
+            log.write(json.dumps(jsonable(asdict(rec))) + "\n")
             if n % every == 0:
                 _dump(out, n, rec, inp, session.camera, kin, believed, top_z)
             n += 1
@@ -714,8 +740,14 @@ def _flag_refusal(a: argparse.Namespace) -> str | None:
         if not getattr(a, "i_know", False):
             return f"lerobot-twin grasp --mode {mode} rusza prawdziwym ramieniem - dodaj --i-know."
         if not getattr(a, "backend", None):
-            return (f"lerobot-twin grasp --mode {mode} wymaga jawnego --backend (np. a1x, albo sim "
-                    f"na probe): plik stanowiska mowi 'sim' domyslnie.")
+            return f"lerobot-twin grasp --mode {mode} wymaga jawnego --backend (np. a1x, albo sim na probe)."
+    if mode != "dry":
+        if getattr(a, "seconds", None) is not None:
+            return "--seconds tylko w --mode dry."
+        if getattr(a, "object_height", None) is not None:
+            return "--object-height tylko w --mode dry (w pozostalych trybach wysokosc z pliku stanowiska)."
+        if getattr(a, "dump_every", DUMP_EVERY_DEFAULT) != DUMP_EVERY_DEFAULT:
+            return "--dump-every tylko w --mode dry."
     if mode != "sim":
         if getattr(a, "floor", None) == "training":
             return "--floor training tylko w --mode sim (w treningu palce wchodza w stol)."
@@ -726,13 +758,21 @@ def _flag_refusal(a: argparse.Namespace) -> str | None:
     stroke = getattr(a, "jaw_stroke_s", None)
     if stroke is not None and not (math.isfinite(stroke) and stroke > 0.0):
         return f"--jaw-stroke-s musi byc dodatnia liczba sekund, jest {stroke}."
+    height = getattr(a, "object_height", None)
+    if height is not None and not OBJECT_HEIGHT_RANGE[0] <= height <= OBJECT_HEIGHT_RANGE[1]:
+        return f"--object-height {height}: oczekiwano {OBJECT_HEIGHT_RANGE[0]}..{OBJECT_HEIGHT_RANGE[1]} m."
+    for flag, value in (("--episodes", getattr(a, "episodes", 1)),
+                        ("--dump-every", getattr(a, "dump_every", DUMP_EVERY_DEFAULT))):
+        if value < 1:
+            return f"{flag} musi byc >= 1, jest {value}."
     return None
 
 
 def main_grasp(a: argparse.Namespace) -> int:
     """`lerobot-twin grasp`.
 
-    Exit codes: 0 ok, 1 failure (connect, camera, arm lost, guard ending on a real arm), 2 refusal.
+    Exit codes: 0 ok, 1 failure (connect, camera, arm lost, guard ending on a real arm, a STOP while
+    the arm moves), 2 refusal.
     """
     session: Session | None = None
     code = 0
@@ -753,10 +793,10 @@ def main_grasp(a: argparse.Namespace) -> int:
             if object_height is None:
                 object_height = session.rig.object_height() or OBJECT_HEIGHT_DEFAULT
             code = dry_run(session, keys, seconds=getattr(a, "seconds", None),
-                           dump_every=int(getattr(a, "dump_every", 20) or 20), out=out_dir("dry"),
+                           dump_every=int(getattr(a, "dump_every", DUMP_EVERY_DEFAULT)), out=out_dir("dry"),
                            object_height=float(object_height))
         else:
-            code = run_series(session, keys, int(getattr(a, "episodes", 1) or 1))
+            code = run_series(session, keys, int(getattr(a, "episodes", 1)))
     except KeyboardInterrupt:
         print("\nCtrl-C: STOP.", file=sys.stderr, flush=True)
         if session is not None:

@@ -99,9 +99,9 @@ class SceneBackend(RobotBackend):
             return s.kin.from_q(s.data.ctrl[s.act_ids])
 
     def gripper_state(self) -> GripperState | None:
-        """The scene's jaw: the actuator ctrl is command, target and stream at once; the slide is measured.
+        """Szczeka sceny: ctrl aktuatora to naraz rozkaz, cel i strumien; pomiar to suwak.
 
-        Called from driver threads every tick, so it never raises: an error is logged once and gives None.
+        Wolane z watkow sterownikow co takt, wiec nie rzuca: blad zapisany raz daje None.
         """
         twin, grip = self.twin, self.twin._grip
         if not self._connected or grip is None:
@@ -119,7 +119,7 @@ class SceneBackend(RobotBackend):
         except Exception:
             if not self._state_logged:
                 self._state_logged = True
-                logger.exception("gripper_state() of the scene failed")
+                logger.exception("gripper_state() sceny nie powiodlo sie")
             return None
 
 
@@ -586,9 +586,9 @@ class Twin:
         Szczeka w trakcie zamykania NIE sciska - staje w zmierzonym miejscu (palec miedzy
         szczekami). Wyjatek: STOP od bledu chwytaka (`_grip_release`) - bez docisku.
 
-        `gripper` (0..100, clipped) replaces the gripper entry of the pose before the squeeze rule.
-        On a backend whose measured opening is its last command (A1X without jaw feedback) the
-        pose above lets a closing jaw finish its stroke; the streamed opening given here stops it.
+        `gripper` (0..100, przyciety) zastepuje chwytak w pozie przed regula sciskania. Bez niego
+        i bez `measured` chwytak bez pomiaru (A1X: "pomiar" to ostatni rozkaz) trzyma otwarcie,
+        do ktorego doszedl strumien - inaczej zamykajaca sie szczeka dokonczylaby skok.
         """
         if gripper is not None and not math.isfinite(float(gripper)):
             raise ValueError(f"chwytak nie jest liczba: {gripper}")
@@ -597,6 +597,11 @@ class Twin:
             return
         if measured is None:
             measured = self._measured_now()
+            b = self._backend
+            if gripper is None and self._grip is not None and b is not None:
+                gs = b.gripper_state()
+                if gs is not None and not gs.measured and gs.streamed is not None:
+                    gripper = gs.streamed
         measured = {k: float(v) for k, v in measured.items() if k in self._names}
         if gripper is not None and self._grip is not None:
             measured[self._grip] = min(max(float(gripper), 0.0), 100.0)
@@ -879,9 +884,9 @@ class Twin:
         """Nowy cel. Z `owner` - tylko, jesli ten wlasciciel wciaz ma ramie (inaczej RuntimeError):
         watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego.
 
-        A non-finite value raises ValueError and leaves the target as it was: nothing downstream
-        rejects NaN (measured on the fake A1X bus: J1 ran at 90 deg/s past its limits, the jaw past
-        closed)."""
+        Wartosc nieskonczona albo NaN rzuca ValueError i zostawia cel bez zmian: dalej nic NaN
+        nie odrzuca (zmierzone na atrapie magistrali A1X: J1 jechal 90 st./s za granice, szczeka
+        za zamkniecie)."""
         bad = [k for k, v in joints.items() if not math.isfinite(float(v))]
         if bad:
             raise ValueError(f"cel nie jest liczba: {bad}")
@@ -970,11 +975,11 @@ class Twin:
                 self._supervisor.set_speed_cap(self._speed_cap)
 
     def speed_limits(self) -> dict[str, float]:
-        """Effective top speed per joint now [deg/s; gripper units/s], read only; {} when not connected.
+        """Rzeczywista predkosc maksymalna stawow teraz [st./s; chwytak jednostki/s], tylko odczyt; {} bez polaczenia.
 
-        The supervisor's limit (max_vel x velocity_scale, capped by `set_speed`) and, for arm
-        joints, the backend's own slew when it has one (A1X `max_step_deg_s`): each can lower
-        the speed a caller relies on without anything else showing it.
+        Granica nadzoru (max_vel x velocity_scale, przycieta przez `set_speed`) i, dla stawow
+        ramienia, wlasne narastanie backendu, jesli je ma (A1X `max_step_deg_s`): kazde z nich
+        moze obnizyc predkosc, na ktorej polega wolajacy, i nic innego tego nie pokazuje.
         """
         sup, b = self._supervisor, self._backend
         if sup is None or b is None or not self.connected:

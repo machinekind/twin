@@ -319,9 +319,8 @@ lerobot-twin grasp --mode sim        # jeden epizod na symulowanym ramieniu z ko
 lerobot-twin grasp-eval              # 50 epizodów w symulacji, skuteczność
 ```
 
-Na prawdziwym ramieniu najpierw pomiary stanowiska (`lerobot-twin grasp-bench`),
-potem kolejno tryby `dry`, `shadow` i `real`. Instrukcja po angielsku:
-[docs/GRASP.md](docs/GRASP.md).
+Prawdziwe ramię (pomiary stanowiska, potem `dry`, `shadow`, `real`):
+[docs/GRASP.md](docs/GRASP.md), po angielsku.
 
 ### Kamera IDS uEye
 

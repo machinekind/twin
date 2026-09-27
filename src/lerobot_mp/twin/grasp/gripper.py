@@ -22,8 +22,6 @@ from .contract import GAP_CLOSED, GAP_PER_UNIT, STREAM_UNITS_S
 
 logger = logging.getLogger(__name__)
 
-DT_MAX = 0.2
-
 
 def _clip100(v: float) -> float:
     return min(max(float(v), 0.0), 100.0)
@@ -38,16 +36,13 @@ def _toward(value: float, target: float, max_step: float) -> float:
 class GripperEstimator:
     """Opening 0..100 (0 closed, 100 open) and the gap `GAP_CLOSED + GAP_PER_UNIT * opening`."""
 
-    def __init__(self, *, units_s: float = STREAM_UNITS_S, source: Literal["scene", "model"] = "model",
-                 stream_units_s: float = STREAM_UNITS_S) -> None:
+    def __init__(self, *, units_s: float = STREAM_UNITS_S, source: Literal["scene", "model"] = "model") -> None:
         if source not in ("scene", "model"):
             raise ValueError(f"unknown gap source {source!r}")
-        for name, v in (("units_s", units_s), ("stream_units_s", stream_units_s)):
-            if not (math.isfinite(v) and v > 0.0):
-                raise ValueError(f"{name} must be a positive number, got {v}")
+        if not (math.isfinite(units_s) and units_s > 0.0):
+            raise ValueError(f"units_s must be a positive number, got {units_s}")
         self.units_s = float(units_s)
         self.source = source
-        self.stream_units_s = float(stream_units_s)
         self.opening = 100.0
         self._stream = 100.0
         self._t: float | None = None
@@ -72,7 +67,8 @@ class GripperEstimator:
         # A NaN time would make every later step unbounded: the estimate would jump to the stream.
         if not math.isfinite(t):
             raise ValueError(f"time is not a number: {t}")
-        dt = 0.0 if self._t is None else min(max(t - self._t, 0.0), DT_MAX)
+        # Uncapped: the real jaw keeps moving through ticks the driver skips.
+        dt = 0.0 if self._t is None else max(t - self._t, 0.0)
         self._t = t
 
         if (self.source == "scene" and state is not None and state.measured
@@ -84,7 +80,7 @@ class GripperEstimator:
         if state is not None and state.streamed is not None:
             self._stream = _clip100(state.streamed)
         else:
-            self._stream = _toward(self._stream, _clip100(commanded), self.stream_units_s * dt)
+            self._stream = _toward(self._stream, _clip100(commanded), STREAM_UNITS_S * dt)
         # A frozen backend stream stops by itself, and the estimate stops with it.
         self.opening = _toward(self.opening, self._stream, self.units_s * dt)
         return self.gap_of(self.opening)
