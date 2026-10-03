@@ -1,28 +1,51 @@
-# Plan: generic calibration twin
+# Plan: generic calibration twin as a measurement layer
 
-This plan turns `lerobot_mp` into a generic calibration and digital-twin product. Part 1 states the goal.
-Part 2 removes the code that serves one device, one robot or one app. Part 3 defines how a robot enters the
-product. Part 4 defines how a policy drives the twin and how the cameras measure its error. Part 5 describes
-the room-scale deployment with two arms and the Wojtek quadruped. Part 6 describes the sim-to-real loop.
+This plan turns `lerobot_mp` into a vendor-neutral measurement and verification layer for robots that train in
+simulation and run on real hardware. Parts 1 to 7 cover the goal, the cut, the robot contract, the policy
+contract, the room-scale deployment, the sim-to-real loop and the industrial path.
 
-Every fact below was checked against commit `86a9e2c`. Paths are relative to `src/lerobot_mp/` unless they
-start with `tests/`, `docs/`, `assets/`, `scripts/`, `examples/` or `configs/`.
+Every repository fact below was checked against commit `86a9e2c`. The outside tools in part 7 were checked on
+the web in October 2026. Paths are relative to `src/lerobot_mp/` unless they start with `tests/`, `docs/`,
+`assets/`, `scripts/`, `examples/` or `configs/`.
 
 ## 1. Goal
 
-The product calibrates cameras against a measured rig and builds a MuJoCo twin of that rig.
+The repository becomes a vendor-neutral measurement and verification layer for robots that train entirely in
+simulation and run on real hardware. It aims at industrial cells. Development starts on cheap arms, because
+they are the cheapest place to build the layer. Three theses define the goal.
 
-- The product owns a contract for adding any robot from a URDF or MJCF model and a definition file. The package ships no robot.
-- One scene holds several robots, and each robot has its own parameters.
-- The product calibrates the cameras against the measured rig and builds the twin from that calibration.
+### Training happens entirely in simulation
+
+- Every policy trains in the twin. The plan contains no manual demonstration collection, no teleoperation recording and no imitation learning from human demonstrations.
+- Scripted planners inside the simulation are the only source of reference motions.
+- Real data is still logged. Robots collect it in autonomous rollouts, and the cameras score each outcome. No person demonstrates a motion or steers a robot to produce data.
+
+### The product is the measurement layer
+
+- The layer calibrates the cameras against the measured rig and builds the twin from that calibration.
+- A robot enters through a URDF or MJCF model and a definition file. One scene holds several robots. The package ships no robot.
 - Any policy runs against the twin or the real robot through one contract. The contract feeds the policy live joint positions and tracking error.
+- The layer logs intent, telemetry and camera observation for every robot.
 - The calibrated cameras measure the policy's error against reality.
+- Attribution maps every failure to a named gap. The correction for that gap flows back into the twin and into training.
+- Rendering, RL frameworks and physics engines are dependencies. The layer delivers none of them. The scene stays in MJCF, so MuJoCo runs it today and Newton or Isaac Lab can run it later.
+
+### The target is industrial cells with mixed vendors
+
+The target is an industrial cell with robots from several vendors. Cheap hobby arms are the development
+environment. The layer is cheapest to build on them, and every gap shows up loudest there. The path has three
+steps. Part 7 describes it.
+
+1. The team builds the layer on the arms in the lab.
+2. One middle-tier six-axis arm with a real controller and a ROS 2 driver validates the robot contract.
+3. One session on a borrowed or rented cobot shows that the ROS 2 adapter and the calibration hold on certified hardware.
 
 These items are out of scope.
 
 - Hardware backends for specific robots live outside the package.
 - Spectacles, RealAnt, the PMD camera, the uEye camera and the MediaPipe hand-control app leave the repository.
 - Training recipes stay as they are. Nothing in this plan changes how `twin/rl/` trains.
+- Teleoperation and human demonstration tooling stay out of the repository.
 
 ## 2. The cut
 
@@ -33,6 +56,9 @@ The cut has five pull requests in this order.
 3. Step 3 deletes the PMD and uEye cameras.
 4. Step 4 moves the twin's dependencies out of the hand-control app.
 5. Step 5 deletes the hand-control app.
+
+Two of the deleted parts steer an arm from a person's hand. Spectacles has a teleop mode, and the hand-control
+app is `TeleopApp` in `app.py`. Part 1 puts teleoperation out of scope, so neither path returns.
 
 Each PR leaves `pytest -q` green. The cut deletes 12 of the 32 test files. Those 12 files hold 127 of the 278
 tests that pytest collects today.
@@ -367,6 +393,7 @@ class Strategy(Protocol):
 - The runner keeps today's divergence stop. It compares the asked target with the measured position, which equals `clip_err + lag_err`. On any stop the runner calls `hold_measured` and releases the robot.
 - `PolicyRunner` becomes `TorchPolicyStrategy`, the first adapter. It keeps `observe`, `apply_action`, the goal and the success rules, and it loses its thread and lag check.
 - `IKStrategy` is the second adapter. It solves `RobotKinematics.ik` for TCP waypoints, checks each segment with `CollisionChecker.path_clear` and ramps toward each solution.
+- The torch RL policy and the scripted IK planner are the first two adapters. No teleoperation or demonstration-recording adapter is planned.
 - The panel's "go above the tag" action at `app.py` line 3442 already chains `tagreach.hover_point`, `ik` and `Twin.move`. It becomes the first user of `IKStrategy`.
 
 ### Error against reality
@@ -484,6 +511,7 @@ Failures with their camera-measured outcome become correction data.
 
 - The arms' supervisors run inside the hub process.
 - Wojtek's safety stays on Wojtek. The hub observes and advises Wojtek and never owns it.
+- The hub takes the same advisory-only stance toward any robot with certified safety.
 - A stop from the hub over the network is advisory.
 - Every robot's hardware cutoff works without the hub.
 
@@ -503,7 +531,7 @@ times. `EpisodeLog` from part 4 stores no frames, so the session log extends it.
 
 ## 6. The sim-to-real loop
 
-The goal is to train in the twin, transfer well, and know why when a transfer fails.
+The goal is to train only in the twin, transfer well, and know why when a transfer fails.
 
 ### What the measured twin closes
 
@@ -527,9 +555,9 @@ The goal is to train in the twin, transfer well, and know why when a transfer fa
 2. Training randomises around the measurements. `Randomization.around` already centres on the identified dynamics and widens each fitted range to the band that sysid reports. Widths from real-episode residuals are new.
 3. Evaluation in simulation runs on the CPU engine. `twin/rl/evaluate.py` already runs policies on plain MuJoCo instead of MuJoCo Warp.
 4. The bench run starts in shadow mode. The strategy drives a simulated copy, the real arm holds still and the real cameras feed the part poses. The log compares intent with the simulated response. The guarded real run follows. `StrategyRunner` needs a shadow flag for this.
-5. Every episode logs its intent, telemetry and camera outcome.
+5. Every episode logs its intent, telemetry and camera outcome inside the cell. Part 7 states which data may leave it.
 6. Attribution maps each failure to a gap. A geometric residual means recalibration. A lag residual means a refit or wider actuator randomisation. A grasp failure after a correct approach means contact, and it goes to real-data correction.
-7. Correction refits what is identifiable and widens what is not. Fine-tuning on real episodes uses the camera-measured outcome as the label.
+7. Correction refits what is identifiable and widens what is not. Fine-tuning uses only autonomous real rollouts. The cameras score each rollout, and that score is the label. No person demonstrates a motion or takes over the robot.
 
 ### Open decisions
 
@@ -538,5 +566,92 @@ The goal is to train in the twin, transfer well, and know why when a transfer fa
 
 ### Done
 
-Part 6 is done when the logged streams of one failed real episode attribute the failure to one named gap. The
-correction for that gap is a documented procedure.
+Part 6 is done when the logged streams of one failed autonomous real episode attribute the failure to one
+named gap. The correction for that gap is a documented procedure.
+
+## 7. The industrial path
+
+The layer is built on hobby arms and aimed at industrial cells. This part states what that move changes.
+
+### What changes on an industrial arm
+
+- Servo system identification stops mattering. The vendor controller closes the joint loop. The log still records `lag_err`.
+- The software supervisor becomes advisory only. Certified safety belongs to the robot. Part 5 treats Wojtek the same way.
+- The vendor's kinematic model replaces the hobby-arm MuJoCo model. The robot definition of part 3 imports it like any URDF.
+- Each vendor has its own real-time interface and its own notion of a trajectory. Examples are RTDE on Universal Robots, RSI on KUKA, EGM on ABB and Stream Motion on FANUC.
+- The ROS 2 adapter is the integration point. Part 5's adapter only observes. The industrial adapter adds a command path behind `RobotBackend`. Per-vendor adapters are scoped work outside the package, like the backends of part 3.
+
+### What stays and grows
+
+- Calibration grows. The layer calibrates cameras to each robot and to one world frame across vendors.
+- One log spans mixed hardware. Every robot writes intent, telemetry and camera observation to one timeline.
+- Outcome verification becomes a quality gate. The task outcome error of part 4 passes or fails each cycle.
+- Attribution matters more. Classical cells never needed it. Learned policies need it, and no vendor tool provides it.
+
+### Calibration accuracy
+
+- `docs/TWIN.md` reports a median camera position error of 0.16 to 0.24 mm. Both figures compare against simulation truth.
+- Real accuracy is unknown until the layer is measured on a real cell. The plan quotes no real figure before that.
+- The lab calibrates with printed AprilTag cards and USB webcams. Industrial calibration uses structured-light or laser-tracker references and better targets.
+- The first real measurement uses a ChArUco plate on a rigid flat substrate such as glass or aluminium composite.
+- Its cameras are global-shutter machine-vision cameras with fixed-focus lenses. A GigE Vision or USB3 Vision camera needs a GenICam driver behind `CameraStream`, which is new work.
+- Its reference is a factory-calibrated structured-light 3D camera, or a laser tracker if the team can borrow one.
+
+### Cycle time
+
+- The benchmark reports cycle time beside the success rate. A learned skill that is slower than the classical program loses.
+- `EpisodeLog` metadata gains the cycle time of each episode. On the lab arms, `IKStrategy` stands in for the classical program.
+
+### Data ownership
+
+- In a plant, the logged streams belong to the customer. Camera frames, telemetry, intent, episode logs, part scans and fine-tuned policies stay in the cell.
+- Three kinds of data may leave with the customer's consent. These are fitted twin parameters, randomisation widths and failure counts per named gap. None of them holds a camera frame or a part's geometry.
+- The data flywheel of parts 5 and 6 runs inside the cell. Only released data improve the shared base training.
+
+### Landscape
+
+| Calibration tool | What it does | What it does not do |
+|---|---|---|
+| Zivid | The Zivid SDK runs 3D hand-eye calibration for Zivid cameras. | It calibrates only Zivid cameras. |
+| Photoneo | Photoneo ships a robot-camera calibration tool for its 3D scanners. | It calibrates only Photoneo sensors. |
+| Mech-Mind | Mech-Vision calibrates Mech-Eye cameras to six-axis and four-axis robots. | It calibrates only Mech-Mind cameras. |
+| Pickit | Pickit calibrates its camera to the robot with a supplied marker plate. | It serves only Pickit's own picking product. |
+| Roboception | The rc_visard runs an on-board hand-eye module behind a REST API. | It calibrates only that sensor. |
+| Ensenso | The Ensenso SDK calibrates its stereo cameras to six-axis robots. | It calibrates only Ensenso cameras. |
+| SICK | The PLB bin-picking system includes a hand-eye alignment. | It serves only PLB part localisation. |
+| Cognex | VisionPro and In-Sight include hand-eye calibration wizards for robot guidance. | They calibrate only Cognex cameras. |
+| Keyence | The CV-X series calibrates itself to most major robot brands in one click. | It calibrates only Keyence cameras. |
+| MVTec HALCON | The `calibrate_hand_eye` operator works with any camera and robot. | It is a library with no twin, log or policy contract. |
+| OpenCV | `calibrateHandEye` solves the hand-eye transform with five classical methods. | It returns one transform and keeps no model of the cell. |
+| MoveIt Calibration | MoveIt Calibration is an open-source hand-eye tool with ChArUco targets. | It targets ROS 1 and stops at the hand-eye transform. |
+| FANUC iRVision | iRVision runs on the FANUC controller and calibrates its cameras to the robot. | It works only with FANUC robots. |
+| ABB Integrated Vision | Integrated Vision pairs Cognex In-Sight cameras with ABB controllers. | It works only with ABB robots. |
+| KUKA.VisionTech | VisionTech calibrates cameras with KUKA plates on KUKA controllers. | It works only with KUKA robots. |
+| Cognibotics | Cognibotics calibrates robot kinematics for absolute accuracy. | It measures the arm and leaves cameras and policies out. |
+| Dynalog | DynaCal calibrates a robot cell with a cable-based measuring device. | It measures the arm and fixtures and leaves cameras out. |
+| Hexagon and API | Hexagon RoboDyn and the API Radian tracker measure and calibrate robot accuracy with laser trackers. | They measure the arm and leave cameras and policies out. |
+| RoboDK | RoboDK calibrates robots against a laser tracker or an optical CMM. | It improves arm accuracy and logs no policy. |
+
+| Adjacent platform | What it does | What it does not do |
+|---|---|---|
+| Intrinsic | Intrinsic Core opens key parts of Flowstate, including hardware-agnostic control, camera calibration and simulation. | Its public material describes no twin-error measurement and no failure attribution. |
+| NVIDIA Isaac for Manipulation | The former Isaac Manipulator bundles GPU motion planning, pose estimation and a sim-to-real tutorial on a UR10e. | It needs NVIDIA hardware, and its public material describes no failure attribution. |
+| Mujin | MujinOS runs a vendor-agnostic digital twin for its own motion planner. | Its public material describes no contract for outside policies. |
+| Foxglove | Foxglove's Comparison Mode overlays recorded runs, including sim and real runs, on one timeline. | It compares recordings without a calibrated twin or gap attribution. |
+| Formant | Formant streams fleet telemetry for observability and teleoperation. | It holds no model to compare that telemetry against. |
+| InOrbit | InOrbit observes and orchestrates fleets from several vendors. | It compares no telemetry with a calibrated model. |
+
+Camera and robot vendors sell calibration as a feature of their own hardware. Libraries and accuracy services
+stop at one transform or at the arm. Observability tools store telemetry without a calibrated model of the cell.
+Two findings soften this picture. Intrinsic Core calibrates cameras and simulates cells across vendors. Foxglove
+overlays a simulated run on a real one. No tool found combines a measured twin, a policy contract and failure
+attribution across vendors.
+
+### Order and done
+
+1. The first real calibration measurement runs on a lab arm. Done when the plan states a measured error against the reference.
+2. The ROS 2 command path lands behind `RobotBackend`. Done when a test drives a simulated ROS 2 arm through `StrategyRunner`.
+3. The middle-tier arm joins through a robot folder and the ROS 2 adapter. Done when it runs both adapters of part 4 and its logs carry cycle time and outcome error.
+4. The cobot session runs. Done when the ROS 2 adapter drives the cobot and the calibration error stays within the bound from step 1.
+
+Part 7 is done when the cobot session log attributes every failed episode to a named gap.
