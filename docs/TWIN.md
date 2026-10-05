@@ -114,7 +114,7 @@ lerobot-twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJ
 **Podgląd kamer** (`--stream-port`): kadry, które panel i tak pobiera, po HTTP na osobnym porcie —
 `/` strona ze wszystkimi kamerami, `/<kamera>.mjpg` strumień, `/<kamera>.jpg` ostatni kadr,
 `/cameras.json` lista. Nic tam nie steruje ramieniem, więc słucha domyślnie w całej sieci
-(`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2, uEye) —
+(`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2) —
 dlatego podgląd siedzi w procesie panelu.
 
 Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
@@ -233,7 +233,7 @@ trzymana równolegle do obiektywu nie wyznacza ogniskowej — sesja bez pochyle�
 kamera z takim obiektywem nie przejdzie kroku 3. *Anuluj* niczego nie liczy
 ani nie zapisuje.
 Obiektyw zmierzony gdzie indziej (eksport K i dystorsji do pliku tekstowego,
-jak `assets/calib/logitech_brio_4k_calib.txt` i `ueye_calib.txt`) wczytuje
+jak `assets/calib/logitech_brio_4k_calib.txt`) wczytuje
 *Gotowy obiektyw z pliku* → *Wczytaj obiektyw z pliku* — do wybranej kamery,
 tylko z tej samej rozdzielczości; plik trafia do `assets/calib/`.
 
@@ -827,59 +827,6 @@ Kalibracja pojawia się pomarańczowy przycisk *Kamera … została poruszona* (
 pomiar tylko dla tej kamery). Klatka
 starsza niż 1 s nie jest kadrem — zamrożony albo martwy strumień panel pokazuje
 jako błąd kamery i otwiera go na nowo.
-
----
-
-### Kamera PMD z tagami na obudowie
-
-Kamera głębi pmd CamBoard nano (podgląd: `python pmd_view.py`) jest kamerą
-stanowiska jak Brio czy uEye — źródło `pmd` / `pmd:<serial>` (`twin/pmd.py`,
-PMDSDK2 przez ctypes; w klonie dowiązanie `pmd/` do rozpakowanego katalogu
-z płyty kamery, `.gitignore`). *Szukaj kamer USB* znajduje ją, gdy SDK i
-kamera są; *Dodaj* wpisuje ją z **K odczytanym z jej kalibracji fabrycznej**
-(xyz z SDK to dokładny model otworkowy, residuum 0,002 px — bez szachownicy,
-plakietka *OBIEKTYW OK*). Jej kadr w panelu, w piramidzie 3D i w podglądzie
-`--stream-port` to obraz **amplitudy** (165×120, szary); odległości i xyz
-ostatniej klatki są obok (`PMDLive.depth_t`) na chmurę punktów — jeszcze nie
-w bliźniaku.
-
-Pozy nie da się skalibrować kartą (165 px szerokości), więc na obudowie są
-naklejone **trzy AprilTagi 36h11** (domyślnie 0, 1, 2) i kamery stanowiska,
-które mają pozę, widzą je — stąd poza PMD w układzie podstawy. Zakładka
-**Kamery → Kamera PMD (tagi na obudowie)** (`twin/tagbody.py`):
-
-1. **id tagów** i **bok tagu** (czarny kwadrat, zmierzony linijką). Pierwszy
-   numer to układ kamery PMD: środek w środku tego taga, z wzdłuż jego normalnej.
-2. **Ucz układu tagów: dodaj kadr** — nikt nie mierzy, gdzie na obudowie
-   siedzą pozostałe tagi: każdy kadr, w którym jedna kamera widzi dwa tagi
-   naraz, daje ich wzajemną pozę, a wszystkie rogi ze wszystkich kadrów
-   dopasowują układ i pozę bryły w każdym kadrze naraz (LM w numpy).
-   Wystarczy K kamery (krok 1), poza niepotrzebna. Kilka kadrów z różnych
-   stron, aż tekst pod przyciskami powie *Układ kompletny*. Sam PnP jednego
-   taga ma błąd głębokości rzędu procenta (tag 50 px, róg 0,3 px → 4 mm na
-   0,4 m); z trzech widoków w symulacji układ wychodzi z dokładnością 0,1 mm.
-3. **Znajdź PMD w kamerach** — kadry kamer z pozą → poza PMD (mediana z kamer),
-   w 3D: osie układu, plytki tagów, etykieta i — po wybraniu **Kamera patrzy
-   wzdłuż** (np. *-z taga 0* = tag 0 na tylnej ściance) — piramida pola widzenia
-   90 × 69°. Rozrzut między kamerami jest, jak przy *Tag na biurku*,
-   sprawdzianem ich kalibracji. **Śledź na żywo** odświeża pozę co takt panelu.
-4. **Zapisz do stanowiska** — sekcja `pmd` w `twin.json` (numery, bok, układ,
-   oś, ostatnia poza); po restarcie PMD jest w 3D od razu.
-
-Gdy w stanowisku jest kamera o źródle `pmd` i wybrano *Kamera patrzy wzdłuż*,
-*Znajdź PMD* wpisuje jej `T_cam2base` (= poza tagów × oś optyczna) — kamera
-dostaje piramidę z żywym obrazem amplitudy i wchodzi do sceny MuJoCo. Poza jest
-**niezaufana z założenia** (początek układu w środku taga, nie w obiektywie;
-dziedziczy kalibrację kamer stanowiska), więc mapa i percepcja jej nie biorą.
-
-W symulacji (`tests/test_twin_tagbody.py`, kostka 4 cm z tagiem na trzech
-ściankach, trzy kamery): poza bryły 1 mm / 1° od prawdy. **Uwaga na numery:**
-karta kalibracyjna ma tagi 0 i 1 — PMD w kadrze podczas fali myli kalibrację
-(`tags.detect` odrzuca numer widziany dwa razy w kadrze, ale tag z obudowy
-widziany *sam* uchodzi za kartę); bezpieczniej nakleić inne numery, panel
-ostrzega, gdy się pokrywają. Sam obraz głębi PMD nie trafia jeszcze do
-bliźniaka — to następny krok (chmura punktów z `pmdGet3DCoordinates` w pozie
-z tagów).
 
 ## Dokładność symulowanej kamery
 

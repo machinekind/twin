@@ -3,10 +3,7 @@
 `CameraHub.grab()` pasuje do `calib.session.Cameras`, wiec ta sama sesja
 kalibracji jedzie na prawdziwych kamerach i na symulowanych.
 
-Kamery IDS uEye (zrodlo `ueye[:id]`) ida przez `twin.ueye` (pyueye), bo sterownik
-IDS nie daje urzadzenia V4L2; kamera glebi pmd CamBoard nano (`pmd[:serial]`) przez
-`twin.pmd` (PMDSDK, kadr = obraz amplitudy). Pozostale kamery prawdziwe uzywaja watku
-`vision.camera.CameraStream` (zawsze najnowsza
+Kamery prawdziwe uzywaja watku `vision.camera.CameraStream` (zawsze najnowsza
 klatka, bez kolejki), z JEDNA roznica: bez lustrzanego odbicia. Aplikacja
 sterowania dlonia odbija obraz, zeby ruch reki zgadzal sie z ekranem - dla
 kalibracji lustrzany kadr to inna geometria i poza kamery wyszlaby z blednym
@@ -75,25 +72,12 @@ def stable_path(index: int) -> str | None:
 
 
 def probe_all() -> list[dict]:
-    """Kamery USB (OpenCV), IDS uEye (pyueye) i pmd CamBoard nano (PMDSDK) do dodania: kazda z
-    `source`, `label`, `width`, `height`; pmd takze z `K` (z kalibracji fabrycznej kamery)."""
-    from . import pmd, ueye
-    return probe_devices() + ueye.probe_devices() + pmd.probe_devices()
+    """Kamery USB (OpenCV) do dodania: kazda z `source`, `label`, `width`, `height`."""
+    return probe_devices()
 
 
-def open_live(record: CameraRecord):
-    """Strumien dla rekordu: `ueye[:id]` przez pyueye, `pmd[:serial]` przez PMDSDK, reszta przez OpenCV.
-
-    Kamera pmd bez K w rekordzie (wpisana recznie do twin.json) dostaje K z xyz przy otwarciu.
-    """
-    from . import pmd, ueye
-    if ueye.is_ueye(record.source):
-        return ueye.UEyeLive(record)
-    if pmd.is_pmd(record.source):
-        live = pmd.PMDLive(record)
-        if record.K is None and live.K is not None:
-            record.K, record.intrinsics_from = live.K.tolist(), "pmd"
-        return live
+def open_live(record: CameraRecord) -> _Live:
+    """Strumien OpenCV dla rekordu prawdziwej kamery."""
     return _Live(record)
 
 
