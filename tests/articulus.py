@@ -1,7 +1,7 @@
 """Independent SO-101 reference from Articulus, for `test_twin_robots.py`.
 
-Copied from the 3D preview of the hand-control app (`lerobot_mp/preview/model.py`), which goes
-away with that app. `przemeknowak781/articulus` rebuilds the SO-101 from the vendor's STEP solids
+Copied from the 3D preview of the deleted hand-control app (`lerobot_mp/preview/model.py`).
+`przemeknowak781/articulus` rebuilds the SO-101 from the vendor's STEP solids
 and URDF; `scripts/import_articulus_model.py` turns its export into `assets/so101_preview.npz`.
 The chain is stored as `pre @ motion @ post` steps rather than derived again as formulas, so the
 test compares the MJCF with the source geometry and not with a second derivation of it.
@@ -157,7 +157,7 @@ class ArmModel:
 
 
 def load_model(path: str | Path | None = None) -> ArmModel | None:
-    """Loads the reference model; returns None when the asset is missing."""
+    """Load the reference model; None when the asset is missing (the test then skips)."""
     candidate = Path(path) if path else Path(DEFAULT_ASSET)
     if not candidate.is_absolute():
         # Also relative to the repository root, one level above tests/.

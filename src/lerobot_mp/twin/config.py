@@ -1,7 +1,7 @@
 """Twin and robot backend configuration: dataclasses and YAML loading.
 
-Moved here from the hand-control app's `lerobot_mp/config.py`, which keeps its own copy until
-that app is deleted. `TwinConfig` holds only the sections the twin and the backends read.
+Moved here from the hand-control app's `lerobot_mp/config.py`, deleted with that app.
+`TwinConfig` holds only the sections the twin and the backends read.
 """
 
 from __future__ import annotations

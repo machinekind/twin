@@ -1,10 +1,10 @@
-"""Gdzie leza dane aplikacji: modele, stanowisko blizniaka, polityki.
+"""Gdzie leza dane blizniaka: stanowisko i polityki.
 
-Domyslne sciezki (`models/*.task`, `workspace/twin.json`, `workspace/policies`)
-przy uruchomieniu z klonu repozytorium licza sie od jego korzenia - tak samo
+Domyslne sciezki (`workspace/twin.json`, `workspace/policies`) przy
+uruchomieniu z klonu repozytorium licza sie od jego korzenia - tak samo
 jak zasoby w `twin/robots.resolve_asset` - zeby `lerobot-twin ui` odpalone
-z innego katalogu nie zaczynalo od pustego stanowiska i nie pobieralo modeli
-drugi raz. Po zwyklej instalacji pakietu (bez klonu) zostaje katalog biezacy.
+z innego katalogu nie zaczynalo od pustego stanowiska. Po zwyklej instalacji
+pakietu (bez klonu) zostaje katalog biezacy.
 
 Sciezki podane przez uzytkownika (flagi, YAML) NIE przechodza przez te funkcje:
 wzgledne licza sie od katalogu biezacego, jak w kazdym programie.
@@ -18,7 +18,7 @@ from pathlib import Path
 #: Korzen repozytorium: `src/lerobot_mp/paths.py` -> dwa poziomy nad `src`.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: Zmienna srodowiskowa z plikiem YAML konfiguracji (patrz `config.load_config`).
+#: Zmienna srodowiskowa z plikiem YAML konfiguracji (patrz `twin.config.load_config`).
 CONFIG_ENV = "LEROBOT_MP_CONFIG"
 
 

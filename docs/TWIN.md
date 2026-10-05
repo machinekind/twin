@@ -412,9 +412,10 @@ Na prawdziwe stanowisko usuń potem w zakładce Kamery obie kamery symulowane
 wystarczy (pusty stół i bez kamer). Backend i port zapisuje w stanowisku
 dopiero *Połącz*.
 
-**`configs/local.yaml`.** Backend `a1x` czyta sekcję `a1x:`. Skopiuj
-`configs/default.yaml` albo napisz samą sekcję (reszta bierze wartości
-domyślne), a panel uruchamiaj z `lerobot-twin --config configs/local.yaml ui`:
+**`configs/local.yaml`.** Backend `a1x` czyta sekcję `a1x:`, której nie ma
+w `configs/default.yaml`. Napisz samą sekcję (reszta bierze wartości
+domyślne, klucze są w tabeli niżej), a panel uruchamiaj z
+`lerobot-twin --config configs/local.yaml ui`:
 
 ```yaml
 a1x:
@@ -423,9 +424,7 @@ a1x:
 ```
 
 `robot.backend` i `robot.port` z pliku bliźniak **pomija**: backend i port
-wybiera panel (pole Ramię i Port), a zapamiętuje stanowisko. Nie wpisuj
-`robot.backend: a1x` do pliku, którego używa też `lerobot-mp`. Aplikacja
-dłoni ma stawy SO-101, a backend `a1x` odmawia wtedy startu.
+wybiera panel (pole Ramię i Port), a zapamiętuje stanowisko.
 
 | klucz | domyślnie | znaczenie |
 |---|---|---|
@@ -948,12 +947,15 @@ zachowanie **dostarczanych** plików polityk, nie tylko środowiska.
 ```
 src/lerobot_mp/twin/
 ├── robots.py        opis ramienia: MJCF, stawy, TCP, osie chwytaka, szczęki, zakresy fali
+├── config.py        konfiguracja z YAML: safety, robot, a1x, stawy (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
 ├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu
 ├── collision.py     kolizje pozy i drogi do niej
 ├── workspace.py     stanowisko w JSON: ramię, port, stół, karta, kamery (+ prawda symulowanych), dynamika
 ├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane
+├── camera_stream.py wątek kamery: zawsze najnowsza klatka, bez kolejki
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
+├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
 ├── cli.py           lerobot-twin
 ├── calib/

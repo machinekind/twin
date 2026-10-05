@@ -4,10 +4,9 @@
 kalibracji jedzie na prawdziwych kamerach i na symulowanych.
 
 Kamery prawdziwe uzywaja watku `camera_stream.CameraStream` (zawsze najnowsza
-klatka, bez kolejki), z JEDNA roznica: bez lustrzanego odbicia. Aplikacja
-sterowania dlonia odbija obraz, zeby ruch reki zgadzal sie z ekranem - dla
-kalibracji lustrzany kadr to inna geometria i poza kamery wyszlaby z blednym
-znakiem.
+klatka, bez kolejki), z JEDNA roznica: bez lustrzanego odbicia, choc
+`CameraConfig.mirror` jest domyslnie wlaczone - dla kalibracji lustrzany kadr
+to inna geometria i poza kamery wyszlaby z blednym znakiem.
 """
 
 from __future__ import annotations
