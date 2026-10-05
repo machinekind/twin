@@ -319,7 +319,8 @@ def robot_config(
     jak w `load_config`. Dwie zasady:
 
     * Sekcje `joints` i `safety.home` pliku to tabele aplikacji dloni, kluczowane
-      stawami SO-101 (`configs/default.yaml`, kopiowany do `configs/local.yaml`).
+      stawami SO-101 (`safety.home` z `configs/default.yaml`; `joints` tylko z wlasnej
+      kopii w `configs/local.yaml`).
       Stosuja sie tylko do ramienia o stawach SO-101 (te same co w aplikacji dloni);
       innemu ramieniu plik ich nie daje - limity i poze domowa bierze z opisu
       (nazwa `gripper` jest wspolna, wiec nawet pojedynczy wpis SO-101 dalby

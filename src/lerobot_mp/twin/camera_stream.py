@@ -63,7 +63,7 @@ class CameraStream:
         if not cap.isOpened():
             raise RuntimeError(
                 f"Nie udalo sie otworzyc zrodla obrazu: {self.cfg.source!r}. "
-                "Sprawdz indeks kamery (--camera 0/1/2) albo sciezke do pliku wideo."
+                "Sprawdz zrodlo kamery (zakladka Kamery) albo sciezke do pliku wideo."
             )
 
         if not self._is_file:
