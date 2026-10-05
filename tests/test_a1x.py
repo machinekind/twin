@@ -19,7 +19,7 @@ galaxeo = pytest.importorskip("galaxeo")
 from galaxeo import protocol as P  # noqa: E402
 from galaxeo.bus import Frame  # noqa: E402
 
-from lerobot_mp.config import JointConfig, load_config  # noqa: E402
+from lerobot_mp.twin.config import JointConfig, load_config  # noqa: E402
 from lerobot_mp.robot.a1x import A1XArm  # noqa: E402
 
 ARM = tuple(f"arm_joint{i}" for i in range(1, 7))

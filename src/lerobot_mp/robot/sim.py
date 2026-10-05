@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from ..config import AppConfig, JOINT_NAMES
+from ..twin.config import JOINT_NAMES, TwinConfig
 from .base import RobotBackend, RobotInfo
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class SimulatedArm(RobotBackend):
     """Wirtualne ramie o dynamice zblizonej do serw STS3215."""
 
-    def __init__(self, cfg: AppConfig, response_hz: float = 6.0):
+    def __init__(self, cfg: TwinConfig, response_hz: float = 6.0):
         self.cfg = cfg
         #: Szybkosc nadazania za celem [Hz]; wieksza = sztywniejsze serwo.
         self.response_hz = response_hz

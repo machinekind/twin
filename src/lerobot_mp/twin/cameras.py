@@ -3,7 +3,7 @@
 `CameraHub.grab()` pasuje do `calib.session.Cameras`, wiec ta sama sesja
 kalibracji jedzie na prawdziwych kamerach i na symulowanych.
 
-Kamery prawdziwe uzywaja watku `vision.camera.CameraStream` (zawsze najnowsza
+Kamery prawdziwe uzywaja watku `camera_stream.CameraStream` (zawsze najnowsza
 klatka, bez kolejki), z JEDNA roznica: bez lustrzanego odbicia. Aplikacja
 sterowania dlonia odbija obraz, zeby ruch reki zgadzal sie z ekranem - dla
 kalibracji lustrzany kadr to inna geometria i poza kamery wyszlaby z blednym
@@ -22,8 +22,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..config import CameraConfig
-from ..vision.camera import CameraStream
+from .camera_stream import CameraStream
+from .config import CameraConfig
 from .workspace import CameraRecord, Workspace
 
 logger = logging.getLogger(__name__)

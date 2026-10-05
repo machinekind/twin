@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 
-from ..config import AppConfig
+from ..twin.config import TwinConfig
 from .base import RobotBackend
 from .sim import SimulatedArm
 
@@ -16,7 +16,7 @@ def lerobot_available() -> bool:
     return importlib.util.find_spec("lerobot") is not None
 
 
-def create_backend(cfg: AppConfig) -> RobotBackend:
+def create_backend(cfg: TwinConfig) -> RobotBackend:
     """Tworzy backend: `sim`, `lerobot`, `feetech`, `a1x` albo `auto` (co jest dostepne)."""
     backend = cfg.robot.backend.lower()
 

@@ -43,7 +43,7 @@ TICKS_PER_REV = 4096
 @lru_cache(maxsize=1)
 def backend_gripper_ticks() -> tuple[float, float, float]:
     """(zamkniety, otwarty, zero) chwytaka w tikach serwa - z tej samej konfiguracji, co backend."""
-    from ..config import load_config
+    from .config import load_config
 
     rc = load_config().robot
     return float(rc.gripper_closed_ticks), float(rc.gripper_open_ticks), float(rc.center_ticks)

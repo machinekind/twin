@@ -59,7 +59,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
-from ...config import GRIPPER
+from ..config import GRIPPER
 from .. import scene as sc
 from ..robots import SO101, RobotSpec
 from .randomize import UNFITTED_RANGES, Dynamics

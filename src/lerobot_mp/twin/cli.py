@@ -32,8 +32,6 @@ from pathlib import Path
 
 def _check(_: argparse.Namespace) -> int:
     """Sprawdza srodowisko bez renderowania czegokolwiek."""
-    import numpy as np
-
     ok = True
 
     def line(label: str, value: str, good: bool = True) -> None:
@@ -57,7 +55,7 @@ def _check(_: argparse.Namespace) -> int:
 
     try:
         from .kinematics import RobotKinematics
-        from .robots import REGISTRY, SO101
+        from .robots import REGISTRY
 
         for spec in REGISTRY.values():
             try:
@@ -65,23 +63,6 @@ def _check(_: argparse.Namespace) -> int:
                 line(f"model {spec.title}", f"{m.nbody} cial, {int(m.mesh_facenum.sum())} trojkatow")
             except Exception as exc:  # noqa: BLE001 - zly model to wiersz raportu, nie wyjatek
                 line(f"model {spec.title}", f"{type(exc).__name__}: {exc}", False)
-        # Zgodnosc z niezaleznym modelem podgladu 3D - tylko SO-101 go ma.
-        kin = RobotKinematics(SO101)
-        from ..preview.model import load_model
-
-        art = load_model()
-        if art is not None:
-            base = art.link_names.index("base")
-            rng = np.random.default_rng(0)
-            worst = 0.0
-            for _ in range(20):
-                j = {n: float(rng.uniform(np.degrees(lo), np.degrees(hi)))
-                     for n, lo, hi in zip(SO101.joints, kin.lo, kin.hi)}
-                Ta = art.link_transforms(art.from_lerobot(j))
-                for name in ("upper_arm", "lower_arm", "wrist", "gripper"):
-                    ref = (np.linalg.inv(Ta[base]) @ Ta[art.link_names.index(name)])[:3, 3]
-                    worst = max(worst, float(np.linalg.norm(ref - kin.body(name, j)[:3, 3])))
-            line("zgodnosc z Articulusem", f"{worst * 1e6:.1f} um (musi byc < 10 um)", worst < 1e-5)
     except Exception as exc:
         line("model SO-101", f"{type(exc).__name__}: {exc}", False)
 
@@ -449,8 +430,8 @@ def _use_config(path: str) -> None:
     """
     import yaml
 
-    from ..config import load_config
     from ..paths import CONFIG_ENV
+    from .config import load_config
 
     cfg = Path(path).expanduser().resolve()
     if not cfg.is_file():

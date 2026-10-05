@@ -38,8 +38,9 @@ def random_joints(kin: RobotKinematics, rng: np.random.Generator) -> dict[str, f
 
 
 def test_mjcf_matches_the_articulus_reference_in_every_pose(kin):
-    preview = pytest.importorskip("lerobot_mp.preview.model")
-    art = preview.load_model()
+    from articulus import load_model
+
+    art = load_model()
     if art is None:
         pytest.skip("brak modelu podgladu 3D w repozytorium")
 
@@ -63,7 +64,7 @@ def test_gripper_angle_is_the_servo_angle_of_the_feetech_backend(kin):
     `feetech` rozciaga je na tiki 1986..2670 (60 st. skoku serwa) - jednostka
     chwytaka byla w symulacji 1,8 raza wieksza niz na ramieniu.
     """
-    from lerobot_mp.config import load_config
+    from lerobot_mp.twin.config import load_config
     from lerobot_mp.robot.feetech import FeetechArm
 
     cfg = load_config(overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})

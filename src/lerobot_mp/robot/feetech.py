@@ -29,7 +29,7 @@ import socket
 import time
 from typing import Any
 
-from ..config import GRIPPER, JOINT_NAMES, AppConfig
+from ..twin.config import GRIPPER, JOINT_NAMES, TwinConfig
 from .base import RobotBackend, RobotInfo
 
 logger = logging.getLogger(__name__)
@@ -370,7 +370,7 @@ class FeetechBus:
 class FeetechArm(RobotBackend):
     """Ramie SO-101 sterowane wprost przez port szeregowy."""
 
-    def __init__(self, cfg: AppConfig, bus: FeetechBus | None = None):
+    def __init__(self, cfg: TwinConfig, bus: FeetechBus | None = None):
         self.cfg = cfg
         rc = cfg.robot
         if not rc.port:

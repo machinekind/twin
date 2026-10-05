@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..config import AppConfig, JointConfig, config_from_data, read_config_data
+from .config import JointConfig, TwinConfig, config_from_data, read_config_data
 
 #: Korzen repozytorium (wspolny dla calego pakietu, patrz `lerobot_mp.paths`).
 from ..paths import REPO_ROOT
@@ -312,7 +312,7 @@ _SKIP_WARNED: set[tuple[str, str]] = set()
 
 def robot_config(
     spec: RobotSpec, path: str | Path | None = None, overrides: dict[str, Any] | None = None
-) -> AppConfig:
+) -> TwinConfig:
     """`load_config()` dla tego ramienia: stawy z opisu, poza domowa z opisu.
 
     Plik YAML (`path` albo `LEROBOT_MP_CONFIG`) i `overrides` leza na wierzchu,

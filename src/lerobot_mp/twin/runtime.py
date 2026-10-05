@@ -9,7 +9,7 @@ albo prawdziwe (backend `feetech`/`lerobot`, a scena tylko je odzwierciedla -
 kinematycznie, katami zmierzonymi na serwach). Reszta aplikacji nie widzi
 roznicy: `joints()`, `set_target()`, `move()` dzialaja tak samo.
 
-Kazdy rozkaz przechodzi przez `control.safety.SafetySupervisor` - te same
+Kazdy rozkaz przechodzi przez `safety.SafetySupervisor` - te same
 limity pozycji i predkosci, stop awaryjny i plynny powrot do domu, co w
 aplikacji sterowania dlonia.
 
@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-from ..control.safety import SafetyState, SafetySupervisor
+from .safety import SafetyState, SafetySupervisor
 from ..robot import create_backend
 from ..robot.base import RobotBackend, RobotInfo
 from . import scene as sc

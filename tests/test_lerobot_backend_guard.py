@@ -17,7 +17,7 @@ import enum
 
 import pytest
 
-from lerobot_mp.config import load_config
+from lerobot_mp.twin.config import load_config
 from lerobot_mp.robot.lerobot_backend import STATUS_EVERY_READS, LeRobotArm
 
 
