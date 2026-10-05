@@ -330,8 +330,8 @@ def load_config(
     arm, `robots.robot_config`); the YAML `joints` section and the overrides merge into it,
     so a joint outside it is an error.
 
-    Top-level sections `TwinConfig` has no field for are skipped, so a user file copied from
-    the old `configs/default.yaml` still loads.
+    Top-level file sections `TwinConfig` has no field for are skipped, so a user file copied
+    from the old `configs/default.yaml` still loads. Unknown keys in `overrides` still fail.
     """
     return config_from_data(read_config_data(path), overrides, joints=joints)
 
@@ -343,14 +343,14 @@ def config_from_data(
     joints: Mapping[str, JointConfig] | None = None,
 ) -> TwinConfig:
     """`load_config` for file content that is already read (`read_config_data`)."""
-    data = dict(data)
-    if overrides:
-        data = _deep_merge(data, overrides)
+    # Only file sections are skipped; overrides come from code and stay strict.
     known = {f.name for f in fields(TwinConfig)}
     skipped = sorted(str(k) for k in data if k not in known)
     if skipped:
         logger.debug("Skipping config sections the twin does not read: %s", ", ".join(skipped))
     data = {k: v for k, v in data.items() if k in known}
+    if overrides:
+        data = _deep_merge(data, overrides)
 
     # The `joints` section merges into the default dictionary joint by joint, so a single
     # limit can be overridden without rewriting the whole table.

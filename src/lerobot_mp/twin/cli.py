@@ -438,7 +438,7 @@ def _use_config(path: str) -> None:
         raise SystemExit(f"lerobot-twin: --config {path}: nie ma takiego pliku")
     os.environ[CONFIG_ENV] = str(cfg)
     try:
-        load_config()                                  # nieznany klucz = blad teraz, nie w polowie sesji
+        load_config()                                  # an unknown key inside a known section fails here, not mid-session
     except (ValueError, TypeError, yaml.YAMLError) as exc:
         raise SystemExit(f"lerobot-twin: --config {path}: {exc}") from exc
 
