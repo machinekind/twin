@@ -182,7 +182,7 @@ class FakeArm(RobotBackend):
 @pytest.fixture
 def twin():
     # Petla bez watku na zegarze wirtualnym: `step(dt)` go przesuwa (`connect(threaded=False)` bez
-    # `clock` tez by go zalozyl - tu jawnie, jak w testach kierowcy okularow).
+    # `clock` tez by go zalozyl - tu jawnie).
     tw = Twin(Workspace(), clock=VirtualClock(t0=0.0))
     try:
         yield tw

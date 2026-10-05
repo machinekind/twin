@@ -295,7 +295,7 @@ class Twin:
 
     def __init__(self, workspace: Workspace, loop_hz: float = 50.0, clock: Clock | None = None):
         self.workspace = workspace
-        #: Zegar petli i wszystkiego, co na nia czeka (kierowca okularow): `WallClock` w aplikacji.
+        #: Zegar petli i wszystkiego, co na nia czeka: `WallClock` w aplikacji.
         #: Bez `clock` blizniak wybiera sam przy `connect`: z watkiem - zegar sciany, bez watku
         #: (`threaded=False`) - nowy `VirtualClock` od 0 s, ktory przesuwa `step(dt)`. Testy, w ktorych
         #: kierowca i petla maja dzielic czas, podaja wlasny `VirtualClock`.

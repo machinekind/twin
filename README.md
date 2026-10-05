@@ -65,16 +65,11 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
   po CAN-FD (Linux, macOS, Windows) — [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
 - **Mrówkę RealAnt obok ramienia** — mrówka jeździ na własnej polityce, a bliźniak ma jej kopię w fizyce:
   nogi z odczytów serw, poza dociągana AprilTagami z kamer, montaż tagów kalibruje się sam; w demo mrówkę
-  udaje druga, sterowana **WSAD** (ta sama polityka chodu w czterech kierunkach), i jedzie naraz z ramieniem
-  ze Spectacles (`lerobot-twin demo --ant`, zakładka *Mrówka*) — [docs/TWIN.md](docs/TWIN.md#mrówka-realant-kopia-w-bliźniaku-z-serw-i-tagów).
+  udaje druga, sterowana **WSAD** (ta sama polityka chodu w czterech kierunkach; `lerobot-twin demo --ant`,
+  zakładka *Mrówka*) — [docs/TWIN.md](docs/TWIN.md#mrówka-realant-kopia-w-bliźniaku-z-serw-i-tagów).
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.
-- **Cele z okularów Spectacles** — pudełko zasięgu w okularach, pinch wysyła
-  cel, ramię jedzie i cofa się po uderzeniu (`lerobot-twin specs`, folder
-  *Spectacles* w panelu; pierwszy ruch prawdziwym A1X 2026-09-26) —
-  [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch).
-  Kierowca okularów po angielsku: [docs/SPECS.md](docs/SPECS.md); okulary i ramię krok po kroku: [docs/RIG.md](docs/RIG.md).
 
 ## Co przyspiesza
 
@@ -239,10 +234,6 @@ Port 8080 zajęty (inny serwer, proxy)? `lerobot-twin ui --port 8765` i adres
 stanowiska (`istnieje` albo `nowe, puste`) i katalog polityk — tak widać, że
 użyty jest `workspace/twin.json` z klonu, także gdy panel odpalono z innego
 katalogu. To samo pokazuje `lerobot-twin workspace`.
-
-Okulary Spectacles jednym poleceniem (ramię ze stanowiska, bez domu, i sterownik okularów):
-`lerobot-twin ui --port 8765 --arm --specs real --i-know --follow-speed 0.10`
-(szczegóły: [docs/SPECS.md](docs/SPECS.md), sekcja „The panel”).
 
 W panelu: zakładka **Ramię** → `sim` → **Połącz**; zakładka **Polityki** →
 `lift-v3`, `lift: skad polozenie kostki` = **kamery**, kostkę kładzie przycisk

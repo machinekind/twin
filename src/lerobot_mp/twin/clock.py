@@ -1,10 +1,9 @@
 """One time axis for the twin's loop and the threads that drive it.
 
 Production runs on `WallClock`: `time.monotonic`, real sleeps, real waits. Tests step the loop with
-`Twin.step` on a `VirtualClock`, where time moves only in `advance(dt)`. The twin's loop, the
-Spectacles driver's worker (ramps, arrival and gripper waits, the backoff grace) and the network
-thread's timers then all read the same simulated seconds, and ten seconds of motion take a fraction
-of a second of CPU.
+`Twin.step` on a `VirtualClock`, where time moves only in `advance(dt)`. The twin's loop and the
+threads that wait on it (the `Twin.move` ramp, the staged home) then all read the same simulated
+seconds, and ten seconds of motion take a fraction of a second of CPU.
 
 Code that waits for time goes through the clock: `sleep`, `wait(event, timeout)`, `get(queue, timeout)`.
 Code that wakes a waiter goes through it too: `set(event)`, `put(queue, item)`, so a virtual waiter
@@ -203,7 +202,7 @@ class VirtualClock:
     def close(self) -> None:
         """Releases every waiter (test teardown).
 
-        Close the clock last: stop the drivers first (`SpecsReach.stop` ends their waits via `set`), then
+        Close the clock last: stop the threads that wait on it first (their waits end via `set`), then
         the twin, then the clock. Closed first, it makes every wait return at once, and a worker that has
         not yet seen its stop flag loops on `get` with only `closed_nap_s` of sleep per round."""
         with self._cond:
