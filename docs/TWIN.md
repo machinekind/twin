@@ -474,7 +474,7 @@ Wnioski:
   −1,5; −0,007 przy 0,0). Backend czyta ją jako `pos[6]` i przelicza przez
   `gripper_fb_closed/open` na 0..100. Gdy chwytak jest sterowany, **chwytak jest
   zmierzony** (`gripper_measured()`): panel, szczęki w 3D i rozpoznawanie chwytu
-  („w dłoni”, `held`/`missed` w sterowniku Specs) widzą szczęki, nie rozkaz.
+  („w dłoni”) widzą szczęki, nie rozkaz.
 - **W spoczynku po włączeniu zasilania grupa 7 pokazuje dowolną wartość**, np.
   −164,9° (−2,88 rad), choć szczęki stały tam, gdzie zostawił je poprzedni
   przebieg (ok. −85°). Za `p_des` idzie dopiero, gdy płynie `0x051` (−85,6° przy
