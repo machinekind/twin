@@ -45,7 +45,6 @@ from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
-from .ant_panel import AntTab
 from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
 
@@ -584,8 +583,6 @@ class TwinApp:
             self._build_policies()
         with tabs.add_tab("Sim-Real", icon=viser.Icon.ARROWS_DIFF):
             self._build_simreal()
-        with tabs.add_tab("Mrowka", icon=viser.Icon.BUG):
-            self.antp = AntTab(self, s.gui)
 
         # Oswietlenie widoku (nie symulacji): rozproszone z nieba (+z) i jedno kierunkowe z gory.
         # three.js bierze kierunek swiatla polkuli z POLOZENIA swiatla (obrot nic nie zmienia):
@@ -714,7 +711,6 @@ class TwinApp:
                 self.runner.stop("STOP z panelu")
             self.calib_job.stop()
             self.sysid_job.stop()                       # tylko nagranie - dopasowanie jest chronione
-            self.antp.stop("STOP z panelu")             # mrowka ma wlasna petle - staje w pozie startowej
             self.arm_engage.value = False
             self._gizmo_seed = None
         if self._estop_active():
@@ -3774,7 +3770,6 @@ class TwinApp:
         self._tick_training()
         self._tick_policies()
         self._guard("pmd", self._tick_pmd, frames)
-        self._guard("mrowka", self.antp.tick, frames)
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
         return frames
@@ -3890,9 +3885,6 @@ class TwinApp:
         try:
             if self.runner is not None:
                 self.runner.stop("zamkniecie panelu")
-            antp = getattr(self, "antp", None)             # mrowka: petla i pulpit WSAD
-            if antp is not None:
-                self._guard("mrowka", antp.close)
             for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
                 job.stop()
         finally:

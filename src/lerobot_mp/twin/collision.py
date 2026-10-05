@@ -54,7 +54,7 @@ class CollisionChecker:
         return out
 
     def set_world(self, data: mujoco.MjData) -> None:
-        """Stan swiata (obiekty, mrowka: qpos i mocap) z `data` tego samego modelu; ramie i tak ustawia kazde
+        """Stan swiata (obiekty: qpos i mocap) z `data` tego samego modelu; ramie i tak ustawia kazde
         sprawdzenie. Dozwolone kontakty zostaja z budowy."""
         self.data.qpos[:] = data.qpos
         self.data.mocap_pos[:] = data.mocap_pos

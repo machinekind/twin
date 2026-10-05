@@ -722,59 +722,6 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 
 ---
 
-## Mrówka RealAnt: kopia w bliźniaku z serw i tagów
-
-Mrówka RealAnt (8 serw AX-12A, [realant-hw](https://github.com/OteRobotics/realant)) jest w bliźniaku obok
-ramienia: model fizyczny RealAnt v2 z realant-rl (`assets/robots/realant`), AprilTagi 36h11 na tekturze —
-**2 płasko na grzbiecie** (krawędzie równolegle do płyty korpusu, osie wzdłuż nóg), **1 na maszcie**
-(prostopadle do niego, krawędzie równolegle, nad nogą). Zakładka **Mrówka** w panelu (`twin/ant.py`,
-`antmirror.py`, `antwalk.py`, `antdrive.py`, `antpad.py`, `ui/ant_panel.py`); próba bez sprzętu:
-`lerobot-twin demo --ant` (z A1X: `--robot a1x --ant`).
-
-**Mrówka na końcu blatu.** `lerobot-twin workspace --ant` (`--path <plik>`
-dla innego stanowiska) dopisuje do istniejącego stanowiska symulowaną mrówkę z kamerami `sym-mrowka-*`
-(`ant.add_ant`). Stoi na obecnym blacie, 20 cm przed jego dalekim końcem, w y = 0; blat się nie zmienia.
-Na blacie 1,2 × 0,8 m z podstawą w `base_xy` (−0,45, 0) to x = 0,85 m.
-
-**Mrówka jeździ na własnej polityce** — realant-rl `robot_teleop.py` / `robot_policy.py` po jej stronie
-(klawisze, trasy). **Bliźniak niczego jej nie wysyła** (rozkazy z dwóch miejsc naraz się gryzły) — ma jej
-**kopię w fizyce sceny**, która chodzi niezależnie i jest dociągana pomiarami (`antmirror.py`):
-
-* **nogi** kopii jadą do kątów odczytanych z serw prawdziwej mrówki (ZeroMQ, tylko nasłuch `ant_server.py`
-  przez `antproxy.py`, port 3001; `pip install -e .[ant]`) — kopia stawia te same kroki i sama się przesuwa,
-  także gdy kamery jej nie widzą;
-* **poza**: każdy kadr z tagami dociąga pozycję i kurs kopii do pozy z kamer — błąd liczony względem kopii
-  z chwili kadru (opóźnienie kamery nie ciągnie mrówki do tyłu); wysokość i pochylenie zostają z fizyki (nogi
-  na blacie);
-* **montaż taga kalibruje się sam**: kierunek przodu — z porównania, dokąd kopia idzie na odczytach serw, a dokąd
-  mrówka według tagów (przyciągany do 45° + k·90°: którą nogę pokazuje oś taga); wysokość i pochylenie taga —
-  z taga względem korpusu kopii stojącego na nogach. Ręcznie (zwinięte): *Poziom z blatu* i pola montażu.
-
-**Tagi** — numery, bok czarnego kwadratu (linijka), **Ucz układu: dodaj kadr** (kadry z oboma tagami naraz,
-jak kamera PMD; *Maszt prostopadle* przyciąga wyuczony obrót do prostopadłego, odchyłka to sprawdzian
-naklejenia). **Uwaga:** tag 1 jest też na karcie kalibracyjnej ramienia — mrówki nie może być w kadrze podczas
-fali (albo inny numer na maszcie; panel ostrzega).
-
-**Demo** (bez prawdziwej mrówki): udaje ją druga mrówka w scenie (`antprawda/`) z prawdziwymi tagami, na
-polityce chodu `exp004_smooth2` w numpy — przeniesiony `robot_teleop_v2.py`: **WSAD nie zmienia polityki**
-(w bok i w tył ta sama polityka z przemianowanymi nogami i obserwacją obróconą o 90°/180°), Q / E obrót
-w miejscu (**tapnięcie = jeden cykl 1 s**, zmiana trybu czeka na koniec cyklu, więc kąt jest powtarzalny),
-Z / C mały obrót (biodra 0,2, tapnięcie = pół cyklu, ~13°), pozy 0 / V / F / T (start polityki, postawa,
-płasko, na palcach — dwie ostatnie to pozy z kroku *Poziom z blatu*), H / 1–4 noga prosto, B / N machanie nogą,
-spacja stop natychmiast; ze stania do jazdy przez pozę startową (rampa 0,5 s), regulator wysokości, czuwak 0,4 s,
-obserwacja domyślnie *nominalna* (jak na prawdziwej — mrówka nie ma kamery). Pulpit WSAD w zakładce i pod
-`http://<host panelu>:8091/`; kierunki względem widoku 3D (W = w głąb ekranu), klawisze przechwytywane przed
-kamerą 3D visera (kamerę przesuwają strzałki i mysz).
-Kopia (niebieska, półprzezroczysta, schowana przed kamerami symulowanymi) śledzi ją tylko z odczytów serw
-(zaokrąglonych do jednostek AX-12A) i kadrów. STOP panelu zatrzymuje ją razem z ramieniem.
-
-W symulacji (`tests/test_twin_ant.py`, `tests/test_twin_antdrive.py`): układ tagów 1,5 mm / 1°, ta sama
-polityka jedzie w czterech kierunkach ~0,093 m/s; kopia startująca ze złym montażem (obrót 45° zamiast 135°)
-po kilku odcinkach jazdy ma montaż 135°, wysokość taga < 6 mm od prawdy i stoi < 2 cm / 5° od mrówki; bez tagów
-odtwarza przejazd z samych serw (1,5 cm różnicy na 13 cm). **Na prawdziwej mrówce nie jechało.** Mapy serw
-są z `rollout_server.py` (tam „TODO validate”), a kopia odtwarza ruch tylko tak dobrze, jak model v2 odtwarza
-mrówkę v1 (inne uchwyty bioder) — rozjazd dociągają tagi.
-
 ## Polecenia
 
 | | |

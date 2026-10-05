@@ -7,7 +7,7 @@ OpenCV tej kamery nie otworzy: sterownik IDS nie daje urzadzenia V4L2.
 Kamera IDS sama z siebie nie ma zadnej automatyki - w swietle pokoju obraz jest
 czarny. Tu wlacza sie automatyczna migawke ograniczona do `MAX_EXPOSURE_MS`
 (ruch ramienia zostaje ostry) i automatyczne wzmocnienie: te same ustawienia,
-z ktorymi kamera byla kalibrowana (realant, `ueye_view.py`).
+z ktorymi kamera byla kalibrowana (`ueye_view.py`).
 
 Wymaga IDS Software Suite (demon `ueyeusbd` / `ueyeethd` i `libueye_api`) oraz
 `pip install -e ".[ueye]"`.

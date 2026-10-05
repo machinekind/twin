@@ -187,9 +187,6 @@ class Workspace:
     #: Kamera PMD (CamBoard nano) z tagami na obudowie (`tagbody.TagBody.to_dict` + ostatnia
     #: poza `T_body2base` w ukladzie podstawy); None = brak, nie jest zapisywane.
     pmd: dict[str, Any] | None = None
-    #: Mrowka RealAnt z tagami (`ant.Ant.to_dict`: tagi i ich uklad, montaz taga na grzbiecie, nogi,
-    #: ostatnia poza z kamer); None = brak, nie jest zapisywane.
-    ant: dict[str, Any] | None = None
     #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
     #: None = nie wybrano, `load` wgrywa najnowszy.
     calib_preset: str | None = None
@@ -233,25 +230,11 @@ class Workspace:
             k += 1
         return f"{stem}{k}"
 
-    def ant_obj(self):
-        """Mrowka ze stanowiska (`ant.Ant`); None, gdy jej nie ma."""
-        if not self.ant:
-            return None
-        from .ant import Ant
-        return Ant.from_dict(self.ant)
-
-    def scene_config(self, *, with_card: bool = False, with_ant: bool = False, **extra: Any) -> SceneConfig:
-        """Scena z tego stanowiska: stol, ramie i kazda WLACZONA, umiejscowiona kamera.
-
-        `with_ant` - takze mrowka, gdy stanowisko wie, gdzie stoi. Tylko scena blizniaka (runtime):
-        srodowiska RL i sprawdzacz kolizji jej nie biora.
-        """
+    def scene_config(self, *, with_card: bool = False, **extra: Any) -> SceneConfig:
+        """Scena z tego stanowiska: stol, ramie i kazda WLACZONA, umiejscowiona kamera."""
         views = [v for c in self.cameras if c.enabled for v in [c.view()] if v is not None]
-        ant = self.ant_obj() if with_ant else None
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
-                          card=self.card_obj() if with_card else None,
-                          ant=ant.placement() if ant is not None else None,
-                          ant_standin=ant.standin_placement() if ant is not None else None)
+                          card=self.card_obj() if with_card else None)
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
@@ -362,7 +345,7 @@ class Workspace:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("path", None)
-        for key in ("pmd", "ant"):
+        for key in ("pmd",):
             if data.get(key) is None:
                 data.pop(key, None)
         return data

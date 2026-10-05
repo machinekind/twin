@@ -63,10 +63,6 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 - **Drugie ramię: Galaxea A1X** — ten sam bliźniak, panel i nadzór; w
   symulacji model, kalibracja kamer i środowiska RL, na sprzęcie backend `a1x`
   po CAN-FD (Linux, macOS, Windows) — [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
-- **Mrówkę RealAnt obok ramienia** — mrówka jeździ na własnej polityce, a bliźniak ma jej kopię w fizyce:
-  nogi z odczytów serw, poza dociągana AprilTagami z kamer, montaż tagów kalibruje się sam; w demo mrówkę
-  udaje druga, sterowana **WSAD** (ta sama polityka chodu w czterech kierunkach; `lerobot-twin demo --ant`,
-  zakładka *Mrówka*) — [docs/TWIN.md](docs/TWIN.md#mrówka-realant-kopia-w-bliźniaku-z-serw-i-tagów).
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.

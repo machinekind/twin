@@ -18,7 +18,6 @@ import time
 from collections.abc import Callable
 
 from lerobot_mp.twin import runtime as rt
-from lerobot_mp.twin.ant import add_ant
 from lerobot_mp.twin.clock import VirtualClock
 from lerobot_mp.twin.workspace import Workspace
 
@@ -95,17 +94,3 @@ class Bench:
         late = self.clock.late - self._late0
         assert late == 0, (f"VirtualClock: {late} barrier(s) timed out after {self.clock.settle_s:.0f} s real - "
                            f"a thread did not park in time (see the VirtualClock warning in the log)")
-
-
-#: The user's A1X bench: a 1.2 x 0.8 m table with the base 0.45 m behind its centre (the table spans x from
-#: -0.15 to 1.05 m and y +-0.40 m in the base frame).
-USER_TABLE = {"size": [1.2, 0.8], "base_xy": [-0.45, 0.0]}
-
-
-def ant_workspace(xy=None, table=USER_TABLE) -> Workspace:
-    """An A1X workspace with the simulated ant (`ant.add_ant`: the far table end, or `xy`); no cameras."""
-    ws = Workspace(robot="a1x")
-    ws.table = {**ws.table, **table}
-    data = add_ant(ws.to_dict(), xy)
-    ws.ant = data["ant"]
-    return ws

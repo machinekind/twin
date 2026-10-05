@@ -3,8 +3,6 @@
     lerobot-twin check                       # czy srodowisko jest gotowe (bez renderu), takze GPU
     lerobot-twin demo                        # przykladowe stanowisko w symulacji (2 kamery)
     lerobot-twin demo --robot a1x            # ... z ramieniem Galaxea A1X
-    lerobot-twin demo --ant                  # ... i z mrowka RealAnt z tagami (zakladka Mrowka, WSAD)
-    lerobot-twin workspace --ant             # mrowka na dalekim koncu blatu stanowiska
     lerobot-twin card --tag-mm 50            # arkusz karty kalibracyjnej do druku
     lerobot-twin board --square-mm 28        # tablica ChArUco do intrynsyk kamery
     lerobot-twin calib-sim --n 5 --cameras 2 # kalibracja w symulacji, oceniana wzgledem prawdy
@@ -229,27 +227,6 @@ def _calib_sim(a: argparse.Namespace) -> int:
 def _workspace(a: argparse.Namespace) -> int:
     from .workspace import Workspace
 
-    if a.ant:
-        import json
-
-        from .ant import add_ant
-        from .workspace import default_path
-
-        path = Path(a.path) if a.path else default_path()
-        if not path.is_file():
-            print(f"Brak {path} - najpierw stanowisko (lerobot-twin demo albo ui).", file=sys.stderr)
-            return 1
-        try:
-            data = add_ant(json.loads(path.read_text(encoding="utf-8")))
-        except ValueError as exc:
-            print(f"Mrowka sie nie miesci: {exc}", file=sys.stderr)
-            return 1
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
-        T = data["ant"]["sim"]["T_ant2base"]
-        print(f"+ mrowka RealAnt w symulacji na koncu blatu: x = {T[0][3]:.3f} m, y = {T[1][3]:.3f} m (uklad podstawy), "
-              f"kamery sym-mrowka-przod i sym-mrowka-bok -> {path}")
     ws = Workspace.load(a.path)
     exists = ws.path is not None and Path(ws.path).is_file()
     where = Path(ws.path).resolve() if ws.path is not None else "-"
@@ -301,17 +278,6 @@ def _demo(a: argparse.Namespace) -> int:
     print(f"Skopiowano {src} -> {dst}")
     print("Stanowisko w symulacji: ramie sim, dwie kamery symulowane (sym-lewa, sym-prawa) z zaufana kalibracja.")
     ws_flag = f" --workspace {dst}" if a.path else ""
-    if a.ant:
-        import json
-
-        from .ant import add_demo_ant
-        data = add_demo_ant(json.loads(dst.read_text(encoding="utf-8")))
-        dst.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        print("+ mrowka RealAnt w symulacji (tagi 2 na grzbiecie, 1 na maszcie), blat 1,6 x 1,2 m, kamery "
-              "sym-mrowka-przod i sym-mrowka-bok.")
-        print(f"Dalej: lerobot-twin ui{ws_flag}  ->  zakladka Mrowka: Ucz ukladu (kilka kadrow), Poziom z blatu, "
-              f"Sledz mrowke (demo), Uruchom mrowke udajaca prawdziwa, WSAD - kopia kalibruje sie sama.")
-        return 0
     if a.robot == "so101":
         print(f"Dalej: lerobot-twin ui{ws_flag}  ->  Ramie: sim, Polacz  ->  Polityka: lift-v3,"
               f" 'lift: skad polozenie kostki' = kamery.")
@@ -525,8 +491,6 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="nadpisz istniejacy plik stanowiska")
     p.add_argument("--robot", choices=tuple(DEMO_WORKSPACES), default="so101",
                    help="ktore ramie (domyslnie so101)")
-    p.add_argument("--ant", action="store_true",
-                   help="do tego mrowka RealAnt z tagami w symulacji (zakladka Mrowka: kalibracja i WSAD)")
     p.set_defaults(fn=_demo)
 
     p = sub.add_parser("card", help="arkusz karty kalibracyjnej do druku")
@@ -553,8 +517,6 @@ def parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("workspace", help="co wiadomo o stanowisku")
     p.add_argument("--path", default=None)
-    p.add_argument("--ant", action="store_true",
-                   help="dodaj symulowana mrowke RealAnt na dalekim koncu blatu (plik zmieniany w miejscu)")
     p.set_defaults(fn=_workspace)
 
     p = sub.add_parser("train", help="naucz polityke PPO na GPU (MuJoCo Warp)")
