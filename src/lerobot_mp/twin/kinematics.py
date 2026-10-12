@@ -75,7 +75,8 @@ class RobotKinematics:
 
     def __init__(self, spec: RobotSpec, model: mujoco.MjModel | None = None, prefix: str = ""):
         self.spec = spec
-        self._grip_lin = None if spec.gripper_range_q is None else tuple(float(v) for v in spec.gripper_range_q)
+        grip = spec.gripper_range_q
+        self._grip_lin = None if grip is None else (float(grip[0]), float(grip[1]))
         self.prefix = prefix
         self.model = model if model is not None else mujoco.MjModel.from_xml_path(str(spec.mjcf_path))
         self.data = mujoco.MjData(self.model)

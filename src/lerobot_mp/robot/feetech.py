@@ -664,7 +664,8 @@ class FeetechArm(RobotBackend):
         """(closed, open) jaw angle [rad from joint zero]: exactly the ticks `_to_ticks`/`_to_units` use."""
         rc = self.settings
         rad = 2.0 * math.pi / TICKS_PER_REV
-        return (rc.gripper_closed_ticks - rc.center_ticks) * rad, (rc.gripper_open_ticks - rc.center_ticks) * rad
+        return ((rc.gripper_closed_ticks - rc.center_ticks) * rad,
+                (rc.gripper_open_ticks - rc.center_ticks) * rad)
 
     def set_joint_limits(self, limits: Mapping[str, tuple[float, float]]) -> None:
         for name, (lo, hi) in limits.items():

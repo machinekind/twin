@@ -42,7 +42,7 @@ class BackendPlugin(Protocol):
 
     Required: `connect`, `disconnect`, `read_joints`, `send_joints`, `is_connected`. Optional,
     with the meaning given on `RobotBackend`: `info` (an object with `name`, `description`,
-    `simulated`), `link_silent`, `faults()`, `joint_limits()`, `set_joint_limits(limits)`,
+    `simulated`), `link_silent` (or `_link_silent`), `faults()`, `joint_limits()`, `set_joint_limits(limits)`,
     `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`. Any other public
     method stays reachable through the wrapper (the panel looks some up by name).
     """

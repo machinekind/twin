@@ -431,7 +431,9 @@ The backend is any object with `connect`, `disconnect`, `read_joints`,
 `lerobot_mp.robot.base.BackendPlugin`. `create` gets a `BackendContext`: the
 robot's joints and limits, the port and the backend's own config section.
 [examples/robots/testbot](examples/robots/testbot) is a complete example, and the
-tests load it.
+tests load it. Entry points live in the installed package's metadata: after
+pulling a version that changes them (this one registers the backends), run
+`pip install -e .` again, or the panel finds no backends.
 
 ## How it is built
 

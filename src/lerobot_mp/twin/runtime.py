@@ -278,8 +278,8 @@ class Twin:
     grip_ease = 8.0
     #: Blad chwytaka dluzszy niz tyle sekund (mimo odciazenia) = STOP.
     grip_fault_s = 2.0
-    #: Gap [rad] between the backend's gripper range and the description's that makes the panel
-    #: warn: 20 ticks of an STS3215 servo.
+    #: Gap between the backend's gripper range and the description's that makes the panel warn, as
+    #: a fraction of the description's jaw travel: on the SO-101 about 20 ticks of an STS3215 servo.
     grip_range_tol = 0.03
     #: Dwa kolejne odczyty przy polaczeniu (i po kazdym milczeniu lacza) musza sie zgadzac
     #: do tylu jednostek.
@@ -1780,7 +1780,8 @@ def _gripper_mismatch(b: RobotBackend, spec: RobotSpec, tol: float) -> str:
     want = spec.gripper_range_q
     if not got or want is None:
         return ""
-    if all(abs(float(a) - float(w)) <= tol for a, w in zip(got, want)):
+    travel = abs(float(want[1]) - float(want[0]))
+    if all(abs(float(a) - float(w)) <= tol * travel for a, w in zip(got, want)):
         return ""
     fmt = "zamkniety {:.3f}, otwarty {:.3f} rad"
     return (f"chwytak: backend ma zakres ({fmt.format(*got)}), a opis ramienia ({fmt.format(*want)}) - "

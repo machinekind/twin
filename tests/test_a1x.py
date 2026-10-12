@@ -48,7 +48,8 @@ OPEN_LOOP = {"gripper_fb_closed": None, "gripper_fb_open": None}
 def a1x_context(port=None, joints=None, **settings) -> BackendContext:
     """What the twin hands the `a1x` backend: these joints, `port` and the `a1x:` section `settings`."""
     joints = A1X_JOINTS if joints is None else joints
-    return BackendContext(robot="a1x", joints=tuple(joints), gripper="gripper" if "gripper" in joints else None,
+    gripper = "gripper" if "gripper" in joints else None
+    return BackendContext(robot="a1x", joints=tuple(joints), gripper=gripper,
                           limits={n: (jc.min, jc.max) for n, jc in joints.items()},
                           max_vel={n: jc.max_vel for n, jc in joints.items()}, port=port, settings=settings)
 

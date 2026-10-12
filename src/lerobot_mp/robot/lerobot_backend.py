@@ -63,12 +63,6 @@ class LeRobotSettings:
     kind: str = "so101"
     #: True -> joints in degrees (the default in LeRobot >= 0.4).
     use_degrees: bool = True
-    #: LeRobot's clamp of a step relative to the measured position (None = off). Off for the twin:
-    #: with +-12 degrees the gap between measurement and command never passed ~12 degrees, the
-    #: twin's tracking guard (25 degrees) could not trip, and the servo kept pushing into an
-    #: obstacle (measured on the real LeRobot stack over an emulator; without the clamp STOP
-    #: came after 0.78 s). The twin's supervisor limits speed anyway.
-    max_relative_target: float | dict[str, float] | None = None
     calibration_dir: str | None = None
     #: The servo tick of joint zero in the twin's model (as in the `feetech` backend): LeRobot
     #: counts degrees from the middle of its calibration range, and the panel warns about the gap.
@@ -143,7 +137,12 @@ class LeRobotArm(RobotBackend):
             "port": self.port,
             "id": rc.robot_id,
             "use_degrees": rc.use_degrees,
-            "max_relative_target": self._max_relative_target(rc.max_relative_target),
+            # Always off: with LeRobot clamping a step to +-12 degrees from the measured position,
+            # the gap between measurement and command never passed ~12 degrees, the twin's tracking
+            # guard (25 degrees) could not trip, and the servo kept pushing into an obstacle
+            # (measured on the real LeRobot stack over an emulator; without the clamp STOP came
+            # after 0.78 s). The twin's supervisor limits speed anyway.
+            "max_relative_target": None,
             # LeRobot domyslnie zdejmuje moment przy rozlaczeniu - ramie opada pod
             # wlasnym ciezarem. U nas decyduje o tym ta sama opcja co w `feetech`.
             "disable_torque_on_disconnect": rc.torque_off_on_exit,
@@ -163,35 +162,6 @@ class LeRobotArm(RobotBackend):
                 skipped,
             )
         return config_cls(**kwargs)
-
-    @staticmethod
-    def _max_relative_target(value: Any) -> float | dict[str, float] | None:
-        """`lerobot.max_relative_target` w postaci, ktora LeRobot przyjmie: None, float albo {staw: float}.
-
-        `ensure_safe_goal_position` LeRobota 0.6.1 sprawdza `isinstance(..., float)` - `12`
-        wpisane w YAML bez kropki (int) dawalo `TypeError: 12` przy PIERWSZYM rozkazie
-        i petla blizniaka konczyla sie rozlaczeniem. Zly wpis odrzucamy przed portem.
-        None (tez "null"/"none"/"" z linii polecen) = LeRobot nie przycina celu - tego
-        chce blizniak: jego nadzor sam ogranicza predkosc, a przyciecie o 12 st. od pomiaru
-        chowalo kolizje przed straznikiem rozjazdu (25 st.) i ramie pchalo w przeszkode bez konca.
-        """
-        def one(v: Any) -> float:
-            if isinstance(v, bool):
-                raise ValueError(v)
-            out = float(v)
-            if not math.isfinite(out) or out <= 0:
-                raise ValueError(v)
-            return out
-
-        if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "null")):
-            return None
-        try:
-            if isinstance(value, dict):
-                return {str(k): one(v) for k, v in value.items()}
-            return one(value)
-        except (TypeError, ValueError):
-            raise ValueError(f"lerobot.max_relative_target: {value!r} - podaj dodatnia liczbe stopni "
-                             "albo null (bez limitu)") from None
 
     # ------------------------------------------------------------ polaczenie
     def connect(self) -> None:
@@ -218,7 +188,8 @@ class LeRobotArm(RobotBackend):
 
     def _calibrate_hint(self) -> str:
         return (f"Skalibruj ramie w konsoli:  lerobot-calibrate --robot.type={self._kind}_follower "
-                f"--robot.port={self.port} --robot.id={self.settings.robot_id}  - albo uzyj backendu `feetech`.")
+                f"--robot.port={self.port} --robot.id={self.settings.robot_id}  "
+                "- albo uzyj backendu `feetech`.")
 
     def _require_calibration_file(self, robot: Any) -> None:
         """Odmawia polaczenia, zanim cokolwiek dotknie portu, gdy LeRobot nie ma pliku kalibracji.

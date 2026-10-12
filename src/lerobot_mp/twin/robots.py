@@ -197,7 +197,8 @@ def _check(spec: RobotSpec, path: Path) -> None:
     if spec.gripper is not None and spec.gripper not in joints:
         problems.append(f"chwytak {spec.gripper!r} nie jest na liscie `joints`")
     if spec.gripper is not None and spec.gripper_range_q is None:
-        problems.append("ramie z chwytakiem potrzebuje `gripper_range_q` (zamkniety, otwarty) w jednostkach MJCF")
+        problems.append("ramie z chwytakiem potrzebuje `gripper_range_q` (zamkniety, otwarty) "
+                        "w jednostkach MJCF")
     for table in ("limits", "max_vel"):
         missing = joints - set(getattr(spec, table))
         if missing:
@@ -231,14 +232,26 @@ def robot_folders() -> dict[str, Path]:
         found[name] = folder
 
     for ep in entry_points(group=ENTRY_POINT_GROUP):
-        target = ep.load()
+        # One broken package must not take the other robots down with it.
+        try:
+            target = ep.load()
+        except Exception:
+            logger.exception("Wtyczka ramienia %r (%s) nie laduje sie - pomijam ja", ep.name, ep.value)
+            continue
         if not isinstance(target, (str, os.PathLike)):
-            raise TypeError(f"Wtyczka ramienia {ep.name!r} ({ep.value}) musi wskazywac sciezke folderu, "
-                            f"a wskazuje {type(target).__name__}")
+            logger.error("Wtyczka ramienia %r (%s) musi wskazywac sciezke folderu, a wskazuje %s - "
+                         "pomijam ja", ep.name, ep.value, type(target).__name__)
+            continue
         add(ep.name, Path(target), f"pakiet {ep.dist.name if ep.dist else ep.value}")
 
-    local = resolve_asset(LOCAL_ROBOTS)
-    if local.is_dir():
+    # Both roots, like `resolve_asset` for a single file: an `assets/robots/` in the working
+    # directory must not hide the repository's.
+    seen: set[Path] = set()
+    for root in (Path.cwd(), REPO_ROOT):
+        local = (root / LOCAL_ROBOTS).resolve()
+        if local in seen or not local.is_dir():
+            continue
+        seen.add(local)
         for path in sorted(local.glob(f"*/{ROBOT_FILE}")):
             add(path.parent.name, path.parent, str(local))
     return found
@@ -254,7 +267,8 @@ def get_spec(name: str) -> RobotSpec:
         raise KeyError(f"Nieznane ramie {name!r}. Dostepne: {known}") from exc
     spec = load_robot(folder)
     if spec.name.lower() != name.lower():
-        raise ValueError(f"{folder / ROBOT_FILE}: `name: {spec.name}`, a ramie jest zarejestrowane jako {name!r}")
+        raise ValueError(f"{folder / ROBOT_FILE}: `name: {spec.name}`, "
+                         f"a ramie jest zarejestrowane jako {name!r}")
     return spec
 
 
@@ -293,14 +307,15 @@ def robot_config(
       belongs to this robot. A file written for another arm would otherwise hand this one its
       limits or home pose; such tables are skipped with a warning. `overrides` always apply,
       strictly.
-    * The description's home pose applies only when neither the file nor `overrides` has
-      `safety.home`. A partial `home` replaces it whole, as in `load_config` (`SafetySupervisor`
-      fills the missing joints).
+    * The home pose is the description's, with the joints the file's `safety.home` names on top,
+      and then `overrides` (the workspace's "Set home = here" names every joint). A partial home
+      never leaves the other joints at 0: on the A1X that is the folded pose at the end stops.
     """
     data = _own_tables(read_config_data(path), spec, path)
-    if not (_has_home(data) or _has_home(overrides or {})):
-        safety = data.get("safety")
-        data = dict(data, safety=dict(safety if isinstance(safety, dict) else {}, home=dict(spec.home)))
+    safety = data.get("safety")
+    safety = dict(safety) if isinstance(safety, dict) else {}
+    safety["home"] = {**spec.home, **(safety.get("home") or {})}
+    data = dict(data, safety=safety)
     return config_from_data(data, overrides, joints=joint_configs(spec))
 
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 
 from lerobot_mp.twin.kinematics import RobotKinematics, inverse, pose
-from lerobot_mp.twin.robots import SO101
+from lerobot_mp.twin.robots import get_spec
+
+SO101 = get_spec("so101")
 
 kin = RobotKinematics(SO101)
 m, d = kin.model, kin.data

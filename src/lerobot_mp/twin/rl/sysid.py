@@ -80,8 +80,8 @@ class Recording:
     def __post_init__(self) -> None:
         self.joints = tuple(self.joints)
         if np.ndim(self.command) == 2 and len(self.joints) != np.shape(self.command)[1]:
-            raise ValueError(f"nagranie: {np.shape(self.command)[1]} kolumn rozkazu, a stawow {len(self.joints)} "
-                             f"({', '.join(self.joints) or 'brak'})")
+            raise ValueError(f"nagranie: {np.shape(self.command)[1]} kolumn rozkazu, "
+                             f"a stawow {len(self.joints)} ({', '.join(self.joints) or 'brak'})")
 
     def save(self, path: str | Path) -> Path:
         path = Path(path)
@@ -773,7 +773,8 @@ def identify(rec: Recording, spec: RobotSpec, control_hz: float = 20.0, on_progr
     return FitResult(dyn, base, band, calls[0], profiles)
 
 
-def fit(rec: Recording, spec: RobotSpec, control_hz: float = 20.0, on_progress=None) -> tuple[Dynamics, float]:
+def fit(rec: Recording, spec: RobotSpec, control_hz: float = 20.0,
+        on_progress=None) -> tuple[Dynamics, float]:
     """`identify` w starym ksztalcie: (dynamika, blad symulacji nominalnej)."""
     out = identify(rec, spec, control_hz, on_progress)
     return out.dyn, out.base

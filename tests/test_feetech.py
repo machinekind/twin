@@ -157,7 +157,8 @@ class FakeBusLink:
 def arm_ctx():
     """What the twin hands the `feetech` backend for the SO-101 on port COM_TEST."""
     spec = get_spec("so101")
-    return backend_context(robot_config(spec, overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}}), spec)
+    cfg = robot_config(spec, overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})
+    return backend_context(cfg, spec)
 
 
 def connected(ctx, link: FakeBusLink | None = None) -> tuple[FeetechArm, FakeBusLink]:
@@ -194,7 +195,7 @@ def test_connect_refuses_when_a_servo_is_silent(arm_ctx):
 
 
 def test_gripper_range_is_the_one_the_backend_converts_with_and_matches_the_description(arm_ctx):
-    """The twin compares it with `gripper_range_q` of robot.yaml: it must be what the backend computes with."""
+    """The twin compares it with robot.yaml's `gripper_range_q`: it must be what the backend computes with."""
     arm, _ = connected(arm_ctx)
     rad = 2 * 3.141592653589793 / 4096
     closed, opened = arm.gripper_range_q()

@@ -31,7 +31,10 @@ JOINTS = SO101.joints
 
 def synthetic_recording(truth: Dynamics, delay: float, joints=None, hold=0.7):
     """Nagranie jak z `record`: `joints=None` - pelne pobudzenie panelu (`excitation(home)`)."""
-    plan = excitation(SO101.home, joints=SO101.arm_joints if joints is None else joints, **({} if joints is None else {"hold": hold}))
+    if joints is None:
+        plan = excitation(SO101.home, joints=SO101.arm_joints)
+    else:
+        plan = excitation(SO101.home, joints=joints, hold=hold)
     hz = 50.0
     t = np.arange(0, plan[-1][0] + 0.5, 1 / hz)
     cur = np.array([SO101.home[j] for j in JOINTS])
@@ -157,7 +160,8 @@ class JitterArm:
         cmd = np.array(cmd)
         tf = np.arange(0, span, 0.001)
         kf = np.searchsorted(self.tau, tf, side="right") - 1
-        q = Replayer(SO101).run(Recording(tf, cmd[kf], np.full((len(tf), 6), np.nan), joints=JOINTS), truth, delay)
+        empty = Recording(tf, cmd[kf], np.full((len(tf), 6), np.nan), joints=JOINTS)
+        q = Replayer(SO101).run(empty, truth, delay)
         lag = rng.uniform(0.0, 0.004, len(self.tau))           # serwo podaje pozycje chwile po starcie taktu
         meas = np.array([np.interp(self.tau + lag, tf, q[:, j]) for j in range(6)]).T
         meas += rng.normal(0, 0.05, meas.shape)

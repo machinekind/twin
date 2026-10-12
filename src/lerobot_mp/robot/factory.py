@@ -69,7 +69,10 @@ def create_backend(cfg: TwinConfig, spec: RobotSpec) -> RobotBackend:
         )
     registered = backends()
     if name not in registered:
-        known = ", ".join(sorted(registered)) or "zadne"
+        # Entry points live in the installed package's metadata: a checkout updated without
+        # `pip install -e .` has no backends registered at all.
+        known = (", ".join(sorted(registered))
+                 or "zadne - po aktualizacji repozytorium uruchom ponownie pip install -e .")
         raise ValueError(f"Nieznany backend robota: {cfg.robot.backend!r}. Zainstalowane: {known} "
                          "(albo `sim` - symulacja w blizniaku)")
     factory = registered[name].load()
@@ -122,7 +125,8 @@ class PluginBackend(RobotBackend):
 
     @property
     def link_silent(self) -> bool:
-        return bool(getattr(self.plugin, "link_silent", False))
+        # The backends written in this repository set `_link_silent`; they keep it when they move out.
+        return bool(getattr(self.plugin, "link_silent", getattr(self.plugin, "_link_silent", False)))
 
     def faults(self) -> list[str]:
         return self._call("faults", super().faults)

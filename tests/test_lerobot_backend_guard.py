@@ -230,6 +230,17 @@ def test_an_arm_holding_a_pose_is_connected_without_lerobot_configure(arm):
     assert ("torque_off",) not in robot.bus.log
 
 
+def test_lerobot_never_clamps_the_step_and_the_setting_is_gone(arm):
+    """LeRobot's +-12 degree clamp hid collisions from the twin's tracking guard (25 degrees)."""
+    arm.connect()
+    assert FakeRobot.last.config.max_relative_target is None
+    spec = get_spec("so101")
+    cfg = robot_config(spec, overrides={"robot": {"backend": "lerobot", "port": "COM_TEST"},
+                                        "lerobot": {"max_relative_target": 12.0}})
+    with pytest.raises(ValueError, match="max_relative_target"):
+        LeRobotArm(backend_context(cfg, spec))
+
+
 def test_disconnect_keeps_torque_unless_configured_otherwise(arm):
     arm.connect()
     robot = FakeRobot.last

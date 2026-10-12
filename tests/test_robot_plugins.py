@@ -49,10 +49,27 @@ def test_a_robot_folder_from_an_installed_package_is_found_through_its_entry_poi
     assert [c.backend for c in spec.connections] == ["testbot"]
 
 
+def test_robot_folders_in_the_working_directory_do_not_hide_the_repositorys(tmp_path, monkeypatch):
+    (tmp_path / "assets" / "robots").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    reload_robots()
+    assert {"so101", "a1x"} <= set(robot_folders())
+
+
+def test_a_robot_plugin_that_does_not_load_leaves_the_others(testbot, tmp_path, caplog):
+    broken = next(tmp_path.glob("*.dist-info")) / "entry_points.txt"
+    extra = "\n[lerobot_mp.robots]\nbroken = no_such_module:DIR\n"
+    broken.write_text(broken.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    reload_robots()
+    folders = robot_folders()
+    assert "broken" not in folders and {testbot, "so101", "a1x"} <= set(folders)
+    assert "broken" in caplog.text
+
+
 def test_two_robots_with_one_name_are_refused(testbot, tmp_path, monkeypatch):
     local = tmp_path / "assets" / "robots" / testbot
     shutil.copytree(TESTBOT / "testbot" / "robot", local)
-    monkeypatch.chdir(tmp_path)                       # local robot folders resolve from the working directory first
+    monkeypatch.chdir(tmp_path)                       # local robot folders: working directory and repository
     reload_robots()
     with pytest.raises(ValueError, match="Dwa ramiona o nazwie 'testbot'"):
         robot_folders()
@@ -114,7 +131,30 @@ def test_joint_tables_of_another_robot_are_skipped_and_this_robots_apply(tmp_pat
     so101 = get_spec("so101")
     cfg = robot_config(so101, so101_tables)
     assert cfg.joint("shoulder_pan").max == 50.0
-    assert cfg.safety.home == {"shoulder_pan": 10.0, "gripper": 20.0}
+    assert cfg.safety.home == {**so101.home, "shoulder_pan": 10.0, "gripper": 20.0}
+
+
+def test_a_partial_home_in_the_file_keeps_the_rest_of_the_descriptions_home(tmp_path):
+    """A table naming only the shared `gripper` applies to the A1X too; its other joints must not go to 0,
+    the folded pose at the end stops."""
+    grip_only = tmp_path / "grip.yaml"
+    grip_only.write_text("safety: {home: {gripper: 35.0}}\n")
+    a1x = get_spec("a1x")
+    assert robot_config(a1x, grip_only).safety.home == {**a1x.home, "gripper": 35.0}
+    station = {n: 1.0 for n in a1x.joints}                              # "Set home = here" names every joint
+    assert robot_config(a1x, grip_only, overrides={"safety": {"home": station}}).safety.home == station
+
+
+def test_the_config_check_at_startup_accepts_joint_tables(tmp_path, monkeypatch):
+    from lerobot_mp.twin.cli import _use_config
+
+    good = tmp_path / "local.yaml"
+    good.write_text("joints: {shoulder_pan: {min: -90.0}}\nfeetech: {baudrate: 500000}\n")
+    _use_config(str(good))
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("robot: {baudrate: 500000}\n")
+    with pytest.raises(SystemExit, match="baudrate"):
+        _use_config(str(bad))
 
 
 def test_a_backend_section_reaches_its_plugin_raw(testbot):
@@ -171,6 +211,14 @@ def test_the_twin_drives_the_test_robot_through_its_plugin(testbot):
     finally:
         twin.close()
     assert not arm.is_connected
+
+
+def test_the_wrapper_reports_a_silent_link_the_way_the_backends_here_flag_it(testbot):
+    spec = get_spec(testbot)
+    backend = create_backend(robot_config(spec, overrides={"robot": {"backend": "testbot"}}), spec)
+    assert not backend.link_silent
+    backend.plugin._link_silent = True
+    assert backend.link_silent
 
 
 def test_a_gripper_range_other_than_the_descriptions_is_reported(monkeypatch):
