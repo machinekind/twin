@@ -35,6 +35,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -69,6 +70,10 @@ class RunInfo:
     gripper: str | None
     #: The limits that hold on this arm now [app units]: the description's, narrowed to the hardware's.
     limits: Mapping[str, tuple[float, float]]
+    #: Highest commanded speed [app units / s]: the supervisor never goes faster.
+    max_vel: Mapping[str, float]
+    #: The robot's folder: `robot.yaml` and the model, for a strategy with its own kinematics.
+    folder: Path
     simulated: bool
 
 
@@ -95,7 +100,7 @@ class Observation:
 class Action:
     """What the strategy wants after one tick."""
 
-    #: Joint targets [app units]. Joints left out keep their target; empty = hold.
+    #: Joint targets [app units]. Joints left out, or an empty target, keep driving to the previous one.
     target: Mapping[str, float] = field(default_factory=dict)
     #: The run is over (the task is done, or the strategy gives up).
     done: bool = False
@@ -153,6 +158,9 @@ class _Frames(Mapping[str, np.ndarray]):
 class StrategyRunner:
     """Runs one strategy on the twin's arm. See the module docstring for what it guards."""
 
+    #: How long `stop` waits for the loop thread [s]. A slower `act` is left behind: its run is over.
+    join_timeout_s = 2.0
+
     def __init__(self, twin, strategy: Strategy, *, owner: str = OWNER,
                  goal: Callable[[], Any] | None = None,
                  objects: Callable[[], Mapping[str, ObjectPose]] | None = None,
@@ -168,13 +176,21 @@ class StrategyRunner:
         self._goal = goal
         self._objects = objects
         self._cameras = tuple(cameras)
-        self._frame = frame if frame is not None else twin.render
+        self._frame = frame
+        self._fetch: Callable[[str], np.ndarray] = twin.render
         limit = getattr(strategy, "time_limit_s", None) if time_limit_s is None else time_limit_s
         self.time_limit_s = float(limit) if limit is not None else None
         self.status = RunnerStatus()
         self._joints: tuple[str, ...] = ()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        #: The current run. A loop thread holding an older one - a slow `act` that outlived `stop`
+        #: and its join - may not send or finish anything: the run it belongs to is over.
+        self._run: object | None = None
+        # Re-entrant: a preempt fired from inside `set_target` (same thread) ends the run under this lock.
+        self._lock = threading.RLock()
+        #: `strategy.start` returned for the current run: from then on it gets exactly one `stop`.
+        self._began = False
         self._t_start: float | None = None
         self._t_hz, self._ticks = 0.0, 0
 
@@ -186,47 +202,61 @@ class StrategyRunner:
         if not self.twin.connected:
             raise RuntimeError("ramie blizniaka nie jest polaczone")
         self.stop()
+        simulated = bool(self.twin.status.simulated)
+        if self._cameras and self._frame is None and not simulated:
+            raise ValueError("kamery strategii na prawdziwym ramieniu: podaj `frame` "
+                             "- render sceny to nie obraz z kamer")
+        self._fetch = self._frame if self._frame is not None else self.twin.render
+
+        run = object()
         kw = {k: v for k, v in (("gen", gen), ("guard", guard)) if v is not None}
         self.twin.claim(self.owner, preempt=self._preempted, **kw)
+        with self._lock:
+            self._run, self._began = run, False
+            self.status = RunnerStatus(running=True)
+        self._stop.clear()
+        self._t_start, self._ticks = None, 0
         try:
             spec = self.twin.workspace.spec()
             self._joints = tuple(spec.joints)
-            run = RunInfo(robot=spec.name, joints=self._joints, gripper=spec.gripper,
-                          limits=dict(self.twin.joint_limits()), simulated=bool(self.twin.status.simulated))
+            info = RunInfo(robot=spec.name, joints=self._joints, gripper=spec.gripper,
+                           limits=dict(self.twin.joint_limits()), max_vel=dict(spec.max_vel),
+                           folder=spec.root, simulated=simulated)
             begin = getattr(self.strategy, "start", None)
             if begin is not None:
-                begin(run, self._observe(0.0, 0))
-        except Exception:
-            self.twin.release(self.owner)
+                begin(info, self._observe(0.0, 0))
+        except Exception as exc:
+            self._finish(run, f"strategia odmowila: {exc}")
             raise
-        self.status = RunnerStatus(running=True)
-        self._stop.clear()
-        self._t_start, self._ticks = None, 0
+        self._began = True
+        if not self.status.running:                         # the arm was taken while the strategy started
+            self._tell_strategy(self.status.stopped_because)
+            raise RuntimeError(f"ramie odebrane ({self.status.stopped_because})")
         if not self.twin.set_engaged(True, owner=self.owner):
             reason = getattr(self.twin, "preempt_reason", "") or f"ramie ma: {self.twin.owner or 'nikt'}"
-            self.status.running = False
-            self.status.stopped_because = f"przerwana: {reason}"
+            self._finish(run, f"przerwana: {reason}")
             raise RuntimeError(f"ramie odebrane ({reason})")
         if threaded:
-            th = threading.Thread(target=self._loop, name=self.owner, daemon=True)
+            th = threading.Thread(target=self._loop, args=(run,), name=self.owner, daemon=True)
             self._thread = th
             th.start()
 
     # ------------------------------------------------------------------- loop
-    def _loop(self) -> None:
+    def _loop(self, run: object) -> None:
         period = 1.0 / float(self.strategy.hz)
-        while not self._stop.is_set():
+        while not self._stop.is_set() and run is self._run:
             t0 = time.monotonic()
-            if not self.step_once(t0):
+            if not self.step_once(t0, _run=run):
                 return
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
-    def step_once(self, now: float | None = None) -> bool:
+    def step_once(self, now: float | None = None, *, _run: object | None = None) -> bool:
         """One tick. False = the run is over (the reason in `status.stopped_because`).
 
         `now` [s]: the thread passes the wall clock, a test the simulated time.
         """
-        if not self.status.running:
+        run = self._run if _run is None else _run
+        if run is None or run is not self._run or not self.status.running:
             return False
         now = time.monotonic() if now is None else now
         if self._t_start is None:
@@ -234,34 +264,40 @@ class StrategyRunner:
         st = self.status
         try:
             if not self.twin.connected:
-                self._halt("ramie rozlaczone")
+                self._finish(run, "ramie rozlaczone")
                 return False
             t = now - self._t_start
             if self.time_limit_s is not None and t >= self.time_limit_s:
-                self._halt("limit czasu")
+                self._finish(run, "limit czasu")
                 return False
             action = _as_action(self.strategy.act(self._observe(t, st.step)))
             target = self._checked(action.target)
-            if target:
-                self.twin.set_target(target, owner=self.owner)
-            st.step += 1
-            st.stopped_because = ""
-            st.note, st.success, st.error = action.note, action.success, action.error
+            with self._lock:
+                if run is not self._run or not st.running:
+                    return False                            # stopped (maybe restarted) while `act` ran
+                if target:
+                    self.twin.set_target(target, owner=self.owner)
+                st.step += 1
+                st.stopped_because = ""
+                st.note, st.success, st.error = action.note, action.success, action.error
             self._ticks += 1
             if now - self._t_hz >= 1.0:
                 st.hz, self._ticks, self._t_hz = self._ticks / (now - self._t_hz), 0, now
             if action.done:
                 st.done = True
-                self._halt("zadanie wykonane" if action.success else "strategia skonczyla")
+                self._finish(run, "zadanie wykonane" if action.success else "strategia skonczyla")
                 return False
         except _BadTarget as exc:
-            self._halt(f"zly cel strategii: {exc}", hold_measured=True)
+            self._finish(run, f"zly cel strategii: {exc}", hold_measured=True)
             return False
         except Exception as exc:
-            if self.twin.owner != self.owner and self._stop.is_set():
-                return False                                # stopped by `stop` during the tick
+            if self.twin.owner != self.owner:
+                # The arm was taken during the tick (Home, STOP, reconnect): `_preempted` says why.
+                reason = getattr(self.twin, "preempt_reason", "") or "ramie odebrane"
+                self._finish(run, f"przerwana: {reason}")
+                return False
             logger.exception("Strategia przerwana")
-            self._halt(f"{type(exc).__name__}: {exc}", hold_measured=True)
+            self._finish(run, f"{type(exc).__name__}: {exc}", hold_measured=True)
             return False
         return True
 
@@ -273,7 +309,7 @@ class StrategyRunner:
             t=t, step=step, joints=measured, command=dict(status.command or {}),
             goal=None if goal is None else np.asarray(goal, float),
             objects=dict(self._objects() or {}) if self._objects is not None else {},
-            frames=_Frames(self._cameras, self._frame),
+            frames=_Frames(self._cameras, self._fetch),
         )
 
     def _checked(self, target: Mapping[str, float]) -> dict[str, float]:
@@ -282,6 +318,8 @@ class StrategyRunner:
         for name, value in target.items():
             if name not in self._joints:
                 raise _BadTarget(f"staw {name!r} spoza ramienia")
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+                raise _BadTarget(f"{name} = {value!r} to nie liczba")
             v = float(value)
             if not math.isfinite(v):
                 raise _BadTarget(f"{name} = {value!r}")
@@ -294,23 +332,28 @@ class StrategyRunner:
         self.stop(f"przerwana: {getattr(self.twin, 'preempt_reason', '') or 'ramie odebrane'}")
 
     def stop(self, reason: str = "") -> None:
+        run = self._run
         self._stop.set()
         th = self._thread
         if th is not None and th is not threading.current_thread() and th.is_alive():
-            th.join(timeout=2.0)
+            th.join(timeout=self.join_timeout_s)
         self._thread = None
-        if self.status.running:
-            self.status.running = False
-            self.status.stopped_because = reason or "zatrzymana"
-            self._let_go(hold_measured=False)
-            self._tell_strategy(self.status.stopped_because)
+        self._finish(run, reason or "zatrzymana")
 
-    def _halt(self, reason: str, hold_measured: bool = False) -> None:
-        self.status.running = False
-        self.status.stopped_because = reason
+    def _finish(self, run: object | None, reason: str, hold_measured: bool = False) -> None:
+        """Ends `run` once, whoever gets here first (a tick, `stop`, the twin taking the arm)."""
+        with self._lock:
+            if run is None or run is not self._run or not self.status.running:
+                return
+            self.status.running = False
+            self.status.stopped_because = reason
+            self._run = None
+            began = self._began
+            self._stop.set()
+        # Outside the lock: the twin's calls take its own locks.
         self._let_go(hold_measured)
-        self._stop.set()
-        self._tell_strategy(reason)
+        if began:
+            self._tell_strategy(reason)
         logger.info("Strategia zatrzymana: %s", reason)
 
     def _let_go(self, hold_measured: bool) -> None:

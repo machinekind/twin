@@ -7,7 +7,10 @@ Everything in simulated time: the twin's loop without a thread (`connect(threade
 from __future__ import annotations
 
 import ast
+import logging
 import math
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -129,8 +132,10 @@ def test_a_plugin_strategy_returns_plain_values_and_sees_the_whole_observation(t
     runner.start(threaded=False)
     drive(twin, runner, 1.0)
 
+    spec = twin.workspace.spec()
     assert plugin.started.robot == "so101" and plugin.started.simulated
-    assert plugin.started.joints == twin.workspace.spec().joints
+    assert plugin.started.joints == spec.joints and plugin.started.folder == spec.root
+    assert plugin.started.max_vel == spec.max_vel
     obs = plugin.seen[-1]
     assert obs.step == 3 and obs.t == pytest.approx(0.15)
     assert np.allclose(obs.goal, (0.25, 0.05, 0.1)) and obs.objects["cube"].source == "symulacja"
@@ -178,6 +183,8 @@ def test_the_runner_and_the_test_strategy_import_nothing_from_rl():
     ({"shoulder_pan": math.nan}, "shoulder_pan"),
     ({"gripper": math.inf}, "gripper"),
     ({"arm_joint1": 10.0}, "arm_joint1"),
+    ({"shoulder_pan": True}, "nie liczba"),
+    ({"shoulder_pan": "5"}, "nie liczba"),
 ])
 def test_a_bad_target_stops_the_run_and_holds_the_measured_pose(twin, monkeypatch, bad, why):
     arm = FakeArm()
@@ -259,3 +266,96 @@ def test_an_action_object_is_used_as_is(twin):
     assert runner.status.running and runner.status.note == "jade"
     runner.stop()
     assert runner.status.stopped_because == "zatrzymana" and twin.owner is None
+
+
+# ------------------------------------------------------------ races the review found
+def test_a_slow_strategy_that_outlives_stop_cannot_drive_the_next_run(twin, monkeypatch):
+    """`act` slower than the join (VLA inference) used to come back and send its stale target, under
+    the same owner name, into the run started after it."""
+    twin.connect("sim", threaded=False)
+    sent = []
+    real = twin.set_target
+    def spy(target, owner=None):
+        sent.append(dict(target))
+        return real(target, owner)
+
+    monkeypatch.setattr(twin, "set_target", spy)
+    release, inside = threading.Event(), threading.Event()
+
+    def slow(obs):
+        inside.set()
+        release.wait(5.0)
+        return {"shoulder_pan": 40.0}
+
+    first = StrategyRunner(twin, Plugin(slow))
+    first.join_timeout_s = 0.05
+    first.start()
+    assert inside.wait(5.0)
+    first.stop()
+    assert not first.status.running
+
+    first.strategy.answer = lambda obs: {}
+    first.start()                                    # the same runner again, while the old thread still waits
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while first._thread is not None and time.monotonic() < deadline and not sent:
+        time.sleep(0.01)
+    time.sleep(0.2)
+    first.stop()
+    assert sent == [] and first.status.stopped_because == "zatrzymana"
+
+
+def test_the_arm_taken_during_a_tick_reports_the_preempt_not_a_crash(twin, monkeypatch, caplog):
+    twin.connect("sim", threaded=False)
+
+    def taken(target, owner=None):
+        twin.preempt("Dom")
+        raise RuntimeError("ramie odebrane (Dom)")
+
+    plugin = Plugin(lambda obs: {"shoulder_pan": 5.0})
+    runner = StrategyRunner(twin, plugin)
+    runner.start(threaded=False)
+    monkeypatch.setattr(twin, "set_target", taken)
+    with caplog.at_level(logging.ERROR, logger="lerobot_mp.twin.strategy"):
+        assert not runner.step_once(0.0)
+    assert runner.status.stopped_because == "przerwana: Dom" and plugin.stopped == "przerwana: Dom"
+    assert not caplog.records
+
+
+def test_the_strategy_hears_stop_once(twin):
+    twin.connect("sim", threaded=False)
+    calls = []
+
+    class Counting(Plugin):
+        def stop(self, reason):
+            calls.append(reason)
+
+    runner = StrategyRunner(twin, Counting(lambda obs: Action(done=True, success=True)))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.2)
+    runner.stop()
+    runner.stop("jeszcze raz")
+    assert calls == ["zadanie wykonane"]
+
+
+def test_the_arm_taken_while_the_strategy_starts_still_gets_it_a_stop(twin):
+    twin.connect("sim", threaded=False)
+
+    class HomeOnStart(Plugin):
+        def start(self, run, obs):
+            twin.home()
+
+    plugin = HomeOnStart(lambda obs: {"shoulder_pan": 30.0})
+    runner = StrategyRunner(twin, plugin)
+    with pytest.raises(RuntimeError, match="ramie odebrane"):
+        runner.start(threaded=False)
+    assert plugin.stopped and plugin.stopped.startswith("przerwana")
+    assert twin.owner is None and not runner.status.running
+
+
+def test_cameras_on_hardware_need_a_frame_source(twin, monkeypatch):
+    connect_fake(twin, monkeypatch, FakeArm())
+    runner = StrategyRunner(twin, Plugin(lambda obs: {}), cameras=("a",))
+    with pytest.raises(ValueError, match="frame"):
+        runner.start(threaded=False)
+    assert twin.owner is None
