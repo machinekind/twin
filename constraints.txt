@@ -11,8 +11,6 @@
 
 numpy==2.2.6
 PyYAML==6.0.3
-# mediapipe 1.0.1 nie ma kola dla Maca z Intelem - tam pip wezmie 0.10.x (backend legacy).
-mediapipe==1.0.1; sys_platform != "darwin" or platform_machine == "arm64"
 opencv-contrib-python==5.0.0.93
 
 # blizniak [twin] i trening [train] - mujoco i mujoco-warp zawsze w tej samej wersji

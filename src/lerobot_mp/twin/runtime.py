@@ -9,9 +9,8 @@ albo prawdziwe (backend `feetech`/`lerobot`, a scena tylko je odzwierciedla -
 kinematycznie, katami zmierzonymi na serwach). Reszta aplikacji nie widzi
 roznicy: `joints()`, `set_target()`, `move()` dzialaja tak samo.
 
-Kazdy rozkaz przechodzi przez `control.safety.SafetySupervisor` - te same
-limity pozycji i predkosci, stop awaryjny i plynny powrot do domu, co w
-aplikacji sterowania dlonia.
+Kazdy rozkaz przechodzi przez `safety.SafetySupervisor`: limity pozycji
+i predkosci, stop awaryjny i plynny powrot do domu.
 
 Ramieniem steruje naraz JEDEN wlasciciel (`claim`/`release`): panel (suwaki
 ze sprzeglem), polityka, fala kalibracyjna albo identyfikacja. Bez tego
@@ -37,7 +36,7 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-from ..control.safety import SafetyState, SafetySupervisor
+from .safety import SafetyState, SafetySupervisor
 from ..robot import create_backend
 from ..robot.base import RobotBackend, RobotInfo
 from . import scene as sc
@@ -692,7 +691,7 @@ class Twin:
         # rozjazd pomiar-rozkaz nie przekraczal ~12 st., straznik rozjazdu (25 st.) nie mogl
         # zadzialac, a serwo dociskalo do przeszkody bez konca (zmierzone na prawdziwym stosie
         # LeRobota nad emulatorem; bez limitu STOP po 0,78 s). Nadzor blizniaka i tak ogranicza
-        # predkosc. Aplikacja dloni ma wlasna konfiguracje - bez zmian.
+        # predkosc.
         overrides = {"robot": {"backend": "sim" if backend == "sim" else backend,
                                "port": port, "max_relative_target": None}}
         if ws.home:                                    # "Ustaw dom = tu" tego stanowiska

@@ -1,9 +1,8 @@
-"""Przechwytywanie obrazu z kamery w osobnym watku.
+"""Camera capture on a separate thread.
 
-Kluczowy detal: przy sterowaniu w czasie rzeczywistym nie chcemy kolejkowac
-klatek. Watek czyta kamere tak szybko, jak potrafi, i trzyma *tylko najnowsza*
-klatke. Dzieki temu opoznienie nie narasta, gdy detekcja jest wolniejsza niz
-kamera.
+The key detail: for real-time control we do not want to queue frames. The thread reads the
+camera as fast as it can and keeps *only the latest* frame, so the latency does not grow
+when detection is slower than the camera.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..config import CameraConfig
+from .config import CameraConfig
 
 
 @dataclass
@@ -26,7 +25,7 @@ class Frame:
 
 
 def _is_device_path(source: int | str) -> bool:
-    """Sciezka do urzadzenia wideo w /dev (V4L2), np. /dev/video3 albo /dev/v4l/by-id/usb-...-video-index0."""
+    """A video device path in /dev (V4L2), e.g. /dev/video3 or /dev/v4l/by-id/usb-...-video-index0."""
     return isinstance(source, str) and source.startswith("/dev/")
 
 
@@ -35,7 +34,7 @@ def _is_video_file(source: int | str) -> bool:
 
 
 class CameraStream:
-    """Nieblokujace zrodlo klatek (kamera USB, sciezka urzadzenia /dev/... albo plik wideo)."""
+    """Non-blocking frame source (USB camera, a /dev/... device path or a video file)."""
 
     def __init__(self, cfg: CameraConfig):
         self.cfg = cfg
@@ -56,15 +55,15 @@ class CameraStream:
             self._is_file = False
 
         if _is_device_path(source):
-            # Sciezka urzadzenia (/dev/videoN albo stala /dev/v4l/by-id/...): kamera, nie plik.
-            # Indeks V4L2 przesuwa sie po kazdym wpieciu czegos do USB - by-id nie.
+            # A device path (/dev/videoN or the stable /dev/v4l/by-id/...) is a camera, not a
+            # file. The V4L2 index shifts every time something is plugged into USB; by-id does not.
             cap = cv2.VideoCapture(str(source), cv2.CAP_V4L2)
         else:
             cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             raise RuntimeError(
                 f"Nie udalo sie otworzyc zrodla obrazu: {self.cfg.source!r}. "
-                "Sprawdz indeks kamery (--camera 0/1/2) albo sciezke do pliku wideo."
+                "Sprawdz zrodlo kamery (zakladka Kamery) albo sciezke do pliku wideo."
             )
 
         if not self._is_file:
@@ -73,10 +72,10 @@ class CameraStream:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
             cap.set(cv2.CAP_PROP_FPS, self.cfg.fps)
-            # Maly bufor = swiezsze klatki (nie kazdy backend to wspiera).
+            # A small buffer means fresher frames (not every backend supports it).
             try:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except cv2.error:  # pragma: no cover - zalezne od backendu
+            except cv2.error:  # pragma: no cover - backend dependent
                 pass
 
         self._cap = cap
@@ -94,8 +93,7 @@ class CameraStream:
     # ----------------------------------------------------------------- loop
     def _run(self) -> None:
         assert self._cap is not None
-        # Plik wideo odtwarzamy w tempie zblizonym do jego FPS, zeby demo
-        # nie przewijalo sie z predkoscia dysku.
+        # A video file plays at about its own FPS, so a demo does not run at disk speed.
         file_fps = self._cap.get(cv2.CAP_PROP_FPS) if self._is_file else 0.0
         frame_period = 1.0 / file_fps if self._is_file and file_fps > 1e-3 else 0.0
 
@@ -124,12 +122,12 @@ class CameraStream:
 
     # ----------------------------------------------------------------- read
     def read(self) -> Frame | None:
-        """Zwraca najnowsza klatke (albo None, gdy jeszcze zadnej nie ma)."""
+        """Returns the latest frame (or None if there is none yet)."""
         with self._lock:
             return self._latest
 
     def wait_for_frame(self, timeout: float = 5.0) -> Frame:
-        """Czeka na pierwsza klatke; rzuca wyjatkiem po przekroczeniu czasu."""
+        """Waits for the first frame; raises on timeout."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             frame = self.read()

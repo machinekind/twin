@@ -1,186 +1,186 @@
-# Cyfrowy bliźniak SO-101
+# SO-101 digital twin
 
-Symulacja MuJoCo, która wie o biurku to samo, co prawdziwe stanowisko: gdzie
-stoi ramię, gdzie stoją kamery, jaką mają optykę i jak naprawdę odpowiadają
-serwa. Polityki uczone w niej na GPU jadą potem na prawdziwym **SO-101**
-tą samą ścieżką kodu — przez nadzór bezpieczeństwa i z tą samą percepcją
-z kamer.
-
-W repozytorium jest też aplikacja do [sterowania ramieniem ruchem dłoni](#sterowanie-dłonią--lerobot-101--mediapipe)
-(MediaPipe), od której projekt się zaczął.
+A MuJoCo simulation that knows the same things about the desk as the real
+workstation: where the arm stands, where the cameras stand, what optics they
+have and how the servos really respond. Policies trained in it on a GPU then run
+on a real **SO-101** through the same code path, through the safety supervisor
+and with the same camera perception.
 
 ```
-  prawdziwe stanowisko                        bliźniak (MuJoCo)
- ┌──────────────────────┐   kalibracja      ┌──────────────────────────┐
- │ SO-101 (COM/socket)  │ ────────────────► │ ramię z MuJoCo Menagerie │
- │ kamery USB dookoła   │  karta w dłoni,   │ kamery w tych samych     │
- │ biurko, kostka       │  ChArUco, sysid   │ pozach, z tym samym K,   │
- └──────────▲───────────┘                   │ serwa jak zmierzone      │
+  real workstation                            twin (MuJoCo)
+ ┌──────────────────────┐   calibration     ┌──────────────────────────┐
+ │ SO-101 (COM/socket)  │ ────────────────► │ arm from MuJoCo Menagerie│
+ │ USB cameras around   │  card in gripper, │ cameras in the same      │
+ │ desk, cube           │  ChArUco, sysid   │ poses, with the same K,  │
+ └──────────▲───────────┘                   │ servos as measured       │
             │                               └────────────┬─────────────┘
-            │  polityka przez nadzór                     │  tysiące światów MuJoCo Warp
-            │  (te same wzory obserwacji)                ▼  PPO na GPU
-            └────────────────────────────────── polityka reach / lift
+            │  policy through the supervisor             │  thousands of MuJoCo Warp worlds
+            │  (same observation layouts)                ▼  PPO on the GPU
+            └────────────────────────────────── reach / lift policy
 ```
 
-## Jaki problem rozwiązuje
+## The problem it solves
 
-Robot nauczony w zwykłej symulacji zwykle zawodzi na prawdziwym biurku.
-Symulacja nie wie, gdzie naprawdę stoją kamery i jaką mają optykę, jak
-reagują konkretne serwa ani jak spóźniona i zaszumiona jest percepcja —
-polityka działa w sim, a na ramieniu nie. Każda nowa umiejętność to wtedy
-godziny prób i błędów na sprzęcie, z ryzykiem uszkodzeń.
+A robot trained in an ordinary simulation usually fails on the real desk. The
+simulation does not know where the cameras really stand and what optics they
+have, how the particular servos respond, or how delayed and noisy the
+perception is, so the policy works in sim and not on the arm. Every new skill
+then costs hours of trial and error on the hardware, with a risk of damage.
 
-## Podejście
+## Approach
 
-Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
+The twin is **measured from the workstation**, not modelled by eye:
 
-- **Kamery** trafiają do symulacji w swojej zmierzonej pozie i z własną
-  macierzą K — intrynsyki z tablicy ChArUco, położenie z karty z tagami
-  w chwytaku, wszystkie kamery naraz.
-- **Serwa** — identyfikacja dynamiki z nagrania ruchu (tłumienie, armatura,
-  opóźnienie); trening losuje warunki *wokół zmierzonego* ramienia.
-- **Percepcja** — trening widzi kostkę tak, jak widzą ją kamery (spóźnioną,
-  rzadko odświeżaną, zaszumioną), a nie tak, jak zna ją fizyka.
-- **Jedna ścieżka kodu dla symulacji i ramienia** — te same wzory obserwacji,
-  ten sam nadzór bezpieczeństwa, ta sama percepcja; przejście sim → ramię to
-  zmiana backendu (`sim` → `feetech`, dla Galaxea A1X `sim` → `a1x`).
+- **Cameras** enter the simulation in their measured pose and with their own K
+  matrix: intrinsics from a ChArUco board, position from a card with tags held
+  in the gripper, all cameras at once.
+- **Servos**: dynamics are identified from a recorded motion (damping,
+  armature, delay); training randomizes conditions *around the measured* arm.
+- **Perception**: training sees the cube the way the cameras see it (delayed,
+  refreshed rarely, noisy), not the way the physics knows it.
+- **One code path for simulation and arm**: the same observation layouts, the
+  same safety supervisor, the same perception; going from sim to the arm is a
+  backend change (`sim` -> `feetech`, and `sim` -> `a1x` for the Galaxea A1X).
 
-## Co umożliwia
+## What it enables
 
-- **Trening polityk na GPU** (`reach`, `lift`) i uruchamianie ich na
-  prawdziwym SO-101 przez nadzór bezpieczeństwa.
-- **Chwytanie obiektów widzianych wyłącznie z kamer** — bez znaczników na
-  obiekcie; kostka lokalizowana z dokładnością 1–3 mm.
-- **Dowolne rozstawianie wielu kamer** — przestawienie kamery wykrywane samo
-  (przybliżenie o 1 %, obrót o 1°), szybka relokalizacja jednej kamery.
-- **Douczanie gotowych polityk** na zmierzonej dynamice swojego ramienia
-  zamiast uczenia od zera.
-- **Porównanie Sim-Real na żywo** — kadr prawdziwej kamery z nałożonymi
-  krawędziami renderu bliźniaka z tej samej pozy.
-- **Bezpieczną pracę z ramieniem** — jeden właściciel ruchu; STOP i Dom
-  odbierają ramię każdemu; reakcja na błędy serw, utratę łącza i kolizje;
-  ściskający chwytak nie puszcza przy STOP.
-- **Drugie ramię: Galaxea A1X** — ten sam bliźniak, panel i nadzór; w
-  symulacji model, kalibracja kamer i środowiska RL, na sprzęcie backend `a1x`
-  po CAN-FD (Linux, macOS, Windows) — [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
-- **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
-  w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
-  kontrolce.
+- **Training policies on a GPU** (`reach`, `lift`) and running them on a real
+  SO-101 through the safety supervisor.
+- **Grasping objects seen only by the cameras**: no markers on the object; the
+  cube is located to within 1-3 mm.
+- **Arbitrary placement of many cameras**: a moved camera is detected by
+  itself (zoom by 1 %, rotation by 1°), and one camera can be relocalized
+  quickly.
+- **Fine-tuning ready-made policies** on the measured dynamics of your own arm
+  instead of training from scratch.
+- **Live Sim-Real comparison**: a frame from the real camera with the edges of
+  the twin's render from the same pose drawn over it.
+- **Safe work with the arm**: one owner of motion at a time; STOP and Home take
+  the arm from any owner; reaction to servo errors, link loss and collisions; a
+  gripper that is squeezing an object does not let go on STOP.
+- **A second arm, the Galaxea A1X**: the same twin, panel and supervisor; in
+  simulation the model, camera calibration and RL environments, on hardware the
+  `a1x` backend over CAN-FD (Linux, macOS, Windows) —
+  [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
+- **Remote work**: the arm through a network bridge (`socket://`), and a
+  browser panel with a step-by-step guide and a hint on every control.
 
-## Co przyspiesza
+## What it speeds up
 
-Zmierzone na karcie RTX A4500:
+Measured on an RTX A4500:
 
-| | czas |
+| | time |
 |---|---|
-| Fizyka na GPU (MuJoCo Warp) | **1,1 mln kroków/s**, tysiące światów naraz |
-| Trening `reach` | **ok. 2 min** |
-| Trening `lift` od zera / douczanie | ok. 28 min / ok. 16 min |
-| Kalibracja wszystkich kamer | jedna fala, ok. 20 póz; w symulacji 0,16 mm / 0,013° błędu |
-| Identyfikacja dynamiki serw | ok. 20 s ruchu + kilka sekund dopasowania |
-| Od świeżego klona do panelu | ok. 6 min instalacji → `lerobot-twin demo` → `lerobot-twin ui` |
+| GPU physics (MuJoCo Warp) | **1.1 M steps/s**, thousands of worlds at once |
+| `reach` training | **about 2 min** |
+| `lift` training from scratch / fine-tuning | about 28 min / about 16 min |
+| Calibration of all cameras | one wave, about 20 poses; in simulation 0.16 mm / 0.013° error |
+| Servo dynamics identification | about 20 s of motion + a few seconds of fitting |
+| From a fresh clone to the panel | about 6 min of installation -> `lerobot-twin demo` -> `lerobot-twin ui` |
 
-Większość iteracji — projekt zadania, trening, strojenie percepcji,
-kalibracja, próba całego łańcucha — dzieje się w bliźniaku; na sprzęcie
-zostaje sprawdzenie.
+Most iterations (task design, training, perception tuning, calibration, trying
+the whole chain) happen in the twin; on the hardware only the check is left.
 
-## Stan
+## Status
 
-W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
-(inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
-8/8. Testy są wyłącznie integracyjne: łańcuchy przez kilka modułów
-i zachowania groźne dla sprzętu. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
-zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
-na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
-ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
-krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
-Decyzje i pułapki: [HANDOFF.md](HANDOFF.md).
+In simulation: the `reach-v3` and `lift-v3` policies have 100 % success on the
+CPU (a different engine than in training), and `lift` with the cube seen **only
+by the cameras** picks it up 8/8. The tests are integration tests only: chains
+through several modules and behaviours dangerous to the hardware. The Galaxea
+A1X works in simulation (camera calibration 6/6 trusted, IK, wave, stable RL
+physics); its CAN backend is tested on a simulated bus, and there are no
+policies for the A1X yet. **The whole thing has not yet been tested on a real
+arm (neither the SO-101 nor the A1X)**: that is the next step, with a
+step-by-step procedure in [docs/TWIN.md](docs/TWIN.md).
+Decisions and pitfalls: [HANDOFF.md](HANDOFF.md).
 
 ---
 
-## Szybki start na nowym komputerze
+## Quick start on a new computer
 
-Repozytorium zawiera wszystko, czego potrzeba do uruchomienia — także modele
-i dane:
+The repository holds everything needed to run it, including models and data:
 
-| Katalog | Co w nim jest | W repozytorium? |
+| Directory | What is in it | In the repository? |
 |---|---|---|
-| `models/` | modele MediaPipe: dłoń i poza `lite` ([models/README.md](models/README.md)) | tak; brakujący model pobiera się sam |
-| `assets/robots/so101/` | model ramienia z MuJoCo Menagerie z siatkami STL | tak |
-| `assets/robots/a1x/` | Galaxea A1X: URDF i siatki producenta (licencja producenta, nie Apache-2.0 — `NOTICE`) i `a1x.xml` ze skryptu | tak |
-| `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
-| `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
-| `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
-| `assets/calib/*.txt` | przykładowy obiektyw (Logitech Brio 4K 1280x720): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
-| `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
-| `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
-| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — przykładowe zestawy z fal A1X |
-| `workspace/policies/` | polityki, które sam wytrenujesz | nie |
-| `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
+| `assets/robots/so101/` | arm model from MuJoCo Menagerie with STL meshes | yes |
+| `assets/robots/a1x/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
+| `assets/so101_preview.npz` | SO-101 reference model from Articulus: a test compares the twin's MJCF with it (rebuilt by `scripts/import_articulus_model.py`) | yes |
+| `assets/policies/` | base policies `reach-v3` and `lift-v3` (a start for fine-tuning) | yes |
+| `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration | yes |
+| `assets/calib/*.txt` | example lens (Logitech Brio 4K 1280x720): K and distortion to load in Calibration, step 1 | yes |
+| `examples/twin.a1x.sim.json` | the same for the Galaxea A1X (`lerobot-twin demo --robot a1x`) | yes |
+| `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created on the first save in the panel or by `lerobot-twin demo` |
+| `workspace/calib/*.json` | every save of the camera poses (Calibration, step 2) as a separate file; the panel loads the newest, older ones can be picked from a list | yes: example sets from the A1X waves |
+| `workspace/policies/` | policies you train yourself | no |
+| `configs/local.yaml` | your configuration (a copy of `configs/default.yaml`), e.g. gripper ticks | no (`.gitignore`) |
 
-Przy uruchomieniu z klonu domyślne ścieżki (`models/…`, `workspace/…`) liczą
-się od katalogu repozytorium, więc `lerobot-twin ui` odpalone z innego
-katalogu trafia w to samo stanowisko. Ścieżki podane w flagach liczą się jak
-zwykle od katalogu bieżącego. Poza repozytorium zostają tylko rzeczy tworzone
-na danej maszynie: kalibracja LeRobota (tylko backend `lerobot`) i pamięć
-podręczna kerneli MuJoCo Warp (ok. 100 s kompilacji przy pierwszym treningu).
+When run from a clone, the default paths (`workspace/…`) are counted from the
+repository root, so `lerobot-twin ui` started from another directory lands in
+the same workstation. Paths given in flags are counted from the current
+directory as usual. Only things created on a given machine stay outside the
+repository: the LeRobot calibration (only the `lerobot` backend) and the MuJoCo
+Warp kernel cache (about 100 s of compilation at the first training).
 
-**Wymagania:** Python **3.12** (sprawdzony 3.12.10), Git, OpenGL (każda karta
-graficzna, także zintegrowana). Trening polityk wymaga karty **NVIDIA z CUDA**
-(sterownik z obsługą CUDA 12). Bez niej działa wszystko poza treningiem: panel,
-kalibracja, percepcja, identyfikacja dynamiki i ewaluacja polityk na CPU.
-Miejsce na dysku: ok. 5 GB na `.venv` z torchem CUDA (sam torch ok. 3,9 GB),
-ok. 1 GB bez NVIDIA (torch CPU); przy instalacji z CUDA dodatkowo ok. 3 GB
-pamięci podręcznej pip (`pip install --no-cache-dir …` jej nie tworzy).
-Sprawdzone wersje pakietów są w [`constraints.txt`](constraints.txt).
+**Requirements:** Python **3.12** (tested with 3.12.10), Git, OpenGL (any
+graphics card, including an integrated one). Policy training needs an **NVIDIA
+card with CUDA** (a driver that supports CUDA 12). Without it everything works
+except training: the panel, calibration, perception, dynamics identification
+and policy evaluation on the CPU. Disk space: about 5 GB for the `.venv` with
+CUDA torch (torch alone is about 3.9 GB), about 1 GB without NVIDIA (CPU torch);
+a CUDA install adds about 3 GB of pip cache (`pip install --no-cache-dir …`
+does not create it). The tested package versions are in
+[`constraints.txt`](constraints.txt).
 
-### 1. Instalacja
+### 1. Installation
 
-**Windows + karta NVIDIA** (PowerShell):
+**Windows + NVIDIA card** (PowerShell):
 
 ```powershell
 git clone https://github.com/machinekind/digital_twin_training.git
 cd digital_twin_training
 py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process Bypass   # tylko to okno; bez tego Activate.ps1 jest zablokowany
+Set-ExecutionPolicy -Scope Process Bypass   # this window only; without it Activate.ps1 is blocked
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-# torch z CUDA NAJPIERW - torch z PyPI na Windows jest bez CUDA
+# CUDA torch FIRST - torch from PyPI on Windows has no CUDA
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
 pip install -e ".[twin,train,feetech,dev]" -c constraints.txt
 ```
 
-Świeży Windows blokuje skrypty PowerShella („running scripts is disabled on
-this system”), stąd `Set-ExecutionPolicy` przed aktywacją — w każdym nowym
-oknie przed `.venv\Scripts\activate`, albo raz na stałe:
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. W `cmd.exe` aktywacja to
-`.venv\Scripts\activate.bat` i nic więcej nie trzeba. Można też nie aktywować
-wcale i pisać `.venv\Scripts\python -m pip …`, `.venv\Scripts\lerobot-twin …`.
+A fresh Windows blocks PowerShell scripts ("running scripts is disabled on this
+system"), hence `Set-ExecutionPolicy` before activation: in every new window
+before `.venv\Scripts\activate`, or once for good:
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. In `cmd.exe` activation
+is `.venv\Scripts\activate.bat` and nothing more is needed. You can also skip
+activation and write `.venv\Scripts\python -m pip …`,
+`.venv\Scripts\lerobot-twin …`.
 
-Karty RTX 50xx: `cu128` zamiast `cu126`. Mało miejsca na `C:`? Przed
-instalacją (w tym samym oknie PowerShella) przenieś pliki tymczasowe i pamięć
-podręczną pip na inny dysk:
+RTX 50xx cards: `cu128` instead of `cu126`. Short on space on `C:`? Before the
+installation (in the same PowerShell window) move the temporary files and the
+pip cache to another drive:
 
 ```powershell
 $env:TMP='D:\tmp'; $env:PIP_CACHE_DIR='D:\tmp\pipcache'   # cmd.exe: set TMP=D:\tmp & set PIP_CACHE_DIR=D:\tmp\pipcache
 ```
 
-**Linux + karta NVIDIA** (x86_64, glibc ≥ 2.28, np. Ubuntu 22.04/24.04):
+**Linux + NVIDIA card** (x86_64, glibc ≥ 2.28, e.g. Ubuntu 22.04/24.04):
 
 ```bash
-sudo apt install python3.12 python3.12-venv libgl1 libglib2.0-0 libegl1   # Ubuntu 22.04: python3.12 z PPA deadsnakes
+sudo apt install python3.12 python3.12-venv libgl1 libglib2.0-0 libegl1   # Ubuntu 22.04: python3.12 from the deadsnakes PPA
 git clone https://github.com/machinekind/digital_twin_training.git && cd digital_twin_training
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
 pip install -e ".[twin,train,feetech,dev]" -c constraints.txt
-sudo usermod -aG dialout $USER    # dostęp do portu ramienia (po tym wyloguj się i zaloguj)
+sudo usermod -aG dialout $USER    # access to the arm's port (log out and in after this)
 ```
 
-Torch z PyPI na Linuksie jest z CUDA 13 i wymaga sterownika ≥ 580 — dlatego
-też tu indeks `cu126`. Na serwerze bez ekranu: `export MUJOCO_GL=egl`.
+Torch from PyPI on Linux is built with CUDA 13 and needs a driver ≥ 580, which
+is why the `cu126` index is used here too. On a server without a display:
+`export MUJOCO_GL=egl`.
 
-**Bez karty NVIDIA** — te same kroki, tylko torch z indeksu `cpu` i bez `train`:
+**Without an NVIDIA card**: the same steps, only torch from the `cpu` index and
+without `train`:
 
 ```powershell
 # Windows (PowerShell)
@@ -195,7 +195,7 @@ pip install -e ".[twin,feetech,dev]" -c constraints.txt
 ```
 
 ```bash
-# Linux (pakiety systemowe jak wyżej) i macOS z Apple Silicon
+# Linux (system packages as above) and macOS on Apple Silicon
 git clone https://github.com/machinekind/digital_twin_training.git && cd digital_twin_training
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
@@ -203,591 +203,225 @@ pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu   # m
 pip install -e ".[twin,feetech,dev]" -c constraints.txt
 ```
 
-Linux bez ekranu i bez GPU: dodatkowo `sudo apt install libosmesa6` i
-`export MUJOCO_GL=osmesa`. Sama aplikacja sterowania dłonią (bez bliźniaka,
-bez torcha): `pip install -e ".[feetech]" -c constraints.txt`.
+Linux without a display and without a GPU: additionally
+`sudo apt install libosmesa6` and `export MUJOCO_GL=osmesa`.
 
-### 2. Sprawdzenie
+### 2. Check
 
 ```bash
 lerobot-twin check
 ```
 
-Wypisuje wersje (mujoco, viser, torch, cv2…), model SO-101 i porty USB-serial,
-a osobno gotowość do treningu: torch z CUDA (`cuda.is_available`, karta), warp
-i mujoco_warp — `OK` przy każdej gotowej pozycji, `--` przy niedostępnej.
-„Trening na GPU: niedostępny” na komputerze bez NVIDIA to nie błąd.
+It prints the versions (mujoco, viser, torch, cv2…), the SO-101 model and the
+USB-serial ports, and separately the readiness for training: torch with CUDA
+(`cuda.is_available`, the card), warp and mujoco_warp: `OK` for every ready
+item, `--` for an unavailable one. "Trening na GPU: niedostepny" (GPU training:
+unavailable) on a computer without NVIDIA is not an error.
 
-### 3. Panel bliźniaka z przykładowym stanowiskiem
+### 3. The twin's panel with the example workstation
 
 ```bash
-lerobot-twin demo     # examples/twin.sim.json -> workspace/twin.json (istniejącego nie nadpisze bez --force)
+lerobot-twin demo     # examples/twin.sim.json -> workspace/twin.json (does not overwrite an existing one without --force)
 lerobot-twin ui       # http://localhost:8080
 ```
 
-Port 8080 zajęty (inny serwer, proxy)? `lerobot-twin ui --port 8765` i adres
-`http://localhost:8765`. Na starcie panel wypisuje w konsoli pełną ścieżkę pliku
-stanowiska (`istnieje` albo `nowe, puste`) i katalog polityk — tak widać, że
-użyty jest `workspace/twin.json` z klonu, także gdy panel odpalono z innego
-katalogu. To samo pokazuje `lerobot-twin workspace`.
+Port 8080 taken (another server, a proxy)? `lerobot-twin ui --port 8765` and
+the address `http://localhost:8765`. At startup the panel prints in the console
+the full path of the workstation file (`istnieje` or `nowe, puste`: exists or
+new, empty) and the policies directory, so you can see that the
+`workspace/twin.json` from the clone is used, also when the panel was started
+from another directory. `lerobot-twin workspace` shows the same.
 
-W panelu: zakładka **Ramię** → `sim` → **Połącz**; zakładka **Polityki** →
-`lift-v3`, `lift: skad polozenie kostki` = **kamery**, kostkę kładzie przycisk
-`lift (sim): poloz kostke losowo`. Bez `demo` bliźniak startuje z pustym
-stanowiskiem (ramię `sim`, bez kamer) — kamery dodaje się w zakładce Kamery
-(`Dodaj symulowana przed ramieniem`, potem kalibracja albo
-w zakładce Kalibracja `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
-Karta z panelem musi być widoczna: viser w karcie w tle nic nie rysuje.
+In the panel: the **Ramię** tab -> `sim` -> **Połącz**; the **Polityki** tab ->
+`lift-v3`, `lift: skad polozenie kostki` = **kamery**, and the cube is placed by
+the button `lift (sim): poloz kostke losowo`. Without `demo` the twin starts
+with an empty workstation (arm `sim`, no cameras); cameras are added in the
+Kamery tab (`Dodaj symulowana przed ramieniem`, then calibration, or in the
+Kalibracja tab `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
+The tab with the panel must be visible: viser draws nothing in a background
+tab.
 
-### 4. Testy
+### 4. Tests
 
 ```bash
-pytest -q                     # ok. 3-4 min z GPU (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
-pytest -q -m "not render"     # komputer bez OpenGL
+pytest -q
+pytest -q -m "not render"     # a computer without OpenGL
 ```
 
-Testy GPU pomijają się same bez CUDA albo bez `mujoco_warp`; testy bliźniaka —
-bez `mujoco`/`torch`. Jeden stary test (`test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`)
-jest oznaczony jako znany problem (`xfail`).
+The twin's tests skip themselves without `mujoco`, `torch` or `viser`, and the
+`a1x` backend tests without the `galaxeo` package (the `a1x` extra). With the
+full installation (`.[twin,a1x,dev]`) the result is all `passed`.
 
-Czysty wynik bez NVIDIA i bez LeRobota: same `passed` poza **12 skipped**
-(4 testy GPU, 8 testów LeRobota) i **1 xfailed**; ok. 2–3 min na CPU. Z kartą
-NVIDIA zostają tylko pominięcia LeRobota (albo żadne, gdy jest zainstalowany).
-Bez pakietu `galaxeo` (extra `a1x`) pomijają się dodatkowo testy backendu `a1x`.
-
-### 5. Trening (tylko NVIDIA)
+### 5. Training (NVIDIA only)
 
 ```bash
 lerobot-twin train --task reach --iters 160
-lerobot-twin train --init assets/policies/reach-v3/policy.pt --iters 150    # douczanie polityki bazowej
-lerobot-twin eval workspace/policies/<nazwa>/policy.pt --rand               # ewaluacja, działa na CPU
+lerobot-twin train --init assets/policies/reach-v3/policy.pt --iters 150    # fine-tuning a base policy
+lerobot-twin eval workspace/policies/<name>/policy.pt --rand                # evaluation, runs on the CPU
 ```
 
-Wyniki trafiają do `workspace/policies/<nazwa>/`. Na karcie z mniej niż 20 GB
-pamięci dodaj `--envs 2048` albo `1024`.
+The results go to `workspace/policies/<name>/`. On a card with less than 20 GB
+of memory add `--envs 2048` or `1024`.
 
-### 6. Prawdziwe SO-101
+### 6. A real SO-101
 
-Do bliźniaka służy backend `feetech` (sam `pyserial`, bez LeRobota i bez jego
-kalibracji). Port pokaże `lerobot-twin check` albo „Wykryj porty” w panelu
-(Windows `COMx`, Linux `/dev/ttyACM0`). Tiki chwytaka w konfiguracji
-(`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670) to wartości
-przykładowego ramienia — sprawdź swoje i wpisz je w kopię konfiguracji:
+The twin uses the `feetech` backend (`pyserial` alone, without LeRobot and its
+calibration). The port is shown by `lerobot-twin check` or "Wykryj porty" in the
+panel (Windows `COMx`, Linux `/dev/ttyACM0`). The gripper ticks in the
+configuration (`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670)
+are the values of the example arm: check yours and put them in your copy of the
+configuration:
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
 lerobot-twin --config configs/local.yaml ui
 ```
 
-Dalej: [docs/TWIN.md](docs/TWIN.md), „Pierwszy test na prawdziwym stanowisku”, od kroku 0.
+Next: [docs/TWIN.md](docs/TWIN.md), "Pierwszy test na prawdziwym stanowisku"
+(first test on a real workstation), from step 0.
 
 ### 7. Galaxea A1X (CAN)
 
-Backend `a1x` rozmawia z ramieniem po CAN-FD przez pakiet `galaxeo`
-(protokół i łącze, repozytorium galaxeo-manipulators):
+The `a1x` backend talks to the arm over CAN-FD through the `galaxeo` package
+(protocol and link, the galaxeo-manipulators repository):
 
 ```bash
-pip install -e ".[twin,a1x,dev]" -c constraints.txt   # wymaga scalonej gałęzi `pkg` w galaxeo-manipulators
-# do czasu scalenia: ".[twin,dev]" i pip install -e ../galaxeo-manipulators   (klon na gałęzi pkg)
-# macOS (dongiel XCAN): dodatkowo pip install pyusb i brew install libusb
-# Windows (PCAN): dodatkowo pip install python-can
-lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji (istniejącego nie nadpisze bez --force)
+pip install -e ".[twin,a1x,dev]" -c constraints.txt   # needs the merged `pkg` branch in galaxeo-manipulators
+# until it is merged: ".[twin,dev]" and pip install -e ../galaxeo-manipulators   (a clone on the `pkg` branch)
+# macOS (XCAN dongle): additionally pip install pyusb and brew install libusb
+# Windows (PCAN): additionally pip install python-can
+lerobot-twin demo --robot a1x      # an A1X workstation in simulation (does not overwrite an existing one without --force)
 ```
 
-W panelu: Ramię = `a1x`, Port = interfejs CAN (`can0` na Linuksie po
-`./can_up.sh`, `xcan` albo `xcan:<adres usb>` na macOS, `PCAN_USBBUS1` na
-Windows). Parametry (zero stawów, sprzężenie chwytaka, progi) są w sekcji
-`a1x` konfiguracji. Po „Połącz” nic nie idzie na magistralę do pierwszego
-ruchu; sekwencja włączenia FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
-**A1X nie ma hamulców** — przed pierwszą sesją przeczytaj
-[docs/TWIN.md](docs/TWIN.md#galaxea-a1x), „Galaxea A1X”.
-
-### Naprawa OpenCV po LeRobocie
-
-Opcjonalny backend `lerobot` (`pip install -e ".[robot]" -c constraints.txt`,
-tylko Python 3.12) ciągnie `opencv-python-headless`, który podmienia `cv2` na
-wersję bez okien — testy przechodzą, ale okno podglądu `lerobot-mp` się nie
-otwiera. Naprawa:
-
-```bash
-pip uninstall -y opencv-python-headless opencv-python
-pip install --force-reinstall --no-deps opencv-contrib-python==5.0.0.93
-python -c "import cv2; print([l.strip() for l in cv2.getBuildInformation().splitlines() if 'GUI' in l])"
-```
-
-Ostatnie polecenie ma pokazać `WIN32UI` (Windows) albo `GTK`/`QT` (Linux), a nie `NONE`.
+In the panel: Ramię = `a1x`, Port = the CAN interface (`can0` on Linux after
+`./can_up.sh`, `xcan` or `xcan:<usb address>` on macOS, `PCAN_USBBUS1` on
+Windows). The parameters (joint zeros, gripper coupling, thresholds) are in the
+`a1x` section of the configuration; its keys are described in
+[docs/TWIN.md](docs/TWIN.md#galaxea-a1x). After "Połącz" nothing goes onto the
+bus until the first move; the FF 1-5-6 enable sequence is manual only ("Włącz
+silniki A1X"). **The A1X has no brakes**: before the first session read
+[docs/TWIN.md](docs/TWIN.md#galaxea-a1x), "Galaxea A1X".
 
 ---
 
----
+## When the system does not see the arm
 
-# Sterowanie dłonią — LeRobot 101 × MediaPipe
+The arm is not a USB device by itself: it shows up as a **USB-serial adapter**
+on the controller board (most often a CH340, more rarely a CP210x or FTDI), and
+only that creates the COM port. The twin has no way to "search" for it: if the
+port is not in the system, there is nothing to open.
 
-Sterowanie ramieniem **SO-101 (LeRobot 101)** ruchem dłoni przed kamerą.
-MediaPipe śledzi 21 punktów dłoni, a aplikacja zamienia je na zadane pozycje
-sześciu stawów — z filtracją, limitami i zatrzymaniem awaryjnym.
-
-Działa **bez robota**: wbudowany symulator i podgląd 3D pozwalają nauczyć się
-gestów, zanim cokolwiek podłączysz.
-
-```
-   dłoń przed kamerą              podgląd na żywo                  ramię
-  ┌────────────────┐        ┌──────────────────────┐        ┌──────────────┐
-  │  21 punktów    │──────► │  HUD: stan, stawy,   │──────► │  SO-101      │
-  │  MediaPipe     │        │  limity, chwytak     │        │  lub symulator│
-  └────────────────┘        │  + model 3D ramienia │        └──────────────┘
-                            └──────────────────────┘
-```
-
-## Szybki start
-
-### Windows
-
-Kliknij dwukrotnie **`start.bat`**. Przy pierwszym uruchomieniu utworzy
-środowisko (Python 3.12, jeśli jest) i zainstaluje zależności w wersjach
-z `constraints.txt`, potem pokaże menu: symulator, prawdziwe ramię, tryb IK,
-demo z pliku wideo, diagnostyka, panel bliźniaka.
-
-### Linux / macOS
-
-```bash
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[feetech]" -c constraints.txt
-lerobot-mp                      # symulator + kamera 0
-```
-
-Modele MediaPipe są w repozytorium (`models/`); gdyby ich zabrakło, pobiorą
-się same przy pierwszym starcie.
-
-### Prawdziwe ramię
-
-```bash
-pip install -e ".[feetech]" -c constraints.txt
-lerobot-mp --port /dev/ttyACM0        # Linux
-lerobot-mp --port COM5                # Windows
-```
-
-Bez zainstalowanego LeRobota `--port` używa backendu `feetech` — rozmowy wprost
-z serwami, bez kalibracji LeRobota. Z LeRobotem (`.[robot]`) domyślny jest
-backend `lerobot`: ramię musi być wtedy skalibrowane jego narzędziami, a
-`--robot-id` wskazuje plik kalibracji. Backend wybiera się jawnie flagą
-`--robot feetech|lerobot`.
-
-> **Zanim podłączysz robota:** zrób wokół niego miejsce. Sterowanie rusza
-> dopiero po naciśnięciu **SPACJI**, **ESC** to zatrzymanie awaryjne, a **X**
-> zamyka aplikację (i odsyła ramię do pozycji domowej).
-
-### Kiedy system nie widzi ramienia
-
-Ramię nie jest urządzeniem USB samo w sobie — zgłasza się jako **przejściówka
-USB-serial** na płytce sterownika (najczęściej CH340, rzadziej CP210x lub FTDI)
-i dopiero ona tworzy port COM. Aplikacja nie ma jak go „poszukać": jeśli portu
-nie ma w systemie, nie ma czego otworzyć.
-
-Sprawdzenie, co widzi system:
+Check what the system sees:
 
 ```bash
 python -c "import serial.tools.list_ports as l; print([p.device for p in l.comports()] or 'BRAK')"
 ```
 
-Pusta lista oznacza jedną z trzech rzeczy, w tej kolejności prawdopodobieństwa:
+An empty list means one of three things, in this order of likelihood:
 
-1. **Kabel** — sporo kabli USB ma tylko żyły zasilania. Ramię się zaświeci,
-   a portu nie będzie. Zamień kabel na taki, o którym wiesz, że przenosi dane.
-2. **Sterownik przejściówki** — układ dotarł do systemu, ale bez sterownika
-   siedzi w Menedżerze urządzeń jako nieznane urządzenie zamiast portu COM.
-   W Menedżerze urządzeń szukaj pozycji z żółtym wykrzyknikiem, sprawdź jej
-   `VID`/`PID` i doinstaluj sterownik: `1A86:7523` to CH340, `10C4:EA60` to
-   CP210x, `0403:6001` to FTDI.
-3. **Maszyna wirtualna albo pulpit zdalny** — urządzenie wpięte do fizycznego
-   komputera **nie trafia** do systemu goszczonego samo z siebie. Trzeba je
-   jawnie przepuścić:
+1. **The cable**: many USB cables carry only the power wires. The arm lights
+   up and there is no port. Swap the cable for one you know carries data.
+2. **The adapter's driver**: the chip reached the system, but without a driver
+   it sits in Device Manager as an unknown device instead of a COM port. Look in
+   Device Manager for an entry with a yellow exclamation mark, check its
+   `VID`/`PID` and install the driver: `1A86:7523` is a CH340, `10C4:EA60` is a
+   CP210x, `0403:6001` is an FTDI.
+3. **A virtual machine or a remote desktop**: a device plugged into the
+   physical computer **does not** reach the guest system by itself. It has to be
+   passed through explicitly:
 
-| Środowisko | Gdzie to włączyć |
+| Environment | Where to enable it |
 |---|---|
-| VirtualBox | Urządzenia → USB → wybierz urządzenie (plus Extension Pack) |
-| VMware | VM → Removable Devices → urządzenie → Connect |
-| Hyper-V | brak przekierowania USB — użyj trybu rozszerzonej sesji albo `usbipd-win` |
-| WSL2 | `usbipd bind --busid <id>` i `usbipd attach --wsl --busid <id>` |
-| Pulpit zdalny (RDP) | w kliencie: Zasoby lokalne → Więcej → zaznacz urządzenie |
+| VirtualBox | Devices -> USB -> pick the device (plus the Extension Pack) |
+| VMware | VM -> Removable Devices -> the device -> Connect |
+| Hyper-V | no USB redirection: use the enhanced session mode or `usbipd-win` |
+| WSL2 | `usbipd bind --busid <id>` and `usbipd attach --wsl --busid <id>` |
+| Remote desktop (RDP) | in the client: Local Resources -> More -> tick the device |
 
-Ta sama zasada dotyczy kamery. Jeśli w systemie goszczonym kamera jest
-widoczna, ale nie oddaje żadnej klatki (OpenCV otwiera ją i zaraz dostaje
-`ERROR_OPERATION_ABORTED`), to zwykle nie jest wina sterownika — to samo
-przekierowanie USB, które trzeba włączyć.
+The same rule applies to a camera. If the camera is visible in the guest system
+but returns no frame (OpenCV opens it and right away gets
+`ERROR_OPERATION_ABORTED`), it is usually not the driver's fault: it is the same
+USB redirection that has to be enabled.
 
 ---
 
-## Ramię na jednej maszynie, aplikacja na drugiej
+## The arm on one machine, the twin on another
 
-Przekierowanie całego USB przez sieć działa dobrze na LAN-ie i na lokalnym
-hypervisorze, a źle przez internet — i nie dlatego, że „jest wolniej".
-Protokół Feetech to pytanie–odpowiedź: aplikacja wysyła ramkę i **czeka** na
-odpowiedź serwa, zanim wyśle następną. Lokalnie jedna taka transakcja kosztuje
-**0,29 ms**. Przy przekierowaniu USB kosztuje tyle, ile wynosi RTT łącza —
-razy liczba przebiegów URB, których sterownik potrzebuje na jedną ramkę.
-`feetech-servo-sdk` daje na odpowiedź około **34 ms** przy 1 Mbaud, więc to
-wyścig, którego nie warto zaczynać na łączu o RTT rzędu 20 ms.
+Redirecting the whole USB over the network works well on a LAN and on a local
+hypervisor, and badly over the internet, and not because "it is slower". The
+Feetech protocol is request-response: the twin sends a frame and **waits** for
+the servo's answer before it sends the next one. Locally one such transaction
+costs **0.29 ms**. With USB redirection it costs as much as the link's RTT,
+times the number of URB round trips the driver needs for one frame.
+`feetech-servo-sdk` takes about **34 ms** for an answer at 1 Mbaud, so this is a
+race not worth starting on a link with an RTT of about 20 ms.
 
-Most przenosi przez sieć **sam strumień bajtów**, a nie transakcje USB, więc
-jedna ramka to jeden przebieg zamiast kilku. Na maszynie z ramieniem:
+The bridge carries **only the byte stream** over the network, not USB
+transactions, so one frame is one round trip instead of several. On the machine
+with the arm:
 
 ```bash
 pip install -e ".[bridge]"
-lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
+lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-of-the-remote-machine>
 ```
 
-Na maszynie zdalnej wystarczy dowolny sterownik wirtualnego portu szeregowego
-po TCP — **HW VSP3** albo **com0com + com2tcp** na Windowsie, `socat` na
-Linuksie. Powstaje tam zwykły `COM3`, a aplikacja nie wie, że port jest gdzie
-indziej:
+On the machine with the twin, in the panel: Ramię = "SO-101 przez port
+(feetech)", Port = `socket://<address of the machine with the arm>:5555`. The
+`feetech` backend connects to the bridge directly, and the arm is read with one
+SYNC READ packet: one round trip per read over the network instead of six. A
+virtual serial port over TCP also works (**HW VSP3** or **com0com + com2tcp** on
+Windows, `socat` on Linux) entered in the Port field like an ordinary `COM3`.
 
-```bash
-lerobot-mp --port COM3
-```
+Measured: a ping of all six servos through the bridge over loopback is
+**0.40 ms** against 0.29 ms directly, so the bridge itself costs **0.11 ms** and
+the whole rest of the budget is the link's RTT. `--stats 5` shows the traffic
+live when you need to check whether anything flows at all.
 
-Zmierzone: ping wszystkich sześciu serw przez most po pętli zwrotnej to
-**0,40 ms** wobec 0,29 ms bezpośrednio — sam most kosztuje więc **0,11 ms**,
-a cała reszta budżetu to RTT łącza. `--stats 5` pokazuje ruch na żywo, kiedy
-trzeba sprawdzić, czy coś w ogóle płynie.
+Two things worth remembering:
 
-Dwie rzeczy warte zapamiętania:
+* `--allow` is not decoration. An open TCP port on the other side moves a
+  physical arm: without an address list the bridge warns in the log and
+  listens to everyone.
+* A network disconnect **does not drop the arm**: the servos hold the last
+  commanded position. The bridge then closes the port so that the next client
+  does not find it busy.
 
-* `--allow` nie jest ozdobnikiem. Otwarty port TCP po drugiej stronie rusza
-  fizycznym ramieniem — bez listy adresów most ostrzega w logu i słucha
-  wszystkich.
-* Rozłączenie sieci **nie upuszcza ramienia**: serwa trzymają ostatnią zadaną
-  pozycję. Most zamyka wtedy port, żeby kolejny klient nie zastał go zajętego.
-
-Zostaje kamera — musi być na tej maszynie, na której liczy się wizja. Sieć
-przenosi tu port szeregowy, nie obraz.
+What is left is the camera: it has to be on the machine where the vision runs.
+The network carries the serial port here, not the image.
 
 ---
 
-## Jak się tym steruje
-
-| Ruch dłoni | Co robi ramię |
-|---|---|
-| w lewo / w prawo | obrót podstawy `shoulder_pan` |
-| w górę / w dół | podnoszenie ramienia `shoulder_lift` |
-| bliżej / dalej od kamery | wysuwanie przedramienia `elbow_flex` |
-| pochylenie dłoni | pochylenie nadgarstka `wrist_flex` |
-| obrót dłoni | obrót nadgarstka `wrist_roll` |
-| szczypnięcie kciuk–wskazujący | chwytak `gripper` |
-| **zwinięcie trzech ostatnich palców** | **pauza** — ramię stoi, dłoń można przełożyć |
-
-To jest tryb `direct`. Są jeszcze trzy — `ik`, `arm` i `keys` — opisane niżej.
-Ostatni z nich nie potrzebuje ani dłoni, ani kamery.
-
-Gest pauzy działa jak podniesienie myszy z podkładki: zwijasz środkowy,
-serdeczny i mały palec, przenosisz rękę w wygodne miejsce, prostujesz palce —
-i jedziesz dalej. Robot nigdy nie przeskakuje, bo ruch liczy się od pozycji
-z chwili załączenia, a nie od bezwzględnego położenia dłoni w kadrze.
-
-### Klawisze
-
-| | | | |
-|---|---|---|---|
-| `SPACJA` | włącz/wyłącz sterowanie | `H` | powrót do pozycji domowej |
-| `ESC` | stop awaryjny i jego kasowanie | `C` | nowe zaczepienie dłoni |
-| `O` / `P` | kalibracja chwytaka: otwarty / zamknięty | `M` | tryb mapowania: `direct` → `ik` → `arm` |
-| `J` `L` `I` `K` | obrót kamery podglądu | `,` `.` | przybliżenie |
-| `-` / `=` | limit prędkości | `V` | podgląd ramienia wł./wył. |
-| `X` | wyjście | | |
-
-W trybie `keys` dochodzą klawisze jazdy: `W` / `S` prowadzą chwytak w górę i w
-dół, `A` / `D` w bok, `Q` / `E` cofają i wysuwają, strzałki w bok obracają
-nadgarstek, a strzałki góra/dół rozwierają i zaciskają szczękę.
-
-Dlatego właśnie **wyjście siedzi na `X`, a stop awaryjny na `ESC`** — `Q` jest
-zajęte przez jazdę. Stop awaryjny celowo *nie* trafił na klawisz sąsiadujący z
-wyjściem: pomyłka przy panice miałaby zatrzymać ramię, a nie zamknąć aplikację,
-bo zamknięcie odsyła ramię do pozycji domowej, czyli nim rusza.
-
-**Kalibracja chwytaka pod własną dłoń** zajmuje dwie sekundy: rozstaw palce
-i naciśnij `O`, złącz je i naciśnij `P`.
-
----
-
-## Cztery tryby mapowania
-
-Przełączasz je klawiszem `M` albo flagą `--mode`.
-
-**`direct`** (domyślny) — każda oś dłoni steruje jednym stawem. Nie wymaga
-znajomości wymiarów ramienia, więc działa poprawnie przy dowolnej kalibracji.
-Zacznij od niego.
-
-**`ik`** — pozycja dłoni wyznacza punkt w przestrzeni, a kąty stawów liczy
-odwrotna kinematyka. Ruch jest bardziej „kartezjański": dłoń w bok przesuwa
-chwytak w bok, a nie obraca całe ramię wokół podstawy.
-
-**`arm`** — śledzi **całe Twoje ramię**, nie samą dłoń. MediaPipe Pose podaje
-bark, łokieć i nadgarstek; aplikacja liczy z nich trzy kąty i przekłada je
-wprost na trzy pierwsze stawy robota:
-
-| Twój ruch | Staw robota |
-|---|---|
-| unosisz rękę | `shoulder_lift` |
-| przenosisz ją w bok / do przodu | `shoulder_pan` |
-| **zginasz łokieć** | **`elbow_flex`** |
-| obracasz dłoń | `wrist_roll` |
-| szczypiesz palcami | `gripper` |
-
-Domyślne przełożenie to **1:1** — zginasz łokieć o 60°, robot zgina o 60°.
-
-```bash
-lerobot-mp --mode arm
-lerobot-mp --mode arm --arm-side Right     # wymuś konkretną rękę
-lerobot-mp --mode arm --no-arm-hand        # bez śledzenia dłoni (szybciej)
-```
-
-Kąty liczą się w **układzie Twojego tułowia**, a nie kamery: obrócenie się
-bokiem albo przechylenie na krześle nie zmienia zadanej pozy robota, bo
-geometrycznie ramię wobec tułowia się nie zmieniło.
-
-W tym trybie dłoń jest **dodatkiem**, a nie warunkiem — kiedy wypadnie z kadru,
-nadgarstek i chwytak po prostu stoją, a bark z łokciem jadą dalej. Zniknięcie
-całego ramienia zatrzymuje wszystko, tak jak zniknięcie dłoni w pozostałych
-trybach.
-
-Dwie rzeczy zmierzone, nie założone:
-
-* po ustabilizowaniu śledzenia ten sam obraz daje **0,4° rozrzutu na łokciu**
-  (model `lite`, 17 ms/klatkę) albo **0,2°** (`pose_landmarker_full`, 22 ms) —
-  znacznie poniżej tego, co ma znaczenie przy prowadzeniu ręką;
-* MediaPipe jest trenowane na ludziach mniej więcej pionowych. Przechylenie do
-  ±10° kosztuje kilka stopni błędu, ale przy ±25° estymata psuje się mocno
-  (kilkadziesiąt stopni). Trzymaj się z grubsza prosto.
-
-Oba modele śledzenia naraz to około 30 ms na klatkę, czyli ~20 FPS wizji.
-Pętla sterowania i tak tyka niezależnie z 30 Hz, więc ramię jedzie płynnie —
-po to jest to rozdzielenie.
-
-**`keys`** — sterowanie z klawiatury, **bez kamery i bez dłoni**. Klawisze
-prowadzą końcówkę chwytaka po przestrzeni, a kąty stawów liczy ta sama odwrotna
-kinematyka co w trybie `ik`:
-
-| Klawisze | Co robi ramię |
-|---|---|
-| `W` / `S` | góra i dół |
-| `A` / `D` | ruch w bok |
-| `Q` / `E` | cofnięcie i wysunięcie końcówki |
-| `←` / `→` | obrót nadgarstka `wrist_roll` |
-| `↑` / `↓` | rozwarcie i zaciśnięcie chwytaka |
-
-```bash
-lerobot-mp --mode keys
-```
-
-Osie są zaczepione w **bieżącym kierunku ramienia**, a nie w układzie świata:
-`W` zawsze wysuwa chwytak dalej od podstawy, niezależnie od tego, gdzie ramię
-akurat patrzy. Przy osiach światowych to samo `W` raz by wysuwało, a raz
-prowadziło bokiem — zależnie od obrotu podstawy.
-
-Wciśnięcie nie robi kroku, tylko **nadaje osi prędkość na 0,18 s**
-(`keyboard.hold_timeout`). Klawiatura nie wysyła zdarzenia „puszczono" —
-trzymany klawisz to seria powtórzeń z autopowtarzania systemu. Gdyby jedno
-zdarzenie znaczyło jeden krok, ruch szarpałby na starcie, bo pierwsze
-powtórzenie przychodzi dopiero po ~0,5 s. Tak wychodzi jazda ciągła przy
-trzymaniu i natychmiastowy stop po puszczeniu.
-
-Trzymanie klawisza poza zasięgiem **nie nakręca** zapamiętanego punktu: po
-przycięciu przez IK cel wraca na osiągalny, więc powrót nie trwa tyle, ile
-trwało wyjście.
-
-Ten tryb działa też jako awaryjne wyjście, kiedy kamery po prostu nie ma —
-`M` nie wyprowadzi z niego aplikacji uruchomionej bez obrazu, bo pozostałe
-tryby nie miałyby z czego liczyć ruchu.
-
-### Czym steruje się szczęką chwytaka
-
-`mapping.gripper_source` (albo `--gripper`):
-
-* `pinch` (domyślnie) — odległość kciuk–wskazujący, znormalizowana rozmiarem
-  dłoni, więc niezależna od odległości od kamery. Działa we wszystkich trzech
-  trybach, także w `arm`.
-* `none` — chwytak nie rusza się sam.
-
-Kciuk i wskazujący są celowo **wyłączone** z gestu pauzy, żeby szczypanie nie
-było mylone z zaciskaniem pięści.
-
----
-
-## Podgląd 3D — prawdziwe złożenie, nie ilustracja
-
-Panel obok obrazu z kamery pokazuje **rzeczywistą geometrię SO-101**: bryły
-producenta (STEP z `TheRobotStudio/SO-ARM100`) złożone według jego URDF-a,
-zaimportowane z repozytorium [Articulus](https://github.com/przemeknowak781/articulus).
-Model MJCF ramienia — MuJoCo Menagerie (Apache-2.0), modele MediaPipe — Google
-(Apache-2.0). Pełna lista plików osób trzecich: [NOTICE](NOTICE).
-
-Kinematyka podglądu nie jest przepisana drugi raz — łańcuch jest wczytywany
-z eksportu Articulusa jako ciąg kroków `pre @ ruch @ post`. Test
-`test_kinematics_matches_the_articulus_reference` porównuje wynik z
-transformacjami referencyjnymi zapisanymi przy eksporcie: **zgodność poniżej
-mikrometra dla każdego członu w każdej nazwanej pozie**.
-
-Model (~160 kB) jest w repozytorium. Odtworzenie go od zera:
-
-```bash
-pip install "build123d>=0.11,<0.12"
-git clone https://github.com/przemeknowak781/articulus ../articulus
-python scripts/import_articulus_model.py --articulus ../articulus
-```
-
-Bez tego pliku aplikacja działa dalej — pokazuje uproszczony rysunek
-schematyczny zamiast modelu.
-
----
-
-## Skąd wzięły się liczby w konfiguracji
-
-Stałe geometryczne **nie są oszacowane**. Wyprowadza je
-`scripts/derive_geometry.py` z tego samego modelu 3D — długości ogniw,
-wysokość barku, położenie osi obrotu podstawy, przesunięcia i znaki wszystkich
-stawów — i od razu mierzy, jak bardzo uproszczony model płaski rozjeżdża się
-z pełną kinematyką:
-
-```
-$ python scripts/derive_geometry.py --check
-  sprawdzono 625 poz; blad mediana 1.06 mm, najgorszy 1.07 mm
-  domkniecie FK->IK->FK: najgorszy blad 0.0000 mm
-```
-
-Milimetr błędu przy zasięgu 45 cm — znacznie poniżej precyzji sterowania ręką.
-Kilka rzeczy, które ten pomiar wykrył i które inaczej zostałyby błędem:
-
-* oś obrotu podstawy **nie leży w początku układu** — pominięcie tego dawało
-  30 mm błędu przy obrocie o 45°,
-* wszystkie cztery stawy ramienia mają **ujemny** zwrot względem kąta ogniwa,
-* gałąź rozwiązania IK „łokieć w górę" wypada poza zakresy stawów SO-101 —
-  domyślna jest druga.
-
----
-
-## Bezpieczeństwo
-
-Nic nie trafia do serw z pominięciem nadzoru (`control/safety.py`):
-
-* **limity pozycji** każdego stawu, ciaśniejsze niż zakres z kalibracji,
-* **limit prędkości** zadanej — gwałtowny ruch ręki nie daje szarpnięcia,
-* **start od zmierzonej pozycji** i płynne dojście do pozycji domowej,
-  zamiast skoku przy pierwszym rozkazie,
-* **watchdog dłoni** — zniknięcie ręki zamraża ruch po 0,4 s, a po 6 s
-  odsyła ramię do pozycji domowej,
-* **stop awaryjny** klawiszem `ESC` (drugie `ESC` go kasuje; `X` zamyka aplikację),
-* **`max_relative_target`** przekazywany do LeRobot jako dodatkowy limit
-  sprzętowy skoku.
-
-Sterowanie startuje **wyłączone** — robot nie ruszy, dopóki świadomie nie
-naciśniesz SPACJI.
-
----
-
-## Konfiguracja
-
-Wszystkie parametry są w `configs/default.yaml`, opisane komentarzami:
-
-```bash
-lerobot-mp --config configs/default.yaml
-```
-
-Plik można skracać — brakujące klucze biorą wartości domyślne, a nieznany
-klucz kończy się czytelnym błędem zamiast cichego zignorowania.
-
-Najczęściej strojone rzeczy:
-
-| Objaw | Co zmienić |
-|---|---|
-| staw jedzie w złą stronę | `joints.<nazwa>.invert: true` |
-| ruch zbyt czuły / zbyt leniwy | `joints.<nazwa>.gain` |
-| drżenie obrazu przenosi się na ramię | `filters.position.min_cutoff` w dół |
-| wyczuwalne opóźnienie | `filters.*.beta` w górę |
-| ramię rusza się za szybko | `safety.velocity_scale: 0.5` |
-| pauza włącza się przypadkiem | `clutch.curl_threshold` w dół |
-| tryb `arm` gubi rękę | `arm.min_visibility` w dół |
-| tryb `arm` reaguje za mocno | `arm.pan_gain` / `lift_gain` / `elbow_gain` |
-
-Uwaga na jednostki `gain`: dla `shoulder_pan`, `shoulder_lift` i `elbow_flex`
-to **stopnie na jednostkę znormalizowaną** (ruch dłoni przez pół kadru ≈ 0,5),
-a dla `wrist_flex` i `wrist_roll` **bezwymiarowe przełożenie** (1,0 = ruch 1:1).
-
----
-
-## Bez kamery i bez ekranu
-
-```bash
-lerobot-mp --source nagranie.mp4 --no-view --clutch always --record wynik.mp4
-```
-
-Odtwarza plik wideo (własne nagranie dłoni — w repozytorium nie ma przykładowego) zamiast kamery i zapisuje cały podgląd — z HUD-em i modelem
-3D — do pliku. Przydaje się do demonstracji i do zgłaszania błędów.
-
----
-
-## Jak to jest zbudowane
+## Configuration
+
+The twin reads a configuration file only when one is given:
+`lerobot-twin --config configs/local.yaml ui` (also `train`, `eval`). The model
+is `configs/default.yaml` with the `safety` and `robot` sections, described by
+comments; a copy `configs/local.yaml` is in `.gitignore`. The file can be
+shortened: missing keys take their default values, and an unknown key inside a
+section ends with a clear error. The arm's backend and port are chosen by the
+panel, not by the file. The keys are described in
+[docs/TWIN.md](docs/TWIN.md): the paragraph "Konfiguracja ramienia" and the
+chapter [Galaxea A1X](docs/TWIN.md#galaxea-a1x), which has the `a1x` section.
+
+## How it is built
 
 ```
 src/lerobot_mp/
-├── config.py              parametry + wczytywanie YAML
-├── app.py                 pętla główna
-├── cli.py                 wiersz poleceń
-├── vision/                kamera, MediaPipe (dłoń + sylwetka), cechy sterujące
-├── control/               filtry, kinematyka, mapowanie, nadzór
-├── robot/                 symulator i adapter LeRobot
-├── preview/               model 3D, renderer programowy i jego wątek
-└── ui/                    HUD i podgląd schematyczny
+├── twin/          the twin: MuJoCo scene, the arm loop with the supervisor, cameras, perception, lerobot-twin
+│   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
+│   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
+│   └── ui/        browser panel (viser)
+├── robot/         backends of the real arms: feetech, lerobot, a1x (CAN-FD), the COM<->TCP bridge
+└── paths.py       default data paths counted from the clone's root
 ```
 
-Wizja i sterowanie chodzą w **różnym tempie**: pętla sterowania tyka ze stałą
-częstotliwością niezależnie od tego, czy kamera zdążyła z nową klatką. Dzięki
-temu limity prędkości i watchdog działają tak samo, gdy detekcja chwilowo
-zwolni — ramię dojeżdża, zamiast szarpać.
+The arm in simulation is MuJoCo physics in the twin's scene; a real arm is a
+backend from `robot/`, and the scene only mirrors it. The rest of the twin sees
+no difference: the same observation layouts, the same supervisor and the same
+perception.
 
-Podgląd 3D rysuje **osobny wątek**. Złożenie ~22 tys. trójkątów kosztuje ok.
-30 ms, więc robiony wprost w pętli sterowania zabierał jej ten czas co drugą
-iterację — pętla zadana na 30 Hz schodziła do 20 Hz, a model i tak przeskakiwał.
-Teraz pętla zostawia rendererowi najnowszą pozę i zabiera ostatnią gotową
-klatkę, nigdy na niego nie czekając. Poz pośrednich nie odrabiamy, więc
-zaległości nie narastają: przy wolnym rysowaniu podgląd gubi klatki, a ramię
-i tak jedzie równo.
+## Licence
 
-MediaPipe ma dwa niekompatybilne API — nowe `tasks` (1.x) i stare `solutions`
-(0.10.x). Aplikacja wykrywa dostępne automatycznie i w obu przypadkach zwraca
-ten sam format, więc działa na obu wersjach.
-
-### Testy
-
-```bash
-pip install -e ".[dev]" -c constraints.txt && pytest -q
-```
-
-Ok. 680 testów pokrywa matematykę sterowania (filtry, kinematyka, mapowanie,
-nadzór), kąty ramienia w układzie tułowia, wątek podglądu 3D i zgodność modelu
-ze źródłem, cały łańcuch od cech dłoni do symulowanego ramienia oraz bliźniaka
-(kalibracja, percepcja, RL, panel) i backendu `a1x` na symulowanej magistrali CAN. Bez extra `[twin]` testy bliźniaka się
-pomijają; bez OpenGL: `pytest -q -m "not render"`.
-
-Kilka z nich sprawdza **skutek fizyczny, a nie wartość stawu** — i to nie jest
-formalność: w kalibracji SO-101 rosnący `shoulder_lift` *opuszcza* ramię, więc
-test „wartość rośnie" przepuszczał odwrócony kierunek. Test liczący wysokość
-końcówki go nie przepuszcza.
-
----
-
-## Wymagania
-
-* Python 3.12 (sama aplikacja `lerobot-mp` działa od 3.10, ale sprawdzany
-  i wymagany przez LeRobota jest 3.12)
-* kamera internetowa
-* dla prawdziwego ramienia: SO-101 na USB i `.[feetech]` (albo `.[robot]`
-  z LeRobotem i jego kalibracją)
-* bliźniak (`.[twin]`): OpenGL do renderu kamer; trening (`.[train]`):
-  karta NVIDIA z CUDA — szczegóły w „Szybki start na nowym komputerze”
-
-## Licencja
-
-Apache-2.0. Geometria SO-101 pochodzi z
-[TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)
-(Apache-2.0) przez repozytorium
-[Articulus](https://github.com/przemeknowak781/articulus).
+Apache-2.0. Third-party files (the SO-101 model from MuJoCo Menagerie, the
+reference model from Articulus, the Galaxea A1X URDF and meshes under the
+manufacturer's licence) and their licences: [NOTICE](NOTICE).

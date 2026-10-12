@@ -1,15 +1,10 @@
-"""Model 3D ramienia SO-101: siatki czlonow + lancuch kinematyczny.
+"""Independent SO-101 reference from Articulus, for `test_twin_robots.py`.
 
-Dane pochodza z repozytorium `przemeknowak781/articulus`, ktore odtwarza SO-101
-z bryl STEP producenta i jego URDF (`TheRobotStudio/SO-ARM100`). Skrypt
-`scripts/import_articulus_model.py` zamienia eksport `articulus web` na jeden
-skompresowany plik `.npz` - tutaj tylko go wczytujemy i skladamy pozy.
-
-Wazne: to jest *ta sama* kinematyka, ktora liczy Articulus. Lancuch jest
-zapisany jako ciag krokow ``pre @ ruch @ post``, a nie przepisany drugi raz
-wzorami - dzieki temu podglad pokazuje geometrie zgodna ze zrodlem, a nie
-jej ladniejsza kuzynke. Test `tests/test_preview_model.py` porownuje nasze
-transformacje z transformacjami referencyjnymi zapisanymi w eksporcie.
+Copied from the 3D preview of the deleted hand-control app (`lerobot_mp/preview/model.py`).
+`przemeknowak781/articulus` rebuilds the SO-101 from the vendor's STEP solids
+and URDF; `scripts/import_articulus_model.py` turns its export into `assets/so101_preview.npz`.
+The chain is stored as `pre @ motion @ post` steps rather than derived again as formulas, so the
+test compares the MJCF with the source geometry and not with a second derivation of it.
 """
 
 from __future__ import annotations
@@ -23,12 +18,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: Domyslna lokalizacja zasobu wzgledem korzenia repozytorium.
+#: Default location of the asset, relative to the repository root.
 DEFAULT_ASSET = "assets/so101_preview.npz"
 
 
 def _rotation(axis: np.ndarray, angle_rad: float) -> np.ndarray:
-    """Macierz 4x4 obrotu wokol osi przechodzacej przez poczatek ukladu."""
+    """4x4 rotation matrix about an axis through the origin."""
     matrix = np.eye(4, dtype=np.float64)
     if abs(angle_rad) < 1e-12:
         return matrix
@@ -36,7 +31,7 @@ def _rotation(axis: np.ndarray, angle_rad: float) -> np.ndarray:
     a = axis / (np.linalg.norm(axis) or 1.0)
     c, s = np.cos(angle_rad), np.sin(angle_rad)
     x, y, z = a
-    # Wzor Rodriguesa.
+    # Rodrigues' formula.
     matrix[:3, :3] = np.array(
         [
             [c + x * x * (1 - c), x * y * (1 - c) - z * s, x * z * (1 - c) + y * s],
@@ -49,16 +44,16 @@ def _rotation(axis: np.ndarray, angle_rad: float) -> np.ndarray:
 
 @dataclass
 class ArmModel:
-    """Siatki i lancuch kinematyczny prawdziwego SO-101."""
+    """Meshes and kinematic chain of the real SO-101."""
 
     link_names: list[str]
     link_colors: np.ndarray          # (L, 3) uint8, RGB
-    vertices: np.ndarray             # (N, 3) float32, metry, uklad lokalny czlonu
+    vertices: np.ndarray             # (N, 3) float32, metres, link-local frame
     faces: np.ndarray                # (M, 3) int32
     face_link: np.ndarray            # (M,)   int16
     vertex_link: np.ndarray          # (N,)   int16
     chain_link: np.ndarray           # (K,)   int16
-    chain_parent: np.ndarray         # (K,)   int16, -1 = korzen
+    chain_parent: np.ndarray         # (K,)   int16, -1 = root
     chain_joint: list[str]
     chain_axis: np.ndarray           # (K, 3)
     chain_pre: np.ndarray            # (K, 4, 4)
@@ -68,10 +63,7 @@ class ArmModel:
     dof_max: np.ndarray
     source: dict
     reference: dict
-    #: Pamiec podreczna podzialu wierzcholkow na czlony - patrz `_link_vertices`.
-    _link_cache: list[tuple[np.ndarray, np.ndarray]] | None = None
 
-    # ------------------------------------------------------------- wczytanie
     @classmethod
     def load(cls, path: str | Path) -> "ArmModel":
         data = np.load(Path(path), allow_pickle=True)
@@ -80,8 +72,8 @@ class ArmModel:
         face_link = data["face_link"].astype(np.int16)
         vertices = data["vertices"].astype(np.float32)
 
-        # Kazdy wierzcholek nalezy do dokladnie jednego czlonu (siatki sa
-        # sklejane osobno), wiec przypisanie z trojkatow jest jednoznaczne.
+        # Every vertex belongs to exactly one link (the meshes are joined separately), so
+        # assigning from the triangles is unambiguous.
         vertex_link = np.zeros(len(vertices), dtype=np.int16)
         vertex_link[faces.reshape(-1)] = np.repeat(face_link, 3)
 
@@ -108,7 +100,7 @@ class ArmModel:
         return model
 
     def _validate(self) -> None:
-        """Lancuch musi byc posortowany topologicznie - rodzic przed dzieckiem."""
+        """The chain must be topologically sorted: parent before child."""
         seen: set[int] = set()
         for step_index, parent in enumerate(self.chain_parent):
             if parent >= 0 and int(parent) not in seen:
@@ -119,9 +111,8 @@ class ArmModel:
                 )
             seen.add(int(self.chain_link[step_index]))
 
-    # ------------------------------------------------------------ kinematyka
     def link_transforms(self, joints_deg: dict[str, float]) -> np.ndarray:
-        """Transformacje swiat<-czlon (L, 4, 4) dla zadanych katow w stopniach."""
+        """World<-link transforms (L, 4, 4) for the given angles in degrees."""
         world = np.repeat(np.eye(4, dtype=np.float64)[None], len(self.link_names), axis=0)
 
         for step in range(len(self.chain_link)):
@@ -138,40 +129,13 @@ class ArmModel:
             world[link] = base @ self.chain_pre[step] @ move @ self.chain_post[step]
         return world
 
-    def _link_vertices(self) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Indeksy i wierzcholki kazdego czlonu - liczone raz, nie co klatke.
-
-        Podglad rysuje sie kilkanascie razy na sekunde, a przypisanie
-        wierzcholkow do czlonow jest stale. Wyznaczanie go od nowa przy kazdej
-        klatce to kilka maskowan po 12 tys. elementow za darmo.
-        """
-        if self._link_cache is None:
-            cache = []
-            for index in range(len(self.link_names)):
-                which = np.flatnonzero(self.vertex_link == index)
-                if len(which):
-                    cache.append((which, np.ascontiguousarray(self.vertices[which])))
-            self._link_cache = cache
-        return self._link_cache
-
-    def posed_vertices(self, joints_deg: dict[str, float]) -> np.ndarray:
-        """Wierzcholki wszystkich czlonow przeniesione do ukladu swiata."""
-        transforms = self.link_transforms(joints_deg)
-        out = np.empty_like(self.vertices, dtype=np.float32)
-        for which, local in self._link_vertices():
-            matrix = transforms[int(self.vertex_link[which[0]])]
-            rotation = np.ascontiguousarray(matrix[:3, :3].T, dtype=np.float32)
-            out[which] = local @ rotation + matrix[:3, 3].astype(np.float32)
-        return out
-
-    # ------------------------------------------------- jednostki z LeRobot
     def from_lerobot(self, joints: dict[str, float]) -> dict[str, float]:
-        """Przelicza pozycje stawow z LeRobot na katy modelu [stopnie].
+        """Converts LeRobot joint positions to model angles [degrees].
 
-        Stawy ramienia LeRobot podaje juz w stopniach tej samej kalibracji,
-        wiec ida bez zmian. Chwytak jest wyjatkiem: LeRobot normalizuje go
-        zawsze do 0..100, a model ma prawdziwy zakres katowy - przeliczamy
-        liniowo, korzystajac z granic zapisanych w modelu.
+        LeRobot already gives the arm joints in degrees of the same calibration, so they pass
+        unchanged. The gripper is the exception: LeRobot always normalizes it to 0..100, while
+        the model has a real angular range, so it is mapped linearly using the limits stored
+        in the model.
         """
         out: dict[str, float] = {}
         limits = dict(zip(self.dof_names, zip(self.dof_min, self.dof_max)))
@@ -193,15 +157,11 @@ class ArmModel:
 
 
 def load_model(path: str | Path | None = None) -> ArmModel | None:
-    """Wczytuje model podgladu; zwraca None, gdy zasobu nie ma.
-
-    Brak pliku nie jest bledem - aplikacja przechodzi wtedy na uproszczony
-    podglad schematyczny i dziala dalej.
-    """
+    """Load the reference model; None when the asset is missing (the test then skips)."""
     candidate = Path(path) if path else Path(DEFAULT_ASSET)
     if not candidate.is_absolute():
-        # Szukamy takze wzgledem korzenia repozytorium (dwa poziomy nad pakietem).
-        for root in (Path.cwd(), Path(__file__).resolve().parents[3]):
+        # Also relative to the repository root, one level above tests/.
+        for root in (Path.cwd(), Path(__file__).resolve().parents[1]):
             resolved = root / candidate
             if resolved.is_file():
                 candidate = resolved

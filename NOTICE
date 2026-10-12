@@ -1,4 +1,4 @@
-lerobot-mp - sterowanie ramieniem SO-101 gestami dłoni i cyfrowy bliźniak stanowiska
+lerobot-mp - cyfrowy bliźniak stanowiska z ramieniem robota
 Licencja projektu: Apache-2.0 (pyproject.toml).
 
 Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
@@ -10,19 +10,13 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    Menagerie wywodzi model z TheRobotStudio/SO-ARM100 (Apache-2.0).
 
 2. assets/so101_preview.npz
-   Siatka podglądu 3D aplikacji lerobot-mp, odtworzona z geometrii producenta
+   Model referencyjny, z którym test porównuje MJCF bliźniaka, odtworzony z geometrii producenta
    SO-101: TheRobotStudio/SO-ARM100, https://github.com/TheRobotStudio/SO-ARM100
    (Apache-2.0), przez projekt articulus (przemeknowak781/articulus ->
    vendor/lerobot-so101; skrypt scripts/import_articulus_model.py).
    Plik jest przetworzeniem (uproszczona siatka + łańcuch kinematyczny).
 
-3. models/hand_landmarker.task, models/pose_landmarker_lite.task
-   Modele Google MediaPipe (Hand Landmarker, Pose Landmarker lite),
-   https://storage.googleapis.com/mediapipe-models/ ; licencja Apache-2.0
-   według kart modeli MediaPipe. Skopiowane bez zmian; źródła i sumy SHA-256
-   w models/README.md.
-
-4. assets/robots/a1x/  (a1x.urdf, siatki STL w assets/, a1x.xml)
+3. assets/robots/a1x/  (a1x.urdf, siatki STL w assets/, a1x.xml)
    URDF i siatki ramienia Galaxea A1X od producenta (Galaxea), przez pakiet
    ros2_ws/src/galaxea_a1xy_description repozytorium galaxeo-manipulators
    (package.xml: licencja "Proprietary", źródło "userguide-galaxea/URDF").
@@ -30,7 +24,7 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    licencją Apache-2.0 projektu. a1x.xml to przetworzenie URDF wygenerowane
    skryptem scripts/import_a1x_model.py (reguły w assets/robots/a1x/README.md).
 
-5. galaxeo.xcan_usb  (NIE w tym repozytorium - zależność opcjonalna)
+4. galaxeo.xcan_usb  (NIE w tym repozytorium - zależność opcjonalna)
    Backend a1x (src/lerobot_mp/robot/a1x.py) importuje pakiet galaxeo
    z repozytorium machinekind/galaxeo-manipulators (extra "a1x" w pyproject.toml,
    instalowany z gita; repozytorium nie ma pliku licencji). Jego moduł

@@ -16,7 +16,7 @@ import math
 import time
 from typing import Any
 
-from ..config import AppConfig, GRIPPER, JOINT_NAMES
+from ..twin.config import GRIPPER, JOINT_NAMES, TwinConfig
 from .base import RobotBackend, RobotInfo
 from .feetech import LINK_LOSS_CYCLES, describe_servo_error
 
@@ -55,7 +55,7 @@ _MODULE_CANDIDATES: tuple[str, ...] = (
 class LeRobotArm(RobotBackend):
     """Adapter na `SO101Follower` / `SO100Follower` z LeRobot."""
 
-    def __init__(self, cfg: AppConfig):
+    def __init__(self, cfg: TwinConfig):
         self.cfg = cfg
         self._robot: Any = None
         self._connected = False

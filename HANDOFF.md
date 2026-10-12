@@ -35,9 +35,9 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
 Klon ma wszystko do uruchomienia — instalacja per platforma:
 README, „Szybki start na nowym komputerze”.
 
-- **W repozytorium:** modele MediaPipe (`models/*.task`, źródła i sumy
-  w `models/README.md`), model ramienia i siatki (`assets/robots/so101`),
-  podgląd 3D (`assets/so101_preview.npz`), polityki bazowe (`assets/policies`),
+- **W repozytorium:** model ramienia i siatki (`assets/robots/so101`),
+  model referencyjny Articulusa do testu zgodności MJCF (`assets/so101_preview.npz`),
+  polityki bazowe (`assets/policies`),
   przykładowe stanowisko w symulacji (`examples/twin.sim.json`,
   `lerobot-twin demo`), sprawdzone wersje pakietów (`constraints.txt`),
   licencje plików osób trzecich (`NOTICE`).
@@ -45,7 +45,7 @@ README, „Szybki start na nowym komputerze”.
   polityki), `configs/local.yaml` (tiki chwytaka SO-101, sekcja `a1x` i reszta
   konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (extra `a1x`), `.claude/`, cache kerneli Warp,
   kalibracja LeRobota (tylko backend `lerobot`).
-- Domyślne ścieżki (`models/…`, `workspace/…`) z klonu liczą się od katalogu
+- Domyślne ścieżki (`workspace/…`) z klonu liczą się od katalogu
   repozytorium (`src/lerobot_mp/paths.py`), więc katalog uruchomienia nie ma
   znaczenia; bez klonu — od katalogu bieżącego.
 - `lerobot-twin check` mówi osobno, czy komputer nadaje się do treningu
@@ -203,8 +203,8 @@ Każda jest pilnowana testem albo poprawiona w kodzie:
   (`body_invweight0`) zostają od starej masy; kostka ściśnięta między szczęką
   a blatem wylatywała z prędkością 10–180 m/s. Na GPU: `mjw.set_const`.
 - **Torch z PyPI na Windows nie ma CUDA** — koło z indeksu PyTorcha.
-- **`CameraStream` z aplikacji odbija obraz lustrzanie**; bliźniak otwiera
-  kamery z `mirror=False`.
+- **`CameraStream` domyślnie odbija obraz lustrzanie** (`CameraConfig.mirror`);
+  bliźniak otwiera kamery z `mirror=False`.
 - **`MjSpec.attach` gubi opcje fizyki ramienia**, jeśli scena ich nie przejmie.
 - **Nadzór dociągał ramię do limitów z konfiguracji** przy połączeniu (skok
   przy `shoulder_lift −101°`) — teraz ramię zostaje, a w zakres wraca powoli

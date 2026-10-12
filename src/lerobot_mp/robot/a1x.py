@@ -47,7 +47,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from ..config import GRIPPER, AppConfig
+from ..twin.config import GRIPPER, TwinConfig
 from .base import RobotBackend, RobotInfo
 
 #: A1X_GRIPPER_XCAN=1 (albo true / yes / tak) = to samo co `a1x.gripper_over_xcan: true`.
@@ -115,7 +115,7 @@ class A1XArm(RobotBackend):
     a `enable()` odmierza czas przez `sleep` i sam wola `io_step`.
     """
 
-    def __init__(self, cfg: AppConfig, *, bus: Any = None, clock: Callable[[], float] = time.monotonic,
+    def __init__(self, cfg: TwinConfig, *, bus: Any = None, clock: Callable[[], float] = time.monotonic,
                  threaded: bool = True, sleep: Callable[[float], None] = time.sleep,
                  connect_timeout_s: float = CONNECT_TIMEOUT_S):
         self.P, self._B = _galaxeo()

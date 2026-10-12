@@ -319,6 +319,37 @@ def test_connect_without_moving_sends_nothing_to_a_joint_outside_the_limits(twin
     assert twin.joint_limits()["shoulder_lift"][0] == pytest.approx(-95.0)
 
 
+def test_auto_backend_without_a_port_refuses_instead_of_simulating(twin):
+    """`auto` without a port used to fall back to a toy simulator. A request that reaches
+    `create_backend` wants hardware, so it gets a real backend or an error, never a simulation."""
+    with pytest.raises(ValueError, match="auto"):
+        twin.connect("auto", port="", threaded=False)
+    assert not twin.connected
+    assert "auto" in twin.status.error
+
+
+def test_config_file_skips_unknown_sections_but_not_unknown_keys(tmp_path):
+    """A file copied from the old `configs/default.yaml` still has the hand-control app's
+    sections; any top-level section the twin does not read is skipped, but a typo inside a
+    section it does read must still fail instead of silently dropping a safety setting."""
+    from lerobot_mp.twin.config import TwinConfig, load_config
+
+    old = tmp_path / "old.yaml"
+    old.write_text(
+        "loop_hz: 30.0\ncamera: {source: 0, mirror: true}\ntracker: {backend: auto}\n"
+        "filters: {gripper_ema: 0.5}\nmapping: {mode: direct}\nclutch: {mode: gesture}\n"
+        "ui: {show: true}\nsomething_else: [1, 2]\nsafety: {velocity_scale: 0.5}\n"
+    )
+    cfg = load_config(old)
+    assert isinstance(cfg, TwinConfig)
+    assert cfg.safety.velocity_scale == 0.5
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("safety: {bogus: 1}\n")
+    with pytest.raises(ValueError, match="bogus"):
+        load_config(bad)
+
+
 # ------------------------------------------------------------ bledy serw, przerwy, limity
 def test_servo_fault_triggers_estop_and_preempts_the_owner(twin, monkeypatch):
     arm = FakeArm()

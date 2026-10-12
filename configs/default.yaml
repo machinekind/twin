@@ -1,99 +1,15 @@
-# Konfiguracja sterowania ramieniem LeRobot 101 (SO-101) gestami dloni.
+# Konfiguracja ramienia dla cyfrowego blizniaka (lerobot-twin).
 #
-# Kazda sekcja odpowiada jednej dataclassie z `lerobot_mp/config.py`; wartosci
-# nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna nadpisac
-# pojedynczy parametr bez przepisywania calosci. Nieznany klucz konczy sie
-# bledem, a nie cichym zignorowaniem.
+# Kazda sekcja odpowiada jednej dataclassie z `lerobot_mp/twin/config.py`;
+# wartosci nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna
+# nadpisac pojedynczy parametr bez przepisywania calosci. Nieznany klucz
+# w sekcji konczy sie bledem, a nie cichym zignorowaniem.
 #
-# Uruchomienie:  lerobot-mp --config configs/default.yaml
-# Blizniak:      lerobot-twin --config configs/local.yaml ui   (albo train/eval)
+# Uruchomienie:  lerobot-twin --config configs/local.yaml ui   (albo train/eval)
 #                - ustawia zmienna LEROBOT_MP_CONFIG, ktora widzi tez proces
 #                treningu uruchomiony z panelu. Mozna ja tez ustawic samemu.
 # Wlasne wartosci trzymaj w kopii: configs/local.yaml (jest w .gitignore) -
 # wystarczy w niej sekcja, ktora zmieniasz, np. tylko `robot:`.
-
-# Czestotliwosc petli sterowania [Hz]. Wizja moze chodzic wolniej - petla
-# tyka niezaleznie, wiec ograniczenia predkosci i watchdog dzialaja tak samo.
-loop_hz: 30.0
-
-camera:
-  source: 0            # indeks kamery albo sciezka do pliku wideo
-  width: 1280
-  height: 720
-  fps: 30
-  mirror: true         # obraz lustrzany - ruch dloni zgodny z obrazem
-  fourcc: MJPG         # czesto odblokowuje 30+ FPS na kamerach USB
-  loop_video: true
-
-tracker:
-  backend: auto        # auto | tasks (MediaPipe 1.x) | legacy (0.10.x)
-  model_path: models/hand_landmarker.task   # w repozytorium (models/README.md); brakujacy pobiera sie sam z model_url
-  num_hands: 2
-  preferred_hand: any  # any | Left | Right
-  min_detection_confidence: 0.6
-  min_presence_confidence: 0.6
-  min_tracking_confidence: 0.6
-  running_mode: video  # video (synchronicznie) | live_stream (mniejsze opoznienie)
-
-# Filtr One-Euro: mocno tlumi drzenie przy wolnym ruchu, a przy szybkim
-# prawie nie opoznia. Mniejsze `min_cutoff` = gladziej, ale z wieksza zwloka;
-# wieksze `beta` = szybsza reakcja na gwaltowne ruchy.
-#
-# `beta` mnozy PREDKOSC sygnalu, wiec jej sensowna wartosc zalezy od jednostki
-# tego sygnalu - i dlatego kazde wejscie ma tu wlasny wpis. Za mala `beta`
-# zamienia One-Euro w zwykly filtr o stalym `min_cutoff`, czyli w czyste
-# opoznienie. Zmierzone przy machnieciu reka 0,5 Hz (opoznienie grupowe):
-#   position beta 0.02 -> 143 ms,  beta 3.0 -> 66 ms   (drzenie bez zmian)
-#   scale    beta 0.01 -> 173 ms,  beta 10  -> 63 ms
-#   angle    beta 0.05 ->  89 ms,  beta 1.5 -> 32 ms
-filters:
-  position:  {min_cutoff: 1.0, beta: 3.0,  d_cutoff: 1.0}   # polozenie dloni, 0..1
-  scale:     {min_cutoff: 0.8, beta: 10.0, d_cutoff: 1.0}   # rozmiar dloni (glebokosc)
-  angle:     {min_cutoff: 1.5, beta: 1.5,  d_cutoff: 1.0}   # katy dloni [rad]
-  arm_angle: {min_cutoff: 1.5, beta: 0.05, d_cutoff: 1.0}   # katy ramienia [stopnie]
-  gripper_ema: 0.5
-
-mapping:
-  # direct - kazda os dloni steruje jednym stawem
-  # ik     - pozycja dloni wyznacza punkt, katy liczy odwrotna kinematyka
-  # arm    - sledzimy cale ramie operatora: bark, lokiec i nadgarstek
-  mode: direct
-  gripper_source: pinch  # pinch (kciuk-wskazujacy) | none (tylko klawiszami)
-  relative: true       # ruch liczony od chwili zalaczenia sprzegla
-  deadzone: 0.012
-  depth_gain: 1.5      # jak mocno rozmiar dloni w kadrze steruje glebokoscia
-  pinch_open: 0.62     # rozwarcie kciuk-wskazujacy przy otwartym chwytaku
-  pinch_closed: 0.15   # ...i przy zamknietym (kalibracja na zywo: klawisze O/P)
-  gripper_invert: false
-  x_scale: 1.0
-  y_scale: 1.0
-
-# Tryb `arm`: sledzenie calego ramienia operatora (MediaPipe Pose).
-# Katy licza sie w ukladzie TULOWIA, wiec przechylenie sie na krzesle albo
-# obrot bokiem do kamery nie zmienia zadanej pozy robota.
-arm:
-  side: auto           # auto | Left | Right - strona OPERATORA
-  min_visibility: 0.6  # ponizej tego progu ramie uznajemy za niewidoczne
-  pan_gain: 1.0        # przelozenia bezwymiarowe: 1.0 = ruch 1:1
-  lift_gain: 1.0
-  elbow_gain: 1.0
-  use_hand: true       # nadgarstek i chwytak nadal ze sledzenia dloni
-  model_path: models/pose_landmarker_lite.task
-  min_detection_confidence: 0.5
-  min_presence_confidence: 0.5
-  min_tracking_confidence: 0.5
-
-clutch:
-  mode: gesture        # gesture (zwiniete palce = pauza) | key | always
-  debounce_s: 0.12
-  engaged_on_start: false   # bezpiecznie: robot rusza dopiero po SPACJI
-  curl_threshold: 0.58      # otwarta dlon ~0.78, piesc ~0.40
-
-keyboard:                   # tryb `keys`: prowadzenie koncowki klawiszami
-  move_speed: 0.12          # WSAD oraz R/F [m/s trzymania]
-  roll_speed: 60.0          # strzalki w bok: obrot nadgarstka [stopnie/s]
-  gripper_speed: 60.0       # strzalki gora/dol: zacisk chwytaka [jednostki/s]
-  hold_timeout: 0.18        # jak dlugo wcisniecie podtrzymuje ruch bez powtorzen
 
 safety:
   hold_timeout_s: 0.4       # brak dloni dluzej -> zamrozenie ruchu
@@ -119,7 +35,7 @@ robot:
   max_relative_target: 12.0   # sprzetowy limit skoku (null = wylaczony)
   calibration_dir: null
   read_state_hz: 10.0
-  # --- tylko backend `feetech` (lerobot-mp) i blizniak (lerobot-twin) --------
+  # --- tylko backend `feetech` i blizniak (lerobot-twin) --------
   # Blizniak przelicza chwytak 0..100 na kat szczeki przez te same tiki, wiec
   # przy innym ramieniu trzeba je poprawic TUTAJ (w kopii pliku),
   # inaczej `lift` sciska za mocno albo nie domyka.
@@ -130,85 +46,3 @@ robot:
   # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position
   # serwa chwytaka (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u.
   torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte
-
-# --- tylko backend `a1x`: Galaxea A1X po CAN-FD (lerobot-twin, pip install -e ".[a1x]") ---
-# robot.port to wtedy interfejs CAN: can0 (Linux), xcan albo xcan:<adres usb> (macOS),
-# PCAN_USBBUS1 (Windows, wpisz jawnie), virtual:x. Blizniak bierze backend i port z panelu.
-# Opis kluczy i pomiar zera stawow / sprzezenia chwytaka: docs/TWIN.md, "Galaxea A1X".
-a1x:
-  kp: 20.0                   # nigdy 0: przy kp 0 ramie jest gluche; dziala i tak tylko p_des
-  kd: 1.0                    # tlumienie w 0x050/0x051; na ruch nie wplywa
-  gripper_kp: 25.0           # kp ramki chwytaka 0x051; tez > 0
-  gripper_open_pdes: -1.95   # p_des chwytaka [rad] przy 100 (otwarty); bardziej ujemne = szerzej; wlos przed ogranicznikiem
-  gripper_closed_pdes: 0.08  # p_des przy 0 (zamkniety): 0,04 rad za ogranicznikiem +0,039. NIE +0,6 (utyk, przegrzanie)
-  gripper_fb_closed: 0.039   # grupa 7 z 0x052 [rad] na ogranicznikach, zmierzone 2026-09-27 (--grip-test);
-  gripper_fb_open: -1.992    #   wazne od pierwszej 0x051 (w spoczynku po zasilaniu grupa 7 bywa dowolna); null = rozkaz
-  gripper_start: 0.0         # co zglaszac jako chwytak przed pierwszym rozkazem (bez sprzezenia); 0 = zamkniety
-  gripper_rate_pdes_s: 2.0   # slew p_des chwytaka [1/s]
-  gripper_force: 1.2         # |effort| przy zamykaniu ponad spoczynek (pierwsze 0,1 s) = kontakt, cel zamarza
-  joint_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # zero stawow [st.]: odjete przy odczycie (J3 ~ +1.49)
-  stream_hz: 200.0           # strumien 0x050/0x051 [Hz]
-  max_step_deg_s: 90.0       # wlasny limit predkosci backendu (pod nadzorem blizniaka)
-  stale_ms: 150.0            # brak 0x052 dluzej = lacze milczy, wysylka stoi
-  frozen_frames: 50          # tyle identycznych 0x052 = ramie zwolnione (FF 2): wylacz i wlacz zasilanie
-  deaf_err_deg: 3.0          # rozkaz-pomiar tyle st. przez deaf_s przy stojacym stawie
-  deaf_s: 1.0                #   = ramie gluche (Wlacz silniki A1X) albo zablokowane -> STOP
-  enable_on_connect: false   # FF 1->5->6 po polaczeniu; domyslnie nie (FF 5 na chwile puszcza silniki)
-  gripper_over_xcan: true    # chwytak przez XCAN (macOS) dziala (zmierzone 2026-09-27); false = odmowa "no gripper"
-
-ui:
-  show: true
-  window_name: "LeRobot 101 x MediaPipe"
-  draw_skeleton: true
-  draw_hud: true
-  draw_arm_view: true
-  preview_3d: true          # prawdziwe zlozenie SO-101 zamiast schematu
-  preview_asset: null       # domyslnie assets/so101_preview.npz
-  preview_hz: 30.0        # gorny limit; render chodzi w osobnym watku
-  preview_width: 360
-  display_scale: 1.0
-  record_path: null         # np. demo.mp4 - zapis podgladu do pliku
-
-# Limity i wzmocnienia stawow.
-#   gain dla pan/lift/elbow : stopnie na jednostke znormalizowana
-#                             (ruch dloni przez pol kadru ~ 0,5)
-#   gain dla wrist_flex/roll: przelozenie bezwymiarowe (1.0 = ruch 1:1)
-#   invert                  : odwroc kierunek, gdy Twoja kalibracja ma inny znak
-joints:
-  shoulder_pan:  {min: -105.0, max: 105.0, max_vel: 140.0, gain: 90.0, invert: false, offset: 0.0}
-  shoulder_lift: {min:  -95.0, max:  95.0, max_vel: 120.0, gain: 90.0, invert: false, offset: 0.0}
-  elbow_flex:    {min:  -92.0, max:  92.0, max_vel: 120.0, gain: 90.0, invert: false, offset: 0.0}
-  wrist_flex:    {min:  -95.0, max:  95.0, max_vel: 160.0, gain:  1.2, invert: false, offset: 0.0}
-  wrist_roll:    {min: -150.0, max: 150.0, max_vel: 220.0, gain:  1.0, invert: false, offset: 0.0}
-  gripper:       {min:    0.0, max: 100.0, max_vel: 300.0, gain: 100.0, invert: false, offset: 0.0}
-
-# Geometria wyliczona z prawdziwego zlozenia SO-101 (repo `articulus` ->
-# bryly STEP i URDF producenta). NIE zmieniaj "na oko" - uruchom
-# `python scripts/derive_geometry.py --check`, zeby zobaczyc skutek.
-geometry:
-  base_height: 0.1166
-  pan_axis_x: 0.03884
-  shoulder_offset: 0.0304
-  lateral_offset: 0.00046
-  upper_arm: 0.116
-  forearm: 0.135
-  wrist_to_tip: 0.16566
-  lift_offset_deg: 76.032
-  elbow_offset_deg: -73.825
-  wrist_offset_deg: -5.766
-  pan_sign: -1.0
-  lift_sign: -1.0
-  elbow_sign: -1.0
-  wrist_sign: -1.0
-  elbow_up: false
-
-# Przestrzen robocza dla trybu `ik` (promienie liczone od osi obrotu podstawy).
-workspace:
-  span_x: 0.12
-  span_y: 0.20
-  span_z: 0.12
-  center: [0.32, 0.0, 0.10]
-  radius_min: 0.15
-  radius_max: 0.42
-  pitch_min_deg: -50.0
-  pitch_max_deg: -5.0

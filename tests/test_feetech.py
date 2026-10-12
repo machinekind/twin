@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from lerobot_mp.config import JOINT_NAMES, load_config
+from lerobot_mp.twin.config import JOINT_NAMES, load_config
 from lerobot_mp.robot import serial_bridge
 from lerobot_mp.robot.feetech import (
     ADDR_GOAL_POSITION,

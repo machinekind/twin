@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..config import AppConfig, JointConfig, config_from_data, read_config_data
+from .config import JointConfig, TwinConfig, config_from_data, read_config_data
 
 #: Korzen repozytorium (wspolny dla calego pakietu, patrz `lerobot_mp.paths`).
 from ..paths import REPO_ROOT
@@ -312,14 +312,15 @@ _SKIP_WARNED: set[tuple[str, str]] = set()
 
 def robot_config(
     spec: RobotSpec, path: str | Path | None = None, overrides: dict[str, Any] | None = None
-) -> AppConfig:
+) -> TwinConfig:
     """`load_config()` dla tego ramienia: stawy z opisu, poza domowa z opisu.
 
     Plik YAML (`path` albo `LEROBOT_MP_CONFIG`) i `overrides` leza na wierzchu,
     jak w `load_config`. Dwie zasady:
 
     * Sekcje `joints` i `safety.home` pliku to tabele aplikacji dloni, kluczowane
-      stawami SO-101 (`configs/default.yaml`, kopiowany do `configs/local.yaml`).
+      stawami SO-101 (`safety.home` z `configs/default.yaml`; `joints` tylko z wlasnej
+      kopii w `configs/local.yaml`).
       Stosuja sie tylko do ramienia o stawach SO-101 (te same co w aplikacji dloni);
       innemu ramieniu plik ich nie daje - limity i poze domowa bierze z opisu
       (nazwa `gripper` jest wspolna, wiec nawet pojedynczy wpis SO-101 dalby

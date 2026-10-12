@@ -1,8 +1,8 @@
-"""Nadzor bezpieczenstwa - ostatnie ogniwo przed wyslaniem rozkazu do serw.
+"""Safety supervision: the last link before a command goes to the servos.
 
-Zasada: *nic* nie trafia do robota z pominieciem tej klasy. Nawet gdyby
-mapowanie albo detekcja dloni zwarialy, tutaj cel jest przycinany do limitow
-stawow i ograniczany co do predkosci, a brak dloni zamraza ruch.
+Rule: *nothing* reaches the robot without passing this class. Even if the mapping or the
+hand detection went wild, the target is clamped to the joint limits and rate-limited here,
+and a missing hand freezes the motion.
 """
 
 from __future__ import annotations
@@ -11,45 +11,71 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..config import GRIPPER, AppConfig
-from .filters import RateLimiter
+from .config import GRIPPER, TwinConfig
 
 logger = logging.getLogger(__name__)
 
 
-class SafetyState(str, Enum):
-    """Stan maszyny bezpieczenstwa."""
+class RateLimiter:
+    """Limits how fast a signal changes (slew rate): a hard safety limit."""
 
-    STARTING = "STARTING"      # plynne dojscie do pozycji domowej po starcie
-    IDLE = "IDLE"              # gotowy, sterowanie nieaktywne
-    ACTIVE = "ACTIVE"          # robot podaza za dlonia
-    HOLDING = "HOLDING"        # dlon zgubiona / sprzeglo rozlaczone - stoimy
-    HOMING = "HOMING"          # powrot do pozycji domowej
-    ESTOP = "ESTOP"            # zatrzymanie awaryjne
+    def __init__(self, max_rate: float, value: float = 0.0):
+        if max_rate <= 0:
+            raise ValueError("max_rate musi byc dodatnie")
+        self.max_rate = max_rate
+        self._value = value
+
+    def __call__(self, target: float, dt: float) -> float:
+        max_step = self.max_rate * max(dt, 0.0)
+        delta = target - self._value
+        if delta > max_step:
+            delta = max_step
+        elif delta < -max_step:
+            delta = -max_step
+        self._value += delta
+        return self._value
+
+    @property
+    def value(self) -> float:
+        return self._value
+
+    def reset(self, value: float) -> None:
+        self._value = value
+
+
+class SafetyState(str, Enum):
+    """State of the safety state machine."""
+
+    STARTING = "STARTING"      # smooth approach to the home pose after start
+    IDLE = "IDLE"              # ready, control inactive
+    ACTIVE = "ACTIVE"          # the robot follows the hand
+    HOLDING = "HOLDING"        # hand lost / clutch released: stand still
+    HOMING = "HOMING"          # returning to the home pose
+    ESTOP = "ESTOP"            # emergency stop
 
 
 @dataclass
 class SafetyReport:
-    """Co nadzor zrobil w tym kroku - do wyswietlenia na HUD."""
+    """What the supervisor did in this step, for the HUD."""
 
     state: SafetyState = SafetyState.IDLE
-    #: Stawy, ktore uderzyly w limit pozycji.
+    #: Joints that hit a position limit.
     at_limit: list[str] = field(default_factory=list)
-    #: Stawy, ktorych zadany ruch byl ograniczony limitem predkosci.
+    #: Joints whose commanded motion was cut by the speed limit.
     rate_limited: list[str] = field(default_factory=list)
     seconds_without_hand: float = 0.0
 
 
 def _smoothstep(t: float) -> float:
-    """Gladkie przejscie 0->1 z zerowa predkoscia na koncach."""
+    """Smooth 0->1 transition with zero speed at both ends."""
     t = max(0.0, min(1.0, t))
     return t * t * (3.0 - 2.0 * t)
 
 
 class SafetySupervisor:
-    """Limity pozycji i predkosci, watchdog dloni, zatrzymanie awaryjne."""
+    """Position and speed limits, hand watchdog, emergency stop."""
 
-    def __init__(self, cfg: AppConfig):
+    def __init__(self, cfg: TwinConfig):
         self.cfg = cfg
         self.state = SafetyState.STARTING
         self._limiters: dict[str, RateLimiter] = {}
@@ -58,28 +84,28 @@ class SafetySupervisor:
         self._ramp_to: dict[str, float] = {}
         self._ramp_t = 0.0
         self._ramp_duration = max(cfg.safety.startup_ramp_s, 1e-3)
-        #: Chwila rampy [s], od ktorej liczy sie rampa danego stawu (brak = od zera).
-        #: Tylko blizniak: staw spoza limitow zaczyna swoja rampe dopiero po powrocie w zakres.
+        #: Ramp time [s] from which a joint's own ramp counts (missing = from zero).
+        #: Twin only: a joint outside its limits starts its ramp only after it is back in range.
         self._ramp_start: dict[str, float] = {}
         self._no_hand_for = 0.0
         self._estop = False
         self._was_active = False
-        #: Stawy nadzorowane - te z konfiguracji, w jej kolejnosci (SO-101 w aplikacji
-        #: dloni, stawy ramienia z opisu w blizniaku, `robots.robot_config`).
+        #: Supervised joints: those of the configuration, in its order (the SO-101 in the hand
+        #: app, the arm's own joints from its description in the twin, `robots.robot_config`).
         self.names: tuple[str, ...] = tuple(cfg.joints)
         self.home = self._clamped_home()
-        #: Tryb blizniaka (`start(..., keep_outside=True)`): staw, ktory stoi poza
-        #: limitami konfiguracji, dostaje wlasne, poszerzone limity az do miejsca,
-        #: gdzie stoi. Limity ida za rozkazem do srodka i znikaja, gdy staw wroci
-        #: w zakres. Pusty slownik = zwykle limity (aplikacja dloni).
+        #: Twin mode (`start(..., keep_outside=True)`): a joint standing outside the configured
+        #: limits gets its own widened limits up to where it stands. The limits follow the
+        #: command inwards and vanish once the joint is back in range. Empty dict = plain
+        #: limits (hand app).
         self._soft: dict[str, tuple[float, float]] = {}
         self._keep_outside = False
-        #: Predkosc [jednostka/s], z jaka staw spoza limitow wraca w zakres.
-        #: Zmierzone na ramieniu nr 2 (shoulder_lift -101 st. przy limicie -95):
-        #: przyciecie na starcie dawalo skok 6 st. z pelna predkoscia serwa.
+        #: Speed [unit/s] at which a joint outside the limits returns into range.
+        #: Measured on arm no. 2 (shoulder_lift at -101 deg with a limit of -95): clamping at
+        #: start gave a 6 deg jump at full servo speed.
         self.outside_vel = 15.0
 
-    # ------------------------------------------------------------- pomocnicze
+    # ------------------------------------------------------------- helpers
     def _clamped_home(self) -> dict[str, float]:
         home = {}
         for name in self.names:
@@ -89,11 +115,11 @@ class SafetySupervisor:
         return home
 
     def set_speed_cap(self, deg_s: float | None) -> None:
-        """Gorna granica predkosci kazdego stawu ramienia [jednostki/s] - jak 'speed' w jog_a1x.
+        """Upper speed bound of every arm joint [units/s], like 'speed' in jog_a1x.
 
-        None = bez granicy (tylko `max_vel` x `velocity_scale`). Chwytak bez zmian.
-        Ograniczniki dostaja nowe tempo od razu, bez skoku (krok liczy sie od ostatniego
-        rozkazu). Staw spoza limitow dalej wraca co najwyzej `outside_vel` (`step`).
+        None = no bound (only `max_vel` x `velocity_scale`). The gripper is unchanged.
+        The limiters take the new pace at once, without a jump (the step counts from the last
+        command). A joint outside its limits still returns at most at `outside_vel` (`step`).
         """
         self.speed_cap = None if deg_s is None else max(float(deg_s), 1e-3)
         for name, limiter in self._limiters.items():
@@ -108,18 +134,17 @@ class SafetySupervisor:
 
     # ------------------------------------------------------------------ start
     def start(self, measured: dict[str, float], go_home: bool = True, *, keep_outside: bool = False) -> None:
-        """Inicjalizuje nadzor aktualna, *zmierzona* pozycja robota.
+        """Initializes the supervisor with the robot's current, *measured* pose.
 
-        Startujemy dokladnie tam, gdzie ramie faktycznie stoi, i dopiero stamtad
-        plynnie jedziemy do pozycji domowej - inaczej pierwszy rozkaz bylby
-        skokiem o kilkadziesiat stopni. `go_home=False` zostawia ramie tam,
-        gdzie stoi - panel blizniaka laczy sie bez ruchu i ma osobny przycisk.
+        We start exactly where the arm really stands and only from there move smoothly to the
+        home pose; otherwise the first command would be a jump of several tens of degrees.
+        `go_home=False` leaves the arm where it stands: the twin panel connects without motion
+        and has a separate button.
 
-        `keep_outside=True` (blizniak): staw poza limitami NIE jest przycinany
-        na starcie - rozkaz zaczyna sie dokladnie od zmierzonej pozy, a do
-        zakresu staw wraca powoli (`outside_vel`) dopiero po wlaczeniu sterowania
-        (ACTIVE) albo w rampie do domu.
-        Bez tego "polacz bez ruchu" wysylal pierwszym rozkazem skok do limitu.
+        `keep_outside=True` (twin): a joint outside the limits is NOT clamped at start. The
+        command begins exactly at the measured pose, and the joint returns into range slowly
+        (`outside_vel`) only once control is on (ACTIVE) or in the ramp home. Without it,
+        "connect without motion" sent a jump to the limit as its first command.
         """
         self._command = {}
         self._limiters = {}
@@ -148,7 +173,7 @@ class SafetySupervisor:
         self.state = SafetyState.STARTING
         logger.info("Nadzor wystartowal, plynne dojscie do pozycji domowej (%.1f s).", self._ramp_duration)
 
-    # ------------------------------------------------------------------- krok
+    # ------------------------------------------------------------------- step
     def step(
         self,
         desired: dict[str, float] | None,
@@ -157,7 +182,7 @@ class SafetySupervisor:
         hand_present: bool,
         engaged: bool,
     ) -> tuple[dict[str, float], SafetyReport]:
-        """Zwraca bezpieczny rozkaz dla robota oraz raport dla HUD."""
+        """Returns the safe command for the robot and the report for the HUD."""
         if not self._command:
             raise RuntimeError("Wywolaj SafetySupervisor.start() przed step()")
 
@@ -174,9 +199,10 @@ class SafetySupervisor:
             outside = name in self._soft
             lo, hi = self._soft.get(name, (jc.min, jc.max))
             if outside and self.state == SafetyState.ACTIVE:
-                # Sterowanie wlaczone: staw wraca w zakres (powoli, patrz nizej), nawet gdy
-                # cel go nie rusza - sterowniki dopisuja do celu biezacy rozkaz, wiec staw
-                # stalby poza limitami do konca sesji, w pozie spoza treningu polityk.
+                # Control is on: the joint returns into range (slowly, see below) even if the
+                # target does not move it. The drivers add to the target the current command,
+                # so the joint would otherwise stay outside the limits for the rest of the
+                # session, in a pose outside what the policies were trained on.
                 lo, hi = jc.min, jc.max
 
             clamped = min(max(raw, lo), hi)
@@ -192,16 +218,17 @@ class SafetySupervisor:
                 report.rate_limited.append(name)
             command[name] = value
             if outside:
-                # Limit idzie za rozkazem do srodka - z powrotem na zewnatrz juz nie.
+                # The limit follows the command inwards, never back outwards.
                 lo, hi = self._soft[name]
                 lo, hi = min(jc.min, max(lo, value)), max(jc.max, min(hi, value))
                 if lo >= jc.min and hi <= jc.max:
                     del self._soft[name]
                     if self.state in (SafetyState.STARTING, SafetyState.HOMING):
-                        # Staw wrocil w zakres w trakcie rampy: jego rampa od nowa, stad.
-                        # Cel rampy uciekl juz daleko (staw pelzal 15 st./s), a ogranicznik
-                        # wracal w zakresie do pelnego max_vel - zmierzone: wrist_roll
-                        # 160 -> dom, rozkaz -15 st./s przez 8 taktow, potem od razu -220 st./s.
+                        # The joint came back into range during the ramp: restart its ramp
+                        # from here. The ramp target had run far ahead (the joint crawled at
+                        # 15 deg/s) and the limiter went back to the full max_vel in range.
+                        # Measured: wrist_roll 160 -> home, command -15 deg/s for 8 ticks,
+                        # then at once -220 deg/s.
                         self._ramp_from[name] = value
                         self._ramp_start[name] = self._ramp_t
                 else:
@@ -218,10 +245,10 @@ class SafetySupervisor:
         hand_present: bool,
         engaged: bool,
     ) -> dict[str, float]:
-        """Maszyna stanow: decyduje, *dokad* w ogole chcemy jechac."""
+        """State machine: decides *where* we want to go at all."""
         if self._estop:
             self.state = SafetyState.ESTOP
-            return dict(self._command)  # stoimy w miejscu
+            return dict(self._command)
 
         if self.state in (SafetyState.STARTING, SafetyState.HOMING):
             self._ramp_t += dt
@@ -229,11 +256,11 @@ class SafetySupervisor:
             for name in self.names:
                 alpha = _smoothstep((self._ramp_t - self._ramp_start.get(name, 0.0)) / self._ramp_duration)
                 target[name] = self._ramp_from[name] + alpha * (self._ramp_to[name] - self._ramp_from[name])
-            # Staw spoza limitow (tylko blizniak, `keep_outside`) konczy rampe dopiero po
-            # powrocie w zakres i wlasnej rampie stamtad. Zmierzone: wrist_roll 45 st. za
-            # limitem (powrot 15 st./s dluzszy niz rampa 2,5 s) - Dom konczyl sie (IDLE)
-            # z rozkazem 158 st., a poza ACTIVE poszerzone limity zostaja, wiec staw
-            # zostawal poza zakresem. Aplikacja dloni `_soft` nie ma - bez zmian.
+            # A joint outside the limits (twin only, `keep_outside`) ends the ramp only after it
+            # is back in range and has run its own ramp from there. Measured: wrist_roll 45 deg
+            # past the limit (the 15 deg/s return takes longer than the 2.5 s ramp): Home
+            # finished (IDLE) with a command of 158 deg, and outside ACTIVE the widened limits
+            # stay, so the joint stayed out of range. The hand app has no `_soft`: unchanged.
             if not self._soft and self._ramp_t >= self._ramp_duration + max(self._ramp_start.values(), default=0.0):
                 self.state = SafetyState.IDLE
                 self._was_active = False
@@ -244,24 +271,24 @@ class SafetySupervisor:
             self._was_active = True
             return desired
 
-        # Sterowanie nieaktywne: trzymamy pozycje...
+        # Control inactive: hold the position...
         if self._no_hand_for >= self.cfg.safety.return_home_timeout_s > 0:
-            # ...a po dluzszej nieobecnosci dloni wracamy do pozycji domowej.
+            # ...and after a long absence of the hand return to the home pose.
             self.begin_homing()
             return dict(self._command)
 
-        # HOLDING znaczy "sterowalismy i zgubilismy dlon", a nie "czekamy na
-        # pierwsza dlon" - inaczej aplikacja startowalaby w stanie alarmowym.
+        # HOLDING means "we were in control and lost the hand", not "waiting for the first
+        # hand"; otherwise the app would start in an alarm state.
         lost_hand = self._no_hand_for > 0 and self._was_active
         self.state = SafetyState.HOLDING if lost_hand else SafetyState.IDLE
         return dict(self._command)
 
-    # ------------------------------------------------------------- sterowanie
+    # ------------------------------------------------------------- control
     def begin_homing(self, duration: float | None = None, *, keep: dict[str, float] | None = None) -> None:
-        """Rozpoczyna plynny powrot do pozycji domowej.
+        """Starts a smooth return to the home pose.
 
-        `keep` (blizniak): stawy, ktore w rampie maja jechac do podanej wartosci
-        zamiast do domu - np. chwytak sciskajacy kostke nie otwiera sie po drodze.
+        `keep` (twin): joints that the ramp should take to the given value instead of home,
+        e.g. a gripper squeezing a cube does not open on the way.
         """
         self._ramp_from = dict(self._command)
         self._ramp_to = dict(self.home)
@@ -277,10 +304,10 @@ class SafetySupervisor:
         self.state = SafetyState.HOMING
 
     def reseed(self, joints: dict[str, float]) -> None:
-        """Rozkaz i ograniczniki predkosci podanych stawow od nowa w tej pozie, bez zmiany stanu.
+        """Restarts the command and speed limiters of the given joints at this pose, keeping the state.
 
-        Dla blizniaka: gdy backend wyslal co innego niz rozkaz (serwo przycina
-        do swoich limitow), nadzor ma liczyc dalej od tego, co naprawde poszlo.
+        For the twin: when the backend sent something other than the command (the servo clamps
+        to its own limits), the supervisor must continue from what really went out.
         """
         if not self._command:
             return
@@ -298,12 +325,12 @@ class SafetySupervisor:
             self._limiters[name].reset(value)
 
     def hold(self, joints: dict[str, float]) -> None:
-        """Stoimy tam, gdzie ramie JEST (zmierzona poza), a nie tam, dokad jechal rozkaz.
+        """Stand where the arm IS (the measured pose), not where the command was heading.
 
-        Przerywa rampe i sterowanie. Ostatni rozkaz po kolizji lezy kilkadziesiat
-        stopni za przeszkoda - trzymanie go (jak robi `set_engaged(False)` samo
-        w sobie) zostawialo serwa dociskajace do niej z pelnym momentem. STOP
-        awaryjny zostaje STOP-em, tylko trzyma zmierzona poze.
+        Interrupts the ramp and the control. After a collision the last command lies several
+        tens of degrees behind the obstacle; holding it (as `set_engaged(False)` alone does)
+        left the servos pressing against it at full torque. An emergency STOP stays a STOP,
+        it just holds the measured pose.
         """
         self.reseed(joints)
         self._no_hand_for = 0.0
@@ -333,7 +360,7 @@ class SafetySupervisor:
 
     @property
     def outside(self) -> dict[str, tuple[float, float]]:
-        """Stawy poza limitami konfiguracji i ich chwilowo poszerzone limity (tylko `keep_outside`)."""
+        """Joints outside the configured limits and their temporarily widened limits (`keep_outside` only)."""
         return dict(self._soft)
 
     @property
