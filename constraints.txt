@@ -22,7 +22,6 @@ warp-lang==1.17.0
 gymnasium==1.3.0
 viser==1.1.1
 websockets==16.1.1
-pyzmq==27.2.0
 torch==2.11.0
 torchvision==0.26.0
 
@@ -30,9 +29,6 @@ torchvision==0.26.0
 pyserial==3.5
 lerobot==0.6.1
 feetech-servo-sdk==1.0.0
-
-# [ueye] - kamera IDS uEye (wymaga IDS Software Suite 4.96 z libueye_api)
-pyueye==4.96.952
 
 # [research], [dev]
 trimesh==5.1.0

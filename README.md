@@ -63,10 +63,6 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 - **Drugie ramię: Galaxea A1X** — ten sam bliźniak, panel i nadzór; w
   symulacji model, kalibracja kamer i środowiska RL, na sprzęcie backend `a1x`
   po CAN-FD (Linux, macOS, Windows) — [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
-- **Mrówkę RealAnt obok ramienia** — mrówka jeździ na własnej polityce, a bliźniak ma jej kopię w fizyce:
-  nogi z odczytów serw, poza dociągana AprilTagami z kamer, montaż tagów kalibruje się sam; w demo mrówkę
-  udaje druga, sterowana **WSAD** (ta sama polityka chodu w czterech kierunkach; `lerobot-twin demo --ant`,
-  zakładka *Mrówka*) — [docs/TWIN.md](docs/TWIN.md#mrówka-realant-kopia-w-bliźniaku-z-serw-i-tagów).
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.
@@ -115,7 +111,7 @@ i dane:
 | `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
 | `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
 | `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
-| `assets/calib/*.txt` | przykładowe obiektywy (Logitech Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
+| `assets/calib/*.txt` | przykładowy obiektyw (Logitech Brio 4K 1280x720): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
 | `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
 | `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — przykładowe zestawy z fal A1X |
@@ -305,22 +301,6 @@ Windows). Parametry (zero stawów, sprzężenie chwytaka, progi) są w sekcji
 ruchu; sekwencja włączenia FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
 **A1X nie ma hamulców** — przed pierwszą sesją przeczytaj
 [docs/TWIN.md](docs/TWIN.md#galaxea-a1x), „Galaxea A1X”.
-
-### Kamera IDS uEye
-
-Kamery IDS (np. UI-1240) nie dają urządzenia V4L2, więc OpenCV ich nie
-otworzy — bliźniak rozmawia z nimi przez `pyueye` i IDS Software Suite
-(demon `ueyeusbd`/`ueyeethd`, `libueye_api`):
-
-```bash
-pip install -e ".[ueye]" -c constraints.txt
-```
-
-W panelu **Szukaj kamer USB** znajduje też kamery uEye (źródło `ueye` =
-pierwsza wolna kamera, `ueye:<id>` = numer z IDS Camera Manager). Kamera
-startuje z automatyczną migawką ograniczoną do 20 ms i automatycznym
-wzmocnieniem — bez tego obraz IDS jest czarny. Gdy sterownik nie widzi
-kamery (kabel, `ueyeusbd`), panel pokazuje to przy kamerze zamiast kadru.
 
 ### Naprawa OpenCV po LeRobocie
 

@@ -3,7 +3,7 @@
     server = FrameServer(app.stream_frames, host="0.0.0.0", port=8766)
     server.start()                                   # http://<maszyna>:8766/
 
-Kamery (V4L2, uEye) otwiera tylko jeden proces, wiec drugi proces nie moze ich
+Kamery (V4L2) otwiera tylko jeden proces, wiec drugi proces nie moze ich
 podgladac - stad serwer w procesie panelu, na kadrach, ktore panel i tak juz pobiera
 (`TwinApp.frames`, co ok. 0.2 s). Nic tu nie steruje ramieniem ani panelem, dlatego
 moze sluchac w calej sieci, inaczej niz sam panel (`--host`).

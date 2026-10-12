@@ -114,7 +114,7 @@ lerobot-twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJ
 **Podgląd kamer** (`--stream-port`): kadry, które panel i tak pobiera, po HTTP na osobnym porcie —
 `/` strona ze wszystkimi kamerami, `/<kamera>.mjpg` strumień, `/<kamera>.jpg` ostatni kadr,
 `/cameras.json` lista. Nic tam nie steruje ramieniem, więc słucha domyślnie w całej sieci
-(`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2, uEye) —
+(`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2) —
 dlatego podgląd siedzi w procesie panelu.
 
 Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
@@ -233,7 +233,7 @@ trzymana równolegle do obiektywu nie wyznacza ogniskowej — sesja bez pochyle�
 kamera z takim obiektywem nie przejdzie kroku 3. *Anuluj* niczego nie liczy
 ani nie zapisuje.
 Obiektyw zmierzony gdzie indziej (eksport K i dystorsji do pliku tekstowego,
-jak `assets/calib/logitech_brio_4k_calib.txt` i `ueye_calib.txt`) wczytuje
+jak `assets/calib/logitech_brio_4k_calib.txt`) wczytuje
 *Gotowy obiektyw z pliku* → *Wczytaj obiektyw z pliku* — do wybranej kamery,
 tylko z tej samej rozdzielczości; plik trafia do `assets/calib/`.
 
@@ -722,59 +722,6 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 
 ---
 
-## Mrówka RealAnt: kopia w bliźniaku z serw i tagów
-
-Mrówka RealAnt (8 serw AX-12A, [realant-hw](https://github.com/OteRobotics/realant)) jest w bliźniaku obok
-ramienia: model fizyczny RealAnt v2 z realant-rl (`assets/robots/realant`), AprilTagi 36h11 na tekturze —
-**2 płasko na grzbiecie** (krawędzie równolegle do płyty korpusu, osie wzdłuż nóg), **1 na maszcie**
-(prostopadle do niego, krawędzie równolegle, nad nogą). Zakładka **Mrówka** w panelu (`twin/ant.py`,
-`antmirror.py`, `antwalk.py`, `antdrive.py`, `antpad.py`, `ui/ant_panel.py`); próba bez sprzętu:
-`lerobot-twin demo --ant` (z A1X: `--robot a1x --ant`).
-
-**Mrówka na końcu blatu.** `lerobot-twin workspace --ant` (`--path <plik>`
-dla innego stanowiska) dopisuje do istniejącego stanowiska symulowaną mrówkę z kamerami `sym-mrowka-*`
-(`ant.add_ant`). Stoi na obecnym blacie, 20 cm przed jego dalekim końcem, w y = 0; blat się nie zmienia.
-Na blacie 1,2 × 0,8 m z podstawą w `base_xy` (−0,45, 0) to x = 0,85 m.
-
-**Mrówka jeździ na własnej polityce** — realant-rl `robot_teleop.py` / `robot_policy.py` po jej stronie
-(klawisze, trasy). **Bliźniak niczego jej nie wysyła** (rozkazy z dwóch miejsc naraz się gryzły) — ma jej
-**kopię w fizyce sceny**, która chodzi niezależnie i jest dociągana pomiarami (`antmirror.py`):
-
-* **nogi** kopii jadą do kątów odczytanych z serw prawdziwej mrówki (ZeroMQ, tylko nasłuch `ant_server.py`
-  przez `antproxy.py`, port 3001; `pip install -e .[ant]`) — kopia stawia te same kroki i sama się przesuwa,
-  także gdy kamery jej nie widzą;
-* **poza**: każdy kadr z tagami dociąga pozycję i kurs kopii do pozy z kamer — błąd liczony względem kopii
-  z chwili kadru (opóźnienie kamery nie ciągnie mrówki do tyłu); wysokość i pochylenie zostają z fizyki (nogi
-  na blacie);
-* **montaż taga kalibruje się sam**: kierunek przodu — z porównania, dokąd kopia idzie na odczytach serw, a dokąd
-  mrówka według tagów (przyciągany do 45° + k·90°: którą nogę pokazuje oś taga); wysokość i pochylenie taga —
-  z taga względem korpusu kopii stojącego na nogach. Ręcznie (zwinięte): *Poziom z blatu* i pola montażu.
-
-**Tagi** — numery, bok czarnego kwadratu (linijka), **Ucz układu: dodaj kadr** (kadry z oboma tagami naraz,
-jak kamera PMD; *Maszt prostopadle* przyciąga wyuczony obrót do prostopadłego, odchyłka to sprawdzian
-naklejenia). **Uwaga:** tag 1 jest też na karcie kalibracyjnej ramienia — mrówki nie może być w kadrze podczas
-fali (albo inny numer na maszcie; panel ostrzega).
-
-**Demo** (bez prawdziwej mrówki): udaje ją druga mrówka w scenie (`antprawda/`) z prawdziwymi tagami, na
-polityce chodu `exp004_smooth2` w numpy — przeniesiony `robot_teleop_v2.py`: **WSAD nie zmienia polityki**
-(w bok i w tył ta sama polityka z przemianowanymi nogami i obserwacją obróconą o 90°/180°), Q / E obrót
-w miejscu (**tapnięcie = jeden cykl 1 s**, zmiana trybu czeka na koniec cyklu, więc kąt jest powtarzalny),
-Z / C mały obrót (biodra 0,2, tapnięcie = pół cyklu, ~13°), pozy 0 / V / F / T (start polityki, postawa,
-płasko, na palcach — dwie ostatnie to pozy z kroku *Poziom z blatu*), H / 1–4 noga prosto, B / N machanie nogą,
-spacja stop natychmiast; ze stania do jazdy przez pozę startową (rampa 0,5 s), regulator wysokości, czuwak 0,4 s,
-obserwacja domyślnie *nominalna* (jak na prawdziwej — mrówka nie ma kamery). Pulpit WSAD w zakładce i pod
-`http://<host panelu>:8091/`; kierunki względem widoku 3D (W = w głąb ekranu), klawisze przechwytywane przed
-kamerą 3D visera (kamerę przesuwają strzałki i mysz).
-Kopia (niebieska, półprzezroczysta, schowana przed kamerami symulowanymi) śledzi ją tylko z odczytów serw
-(zaokrąglonych do jednostek AX-12A) i kadrów. STOP panelu zatrzymuje ją razem z ramieniem.
-
-W symulacji (`tests/test_twin_ant.py`, `tests/test_twin_antdrive.py`): układ tagów 1,5 mm / 1°, ta sama
-polityka jedzie w czterech kierunkach ~0,093 m/s; kopia startująca ze złym montażem (obrót 45° zamiast 135°)
-po kilku odcinkach jazdy ma montaż 135°, wysokość taga < 6 mm od prawdy i stoi < 2 cm / 5° od mrówki; bez tagów
-odtwarza przejazd z samych serw (1,5 cm różnicy na 13 cm). **Na prawdziwej mrówce nie jechało.** Mapy serw
-są z `rollout_server.py` (tam „TODO validate”), a kopia odtwarza ruch tylko tak dobrze, jak model v2 odtwarza
-mrówkę v1 (inne uchwyty bioder) — rozjazd dociągają tagi.
-
 ## Polecenia
 
 | | |
@@ -880,59 +827,6 @@ Kalibracja pojawia się pomarańczowy przycisk *Kamera … została poruszona* (
 pomiar tylko dla tej kamery). Klatka
 starsza niż 1 s nie jest kadrem — zamrożony albo martwy strumień panel pokazuje
 jako błąd kamery i otwiera go na nowo.
-
----
-
-### Kamera PMD z tagami na obudowie
-
-Kamera głębi pmd CamBoard nano (podgląd: `python pmd_view.py`) jest kamerą
-stanowiska jak Brio czy uEye — źródło `pmd` / `pmd:<serial>` (`twin/pmd.py`,
-PMDSDK2 przez ctypes; w klonie dowiązanie `pmd/` do rozpakowanego katalogu
-z płyty kamery, `.gitignore`). *Szukaj kamer USB* znajduje ją, gdy SDK i
-kamera są; *Dodaj* wpisuje ją z **K odczytanym z jej kalibracji fabrycznej**
-(xyz z SDK to dokładny model otworkowy, residuum 0,002 px — bez szachownicy,
-plakietka *OBIEKTYW OK*). Jej kadr w panelu, w piramidzie 3D i w podglądzie
-`--stream-port` to obraz **amplitudy** (165×120, szary); odległości i xyz
-ostatniej klatki są obok (`PMDLive.depth_t`) na chmurę punktów — jeszcze nie
-w bliźniaku.
-
-Pozy nie da się skalibrować kartą (165 px szerokości), więc na obudowie są
-naklejone **trzy AprilTagi 36h11** (domyślnie 0, 1, 2) i kamery stanowiska,
-które mają pozę, widzą je — stąd poza PMD w układzie podstawy. Zakładka
-**Kamery → Kamera PMD (tagi na obudowie)** (`twin/tagbody.py`):
-
-1. **id tagów** i **bok tagu** (czarny kwadrat, zmierzony linijką). Pierwszy
-   numer to układ kamery PMD: środek w środku tego taga, z wzdłuż jego normalnej.
-2. **Ucz układu tagów: dodaj kadr** — nikt nie mierzy, gdzie na obudowie
-   siedzą pozostałe tagi: każdy kadr, w którym jedna kamera widzi dwa tagi
-   naraz, daje ich wzajemną pozę, a wszystkie rogi ze wszystkich kadrów
-   dopasowują układ i pozę bryły w każdym kadrze naraz (LM w numpy).
-   Wystarczy K kamery (krok 1), poza niepotrzebna. Kilka kadrów z różnych
-   stron, aż tekst pod przyciskami powie *Układ kompletny*. Sam PnP jednego
-   taga ma błąd głębokości rzędu procenta (tag 50 px, róg 0,3 px → 4 mm na
-   0,4 m); z trzech widoków w symulacji układ wychodzi z dokładnością 0,1 mm.
-3. **Znajdź PMD w kamerach** — kadry kamer z pozą → poza PMD (mediana z kamer),
-   w 3D: osie układu, plytki tagów, etykieta i — po wybraniu **Kamera patrzy
-   wzdłuż** (np. *-z taga 0* = tag 0 na tylnej ściance) — piramida pola widzenia
-   90 × 69°. Rozrzut między kamerami jest, jak przy *Tag na biurku*,
-   sprawdzianem ich kalibracji. **Śledź na żywo** odświeża pozę co takt panelu.
-4. **Zapisz do stanowiska** — sekcja `pmd` w `twin.json` (numery, bok, układ,
-   oś, ostatnia poza); po restarcie PMD jest w 3D od razu.
-
-Gdy w stanowisku jest kamera o źródle `pmd` i wybrano *Kamera patrzy wzdłuż*,
-*Znajdź PMD* wpisuje jej `T_cam2base` (= poza tagów × oś optyczna) — kamera
-dostaje piramidę z żywym obrazem amplitudy i wchodzi do sceny MuJoCo. Poza jest
-**niezaufana z założenia** (początek układu w środku taga, nie w obiektywie;
-dziedziczy kalibrację kamer stanowiska), więc mapa i percepcja jej nie biorą.
-
-W symulacji (`tests/test_twin_tagbody.py`, kostka 4 cm z tagiem na trzech
-ściankach, trzy kamery): poza bryły 1 mm / 1° od prawdy. **Uwaga na numery:**
-karta kalibracyjna ma tagi 0 i 1 — PMD w kadrze podczas fali myli kalibrację
-(`tags.detect` odrzuca numer widziany dwa razy w kadrze, ale tag z obudowy
-widziany *sam* uchodzi za kartę); bezpieczniej nakleić inne numery, panel
-ostrzega, gdy się pokrywają. Sam obraz głębi PMD nie trafia jeszcze do
-bliźniaka — to następny krok (chmura punktów z `pmdGet3DCoordinates` w pozie
-z tagów).
 
 ## Dokładność symulowanej kamery
 

@@ -1,4 +1,4 @@
-"""Kamera PMD z tagami na obudowie: uklad tagow nauczony z kadrow i poza bryly z kamer, wzgledem prawdy.
+"""Bryla z tagami na obudowie: uklad tagow nauczony z kadrow i poza bryly z kamer, wzgledem prawdy.
 
 Kostka 4 cm z tagiem 0 na sciance +z, 1 na +x i 2 na +y stoi w scenie; dwie kamery patrza z roznych
 stron. Sesja widzi tylko kadry i K - uklad tagow i poza kostki wychodza z nich, a prawda sluzy
@@ -7,6 +7,8 @@ odrzucone: tag widziany dwa razy w kadrze.
 """
 
 from __future__ import annotations
+
+import json
 
 import numpy as np
 import pytest
@@ -129,14 +131,12 @@ def test_layout_reaches_a_tag_only_ever_seen_next_to_another_non_reference_tag(r
     assert fit.missing(body.ids) == [2]
 
 
-def test_round_trip_through_the_workspace_file_and_optical_axis(tmp_path):
+def test_round_trip_through_json_and_optical_axis():
     layout = true_layout()
     body = TagBody("pmd", ids=(0, 1, 2), tag_size=0.02, layout=layout, optical=(0, "-z"))
-    ws = Workspace()
-    ws.pmd = {**body.to_dict(), "T_body2base": np.eye(4).tolist()}
-    ws.save(tmp_path / "twin.json")
-    back = Workspace.load(tmp_path / "twin.json")
-    b2 = TagBody.from_dict(back.pmd)
+    # A saved pose next to the body (`T_body2base`) is not part of it - `from_dict` skips it.
+    data = json.loads(json.dumps({**body.to_dict(), "T_body2base": np.eye(4).tolist()}))
+    b2 = TagBody.from_dict(data)
     assert b2.ids == (0, 1, 2) and b2.optical == (0, "-z") and abs(b2.tag_size - 0.02) < 1e-12
     for i in layout:
         assert np.allclose(b2.layout[i], layout[i])
@@ -146,11 +146,6 @@ def test_round_trip_through_the_workspace_file_and_optical_axis(tmp_path):
     for axis in ("-z", "+x", "-x", "+y", "-y"):
         R = optical_in_tag(axis)[:3, :3]
         assert abs(np.linalg.det(R) - 1) < 1e-9 and np.allclose(R.T @ R, np.eye(3))
-    # Bez sekcji pmd plik jej nie ma - starsze pliki wczytuja sie bez zmian.
-    ws2 = Workspace()
-    ws2.save(tmp_path / "bez.json")
-    assert "pmd" not in (tmp_path / "bez.json").read_text(encoding="utf-8")
-    assert Workspace.load(tmp_path / "bez.json").pmd is None
 
 
 def test_a_tag_id_seen_twice_in_one_frame_is_dropped_not_picked_at_random():

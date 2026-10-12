@@ -1,6 +1,6 @@
-"""Bryla z kilkoma tagami na obudowie - kamera PMD z tagami 0, 1, 2: uklad tagow i poza z kamer.
+"""Sztywna bryla z kilkoma tagami 36h11: uklad tagow nauczony z kadrow i poza bryly z kamer.
 
-    body = TagBody("pmd", ids=(0, 1, 2), tag_size=0.020)
+    body = TagBody("bryla", ids=(0, 1, 2), tag_size=0.020)
     obs = observe(frames, ws.cameras, body)               # [Observation] - jeden kadr kazdej kamery
     body.layout = learn_layout(obs_a + obs_b + ..., body).layout
     fix = locate(frames, ws.cameras, body)                # T_body2base z kamer, ktore maja poze
@@ -23,8 +23,8 @@ na zawiniecie obrotu (`handeye._median_T`); rozrzut miedzy kamerami to od razu s
 ich kalibracji - jak w `tagreach`.
 
 Uwaga na identyfikatory: karta kalibracyjna ma tagi 0 i 1 (`Card.ids`). Te same numery na
-obudowie kamery, gdy jest w kadrze podczas fali, sa dla sesji kalibracji nie do odroznienia
-od karty (`tags.detect` odrzuca id widziane dwa razy w kadrze, ale tag z obudowy widziany
+bryle, gdy jest w kadrze podczas fali, sa dla sesji kalibracji nie do odroznienia
+od karty (`tags.detect` odrzuca id widziane dwa razy w kadrze, ale tag z bryly widziany
 sam za karte uchodzi). Bezpieczniej nakleic inne numery; `ids` sa dowolne.
 """
 
@@ -75,7 +75,7 @@ def _T(x: Any) -> np.ndarray:
 
 @dataclass
 class TagBody:
-    """Sztywna bryla z tagami 36h11 tej samej wielkosci; domyslnie kamera PMD CamBoard nano."""
+    """Sztywna bryla z tagami 36h11 tej samej wielkosci (np. kamera z tagami na obudowie)."""
 
     name: str = "pmd"
     ids: tuple[int, ...] = (0, 1, 2)
