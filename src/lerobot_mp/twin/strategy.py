@@ -1,30 +1,30 @@
 """The control-strategy contract: one way for any strategy to drive the arm, in simulation and on hardware.
 
 A strategy (an RL policy, a modular planner, a VLA model) turns what the twin sees into joint
-targets. It never touches the backend: `StrategyRunner` claims the arm (`Twin.claim`), builds an
-`Observation` every tick, calls the strategy, and sends its target through `Twin.set_target`, so
-every command passes the safety supervisor. Simulation and hardware run the same code path.
+targets. It never touches the backend: `StrategyRunner` claims the arm, builds an `Observation`
+every tick, calls the strategy, and sends its target through `Twin.set_target`, so every command
+passes the safety supervisor. Simulation and hardware run the same code path.
 
-A strategy from another package needs nothing from the twin: it follows the `Strategy` protocol
-and reads the observation's attributes. It returns an `Action`, any object with the same
-attributes, or a plain mapping of joint targets.
+A strategy from another package needs nothing from the twin. It follows the `Strategy` protocol,
+reads the observation's attributes, and returns an `Action`, any object with the same attributes,
+or a plain mapping of joint targets.
 
     runner = StrategyRunner(twin, Waypoints([pose_a, pose_b]), goal=panel_goal, objects=cube_poses)
-    runner.start()            # own thread at `strategy.hz`; tests: `start(threaded=False)` + `step_once`
+    runner.start()      # its own thread at `strategy.hz`; tests: `start(threaded=False)` + `step_once`
     ...
-    runner.stop()             # the arm holds its last target
+    runner.stop()       # the arm holds its last target
 
-What the runner guards, for every strategy:
+The runner ends a run, for every strategy, when:
 
-* targets: only the robot's joints, only finite numbers - anything else stops the run with the
-  arm held where it measures;
-* the arm taken away (Home, STOP, reconnect, another owner) stops the run;
-* a disconnected arm stops the run;
-* `time_limit_s` (the strategy's, or the runner's) ends the run.
+* a target names a joint the robot does not have, or is not a finite number (the arm then holds
+  where it measures);
+* the twin takes the arm away (Home, STOP, reconnect, another owner);
+* the arm disconnects;
+* the time limit runs out.
 
-A joint that cannot follow its command (collision, blocked or limp servo) is the twin's own
-tracking guard, for every owner: it triggers STOP, which takes the arm from the runner.
-What counts as success and how far a goal may be is the task's business, inside the strategy.
+A joint that cannot follow its command (a collision, a blocked or limp servo) is the twin's own
+tracking guard, for every owner: it triggers STOP, which takes the arm from the runner. What counts
+as success, and how far a goal may be, is the task's business inside the strategy.
 """
 
 from __future__ import annotations
@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 #: Default owner name of the arm while a strategy runs (`Twin.claim`).
 OWNER = "strategia"
+
+
+# --------------------------------------------------------------------------- the contract
 
 
 @dataclass(frozen=True)
@@ -81,8 +84,9 @@ class RunInfo:
 class Observation:
     """What the strategy sees in one tick. Units: degrees, gripper 0..100, metres, base frame."""
 
-    #: Seconds since the run started, and the tick number (0 = first).
+    #: Seconds since the run started.
     t: float
+    #: Tick number, 0 = the first.
     step: int
     #: Measured joint positions.
     joints: Mapping[str, float]
@@ -92,7 +96,7 @@ class Observation:
     goal: np.ndarray | None = None
     #: Objects the perception knows about, by name (e.g. "cube").
     objects: Mapping[str, ObjectPose] = field(default_factory=dict)
-    #: Camera frames by camera name, fetched only when read (a strategy without vision pays nothing).
+    #: Camera frames by camera name, fetched only when read: a strategy without vision pays nothing.
     frames: Mapping[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -102,10 +106,11 @@ class Action:
 
     #: Joint targets [app units]. Joints left out, or an empty target, keep driving to the previous one.
     target: Mapping[str, float] = field(default_factory=dict)
-    #: The run is over (the task is done, or the strategy gives up).
+    #: The run is over: the task is done, or the strategy gives up.
     done: bool = False
-    #: The task's result when known: success, and the task's error (e.g. metres from the goal).
+    #: Whether the task succeeded, when known.
     success: bool | None = None
+    #: The task's error, when known (e.g. metres from the goal).
     error: float | None = None
     #: A short status line for the panel.
     note: str = ""
@@ -113,8 +118,12 @@ class Action:
 
 @runtime_checkable
 class Strategy(Protocol):
-    """A control strategy. Required: `hz` and `act`. Optional: `start(run, obs)` (may raise to
-    refuse the run, e.g. a policy trained on another robot), `stop(reason)`, `time_limit_s`."""
+    """A control strategy.
+
+    Required: `hz` and `act`. Optional: `start(run, obs)`, which may raise to refuse the run (e.g. a
+    policy trained on another robot); `stop(reason)`, called exactly once after a successful
+    `start`; and `time_limit_s`.
+    """
 
     hz: float
 
@@ -133,20 +142,359 @@ class RunnerStatus:
     note: str = ""
 
 
-class _Frames(Mapping[str, np.ndarray]):
+# --------------------------------------------------------------------------- the runner
+
+
+@dataclass(eq=False)
+class _Run:
+    """One run of the strategy. It is also its token: a loop thread holding an older run - a slow
+    `act` that outlived `stop` - may not send or finish anything, because that run is over."""
+
+    #: `strategy.start` returned: from then on the strategy gets exactly one `stop`.
+    began: bool = False
+    t_start: float | None = None
+    rate_since: float = 0.0
+    rate_ticks: int = 0
+
+
+class StrategyRunner:
+    """Runs one strategy on the twin's arm. The module docstring lists when it ends a run."""
+
+    #: How long `stop` waits for the loop thread [s]. A slower `act` is left behind: its run is over.
+    join_timeout_s = 2.0
+
+    def __init__(
+        self,
+        twin,
+        strategy: Strategy,
+        *,
+        owner: str = OWNER,
+        goal: Callable[[], Any] | None = None,
+        objects: Callable[[], Mapping[str, ObjectPose]] | None = None,
+        cameras: Sequence[str] = (),
+        frame: Callable[[str], np.ndarray] | None = None,
+        time_limit_s: float | None = None,
+    ):
+        _check_strategy(strategy)
+
+        self.twin = twin
+        self.strategy = strategy
+        self.owner = owner
+        self.status = RunnerStatus()
+
+        if time_limit_s is None:
+            time_limit_s = getattr(strategy, "time_limit_s", None)
+        self.time_limit_s = None if time_limit_s is None else float(time_limit_s)
+
+        self._goal = goal
+        self._objects = objects
+        self._cameras = tuple(cameras)
+        self._frame = frame
+        self._fetch: Callable[[str], np.ndarray] = twin.render
+        self._joints: tuple[str, ...] = ()
+
+        self._run: _Run | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        # Re-entrant: a preempt fired from inside `set_target` (same thread) ends the run under this lock.
+        self._lock = threading.RLock()
+
+    # ------------------------------------------------------------------ start
+
+    def start(self, *, threaded: bool = True, gen: int | None = None,
+              guard: Callable[[], bool] | None = None) -> None:
+        """Takes the arm and starts the run.
+
+        `gen` and `guard` go to `Twin.claim` (see `PolicyRunner.start`): a STOP or Home pressed while
+        the strategy was loading must not be overridden by it.
+        """
+        if not self.twin.connected:
+            raise RuntimeError("ramie blizniaka nie jest polaczone")
+
+        self.stop()
+        self._fetch = self._frame_source()
+
+        run = _Run()
+        self._claim(gen, guard)
+        self._begin(run)
+        self._engage(run)
+
+        if threaded:
+            self._thread = threading.Thread(target=self._loop, args=(run,), name=self.owner, daemon=True)
+            self._thread.start()
+
+    def _frame_source(self) -> Callable[[str], np.ndarray]:
+        if self._frame is not None:
+            return self._frame
+
+        if self._cameras and not self.twin.status.simulated:
+            raise ValueError("kamery strategii na prawdziwym ramieniu: podaj `frame` "
+                             "- render sceny to nie obraz z kamer")
+
+        return self.twin.render
+
+    def _claim(self, gen: int | None, guard: Callable[[], bool] | None) -> None:
+        conditions = {}
+        if gen is not None:
+            conditions["gen"] = gen
+        if guard is not None:
+            conditions["guard"] = guard
+
+        self.twin.claim(self.owner, preempt=self._preempted, **conditions)
+
+    def _begin(self, run: _Run) -> None:
+        """Makes `run` the current one and lets the strategy start it (or refuse it)."""
+        with self._lock:
+            self._run = run
+            self.status = RunnerStatus(running=True)
+        self._stop.clear()
+
+        try:
+            info = self._run_info()
+            start = getattr(self.strategy, "start", None)
+            if start is not None:
+                start(info, self._observe(t=0.0, step=0))
+        except Exception as exc:
+            self._finish(run, f"strategia odmowila: {exc}")
+            raise
+
+        run.began = True
+
+    def _run_info(self) -> RunInfo:
+        spec = self.twin.workspace.spec()
+        self._joints = tuple(spec.joints)
+
+        return RunInfo(
+            robot=spec.name,
+            joints=self._joints,
+            gripper=spec.gripper,
+            limits=dict(self.twin.joint_limits()),
+            max_vel=dict(spec.max_vel),
+            folder=spec.root,
+            simulated=bool(self.twin.status.simulated),
+        )
+
+    def _engage(self, run: _Run) -> None:
+        # The arm may have been taken while the strategy was starting.
+        if not self.status.running:
+            self._tell_strategy(self.status.stopped_because)
+            raise RuntimeError(f"ramie odebrane ({self.status.stopped_because})")
+
+        if not self.twin.set_engaged(True, owner=self.owner):
+            reason = self._preempt_reason() or f"ramie ma: {self.twin.owner or 'nikt'}"
+            self._finish(run, f"przerwana: {reason}")
+            raise RuntimeError(f"ramie odebrane ({reason})")
+
+    # ------------------------------------------------------------------- loop
+
+    def _loop(self, run: _Run) -> None:
+        period = 1.0 / float(self.strategy.hz)
+
+        while not self._stop.is_set() and run is self._run:
+            started = time.monotonic()
+            if not self.step_once(started, _run=run):
+                return
+            time.sleep(max(0.0, period - (time.monotonic() - started)))
+
+    def step_once(self, now: float | None = None, *, _run: _Run | None = None) -> bool:
+        """One tick. False = the run is over (the reason is in `status.stopped_because`).
+
+        `now` [s]: the loop thread passes the wall clock, a test the simulated time.
+        """
+        run = _run or self._run
+        if run is None or run is not self._run or not self.status.running:
+            return False
+
+        if now is None:
+            now = time.monotonic()
+
+        try:
+            return self._tick(run, now)
+        except _BadTarget as exc:
+            self._finish(run, f"zly cel strategii: {exc}", hold_measured=True)
+        except Exception as exc:
+            self._fail(run, exc)
+        return False
+
+    def _tick(self, run: _Run, now: float) -> bool:
+        if run.t_start is None:
+            run.t_start = run.rate_since = now
+        t = now - run.t_start
+
+        if not self.twin.connected:
+            self._finish(run, "ramie rozlaczone")
+            return False
+
+        if self.time_limit_s is not None and t >= self.time_limit_s:
+            self._finish(run, "limit czasu")
+            return False
+
+        answer = self.strategy.act(self._observe(t=t, step=self.status.step))
+        action = _as_action(answer)
+        target = self._checked(action.target)
+
+        if not self._send(run, target, action):
+            return False
+        self._count_rate(run, now)
+
+        if action.done:
+            self.status.done = True
+            self._finish(run, "zadanie wykonane" if action.success else "strategia skonczyla")
+            return False
+
+        return True
+
+    def _send(self, run: _Run, target: dict[str, float], action: Action) -> bool:
+        """Sends the target and records the tick, unless the run ended while `act` was running."""
+        with self._lock:
+            if run is not self._run or not self.status.running:
+                return False
+
+            if target:
+                self.twin.set_target(target, owner=self.owner)
+
+            status = self.status
+            status.step += 1
+            status.stopped_because = ""
+            status.note = action.note
+            status.success = action.success
+            status.error = action.error
+
+        return True
+
+    def _count_rate(self, run: _Run, now: float) -> None:
+        run.rate_ticks += 1
+        elapsed = now - run.rate_since
+        if elapsed >= 1.0:
+            self.status.hz = run.rate_ticks / elapsed
+            run.rate_ticks = 0
+            run.rate_since = now
+
+    def _fail(self, run: _Run, exc: Exception) -> None:
+        if self.twin.owner != self.owner:
+            # The arm was taken during the tick (Home, STOP, reconnect): that is the reason, not `exc`.
+            self._finish(run, f"przerwana: {self._preempt_reason() or 'ramie odebrane'}")
+            return
+
+        logger.exception("Strategia przerwana")
+        self._finish(run, f"{type(exc).__name__}: {exc}", hold_measured=True)
+
+    def _observe(self, *, t: float, step: int) -> Observation:
+        status = self.twin.status
+        goal = self._goal() if self._goal is not None else None
+        objects = self._objects() if self._objects is not None else None
+
+        return Observation(
+            t=t,
+            step=step,
+            joints=dict(status.measured) or self.twin.joints(),
+            command=dict(status.command or {}),
+            goal=None if goal is None else np.asarray(goal, float),
+            objects=dict(objects or {}),
+            frames=_LazyFrames(self._cameras, self._fetch),
+        )
+
+    def _checked(self, target: Mapping[str, float]) -> dict[str, float]:
+        """The target as floats, or `_BadTarget`. A NaN that reached the supervisor once drove a
+        gripper past closed (grasp student, 2026-09-27)."""
+        checked = {}
+
+        for name, value in target.items():
+            if name not in self._joints:
+                raise _BadTarget(f"staw {name!r} spoza ramienia")
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+                raise _BadTarget(f"{name} = {value!r} to nie liczba")
+            if not math.isfinite(value):
+                raise _BadTarget(f"{name} = {value!r}")
+
+            checked[name] = float(value)
+
+        return checked
+
+    # ------------------------------------------------------------------- stop
+
+    def stop(self, reason: str = "") -> None:
+        run = self._run
+        self._stop.set()
+
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=self.join_timeout_s)
+        self._thread = None
+
+        self._finish(run, reason or "zatrzymana")
+
+    def _preempted(self) -> None:
+        """The twin took the arm (Home, STOP, reconnect, another owner)."""
+        self.stop(f"przerwana: {self._preempt_reason() or 'ramie odebrane'}")
+
+    def _preempt_reason(self) -> str:
+        return getattr(self.twin, "preempt_reason", "")
+
+    def _finish(self, run: _Run | None, reason: str, hold_measured: bool = False) -> None:
+        """Ends `run` once, whoever gets here first: a tick, `stop`, or the twin taking the arm."""
+        with self._lock:
+            if run is None or run is not self._run or not self.status.running:
+                return
+
+            self.status.running = False
+            self.status.stopped_because = reason
+            self._run = None
+            self._stop.set()
+
+        # Outside the lock: the twin's calls take its own locks.
+        self._let_go(hold_measured)
+        if run.began:
+            self._tell_strategy(reason)
+
+        logger.info("Strategia zatrzymana: %s", reason)
+
+    def _let_go(self, hold_measured: bool) -> None:
+        """Gives the arm back, only if it is still ours.
+
+        `hold_measured`: the arm stops where it IS, not at a target that may lie behind an obstacle.
+        """
+        if self.twin.owner != self.owner:
+            return
+
+        if hold_measured:
+            self.twin.hold_measured()
+        self.twin.set_engaged(False, owner=self.owner)
+        self.twin.release(self.owner)
+
+    def _tell_strategy(self, reason: str) -> None:
+        stop = getattr(self.strategy, "stop", None)
+        if stop is None:
+            return
+
+        try:
+            stop(reason)
+        except Exception:
+            # The arm is already safe; a failing `stop` is only worth a log line.
+            logger.exception("stop() strategii rzucilo wyjatek")
+
+
+# --------------------------------------------------------------------------- helpers
+
+
+class _BadTarget(ValueError):
+    pass
+
+
+class _LazyFrames(Mapping[str, np.ndarray]):
     """Camera frames fetched on first read, once per tick."""
 
     def __init__(self, names: Sequence[str], fetch: Callable[[str], np.ndarray]):
         self._names = tuple(names)
         self._fetch = fetch
-        self._got: dict[str, np.ndarray] = {}
+        self._fetched: dict[str, np.ndarray] = {}
 
     def __getitem__(self, name: str) -> np.ndarray:
         if name not in self._names:
             raise KeyError(name)
-        if name not in self._got:
-            self._got[name] = self._fetch(name)
-        return self._got[name]
+        if name not in self._fetched:
+            self._fetched[name] = self._fetch(name)
+        return self._fetched[name]
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._names)
@@ -155,241 +503,32 @@ class _Frames(Mapping[str, np.ndarray]):
         return len(self._names)
 
 
-class StrategyRunner:
-    """Runs one strategy on the twin's arm. See the module docstring for what it guards."""
+def _check_strategy(strategy: Any) -> None:
+    if not isinstance(strategy, Strategy):
+        raise TypeError(f"{type(strategy).__name__} nie jest strategia: potrzeba `hz` i `act(obs)`")
 
-    #: How long `stop` waits for the loop thread [s]. A slower `act` is left behind: its run is over.
-    join_timeout_s = 2.0
-
-    def __init__(self, twin, strategy: Strategy, *, owner: str = OWNER,
-                 goal: Callable[[], Any] | None = None,
-                 objects: Callable[[], Mapping[str, ObjectPose]] | None = None,
-                 cameras: Sequence[str] = (), frame: Callable[[str], np.ndarray] | None = None,
-                 time_limit_s: float | None = None):
-        if not isinstance(strategy, Strategy):
-            raise TypeError(f"{type(strategy).__name__} nie jest strategia: potrzeba `hz` i `act(obs)`")
-        if not (isinstance(strategy.hz, (int, float)) and math.isfinite(strategy.hz) and strategy.hz > 0):
-            raise ValueError(f"strategia: hz musi byc dodatnie, jest {strategy.hz!r}")
-        self.twin = twin
-        self.strategy = strategy
-        self.owner = owner
-        self._goal = goal
-        self._objects = objects
-        self._cameras = tuple(cameras)
-        self._frame = frame
-        self._fetch: Callable[[str], np.ndarray] = twin.render
-        limit = getattr(strategy, "time_limit_s", None) if time_limit_s is None else time_limit_s
-        self.time_limit_s = float(limit) if limit is not None else None
-        self.status = RunnerStatus()
-        self._joints: tuple[str, ...] = ()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        #: The current run. A loop thread holding an older one - a slow `act` that outlived `stop`
-        #: and its join - may not send or finish anything: the run it belongs to is over.
-        self._run: object | None = None
-        # Re-entrant: a preempt fired from inside `set_target` (same thread) ends the run under this lock.
-        self._lock = threading.RLock()
-        #: `strategy.start` returned for the current run: from then on it gets exactly one `stop`.
-        self._began = False
-        self._t_start: float | None = None
-        self._t_hz, self._ticks = 0.0, 0
-
-    # ------------------------------------------------------------------ start
-    def start(self, *, threaded: bool = True, gen: int | None = None,
-              guard: Callable[[], bool] | None = None) -> None:
-        """Takes the arm and starts. `gen` and `guard` go to `Twin.claim` (see `PolicyRunner.start`):
-        a STOP or Home pressed while the strategy was loading must not be overridden by it."""
-        if not self.twin.connected:
-            raise RuntimeError("ramie blizniaka nie jest polaczone")
-        self.stop()
-        simulated = bool(self.twin.status.simulated)
-        if self._cameras and self._frame is None and not simulated:
-            raise ValueError("kamery strategii na prawdziwym ramieniu: podaj `frame` "
-                             "- render sceny to nie obraz z kamer")
-        self._fetch = self._frame if self._frame is not None else self.twin.render
-
-        run = object()
-        kw = {k: v for k, v in (("gen", gen), ("guard", guard)) if v is not None}
-        self.twin.claim(self.owner, preempt=self._preempted, **kw)
-        with self._lock:
-            self._run, self._began = run, False
-            self.status = RunnerStatus(running=True)
-        self._stop.clear()
-        self._t_start, self._ticks = None, 0
-        try:
-            spec = self.twin.workspace.spec()
-            self._joints = tuple(spec.joints)
-            info = RunInfo(robot=spec.name, joints=self._joints, gripper=spec.gripper,
-                           limits=dict(self.twin.joint_limits()), max_vel=dict(spec.max_vel),
-                           folder=spec.root, simulated=simulated)
-            begin = getattr(self.strategy, "start", None)
-            if begin is not None:
-                begin(info, self._observe(0.0, 0))
-        except Exception as exc:
-            self._finish(run, f"strategia odmowila: {exc}")
-            raise
-        self._began = True
-        if not self.status.running:                         # the arm was taken while the strategy started
-            self._tell_strategy(self.status.stopped_because)
-            raise RuntimeError(f"ramie odebrane ({self.status.stopped_because})")
-        if not self.twin.set_engaged(True, owner=self.owner):
-            reason = getattr(self.twin, "preempt_reason", "") or f"ramie ma: {self.twin.owner or 'nikt'}"
-            self._finish(run, f"przerwana: {reason}")
-            raise RuntimeError(f"ramie odebrane ({reason})")
-        if threaded:
-            th = threading.Thread(target=self._loop, args=(run,), name=self.owner, daemon=True)
-            self._thread = th
-            th.start()
-
-    # ------------------------------------------------------------------- loop
-    def _loop(self, run: object) -> None:
-        period = 1.0 / float(self.strategy.hz)
-        while not self._stop.is_set() and run is self._run:
-            t0 = time.monotonic()
-            if not self.step_once(t0, _run=run):
-                return
-            time.sleep(max(0.0, period - (time.monotonic() - t0)))
-
-    def step_once(self, now: float | None = None, *, _run: object | None = None) -> bool:
-        """One tick. False = the run is over (the reason in `status.stopped_because`).
-
-        `now` [s]: the thread passes the wall clock, a test the simulated time.
-        """
-        run = self._run if _run is None else _run
-        if run is None or run is not self._run or not self.status.running:
-            return False
-        now = time.monotonic() if now is None else now
-        if self._t_start is None:
-            self._t_start = self._t_hz = now
-        st = self.status
-        try:
-            if not self.twin.connected:
-                self._finish(run, "ramie rozlaczone")
-                return False
-            t = now - self._t_start
-            if self.time_limit_s is not None and t >= self.time_limit_s:
-                self._finish(run, "limit czasu")
-                return False
-            action = _as_action(self.strategy.act(self._observe(t, st.step)))
-            target = self._checked(action.target)
-            with self._lock:
-                if run is not self._run or not st.running:
-                    return False                            # stopped (maybe restarted) while `act` ran
-                if target:
-                    self.twin.set_target(target, owner=self.owner)
-                st.step += 1
-                st.stopped_because = ""
-                st.note, st.success, st.error = action.note, action.success, action.error
-            self._ticks += 1
-            if now - self._t_hz >= 1.0:
-                st.hz, self._ticks, self._t_hz = self._ticks / (now - self._t_hz), 0, now
-            if action.done:
-                st.done = True
-                self._finish(run, "zadanie wykonane" if action.success else "strategia skonczyla")
-                return False
-        except _BadTarget as exc:
-            self._finish(run, f"zly cel strategii: {exc}", hold_measured=True)
-            return False
-        except Exception as exc:
-            if self.twin.owner != self.owner:
-                # The arm was taken during the tick (Home, STOP, reconnect): `_preempted` says why.
-                reason = getattr(self.twin, "preempt_reason", "") or "ramie odebrane"
-                self._finish(run, f"przerwana: {reason}")
-                return False
-            logger.exception("Strategia przerwana")
-            self._finish(run, f"{type(exc).__name__}: {exc}", hold_measured=True)
-            return False
-        return True
-
-    def _observe(self, t: float, step: int) -> Observation:
-        status = self.twin.status
-        measured = dict(status.measured) or self.twin.joints()
-        goal = self._goal() if self._goal is not None else None
-        return Observation(
-            t=t, step=step, joints=measured, command=dict(status.command or {}),
-            goal=None if goal is None else np.asarray(goal, float),
-            objects=dict(self._objects() or {}) if self._objects is not None else {},
-            frames=_Frames(self._cameras, self._fetch),
-        )
-
-    def _checked(self, target: Mapping[str, float]) -> dict[str, float]:
-        # A NaN reaching the supervisor drove a gripper past closed (grasp student, 2026-09-27).
-        out = {}
-        for name, value in target.items():
-            if name not in self._joints:
-                raise _BadTarget(f"staw {name!r} spoza ramienia")
-            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
-                raise _BadTarget(f"{name} = {value!r} to nie liczba")
-            v = float(value)
-            if not math.isfinite(v):
-                raise _BadTarget(f"{name} = {value!r}")
-            out[name] = v
-        return out
-
-    # ------------------------------------------------------------------- stop
-    def _preempted(self) -> None:
-        """The twin took the arm (Home, STOP, reconnect, another owner): only stop the thread."""
-        self.stop(f"przerwana: {getattr(self.twin, 'preempt_reason', '') or 'ramie odebrane'}")
-
-    def stop(self, reason: str = "") -> None:
-        run = self._run
-        self._stop.set()
-        th = self._thread
-        if th is not None and th is not threading.current_thread() and th.is_alive():
-            th.join(timeout=self.join_timeout_s)
-        self._thread = None
-        self._finish(run, reason or "zatrzymana")
-
-    def _finish(self, run: object | None, reason: str, hold_measured: bool = False) -> None:
-        """Ends `run` once, whoever gets here first (a tick, `stop`, the twin taking the arm)."""
-        with self._lock:
-            if run is None or run is not self._run or not self.status.running:
-                return
-            self.status.running = False
-            self.status.stopped_because = reason
-            self._run = None
-            began = self._began
-            self._stop.set()
-        # Outside the lock: the twin's calls take its own locks.
-        self._let_go(hold_measured)
-        if began:
-            self._tell_strategy(reason)
-        logger.info("Strategia zatrzymana: %s", reason)
-
-    def _let_go(self, hold_measured: bool) -> None:
-        """Gives the arm back, only if it is still ours. `hold_measured`: the arm stops where it IS,
-        not at a target that may lie behind an obstacle."""
-        if self.twin.owner != self.owner:
-            return
-        if hold_measured:
-            self.twin.hold_measured()
-        self.twin.set_engaged(False, owner=self.owner)
-        self.twin.release(self.owner)
-
-    def _tell_strategy(self, reason: str) -> None:
-        end = getattr(self.strategy, "stop", None)
-        if end is None:
-            return
-        try:
-            end(reason)
-        except Exception:                                    # the arm is already safe; only report
-            logger.exception("stop() strategii rzucilo wyjatek")
+    hz = strategy.hz
+    if not isinstance(hz, (int, float)) or not math.isfinite(hz) or hz <= 0:
+        raise ValueError(f"strategia: hz musi byc dodatnie, jest {hz!r}")
 
 
-class _BadTarget(ValueError):
-    pass
-
-
-def _as_action(out: Any) -> Action:
+def _as_action(answer: Any) -> Action:
     """The strategy's answer as an `Action`: an `Action`, an object with its attributes, or a mapping."""
-    if isinstance(out, Action):
-        return out
-    if isinstance(out, Mapping):
-        return Action(target=dict(out))
-    target = getattr(out, "target", None)
+    if isinstance(answer, Action):
+        return answer
+
+    if isinstance(answer, Mapping):
+        return Action(target=dict(answer))
+
+    target = getattr(answer, "target", None)
     if not isinstance(target, Mapping):
-        raise TypeError(f"strategia zwrocila {type(out).__name__}: potrzeba Action, obiektu z `target` "
-                        "albo mapowania staw -> cel")
-    return Action(target=dict(target), done=bool(getattr(out, "done", False)),
-                  success=getattr(out, "success", None), error=getattr(out, "error", None),
-                  note=str(getattr(out, "note", "") or ""))
+        raise TypeError(f"strategia zwrocila {type(answer).__name__}: potrzeba Action, "
+                        "obiektu z `target` albo mapowania staw -> cel")
+
+    return Action(
+        target=dict(target),
+        done=bool(getattr(answer, "done", False)),
+        success=getattr(answer, "success", None),
+        error=getattr(answer, "error", None),
+        note=str(getattr(answer, "note", "") or ""),
+    )
