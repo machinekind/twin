@@ -24,7 +24,7 @@ import numpy as np
 from .. import scene as sc
 from ..collision import CollisionChecker
 from ..kinematics import pose
-from ..robots import SO101, RobotSpec
+from ..robots import RobotSpec, get_spec
 from .card import Card, perturb, pinch_point
 from .handeye import pose_error
 from .session import Session, WaveConfig
@@ -80,7 +80,7 @@ CAMERAS = dict(W=640, H=480, fovy=(46.0, 60.0), bearing=(-1.7, 1.7),
                height=(0.12, 0.40), jitter=0.04, spread=0.9)
 
 
-def sample_cameras(rng: np.random.Generator, n: int, spec: RobotSpec = SO101) -> list[sc.CameraView]:
+def sample_cameras(rng: np.random.Generator, n: int, spec: RobotSpec) -> list[sc.CameraView]:
     """N kamer w przedniej polplaszczyznie, rozstawionych co najmniej `spread` rad."""
     cfg = dict(CAMERAS, dist=spec.desk.camera_dist, centre=spec.desk.camera_centre)
     centre = np.asarray(cfg["centre"], float)
@@ -117,7 +117,7 @@ class Result:
     card_deg: float
 
 
-def run(seed: int, n_cameras: int = 1, spec: RobotSpec = SO101, card: Card | None = None,
+def run(seed: int, n_cameras: int, spec: RobotSpec, card: Card | None = None,
         extreme: bool = False, cfg: WaveConfig | None = None, on_step=None) -> Result:
     rng = np.random.default_rng(seed)
     card = card or Card()
@@ -161,12 +161,14 @@ def run(seed: int, n_cameras: int = 1, spec: RobotSpec = SO101, card: Card | Non
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Kalibracja w symulacji, oceniana wzgledem prawdy.")
+    ap.add_argument("--robot", default="so101", help="nazwa ramienia (robot.yaml)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n", type=int, default=5, help="ile losowych stanowisk")
     ap.add_argument("--cameras", type=int, default=1, help="ile kamer na stanowisku")
     ap.add_argument("--extreme", action="store_true", help="karta na granicy przekrzywienia")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
+    spec = get_spec(a.robot)
 
     rows = []
     for seed in range(a.seed, a.seed + a.n):
@@ -174,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             if a.verbose:
                 prog = "  ".join(f"{c}: {o} obs {s:.0f}st" for c, (o, _, s) in r.progress.items())
                 print(f"    poza {r.index:2d}  {prog}  {r.note}")
-        res = run(seed, a.cameras, extreme=a.extreme, on_step=show)
+        res = run(seed, a.cameras, spec, extreme=a.extreme, on_step=show)
         rows.append(res)
         for cam in sorted(res.trusted):
             flag = "" if res.trusted[cam] else f"  NIEZAUFANA ({res.reasons[cam]})"

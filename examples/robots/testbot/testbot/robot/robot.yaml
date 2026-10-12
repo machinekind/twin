@@ -1,0 +1,39 @@
+# The twin's test robot: two revolute joints and a slide gripper whose second jaw mirrors the first.
+name: testbot
+title: Robot testowy
+mjcf: testbot.xml
+
+joints: [j1, j2, gripper]
+gripper: gripper
+tcp_site: tcp
+hand_body: hand
+base_body: base
+tcp_approach: [1.0, 0.0, 0.0]
+tcp_closing: [0.0, 1.0, 0.0]
+fingertips: [tip1, tip2]
+jaw_bodies: [jaw1, jaw2]
+
+home: {j1: 0.0, j2: 20.0, gripper: 50.0}
+limits:
+  j1: [-90.0, 90.0]
+  j2: [-60.0, 60.0]
+  gripper: [0.0, 100.0]
+max_vel: {j1: 90.0, j2: 90.0, gripper: 300.0}
+
+# Jaw travel [m]: 0..2 cm.
+gripper_range_q: [0.0, 0.02]
+mirror_joints:
+  gripper_m: [gripper, -1.0]
+jaw: {still: 0.0005, margin: 0.001, creep: 0.001, open: 0.008}
+
+wave_ranges:
+  j1: [-45.0, 45.0]
+  j2: [-30.0, 30.0]
+
+joint_labels:
+  j1: [J1, J1 - podstawa]
+  j2: [J2, J2 - ramie]
+  gripper: [Chwytak, Chwytak]
+
+connections:
+  - {label: "Robot testowy (w pamieci)", backend: testbot}

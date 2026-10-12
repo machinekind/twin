@@ -39,14 +39,27 @@ research = ["trimesh>=4,<6"]
 dev = ["pytest>=7.4"]
 
 [project.scripts]
-lerobot-mp-bridge = "lerobot_mp.robot.serial_bridge:main"
+lerobot-mp-bridge = "lerobot_mp.robot.so101.serial_bridge:main"
 lerobot-twin = "lerobot_mp.twin.cli:main"
+
+# The SO-101 and A1X packages (src/lerobot_mp/robot/so101, .../a1x) register like any robot
+# package (see examples/robots/testbot) until they move to the so101 repository and to galaxeo.
+[project.entry-points."lerobot_mp.robots"]
+so101 = "lerobot_mp.robot.so101:ROBOT_DIR"
+a1x = "lerobot_mp.robot.a1x:ROBOT_DIR"
+
+[project.entry-points."lerobot_mp.backends"]
+feetech = "lerobot_mp.robot.so101.feetech:create"
+lerobot = "lerobot_mp.robot.so101.lerobot_backend:create"
+a1x = "lerobot_mp.robot.a1x.backend:create"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 lerobot_mp = ["py.typed"]
+"lerobot_mp.robot.so101" = ["robot/**/*"]
+"lerobot_mp.robot.a1x" = ["robot/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

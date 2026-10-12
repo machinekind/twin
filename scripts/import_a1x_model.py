@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MJCF ramienia Galaxea A1X dla blizniaka - z URDF producenta.
 
-    python scripts/import_a1x_model.py                      # przebuduj assets/robots/a1x/a1x.xml
+    python scripts/import_a1x_model.py                      # przebuduj src/lerobot_mp/robot/a1x/robot/a1x.xml
     python scripts/import_a1x_model.py --out /tmp/a1x.xml   # to samo obok, do porownania
 
 To jest generator `sim/urdf2mjcf.py` z galaxeo-manipulators (ta sama deterministyczna
@@ -46,7 +46,7 @@ from pathlib import Path
 from xml.dom import minidom
 
 REPO = Path(__file__).resolve().parents[1]
-ASSET_DIR = REPO / "assets" / "robots" / "a1x"
+ASSET_DIR = REPO / "src" / "lerobot_mp" / "robot" / "a1x" / "robot"
 MESHDIR = "assets"
 
 # Wzmocnienia serw pozycyjnych - "dosc sztywno, zeby trzymac poze pod grawitacja" (galaxeo).

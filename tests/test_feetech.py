@@ -13,9 +13,10 @@ import time
 
 import pytest
 
-from lerobot_mp.twin.config import JOINT_NAMES, load_config
-from lerobot_mp.robot import serial_bridge
-from lerobot_mp.robot.feetech import (
+from lerobot_mp.robot import backend_context
+from lerobot_mp.robot.so101 import serial_bridge
+from lerobot_mp.twin.robots import get_spec, robot_config
+from lerobot_mp.robot.so101.feetech import (
     ADDR_GOAL_POSITION,
     ADDR_MAX_ANGLE_LIMIT,
     ADDR_MIN_ANGLE_LIMIT,
@@ -154,23 +155,26 @@ class FakeBusLink:
 
 
 @pytest.fixture
-def arm_cfg():
-    return load_config(overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})
+def arm_ctx():
+    """What the twin hands the `feetech` backend for the SO-101 on port COM_TEST."""
+    spec = get_spec("so101")
+    cfg = robot_config(spec, overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})
+    return backend_context(cfg, spec)
 
 
-def connected(cfg, link: FakeBusLink | None = None) -> tuple[FeetechArm, FakeBusLink]:
+def connected(ctx, link: FakeBusLink | None = None) -> tuple[FeetechArm, FakeBusLink]:
     link = link or FakeBusLink()
     bus = FeetechBus("COM_TEST")
     bus.open(link=link)
-    arm = FeetechArm(cfg, bus=bus)
+    arm = FeetechArm(ctx, bus=bus)
     arm.connect()
     return arm, link
 
 
-def test_connect_writes_the_goal_before_enabling_torque(arm_cfg):
+def test_connect_writes_the_goal_before_enabling_torque(arm_ctx):
     """Rejestr celu pamieta poprzednia sesje - moment zalaczony przed jego
     nadpisaniem szarpnalby ramieniem do tamtej pozy."""
-    _, link = connected(arm_cfg)
+    _, link = connected(arm_ctx)
     first_torque = next(
         i for i, entry in enumerate(link.log)
         if entry[0] == "write" and entry[2] == ADDR_TORQUE_ENABLE
@@ -183,43 +187,44 @@ def test_connect_writes_the_goal_before_enabling_torque(arm_cfg):
     assert max(goal_writes) < first_torque
 
 
-def test_connect_refuses_when_a_servo_is_silent(arm_cfg):
+def test_connect_refuses_when_a_servo_is_silent(arm_ctx):
     link = FakeBusLink(ids=(1, 2, 3, 4, 5))  # brakuje chwytaka
     bus = FeetechBus("COM_TEST")
     bus.open(link=link)
     with pytest.raises(RuntimeError, match="gripper"):
-        FeetechArm(arm_cfg, bus=bus).connect()
+        FeetechArm(arm_ctx, bus=bus).connect()
 
 
-def test_gripper_ticks_are_the_ones_the_backend_converts_with(arm_cfg):
-    """Blizniak porownuje je z tikami swojej kinematyki - musza byc tymi, ktorymi liczy backend."""
-    arm, _ = connected(arm_cfg)
-    closed, opened, zero = arm.gripper_ticks()
-    assert (closed, opened, zero) == (1986.0, 2670.0, 2048.0)
-    assert arm._to_ticks("gripper", 0.0) == closed
-    assert arm._to_ticks("gripper", 100.0) == opened
-    assert arm._to_units("shoulder_pan", int(zero)) == 0.0
+def test_gripper_range_is_the_one_the_backend_converts_with_and_matches_the_description(arm_ctx):
+    """The twin compares it with robot.yaml's `gripper_range_q`: it must be what the backend computes with."""
+    arm, _ = connected(arm_ctx)
+    rad = 2 * 3.141592653589793 / 4096
+    closed, opened = arm.gripper_range_q()
+    assert arm._to_ticks("gripper", 0.0) == round(2048 + closed / rad) == 1986
+    assert arm._to_ticks("gripper", 100.0) == round(2048 + opened / rad) == 2670
+    assert arm._to_units("shoulder_pan", 2048) == 0.0
+    assert (closed, opened) == pytest.approx(get_spec("so101").gripper_range_q, abs=1e-6)
 
 
-def test_send_joints_clamps_to_the_configured_limits(arm_cfg):
-    arm, link = connected(arm_cfg)
-    limit = arm_cfg.joint("shoulder_pan").max
+def test_send_joints_clamps_to_the_configured_limits(arm_ctx):
+    arm, link = connected(arm_ctx)
+    limit = arm_ctx.limits["shoulder_pan"][1]
     sent = arm.send_joints({"shoulder_pan": limit + 500.0})
     assert sent["shoulder_pan"] == pytest.approx(limit)
     assert link.registers[1][ADDR_GOAL_POSITION] == arm._to_ticks("shoulder_pan", limit)
 
 
-def test_targets_never_leave_the_servo_tick_range(arm_cfg):
+def test_targets_never_leave_the_servo_tick_range(arm_ctx):
     """Nawet absurdalny cel nie moze przepelnic dwubajtowego rejestru."""
-    arm, link = connected(arm_cfg)
-    arm.send_joints({name: 1e6 for name in JOINT_NAMES})
+    arm, link = connected(arm_ctx)
+    arm.send_joints({name: 1e6 for name in arm_ctx.joints})
     for registers in link.registers.values():
         assert 0 <= registers[ADDR_GOAL_POSITION] <= 4095
 
 
-def test_a_reply_with_a_bad_checksum_is_rejected(arm_cfg):
+def test_a_reply_with_a_bad_checksum_is_rejected(arm_ctx):
     """Jeden przeklamany bit na linii TTL dawal -180 stopni zamiast 0 - i to szlo jako rozkaz."""
-    arm, link = connected(arm_cfg)
+    arm, link = connected(arm_ctx)
     before = arm.read_joints()
     link.corrupt_next = {1}
     positions = arm.read_joints()
@@ -227,7 +232,7 @@ def test_a_reply_with_a_bad_checksum_is_rejected(arm_cfg):
     assert arm.bus.corrupt_replies == 1
 
 
-def test_connect_takes_the_start_position_only_from_two_matching_reads(arm_cfg):
+def test_connect_takes_the_start_position_only_from_two_matching_reads(arm_ctx):
     """Pozycja startowa staje sie celem przed zalaczeniem momentu - jeden zly odczyt to skok ramienia."""
     link = FakeBusLink()
     real_write = link.write
@@ -243,13 +248,13 @@ def test_connect_takes_the_start_position_only_from_two_matching_reads(arm_cfg):
         return n
 
     link.write = glitchy
-    connected(arm_cfg, link)
+    connected(arm_ctx, link)
     assert link.registers[1][ADDR_GOAL_POSITION] == REST_TICKS
 
 
-def test_servo_protection_bits_are_reported_as_faults(arm_cfg):
+def test_servo_protection_bits_are_reported_as_faults(arm_ctx):
     """Serwo w ochronie zwalnia moment, ale dalej odpowiada - bez tego wygladalo na zdrowe."""
-    arm, link = connected(arm_cfg)
+    arm, link = connected(arm_ctx)
     arm.read_joints()
     assert arm.faults() == []
     link.status[2] = 0x20
@@ -262,8 +267,8 @@ def test_servo_protection_bits_are_reported_as_faults(arm_cfg):
     assert arm.faults() == []
 
 
-def test_a_dead_link_is_reported_after_consecutive_failed_reads(arm_cfg):
-    arm, link = connected(arm_cfg)
+def test_a_dead_link_is_reported_after_consecutive_failed_reads(arm_ctx):
+    arm, link = connected(arm_ctx)
     arm.read_joints()
     link.silent = True
     for _ in range(4):
@@ -276,10 +281,10 @@ def test_a_dead_link_is_reported_after_consecutive_failed_reads(arm_cfg):
     assert arm.faults() == []
 
 
-def test_no_goals_are_queued_while_the_link_is_silent(arm_cfg):
+def test_no_goals_are_queued_while_the_link_is_silent(arm_ctx):
     """Zapis przez `socket://` "udaje sie" do bufora TCP, a po powrocie sieci cala
     kolejka celow dochodzila naraz - ramie skakalo do rozkazu sprzed STOP-u."""
-    arm, link = connected(arm_cfg)
+    arm, link = connected(arm_ctx)
     arm.read_joints()
     link.silent = True
     arm.read_joints()
@@ -397,9 +402,9 @@ def test_a_late_reply_is_never_taken_for_the_next_read(bridged):
     assert first_answer(bus)[1] == REST_TICKS + 500
 
 
-def test_disconnect_leaves_the_arm_holding_by_default(arm_cfg):
+def test_disconnect_leaves_the_arm_holding_by_default(arm_ctx):
     """Wylaczony moment znaczy wiotkie ramie, ktore opada pod wlasnym ciezarem."""
-    arm, link = connected(arm_cfg)
+    arm, link = connected(arm_ctx)
     arm.disconnect()
     assert all(regs[ADDR_TORQUE_ENABLE] == 1 for regs in link.registers.values())
     assert link.closed

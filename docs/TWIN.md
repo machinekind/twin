@@ -96,12 +96,15 @@ pierwszym zapisie.
 **Konfiguracja ramienia.** Bliźniak czyta plik konfiguracji tylko wtedy, gdy
 się go wskaże: `lerobot-twin --config configs/local.yaml ui` (także `train`,
 `eval`; opcja ustawia zmienną `LEROBOT_MP_CONFIG`, którą dziedziczy proces
-treningu uruchamiany z panelu). Klucze sekcji `robot:` ważne dla bliźniaka
-i backendu `feetech` (opisane w `configs/default.yaml`): `center_ticks` (tik
-zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
+treningu uruchamiany z panelu). Sekcje `safety:` i `robot:` (`backend`, `port`)
+czyta bliźniak; każda inna sekcja należy do backendu o tej nazwie i sprawdza ją
+sam backend. Sekcja `feetech:` (opisana w `configs/default.yaml`): `center_ticks`
+(tik zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
 i 100 w skali aplikacji; domyślne 1986 / 2670 to przykładowe ramię), `baudrate`
-(1 000 000). Galaxea A1X ma własną sekcję `a1x:` — patrz
-[Galaxea A1X](#galaxea-a1x).
+(1 000 000). Backend `lerobot` ma sekcję `lerobot:`, Galaxea A1X — `a1x:`, patrz
+[Galaxea A1X](#galaxea-a1x). Opis samego ramienia (stawy, limity, poza domowa,
+zakres szczęki) leży w `robot.yaml` w folderze ramienia (SO-101:
+`src/lerobot_mp/robot/so101/robot/`, A1X: `src/lerobot_mp/robot/a1x/robot/`).
 
 ## Panel
 
@@ -296,17 +299,18 @@ przejmuje ją „w dłoni”. Polityka kończy sama („zadanie wykonane”), gd
 jest 6 cm nad blatem przez 10 taktów — liczonych tylko ze świeżej pozy (kamery
 albo „w dłoni”), nigdy z ostatnio widzianej.
 
-**Chwytak.** 0..100 w panelu to te same tiki serwa co w backendzie `feetech`
-(`gripper_closed_ticks` … `gripper_open_ticks`, zero w `center_ticks`); w
-bliźniaku 0 = −5,4°, 100 = 54,7° kąta szczęki. Domyślne 1986 … 2670 pochodzą
-z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź na ramieniu, że przy 0
-szczęki się stykają — jeśli nie, zero szczęki w MJCF nie leży w `center_ticks`
-i trzeba to poprawić w konfiguracji, zanim zaufa się `lift`: skopiuj
+**Chwytak.** 0..100 w panelu to w bliźniaku kąt szczęki liniowo na zakresie
+`gripper_range_q` z `src/lerobot_mp/robot/so101/robot/robot.yaml`: 0 = −5,4°, 100 = 54,7°,
+czyli tiki serwa 1986 … 2670 przy zerze w 2048 — te same, co w sekcji `feetech:`.
+Domyślne tiki pochodzą z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź
+na ramieniu, że przy 0 szczęki się stykają — jeśli nie, zero szczęki w MJCF nie
+leży w `center_ticks` i trzeba to poprawić, zanim zaufa się `lift`: skopiuj
 `configs/default.yaml` do `configs/local.yaml` (jest w `.gitignore`), popraw
-w sekcji `robot:` klucze `center_ticks`, `gripper_closed_ticks`,
-`gripper_open_ticks` (i ewentualnie `baudrate`), a panel uruchamiaj przez
-`lerobot-twin --config configs/local.yaml ui`. Wystarczy sama sekcja `robot:`
-z tymi kluczami — reszta bierze wartości domyślne.
+w sekcji `feetech:` klucze `center_ticks`, `gripper_closed_ticks`,
+`gripper_open_ticks` (i ewentualnie `baudrate`), a `gripper_range_q` w `robot.yaml`
+ustaw na (tik − zero) · 2π / 4096 obu końców. Panel ostrzega po połączeniu, gdy
+oba miejsca się rozjeżdżają. Panel uruchamiaj przez
+`lerobot-twin --config configs/local.yaml ui`; wystarczy sama sekcja `feetech:`.
 
 ---
 
@@ -315,9 +319,9 @@ z tymi kluczami — reszta bierze wartości domyślne.
 Drugie ramię bliźniaka: 6 stawów i chwytak z wysuwanymi szczękami, sterowane
 po CAN-FD. Ten sam panel, ten sam nadzór i ta sama procedura co przy SO-101.
 Różnice siedzą w trzech miejscach. Stanowisko ma `"robot": "a1x"`
-(`workspace/twin.json`), więc bliźniak bierze model `assets/robots/a1x`
-i opis ramienia `robots.A1X`. Ze sprzętem rozmawia backend `a1x`
-(`src/lerobot_mp/robot/a1x.py`). Protokół i łącze CAN dostarcza pakiet
+(`workspace/twin.json`), więc bliźniak bierze model `src/lerobot_mp/robot/a1x/robot`
+i opis ramienia `src/lerobot_mp/robot/a1x/robot/robot.yaml`. Ze sprzętem rozmawia backend `a1x`
+(`src/lerobot_mp/robot/a1x/backend.py`). Protokół i łącze CAN dostarcza pakiet
 `galaxeo` z repozytorium galaxeo-manipulators — to samo źródło, z którego
 korzystają narzędzia galaxeo (`jog_a1x.py`, `so101_bridge.py`). Szczegóły
 protokołu i pomiary: `docs/PROTOCOL.md`, `docs/STEERING.md`, `docs/HARDWARE.md`
@@ -611,8 +615,8 @@ z siatek) nie był jeszcze sprawdzony na GPU.
   jest bezpieczne; niebezpieczny jest start z celem innym niż poza ramienia,
   i przed tym chroni start strumienia od pomiaru.
 - **Bliźniak nigdy nie wysyła FF 2** (zwolnienie: ramię wiotczeje, opada
-  i przestaje raportować). `robot.torque_off_on_exit` jest dla `a1x` ignorowane
-  (ostrzeżenie w logu), heartbeat `0x023` nie jest wysyłany nigdy.
+  i przestaje raportować). Sekcja `a1x:` nie ma opcji zdjęcia momentu przy
+  rozłączeniu, heartbeat `0x023` nie jest wysyłany nigdy.
 - **FF 5 na ułamek sekundy puszcza silniki.** Przycisk włączenia tylko przy
   podpartym ramieniu i rozbrojonym panelu; nigdy „na wszelki wypadek”.
 - **`t_ff`, `kp`, `kd` nic nie robią** (zmierzone w galaxeo). Nie ma podatności,
@@ -661,8 +665,8 @@ z siatek) nie był jeszcze sprawdzony na GPU.
 | stawy ramienia | stopnie | radiany, te same kąty | radiany + `joint_offsets_deg` |
 | chwytak | 0..100 (0 = zamknięty) | wysuw szczęki 0..0,05 m (0 = płytki zsunięte, czubki 3 mm od siebie); druga szczęka lustrzanie | `p_des` [rad] liniowo +0,08 (0) … −1,95 (100); pomiar grupy 7 `0x052` [rad]: +0,039 (0) … −1,992 (100) |
 
-Chwytak A1X nie ma tików: klucze `robot.center_ticks` i `gripper_*_ticks`
-dotyczą tylko SO-101. Progi szczęk w metrach (`A1X.jaw`): 20 mm wysuwu to
+Chwytak A1X nie ma tików: klucze `center_ticks` i `gripper_*_ticks` sekcji
+`feetech:` dotyczą tylko SO-101. Progi szczęk w metrach (`jaw` w `robot.yaml`): 20 mm wysuwu to
 43 mm między czubkami, więcej niż przekątna kostki 3 cm (42 mm).
 
 ### Do sprawdzenia na pierwszej sesji
@@ -687,7 +691,7 @@ lerobot-twin calib-sim --robot a1x --n 3 --cameras 2
 ```
 
 Model generuje `scripts/import_a1x_model.py` z URDF producenta. Reguły
-przetwarzania są w `assets/robots/a1x/README.md`, każda z testem. Szczęka 2
+przetwarzania są w `src/lerobot_mp/robot/a1x/robot/README.md`, każda z testem. Szczęka 2
 idzie za szczęką 1 przez równość w MJCF, usztywnioną regułą 6 (`solref`,
 `solimp`). Wyniki z `tests/test_twin_a1x_sim.py` i `tests/test_twin_calib.py`:
 
@@ -946,8 +950,8 @@ zachowanie **dostarczanych** plików polityk, nie tylko środowiska.
 
 ```
 src/lerobot_mp/twin/
-├── robots.py        opis ramienia: MJCF, stawy, TCP, osie chwytaka, szczęki, zakresy fali
-├── config.py        konfiguracja z YAML: safety, robot, a1x, stawy (`TwinConfig`)
+├── robots.py        opisy ramion z folderów (`robot.yaml`), tylko z wtyczek `lerobot_mp.robots`
+├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów surowe (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
 ├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu
 ├── collision.py     kolizje pozy i drogi do niej
@@ -983,7 +987,12 @@ src/lerobot_mp/twin/
     ├── jobs.py        zadania w tle: trening (proces), kalibracje, identyfikacja
     └── watch.py       wykrywanie przestawionej kamery
 
-assets/robots/so101/   model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
-assets/robots/a1x/     Galaxea A1X: URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
-src/lerobot_mp/robot/a1x.py   backend a1x (CAN-FD przez pakiet galaxeo)
+src/lerobot_mp/robot/
+├── base.py, factory.py   kontrakt backendu i rejestr wtyczek
+├── so101/                pakiet SO-101 (wyjdzie do repozytorium so101)
+│   ├── robot/            robot.yaml i model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
+│   └── feetech.py, lerobot_backend.py, serial_bridge.py
+└── a1x/                  pakiet A1X (wyjdzie do galaxeo)
+    ├── robot/            robot.yaml, URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
+    └── backend.py        backend a1x (CAN-FD przez pakiet galaxeo)
 ```

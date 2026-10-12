@@ -29,11 +29,16 @@ ktore ten rozrzut poszerzaja.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from ..robots import RobotSpec
 
 DICT = cv2.aruco.DICT_5X5_100
 
@@ -282,9 +287,12 @@ class Collector:
 
 
 # ------------------------------------------------------------ symulacja
-def simulate(K: np.ndarray, size: tuple[int, int] = (640, 480), n: int = 14, seed: int = 0,
-             board: Board | None = None) -> tuple[Result, Collector]:
+def simulate(K: np.ndarray, spec: RobotSpec, parked: Mapping[str, float], size: tuple[int, int] = (640, 480),
+             n: int = 14, seed: int = 0, board: Board | None = None) -> tuple[Result, Collector]:
     """Sesja w blizniaku: tablica na blacie, kamera o znanym K oglada ja z roznych miejsc.
+
+    The arm `spec` stands in the scene at `parked` [app units], a pose that keeps it out of the
+    view of the board (for the SO-101: shoulder_pan 110, shoulder_lift -95, elbow_flex 90).
 
     Tablica jest renderowana tym samym rendererem i ta sama sciezka kamery co
     scena blizniaka - wiec to sprawdza cala konwencje pikseli od K do rogow.
@@ -293,7 +301,6 @@ def simulate(K: np.ndarray, size: tuple[int, int] = (640, 480), n: int = 14, see
 
     from .. import scene as sc
     from ..kinematics import pose
-    from ..robots import SO101
 
     board = board or Board()
     rng = np.random.default_rng(seed)
@@ -314,10 +321,10 @@ def simulate(K: np.ndarray, size: tuple[int, int] = (640, 480), n: int = 14, see
         return pose(np.column_stack([x, np.cross(z, x), z]), eye)
 
     view = sc.CameraView("intr", np.asarray(K, float), W, H, look(np.array([0.25, -0.3, 0.4]), centre))
-    cfg = sc.SceneConfig(SO101, cameras=[view], panels=[sc.Panel("tablica", img, board.size, T_panel)])
+    cfg = sc.SceneConfig(spec, cameras=[view], panels=[sc.Panel("tablica", img, board.size, T_panel)])
     col = Collector(board, size)
     with sc.build(cfg) as scene:
-        scene.set_joints({"shoulder_pan": 110.0, "shoulder_lift": -95.0, "elbow_flex": 90.0})
+        scene.set_joints(dict(parked))
         cam = scene.model.camera("intr").id
         tries = 0
         while len(col.views) < n and tries < 20 * n:

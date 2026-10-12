@@ -11,13 +11,14 @@ import pytest
 pytest.importorskip("mujoco")
 
 from lerobot_mp.twin.calib.simulate import run  # noqa: E402
+from lerobot_mp.twin.robots import get_spec  # noqa: E402
 
 
 # ----------------------------------------------------------------- sesja
 @pytest.mark.render
 def test_full_session_in_simulation_calibrates_the_camera():
     """Cala sesja: fala, render, detekcja, dopasowanie i werdykt - wzgledem prawdy."""
-    res = run(seed=0, n_cameras=1)
+    res = run(seed=0, n_cameras=1, spec=get_spec("so101"))
     cam = next(iter(res.trusted))
     assert res.trusted[cam], res.reasons[cam]
     # Zaufane sesje na ziarnach 0..5 daja 0,3-1,7 mm i 0,006-0,19 st. (srednio ok. 0,5 mm);

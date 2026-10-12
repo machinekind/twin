@@ -17,8 +17,9 @@ import enum
 
 import pytest
 
-from lerobot_mp.twin.config import load_config
-from lerobot_mp.robot.lerobot_backend import STATUS_EVERY_READS, LeRobotArm
+from lerobot_mp.robot import backend_context
+from lerobot_mp.twin.robots import get_spec, robot_config
+from lerobot_mp.robot.so101.lerobot_backend import STATUS_EVERY_READS, LeRobotArm
 
 
 @dataclasses.dataclass
@@ -195,8 +196,9 @@ def arm(monkeypatch):
         raise AssertionError("backend zapytal o cos w konsoli serwera")
 
     monkeypatch.setattr(builtins, "input", no_console)
-    cfg = load_config(overrides={"robot": {"backend": "lerobot", "port": "COM_TEST"}})
-    return LeRobotArm(cfg)
+    spec = get_spec("so101")
+    cfg = robot_config(spec, overrides={"robot": {"backend": "lerobot", "port": "COM_TEST"}})
+    return LeRobotArm(backend_context(cfg, spec))
 
 
 def test_missing_calibration_file_is_refused_before_touching_the_port(arm):
@@ -226,6 +228,17 @@ def test_an_arm_holding_a_pose_is_connected_without_lerobot_configure(arm):
     assert arm.is_connected and robot.bus.connected
     assert not robot.configured
     assert ("torque_off",) not in robot.bus.log
+
+
+def test_lerobot_never_clamps_the_step_and_the_setting_is_gone(arm):
+    """LeRobot's +-12 degree clamp hid collisions from the twin's tracking guard (25 degrees)."""
+    arm.connect()
+    assert FakeRobot.last.config.max_relative_target is None
+    spec = get_spec("so101")
+    cfg = robot_config(spec, overrides={"robot": {"backend": "lerobot", "port": "COM_TEST"},
+                                        "lerobot": {"max_relative_target": 12.0}})
+    with pytest.raises(ValueError, match="max_relative_target"):
+        LeRobotArm(backend_context(cfg, spec))
 
 
 def test_disconnect_keeps_torque_unless_configured_otherwise(arm):

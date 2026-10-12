@@ -223,17 +223,6 @@ def smear_mask(mask: np.ndarray, shifts: list[tuple[float, float]]) -> np.ndarra
     return out
 
 
-#: Suwaki stawow: krotka etykieta i pelna nazwa (do podpowiedzi) zamiast nazw z MJCF.
-JOINT_LABELS: dict[str, dict[str, tuple[str, str]]] = {
-    "so101": {"shoulder_pan": ("Podstawa", "Obrot podstawy"), "shoulder_lift": ("Bark", "Bark"),
-              "elbow_flex": ("Lokiec", "Lokiec"), "wrist_flex": ("Nadg. zgiecie", "Nadgarstek - zgiecie"),
-              "wrist_roll": ("Nadg. obrot", "Nadgarstek - obrot"), "gripper": ("Chwytak", "Chwytak")},
-    "a1x": {"arm_joint1": ("J1 Podstawa", "J1 - obrot podstawy"), "arm_joint2": ("J2 Bark", "J2 - bark"),
-            "arm_joint3": ("J3 Lokiec", "J3 - lokiec"), "arm_joint4": ("J4 Nadg. gora", "J4 - nadgarstek gora/dol"),
-            "arm_joint5": ("J5 Nadg. bok", "J5 - nadgarstek na bok"), "arm_joint6": ("J6 Obrot", "J6 - obrot chwytaka"),
-            "gripper": ("Chwytak", "Chwytak")},
-}
-
 #: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
 ARM_OVERRIDES = {
     "off": lambda who: ("UZBROJ - najpierw Polacz", "gray", viser.Icon.PLUG_CONNECTED_X),
@@ -984,7 +973,7 @@ class TwinApp:
                                                "rampa nadzoru.")
             spec = self.ws.spec()
             kin = self.twin.scene.kin
-            names = JOINT_LABELS.get(self.ws.robot, {})
+            names = spec.joint_labels
             self.sliders = {}
             self.slider_range = {}
             order = [n for n in spec.joints if n != spec.gripper] + ([spec.gripper] if spec.gripper in spec.joints
@@ -1206,23 +1195,13 @@ class TwinApp:
             self.state_html.content = s
 
     def _arm_presets(self) -> dict[str, tuple[str, str | None]]:
-        """Zestawy Ramie -> (backend, port albo None = z pola). Pierwszy = domyslny dla tego systemu."""
+        """Zestawy Ramie -> (backend, port albo None = z pola), z opisu ramienia (`connections`),
+        a na koncu symulacja. Pierwszy = domyslny: ten dla tego systemu, jesli opis go wskazuje."""
         import platform
-        sim = {"symulacja (blizniak jest ramieniem)": ("sim", "")}
-        if self.ws.robot == "a1x":
-            can = {"Galaxea A1X po xcan (macOS)": ("a1x", "xcan"),
-                   "Galaxea A1X po can0 (Linux)": ("a1x", "can0"),
-                   "Galaxea A1X po PCAN (Windows)": ("a1x", "PCAN_USBBUS1")}
-            first = {"Darwin": "Galaxea A1X po xcan (macOS)", "Linux": "Galaxea A1X po can0 (Linux)",
-                     "Windows": "Galaxea A1X po PCAN (Windows)"}.get(platform.system())
-            ordered = {}
-            if first:
-                ordered[first] = can[first]
-            ordered.update(can)
-            ordered.update(sim)
-            return ordered
-        return {"SO-101 przez port (feetech)": ("feetech", None), **sim,
-                "SO-101 przez LeRobota (lerobot)": ("lerobot", None)}
+        conns = sorted(self.ws.spec().connections, key=lambda c: c.platform != platform.system())
+        presets = {c.label: (c.backend, c.port) for c in conns}
+        presets["symulacja (blizniak jest ramieniem)"] = ("sim", "")
+        return presets
 
     def _preset_backend(self) -> str:
         return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]

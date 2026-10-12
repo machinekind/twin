@@ -6,7 +6,7 @@ import socket
 import threading
 from collections import deque
 
-from lerobot_mp.robot.serial_bridge import serve
+from lerobot_mp.robot.so101.serial_bridge import serve
 
 TIMEOUT = 5.0
 

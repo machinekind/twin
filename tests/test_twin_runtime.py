@@ -14,12 +14,15 @@ import pytest
 
 pytest.importorskip("mujoco")
 
+from lerobot_mp.robot import backend_context  # noqa: E402
 from lerobot_mp.robot.base import RobotBackend, RobotInfo  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
-from lerobot_mp.twin.robots import SO101  # noqa: E402
+from lerobot_mp.twin.robots import get_spec  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+
+SO101 = get_spec("so101")
 
 DT = 0.02
 
@@ -59,14 +62,14 @@ class FakeArm(RobotBackend):
         self.fault_list: list[str] = []
         self.limits: dict[str, tuple[float, float]] = {}
         self.clamp: dict[str, tuple[float, float]] = {}
-        #: Jak `FeetechArm`: przycina rozkaz do limitow swojej konfiguracji (`cfg` z `create_backend`).
-        self.clamp_to_cfg = False
-        self.cfg = None
+        #: Like `FeetechArm`: clamps commands to the limits it got (`BackendContext`, `set_joint_limits`).
+        self.clamp_to_limits = False
+        self.backend_limits: dict[str, tuple[float, float]] = {}
         self.silent = 0
         self._link_silent = False
         self._last_read = dict(self.pos)
         self.glitch: list[dict[str, float]] = []
-        self.grip_ticks: tuple[float, float, float] | None = None
+        self.grip_range: tuple[float, float] | None = None
         #: Jak A1X bez `gripper_fb_*`: `joints()` oddaje rozkaz, a przed nim zgadywanke (`start`).
         self.grip_measured = True
         self._grip_cmd: float | None = None     # jak A1X: rozkaz rowny zglaszanemu nic nie ustala
@@ -106,8 +109,8 @@ class FakeArm(RobotBackend):
         out = {}
         for k, v in targets.items():
             lo, hi = self.clamp.get(k, (-1e9, 1e9))
-            if self.clamp_to_cfg:
-                lo, hi = max(lo, self.cfg.joint(k).min), min(hi, self.cfg.joint(k).max)
+            if self.clamp_to_limits:
+                lo, hi = max(lo, self.backend_limits[k][0]), min(hi, self.backend_limits[k][1])
             out[k] = min(max(v, lo), hi)
         self.sent.append(out)
         if "gripper" in out and (self._grip_sent or abs(out["gripper"] - self.pos["gripper"]) > 0.5):
@@ -161,8 +164,11 @@ class FakeArm(RobotBackend):
     def joint_limits(self):
         return dict(self.limits)
 
-    def gripper_ticks(self):
-        return self.grip_ticks
+    def gripper_range_q(self):
+        return self.grip_range
+
+    def set_joint_limits(self, limits):
+        self.backend_limits.update(limits)
 
     def gripper_measured(self):
         return self.grip_measured
@@ -197,8 +203,8 @@ def assert_on_time(tw) -> None:
 
 
 def connect_fake(twin, monkeypatch, arm: FakeArm, **kw):
-    def make(cfg):
-        arm.cfg = cfg
+    def make(cfg, spec):
+        arm.backend_limits = dict(backend_context(cfg, spec).limits)
         return arm
     monkeypatch.setattr(rt, "create_backend", make)
     twin.connect("feetech", port="COM_TEST", threaded=False, **kw)
@@ -301,7 +307,7 @@ def test_connect_without_moving_sends_nothing_to_a_joint_outside_the_limits(twin
     skoczyc do limitu, a pierwszy ruch wraca w zakres powoli - takze przez backend, ktory
     przycina rozkaz do limitow konfiguracji (jak `FeetechArm.send_joints`)."""
     arm = FakeArm({"shoulder_lift": -101.0})
-    arm.clamp_to_cfg = True
+    arm.clamp_to_limits = True
     connect_fake(twin, monkeypatch, arm)
     run(twin, 1.0)
     assert arm.sent == []
@@ -315,23 +321,23 @@ def test_connect_without_moving_sends_nothing_to_a_joint_outside_the_limits(twin
     run(twin, 1.0)
     assert arm.sent[-1]["shoulder_lift"] >= -95.0 - 1e-6
     # Poszerzenie limitow backendu bylo chwilowe - staw w zakresie, limity znow z konfiguracji.
-    assert arm.cfg.joint("shoulder_lift").min == pytest.approx(-95.0)
+    assert arm.backend_limits["shoulder_lift"][0] == pytest.approx(-95.0)
     assert twin.joint_limits()["shoulder_lift"][0] == pytest.approx(-95.0)
 
 
-def test_auto_backend_without_a_port_refuses_instead_of_simulating(twin):
-    """`auto` without a port used to fall back to a toy simulator. A request that reaches
-    `create_backend` wants hardware, so it gets a real backend or an error, never a simulation."""
-    with pytest.raises(ValueError, match="auto"):
-        twin.connect("auto", port="", threaded=False)
+def test_a_backend_no_plugin_provides_refuses_instead_of_simulating(twin):
+    """A request that reaches `create_backend` wants hardware: a backend plugin or an error naming the
+    installed ones, never a simulation."""
+    with pytest.raises(ValueError, match="nieznany_backend.*feetech"):
+        twin.connect("nieznany_backend", port="", threaded=False)
     assert not twin.connected
-    assert "auto" in twin.status.error
+    assert "nieznany_backend" in twin.status.error
 
 
-def test_config_file_skips_unknown_sections_but_not_unknown_keys(tmp_path):
-    """A file copied from the old `configs/default.yaml` still has the hand-control app's
-    sections; any top-level section the twin does not read is skipped, but a typo inside a
-    section it does read must still fail instead of silently dropping a safety setting."""
+def test_config_file_keeps_foreign_sections_for_backends_but_fails_on_unknown_keys(tmp_path):
+    """Top-level sections the twin does not read stay raw for backend plugins (a file copied from
+    the old `configs/default.yaml` still loads), but a typo inside a section the twin reads must
+    still fail instead of silently dropping a safety setting."""
     from lerobot_mp.twin.config import TwinConfig, load_config
 
     old = tmp_path / "old.yaml"
@@ -343,6 +349,8 @@ def test_config_file_skips_unknown_sections_but_not_unknown_keys(tmp_path):
     cfg = load_config(old)
     assert isinstance(cfg, TwinConfig)
     assert cfg.safety.velocity_scale == 0.5
+    assert cfg.sections["camera"] == {"source": 0, "mirror": True}
+    assert "loop_hz" not in cfg.sections and "something_else" not in cfg.sections
 
     bad = tmp_path / "bad.yaml"
     bad.write_text("safety: {bogus: 1}\n")
@@ -654,7 +662,7 @@ def test_move_raises_when_the_arm_stops_short_of_the_command(monkeypatch):
     "normalnie", tylko mowi, ktory staw nie dojechal."""
     arm = FakeArm()
     arm.wall["shoulder_pan"] = (-1e9, 65.0)
-    monkeypatch.setattr(rt, "create_backend", lambda cfg: arm)
+    monkeypatch.setattr(rt, "create_backend", lambda cfg, spec: arm)
     tw = Twin(Workspace(), clock=VirtualClock())
     try:
         tw.connect("feetech", port="COM_TEST", threaded=False)

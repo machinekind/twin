@@ -102,8 +102,8 @@ The repository holds everything needed to run it, including models and data:
 
 | Directory | What is in it | In the repository? |
 |---|---|---|
-| `assets/robots/so101/` | arm model from MuJoCo Menagerie with STL meshes | yes |
-| `assets/robots/a1x/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
+| `src/lerobot_mp/robot/so101/robot/` | arm model from MuJoCo Menagerie with STL meshes | yes |
+| `src/lerobot_mp/robot/a1x/robot/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
 | `assets/so101_preview.npz` | SO-101 reference model from Articulus: a test compares the twin's MJCF with it (rebuilt by `scripts/import_articulus_model.py`) | yes |
 | `assets/policies/` | base policies `reach-v3` and `lift-v3` (a start for fine-tuning) | yes |
 | `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration | yes |
@@ -268,9 +268,10 @@ of memory add `--envs 2048` or `1024`.
 The twin uses the `feetech` backend (`pyserial` alone, without LeRobot and its
 calibration). The port is shown by `lerobot-twin check` or "Wykryj porty" in the
 panel (Windows `COMx`, Linux `/dev/ttyACM0`). The gripper ticks in the
-configuration (`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670)
-are the values of the example arm: check yours and put them in your copy of the
-configuration:
+`feetech:` section of the configuration (`gripper_closed_ticks` 1986 /
+`gripper_open_ticks` 2670) are the values of the example arm: check yours, put
+them in your copy of the configuration and match `gripper_range_q` in
+`src/lerobot_mp/robot/so101/robot/robot.yaml` (the panel warns when the two disagree):
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -395,13 +396,47 @@ The network carries the serial port here, not the image.
 
 The twin reads a configuration file only when one is given:
 `lerobot-twin --config configs/local.yaml ui` (also `train`, `eval`). The model
-is `configs/default.yaml` with the `safety` and `robot` sections, described by
-comments; a copy `configs/local.yaml` is in `.gitignore`. The file can be
-shortened: missing keys take their default values, and an unknown key inside a
-section ends with a clear error. The arm's backend and port are chosen by the
-panel, not by the file. The keys are described in
-[docs/TWIN.md](docs/TWIN.md): the paragraph "Konfiguracja ramienia" and the
-chapter [Galaxea A1X](docs/TWIN.md#galaxea-a1x), which has the `a1x` section.
+is `configs/default.yaml`, described by comments; a copy `configs/local.yaml` is
+in `.gitignore`. The twin reads the `safety` and `robot` (backend, port)
+sections; every other section belongs to the backend of that name (`feetech`,
+`lerobot`, `a1x`), which checks it itself. The file can be shortened: missing
+keys take their default values, and an unknown key inside a section ends with a
+clear error. The arm's backend and port are chosen by the panel, not by the
+file. The keys are described in [docs/TWIN.md](docs/TWIN.md): the paragraph
+"Konfiguracja ramienia" and the chapter [Galaxea A1X](docs/TWIN.md#galaxea-a1x),
+which has the `a1x` section.
+
+## Adding a robot
+
+A robot is a folder: `robot.yaml` and the MJCF model it names. `robot.yaml` holds
+what the model does not: the joints in app order, the gripper and its range in
+model units, the tool point, joint limits and speeds, the home pose, the desk the
+arm works on, and how the panel labels the joints and connects the arm. The
+loader (`lerobot_mp.twin.robots`) checks every field and every joint name.
+
+The twin holds no robot: it finds them only in installed packages. A robot's
+package registers its folder and its hardware backend through entry points and
+never imports the twin. SO-101 and A1X still live here as such packages,
+`src/lerobot_mp/robot/so101/` and `src/lerobot_mp/robot/a1x/`, registered in this
+repository's `pyproject.toml` until they move to the so101 repository and to
+galaxeo:
+
+```toml
+[project.entry-points."lerobot_mp.robots"]
+myarm = "myarm:ROBOT_DIR"              # a path to the folder with robot.yaml
+
+[project.entry-points."lerobot_mp.backends"]
+myarm = "myarm.backend:create"         # create(context) -> the backend
+```
+
+The backend is any object with `connect`, `disconnect`, `read_joints`,
+`send_joints` and `is_connected`; the optional methods are listed on
+`lerobot_mp.robot.base.BackendPlugin`. `create` gets a `BackendContext`: the
+robot's joints and limits, the port and the backend's own config section.
+[examples/robots/testbot](examples/robots/testbot) is a complete example, and the
+tests load it. Entry points live in the installed package's metadata: after
+pulling a version that changes them (this one registers the backends), run
+`pip install -e .` again, or the panel finds no backends.
 
 ## How it is built
 
@@ -411,7 +446,9 @@ src/lerobot_mp/
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
 │   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
 │   └── ui/        browser panel (viser)
-├── robot/         backends of the real arms: feetech, lerobot, a1x (CAN-FD), the COM<->TCP bridge
+├── robot/         the backend contract and plugin registry
+│   ├── so101/     SO-101 package, leaving for its repo: robot folder, backends feetech and lerobot, COM<->TCP bridge
+│   └── a1x/       A1X package, leaving for galaxeo: robot folder, backend a1x (CAN-FD)
 └── paths.py       default data paths counted from the clone's root
 ```
 

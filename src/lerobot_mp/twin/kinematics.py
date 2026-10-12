@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 
 import mujoco
 from collections.abc import Callable
@@ -35,18 +34,6 @@ from collections.abc import Callable
 import numpy as np
 
 from .robots import RobotSpec
-
-#: Tiki serwa STS3215 na obrot - te same, co w backendzie `feetech`.
-TICKS_PER_REV = 4096
-
-
-@lru_cache(maxsize=1)
-def backend_gripper_ticks() -> tuple[float, float, float]:
-    """(zamkniety, otwarty, zero) chwytaka w tikach serwa - z tej samej konfiguracji, co backend."""
-    from .config import load_config
-
-    rc = load_config().robot
-    return float(rc.gripper_closed_ticks), float(rc.gripper_open_ticks), float(rc.center_ticks)
 
 
 def pose(R: np.ndarray, t: np.ndarray) -> np.ndarray:
@@ -86,18 +73,10 @@ class RobotKinematics:
     `MjData`, wiec nie ruszaja stanu symulacji.
     """
 
-    def __init__(self, spec: RobotSpec, model: mujoco.MjModel | None = None, prefix: str = "",
-                 gripper_ticks: tuple[float, float, float] | None = None):
+    def __init__(self, spec: RobotSpec, model: mujoco.MjModel | None = None, prefix: str = ""):
         self.spec = spec
-        if spec.gripper_range_q is None:
-            #: (zamkniety, otwarty, zero) chwytaka w tikach serwa - patrz `to_q`.
-            self.gripper_ticks = gripper_ticks if gripper_ticks is not None else backend_gripper_ticks()
-            self._grip_lin: tuple[float, float] | None = None
-        else:
-            # Chwytak liniowo na (zamkniety, otwarty) w jednostkach MJCF - tiki serwa
-            # nic tu nie znacza, wiec konfiguracji backendu `feetech` nawet nie czytamy.
-            self.gripper_ticks = None
-            self._grip_lin = tuple(float(v) for v in spec.gripper_range_q)
+        grip = spec.gripper_range_q
+        self._grip_lin = None if grip is None else (float(grip[0]), float(grip[1]))
         self.prefix = prefix
         self.model = model if model is not None else mujoco.MjModel.from_xml_path(str(spec.mjcf_path))
         self.data = mujoco.MjData(self.model)
@@ -128,14 +107,12 @@ class RobotKinematics:
     def to_q(self, joints: Mapping[str, float]) -> np.ndarray:
         """Jednostki aplikacji -> wektor kata stawow MJCF [rad], w kolejnosci opisu.
 
-        Stawy ramienia to stopnie tej samej kalibracji, wiec tylko zmiana jednostki.
-        Chwytak ma 0..100, a MJCF kat szczeki. Przeliczenie idzie przez TE SAME
-        tiki, co w backendzie `feetech` (`gripper_closed_ticks..gripper_open_ticks`,
-        zero w `center_ticks`), przyciete do zakresu stawu z MJCF. Wczesniej 0..100
-        szlo liniowo na caly zakres MJCF (-10..100 st.), a serwo przejezdza na
-        0..100 tylko 60 st. (-5..55): ta sama szczeka byla w blizniaku 1,8 raza
-        szerzej otwarta niz na ramieniu, polityka i sledzenie kostki widzialy
-        inna liczbe niz w treningu. Brakujace stawy biora wartosc z pozy spoczynkowej.
+        Arm joints are degrees of the same calibration, so only the unit changes. The gripper's
+        0..100 maps linearly onto `RobotSpec.gripper_range_q` (closed, open), and past it as far as
+        the joint's MJCF range: the jaw travel the real servo makes, not the whole MJCF range. On the
+        SO-101 the whole range is -10..100 degrees and the servo covers only -5..55 on 0..100,
+        so mapping onto it showed the jaw 1.8 times wider open than on the arm. Missing joints
+        take their value from the rest pose.
         """
         q = np.empty(len(self.spec.joints))
         for k, name in enumerate(self.spec.joints):
@@ -147,28 +124,18 @@ class RobotKinematics:
         return q
 
     def _grip_to_q(self, k: int, value: float) -> float:
-        if self._grip_lin is not None:
-            closed, opened = self._grip_lin
-            q = closed + min(max(value / 100.0, 0.0), 1.0) * (opened - closed)
-            return float(min(max(q, self.lo[k]), self.hi[k]))
-        closed, opened, center = self.gripper_ticks
-        if abs(opened - closed) < 1e-9:                    # konfiguracja bez zakresu - liniowo na MJCF
-            fraction = min(max(value / 100.0, 0.0), 1.0)
-            return float(self.lo[k] + fraction * (self.hi[k] - self.lo[k]))
-        ticks = closed + value / 100.0 * (opened - closed)
-        q = np.radians((ticks - center) * 360.0 / TICKS_PER_REV)
+        closed, opened = self._grip_range()
+        q = closed + value / 100.0 * (opened - closed)
         return float(min(max(q, self.lo[k]), self.hi[k]))
 
     def _grip_from_q(self, k: int, q: float) -> float:
-        if self._grip_lin is not None:
-            closed, opened = self._grip_lin
-            return float((q - closed) * 100.0 / (opened - closed)) if opened != closed else 0.0
-        closed, opened, center = self.gripper_ticks
-        if abs(opened - closed) < 1e-9:
-            span = self.hi[k] - self.lo[k]
-            return float((q - self.lo[k]) / span * 100.0) if span > 0 else 0.0
-        ticks = center + np.degrees(q) * TICKS_PER_REV / 360.0
-        return float((ticks - closed) * 100.0 / (opened - closed))
+        closed, opened = self._grip_range()
+        return float((q - closed) * 100.0 / (opened - closed)) if opened != closed else 0.0
+
+    def _grip_range(self) -> tuple[float, float]:
+        if self._grip_lin is None:
+            raise ValueError(f"{self.spec.name}: chwytak bez `gripper_range_q` w opisie ramienia")
+        return self._grip_lin
 
     def from_q(self, q: np.ndarray) -> dict[str, float]:
         """Wektor MJCF [rad] -> jednostki aplikacji."""

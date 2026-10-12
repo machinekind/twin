@@ -12,7 +12,9 @@ import time
 import numpy as np
 
 from lerobot_mp.twin.kinematics import RobotKinematics
-from lerobot_mp.twin.robots import SO101
+from lerobot_mp.twin.robots import get_spec
+
+SO101 = get_spec("so101")
 
 kin = RobotKinematics(SO101)
 print("zakresy [deg]:", {j: (round(float(np.degrees(lo)), 1), round(float(np.degrees(hi)), 1))

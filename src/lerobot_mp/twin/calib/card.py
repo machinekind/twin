@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..robots import SO101, RobotSpec
+from ..robots import RobotSpec
 from .tags import MARKER_FRACTION, render
 
 
@@ -60,7 +60,7 @@ class Card:
         back[2, 3] = -self.thickness / 2
         return {self.ids[0]: front, self.ids[1]: back}
 
-    def nominal(self, pinch_in_tcp: np.ndarray, spec: RobotSpec = SO101) -> np.ndarray:
+    def nominal(self, pinch_in_tcp: np.ndarray, spec: RobotSpec) -> np.ndarray:
         """Nominalna poza karty w ukladzie TCP, gdy wlozono ja "mniej wiecej prosto".
 
         `pinch_in_tcp` to punkt miedzy zamknietymi czubkami szczek (patrz

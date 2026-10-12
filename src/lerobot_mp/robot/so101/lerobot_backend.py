@@ -13,11 +13,12 @@ import importlib
 import inspect
 import logging
 import math
+from dataclasses import dataclass
 import time
 from typing import Any
 
-from ..twin.config import GRIPPER, JOINT_NAMES, TwinConfig
-from .base import RobotBackend, RobotInfo
+from ...twin.config import from_mapping
+from ..base import BackendContext, RobotBackend, RobotInfo
 from .feetech import LINK_LOSS_CYCLES, describe_servo_error
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ STATUS_FAIL_LIMIT = 5
 DEFAULT_RESOLUTION = 4096
 
 #: O tyle tikow (~1,8 st.) zero stawu LeRobota (srodek zakresu z kalibracji) moze
-#: odbiegac od zera, ktore zaklada blizniak (`robot.center_ticks`), zanim ostrzezemy.
+#: odbiegac od zera, ktore zaklada blizniak (`lerobot.center_ticks`), zanim ostrzezemy.
 ZERO_TOLERANCE_TICKS = 20
 
 #: Kolejne lokalizacje klas SO-follower - od najnowszej do najstarszej.
@@ -52,21 +53,47 @@ _MODULE_CANDIDATES: tuple[str, ...] = (
 )
 
 
+@dataclass
+class LeRobotSettings:
+    """The `lerobot:` section of the twin's config."""
+
+    #: Arm id in LeRobot (selects the calibration file).
+    robot_id: str = "so101_follower"
+    #: Arm type passed to LeRobot: "so101" or "so100".
+    kind: str = "so101"
+    #: True -> joints in degrees (the default in LeRobot >= 0.4).
+    use_degrees: bool = True
+    calibration_dir: str | None = None
+    #: The servo tick of joint zero in the twin's model (as in the `feetech` backend): LeRobot
+    #: counts degrees from the middle of its calibration range, and the panel warns about the gap.
+    center_ticks: int = 2048
+    #: Torque off on exit (LeRobot's default is on: the arm drops under its own weight).
+    torque_off_on_exit: bool = False
+
+
+def create(ctx: BackendContext) -> LeRobotArm:
+    """Entry point of the `lerobot` backend plugin."""
+    return LeRobotArm(ctx)
+
+
 class LeRobotArm(RobotBackend):
     """Adapter na `SO101Follower` / `SO100Follower` z LeRobot."""
 
-    def __init__(self, cfg: TwinConfig):
-        self.cfg = cfg
+    def __init__(self, ctx: BackendContext):
+        self.settings: LeRobotSettings = from_mapping(LeRobotSettings, ctx.settings, "lerobot")
+        self.port = ctx.port
+        self.joints = tuple(ctx.joints)
+        self.gripper = ctx.gripper
         self._robot: Any = None
         self._connected = False
-        kind = cfg.robot.kind.lower()
+        kind = self.settings.kind.lower()
         if kind not in ("so101", "so100"):
-            raise ValueError(f"Nieznany typ ramienia: {cfg.robot.kind!r} (so101|so100)")
+            raise ValueError(f"Nieznany typ ramienia: {self.settings.kind!r} (so101|so100)")
         self._kind = kind
         self._reset_status()
         self.info = RobotInfo(
             name=f"{kind.upper()} (LeRobot)",
-            description=f"port {cfg.robot.port}",
+            description=f"port {self.port}",
             simulated=False,
         )
 
@@ -99,18 +126,23 @@ class LeRobotArm(RobotBackend):
 
     def _build_config(self, config_cls: Any) -> Any:
         """Sklada obiekt konfiguracji, pomijajac pola nieznane danej wersji."""
-        rc = self.cfg.robot
-        if not rc.port:
+        rc = self.settings
+        if not self.port:
             raise ValueError(
                 "Nie podano portu szeregowego ramienia. Uzyj --port /dev/ttyACM0 "
                 "(Linux), /dev/tty.usbmodem* (macOS) albo COM5 (Windows)."
             )
 
         wanted: dict[str, Any] = {
-            "port": rc.port,
+            "port": self.port,
             "id": rc.robot_id,
             "use_degrees": rc.use_degrees,
-            "max_relative_target": self._max_relative_target(rc.max_relative_target),
+            # Always off: with LeRobot clamping a step to +-12 degrees from the measured position,
+            # the gap between measurement and command never passed ~12 degrees, the twin's tracking
+            # guard (25 degrees) could not trip, and the servo kept pushing into an obstacle
+            # (measured on the real LeRobot stack over an emulator; without the clamp STOP came
+            # after 0.78 s). The twin's supervisor limits speed anyway.
+            "max_relative_target": None,
             # LeRobot domyslnie zdejmuje moment przy rozlaczeniu - ramie opada pod
             # wlasnym ciezarem. U nas decyduje o tym ta sama opcja co w `feetech`.
             "disable_torque_on_disconnect": rc.torque_off_on_exit,
@@ -131,35 +163,6 @@ class LeRobotArm(RobotBackend):
             )
         return config_cls(**kwargs)
 
-    @staticmethod
-    def _max_relative_target(value: Any) -> float | dict[str, float] | None:
-        """`robot.max_relative_target` w postaci, ktora LeRobot przyjmie: None, float albo {staw: float}.
-
-        `ensure_safe_goal_position` LeRobota 0.6.1 sprawdza `isinstance(..., float)` - `12`
-        wpisane w YAML bez kropki (int) dawalo `TypeError: 12` przy PIERWSZYM rozkazie
-        i petla blizniaka konczyla sie rozlaczeniem. Zly wpis odrzucamy przed portem.
-        None (tez "null"/"none"/"" z linii polecen) = LeRobot nie przycina celu - tego
-        chce blizniak: jego nadzor sam ogranicza predkosc, a przyciecie o 12 st. od pomiaru
-        chowalo kolizje przed straznikiem rozjazdu (25 st.) i ramie pchalo w przeszkode bez konca.
-        """
-        def one(v: Any) -> float:
-            if isinstance(v, bool):
-                raise ValueError(v)
-            out = float(v)
-            if not math.isfinite(out) or out <= 0:
-                raise ValueError(v)
-            return out
-
-        if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "null")):
-            return None
-        try:
-            if isinstance(value, dict):
-                return {str(k): one(v) for k, v in value.items()}
-            return one(value)
-        except (TypeError, ValueError):
-            raise ValueError(f"robot.max_relative_target: {value!r} - podaj dodatnia liczbe stopni "
-                             "albo null (bez limitu)") from None
-
     # ------------------------------------------------------------ polaczenie
     def connect(self) -> None:
         robot_cls, config_cls, module_name = self._resolve_classes(self._kind)
@@ -168,7 +171,7 @@ class LeRobotArm(RobotBackend):
         config = self._build_config(config_cls)
         robot = robot_cls(config)
         self._require_calibration_file(robot)
-        logger.info("Lacze z ramieniem na porcie %s ...", self.cfg.robot.port)
+        logger.info("Lacze z ramieniem na porcie %s ...", self.port)
         self._connect_without_calibration(robot)
         self._robot = robot
         self._connected = True
@@ -176,7 +179,7 @@ class LeRobotArm(RobotBackend):
         self._warn_about_joint_zero()
 
         motors = self.motor_names()
-        missing = [n for n in JOINT_NAMES if n not in motors]
+        missing = [n for n in self.joints if n not in motors]
         if missing:
             logger.warning(
                 "Robot nie raportuje stawow %s - beda pomijane przy wysylaniu.", missing
@@ -184,9 +187,9 @@ class LeRobotArm(RobotBackend):
         logger.info("Polaczono. Stawy: %s", ", ".join(motors))
 
     def _calibrate_hint(self) -> str:
-        rc = self.cfg.robot
         return (f"Skalibruj ramie w konsoli:  lerobot-calibrate --robot.type={self._kind}_follower "
-                f"--robot.port={rc.port} --robot.id={rc.robot_id}  - albo uzyj backendu `feetech`.")
+                f"--robot.port={self.port} --robot.id={self.settings.robot_id}  "
+                "- albo uzyj backendu `feetech`.")
 
     def _require_calibration_file(self, robot: Any) -> None:
         """Odmawia polaczenia, zanim cokolwiek dotknie portu, gdy LeRobot nie ma pliku kalibracji.
@@ -201,7 +204,7 @@ class LeRobotArm(RobotBackend):
             return
         where = getattr(robot, "calibration_fpath", None) or "katalog kalibracji LeRobota"
         raise RuntimeError(
-            f"Brak kalibracji LeRobota dla ramienia '{self.cfg.robot.robot_id}' ({where}). "
+            f"Brak kalibracji LeRobota dla ramienia '{self.settings.robot_id}' ({where}). "
             "Bez niej LeRobot przy laczeniu zdejmuje moment ze wszystkich serw i czeka na Enter "
             "w konsoli. " + self._calibrate_hint()
         )
@@ -273,11 +276,11 @@ class LeRobotArm(RobotBackend):
     def motor_names(self) -> list[str]:
         """Nazwy stawow zgloszone przez LeRobot (kolejnosc jak w sterowniku)."""
         if self._robot is None:
-            return list(JOINT_NAMES)
+            return list(self.joints)
         try:
             return [key.removesuffix(".pos") for key in self._robot.action_features]
         except Exception:  # pragma: no cover - zalezne od wersji LeRobot
-            return list(JOINT_NAMES)
+            return list(self.joints)
 
     def disconnect(self) -> None:
         if self._robot is not None and self._connected:
@@ -510,32 +513,35 @@ class LeRobotArm(RobotBackend):
             out[str(name)] = (min(a, b), max(a, b))
         return out
 
-    def gripper_ticks(self) -> tuple[float, float, float] | None:
-        """(zamkniety, otwarty, zero) chwytaka w tikach wedlug kalibracji LeRobota.
+    def gripper_range_q(self) -> tuple[float, float] | None:
+        """(closed, open) jaw angle [rad from joint zero] by LeRobot's calibration.
 
-        LeRobot skaluje chwytak 0..100 po `range_min..range_max` z kalibracji
-        (`drive_mode` odwraca skale), a nie po `gripper_closed/open_ticks` z konfiguracji,
-        z ktorych blizniak liczy kat szczeki. Zero = pol obrotu (2047): tam kalibracja
-        LeRobota (`set_half_turn_homings`) stawia poze srodkowa ramienia. Rejestr pozycji
-        jest ten sam co w `feetech` (Homing_Offset stosuje serwo), wiec tiki sa porownywalne.
+        LeRobot scales the gripper's 0..100 over `range_min..range_max` of its calibration
+        (`drive_mode` reverses it), not over the ticks the twin's description assumes. Zero is
+        half a turn (2047): LeRobot's calibration (`set_half_turn_homings`) puts the arm's middle
+        pose there. The position register is the one `feetech` reads (the servo applies
+        Homing_Offset), so the angles compare.
         """
-        cal = self._calibration().get(GRIPPER)
-        if cal is None or self._norm_mode(GRIPPER) != "RANGE_0_100":
+        g = self.gripper
+        cal = self._calibration().get(g) if g else None
+        if cal is None or self._norm_mode(g) != "RANGE_0_100":
             return None
         lo, hi = float(cal.range_min), float(cal.range_max)
         closed, opened = (hi, lo) if self._drive_inverted(cal) else (lo, hi)
-        return closed, opened, float((self._resolution(GRIPPER) - 1) // 2)
+        res = self._resolution(g)
+        zero = float((res - 1) // 2)
+        return (closed - zero) * 2.0 * math.pi / res, (opened - zero) * 2.0 * math.pi / res
 
     def joint_zero_offsets(self) -> dict[str, float]:
         """O ile stopni zero stawu LeRobota lezy od zera blizniaka: {staw: stopnie} (ponad tolerancje).
 
         W stopniach LeRobot liczy kat od SRODKA zakresu z kalibracji, a blizniak
-        (kinematyka, polityki) od `robot.center_ticks` - tak jak backend `feetech`.
+        (kinematyka, polityki) od `lerobot.center_ticks` - tak jak backend `feetech`.
         Dla typowej kalibracji SO-101 to kilka stopni na stawie, dla zakresu nagranego
         tylko w jedna strone (limity ramienia nr 1: wrist_flex 2025..2858) ~35 st.
         Nie przeliczamy tego po cichu - zmienilyby sie jednostki zapisow zgodnych z LeRobotem.
         """
-        center = float(self.cfg.robot.center_ticks)
+        center = float(self.settings.center_ticks)
         out: dict[str, float] = {}
         for name, cal in self._calibration().items():
             if self._norm_mode(name) != "DEGREES":
@@ -548,12 +554,12 @@ class LeRobotArm(RobotBackend):
     def non_degree_joints(self) -> list[str]:
         """Stawy ramienia (bez chwytaka), ktorych LeRobot NIE podaje w stopniach.
 
-        `robot.use_degrees: false` przestawia je na -100..100 procent zakresu z kalibracji,
+        `lerobot.use_degrees: false` przestawia je na -100..100 procent zakresu z kalibracji,
         a kinematyka, polityki i IK traktuja kazda liczbe jak stopnie - 100 "stopni" to wtedy
         koniec zakresu stawu. Wczesniej nic w panelu o tym nie mowilo.
         """
         return [str(name) for name in self._motors()
-                if name != GRIPPER and self._norm_mode(str(name)) != "DEGREES"]
+                if name != self.gripper and self._norm_mode(str(name)) != "DEGREES"]
 
     def calibration_warnings(self) -> list[str]:
         """Niefatalne zastrzezenia do kalibracji tego ramienia - zdania dla panelu. Nigdy nie rzuca."""
@@ -562,14 +568,14 @@ class LeRobotArm(RobotBackend):
             wrong_units = self.non_degree_joints()
             if wrong_units:
                 out.append(f"UWAGA: stawy {', '.join(wrong_units)} ida z LeRobota w procentach zakresu "
-                           f"(-100..100), a nie w stopniach (robot.use_degrees = {self.cfg.robot.use_degrees}) "
+                           f"(-100..100), a nie w stopniach (lerobot.use_degrees = {self.settings.use_degrees}) "
                            "- kinematyka i polityki blizniaka licza w stopniach, wiec kazdy ruch pojedzie "
-                           "w zle miejsce. Ustaw robot.use_degrees: true albo uzyj backendu `feetech`.")
+                           "w zle miejsce. Ustaw lerobot.use_degrees: true albo uzyj backendu `feetech`.")
             off = self.joint_zero_offsets()
             if off:
                 shifts = ", ".join(f"{name} {deg:+.1f} st." for name, deg in off.items())
                 out.append(f"zero stawow w kalibracji LeRobota (srodek zakresu) nie jest zerem blizniaka "
-                           f"(tik {int(self.cfg.robot.center_ticks)}) - katy z backendu `lerobot` sa "
+                           f"(tik {int(self.settings.center_ticks)}) - katy z backendu `lerobot` sa "
                            f"przesuniete wzgledem modelu ({shifts}) - do pracy z blizniakiem uzyj backendu "
                            "`feetech`.")
             return out

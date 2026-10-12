@@ -1,0 +1,41 @@
+<mujoco model="testbot">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"/>
+  <default>
+    <joint damping="0.5" armature="0.005"/>
+    <position kp="20" kv="1"/>
+  </default>
+  <worldbody>
+    <body name="base">
+      <geom name="base" type="cylinder" size="0.04 0.02" pos="0 0 0.02" mass="1"/>
+      <body name="link1" pos="0 0 0.04">
+        <joint name="j1" type="hinge" axis="0 0 1" range="-2 2"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.015" mass="0.2"/>
+        <body name="link2" pos="0 0 0.1">
+          <joint name="j2" type="hinge" axis="0 1 0" range="-1.5 1.5"/>
+          <geom type="capsule" fromto="0 0 0 0.12 0 0" size="0.012" mass="0.1"/>
+          <body name="hand" pos="0.12 0 0">
+            <geom type="box" size="0.01 0.03 0.01" mass="0.05"/>
+            <site name="tcp" pos="0.04 0 0"/>
+            <body name="jaw1" pos="0.02 0 0">
+              <joint name="gripper" type="slide" axis="0 1 0" range="0 0.02"/>
+              <geom name="tip1" type="box" size="0.02 0.003 0.008" pos="0.02 0.005 0" mass="0.01"/>
+            </body>
+            <body name="jaw2" pos="0.02 0 0">
+              <joint name="gripper_m" type="slide" axis="0 1 0" range="-0.02 0"/>
+              <geom name="tip2" type="box" size="0.02 0.003 0.008" pos="0.02 -0.005 0" mass="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <joint joint1="gripper_m" joint2="gripper" polycoef="0 -1 0 0 0"/>
+  </equality>
+  <actuator>
+    <position name="j1" joint="j1"/>
+    <position name="j2" joint="j2"/>
+    <position name="gripper" joint="gripper" kp="50" kv="2"/>
+  </actuator>
+</mujoco>

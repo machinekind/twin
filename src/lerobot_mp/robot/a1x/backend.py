@@ -45,10 +45,12 @@ import math
 import os
 import threading
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..twin.config import GRIPPER, TwinConfig
-from .base import RobotBackend, RobotInfo
+from ...twin.config import from_mapping
+from ..base import BackendContext, RobotBackend, RobotInfo
 
 #: A1X_GRIPPER_XCAN=1 (albo true / yes / tak) = to samo co `a1x.gripper_over_xcan: true`.
 GRIPPER_XCAN_ENV = "A1X_GRIPPER_XCAN"
@@ -108,6 +110,86 @@ def default_iface() -> str:
     return _galaxeo()[1].default_iface()
 
 
+@dataclass
+class A1XConfig:
+    """The `a1x:` section of the twin's config: Galaxea A1X over CAN-FD (protocol and link from `galaxeo`).
+
+    The arm is purely position-controlled: only p_des acts and kp/kd/v_des/t_ff have no effect,
+    but kp 0 leaves it deaf to commands (galaxeo diag/REPORT.md), hence kp > 0.
+    The arm has no brakes: disconnecting never releases the motors (FF 2), and an uncontrolled
+    A1X holds the pose it stands in (galaxeo docs/SAFETY.md).
+    """
+
+    #: Gains sent in 0x050 (never 0; only p_des has authority).
+    kp: float = 20.0
+    kd: float = 1.0
+    gripper_kp: float = 25.0
+    #: Gripper p_des [rad, same units as group 7 of frame 0x052] at 100 (open) and at 0
+    #: (closed); more negative = wider. Measured 2026-09-27 (galaxeo `xcan_usb --grip-test`, kp 20):
+    #: closed stop about +0.039 rad (+2.2 deg), open about -1.99 rad (-114 deg). The old +0.6
+    #: pushed the jaws 0.56 rad past the stop: the stall current (|effort| 7.8 instead of 0.2)
+    #: overheated the gripper motor. Closed = 0.04 rad of pressure past the stop (objects are
+    #: held by the `gripper_force` contact stop anyway), open = a hair before the stop so it
+    #: does not lean on it.
+    gripper_open_pdes: float = -1.95
+    gripper_closed_pdes: float = 0.08
+    #: Group 7 position from 0x052 [rad] at 0 and at 100: the stops measured 2026-09-27 (above).
+    #: Only valid with a driven gripper (from the first 0x051 in the connection): at rest after
+    #: power-on group 7 reads an arbitrary value (-165 deg with the jaws at -85 deg).
+    #: None (both) = feedback not measured: the backend reports the last command (open loop).
+    gripper_fb_closed: float | None = 0.039
+    gripper_fb_open: float | None = -1.992
+    #: What the backend reports as the gripper before the first command when feedback is not
+    #: measured. 0 = closed: the station convention (home = jaws closed, "Set home = here"
+    #: confirms it).
+    gripper_start: float = 0.0
+    #: Gripper p_des slew [rad/s]; the full 2.03 travel takes about 1.0 s.
+    gripper_rate_pdes_s: float = 2.0
+    #: |effort| of group 7 this far above rest (median of the first 0.1 s of closing) = contact:
+    #: the target freezes (it grips, does not crush).
+    gripper_force: float = 1.2
+    #: Arm joint zero offset [deg]: subtracted on read, added on send
+    #: (J3 reads about +1.49 deg at rest - measure yours).
+    joint_offsets_deg: tuple[float, ...] = (0.0,) * 6
+    #: Rate of the 0x050 / 0x051 stream [Hz] (the arm answers 0x052 every 5 ms).
+    stream_hz: float = 200.0
+    #: The backend's own p_des speed limit [deg/s]: a second layer below the twin's supervisor.
+    max_step_deg_s: float = 90.0
+    #: No 0x052 for longer than this [ms] = the link is silent: sending stops, the twin gets an error.
+    stale_ms: float = 150.0
+    #: This many identical 0x052 frames in a row = frozen telemetry (arm released, FF 2).
+    frozen_frames: int = 50
+    #: A command-measurement gap [deg] lasting `deaf_s` on a stationary joint = arm deaf or blocked.
+    deaf_err_deg: float = 3.0
+    deaf_s: float = 1.0
+    #: FF 1 -> 5 -> 6 enable sequence right after connecting. Off by default: a freshly powered
+    #: arm listens right away, and FF 5 briefly releases the motors. The panel has a button for it.
+    enable_on_connect: bool = False
+    #: Gripper over XCAN (macOS): on by default. Measured 2026-09-27 (`python -m galaxeo.xcan_usb
+    #: --grip-test`): 0x051 gets through, the jaws travelled 85-116 degrees. The earlier refusal
+    #: rested on an unverified comment. False = refuse ("no gripper"); env A1X_GRIPPER_XCAN=1 forces True.
+    gripper_over_xcan: bool = True
+
+    def __post_init__(self) -> None:
+        if self.kp <= 0 or self.gripper_kp <= 0:
+            raise ValueError("a1x.kp i a1x.gripper_kp musza byc > 0 - przy kp 0 ramie A1X przestaje "
+                             "sluchac rozkazow")
+        if len(self.joint_offsets_deg) != 6:
+            raise ValueError("a1x.joint_offsets_deg: potrzeba 6 wartosci (arm_joint1..6)")
+        self.joint_offsets_deg = tuple(float(x) for x in self.joint_offsets_deg)
+        if (self.gripper_fb_closed is None) != (self.gripper_fb_open is None):
+            raise ValueError("a1x.gripper_fb_closed i gripper_fb_open: podaj oba albo zadne")
+        if self.gripper_fb_closed is not None and abs(self.gripper_fb_open - self.gripper_fb_closed) < 1e-6:
+            raise ValueError("a1x.gripper_fb_closed i gripper_fb_open nie moga byc rowne")
+        if self.stream_hz <= 0 or self.max_step_deg_s <= 0 or self.gripper_rate_pdes_s <= 0:
+            raise ValueError("a1x.stream_hz, max_step_deg_s i gripper_rate_pdes_s musza byc > 0")
+
+
+def create(ctx: BackendContext) -> A1XArm:
+    """Entry point of the `a1x` backend plugin."""
+    return A1XArm(ctx)
+
+
 class A1XArm(RobotBackend):
     """Galaxea A1X: 6 stawow ramienia + chwytak po CAN-FD (protokol z galaxeo).
 
@@ -115,17 +197,18 @@ class A1XArm(RobotBackend):
     a `enable()` odmierza czas przez `sleep` i sam wola `io_step`.
     """
 
-    def __init__(self, cfg: TwinConfig, *, bus: Any = None, clock: Callable[[], float] = time.monotonic,
+    def __init__(self, ctx: BackendContext, *, bus: Any = None, clock: Callable[[], float] = time.monotonic,
                  threaded: bool = True, sleep: Callable[[float], None] = time.sleep,
                  connect_timeout_s: float = CONNECT_TIMEOUT_S):
         self.P, self._B = _galaxeo()
-        self.cfg = cfg                         # te same JointConfig co nadzor blizniaka (`_sync_backend_limits`)
-        self.acfg = cfg.a1x
-        self.arm = tuple(n for n in cfg.joints if n != GRIPPER)
-        if len(self.arm) != self.P.N_JOINTS or GRIPPER not in cfg.joints:
-            raise ValueError("backend a1x potrzebuje 6 stawow ramienia + 'gripper' w sekcji joints - "
-                             "stanowisko robot: a1x")
-        self.iface = cfg.robot.port or None
+        self.acfg: A1XConfig = from_mapping(A1XConfig, ctx.settings, "a1x")
+        self.gripper = ctx.gripper
+        self.arm = tuple(n for n in ctx.joints if n != ctx.gripper)
+        if len(self.arm) != self.P.N_JOINTS or ctx.gripper is None:
+            raise ValueError("backend a1x potrzebuje 6 stawow ramienia i chwytaka - stanowisko robot: a1x")
+        #: Limits `send_joints` clamps to; the twin moves them through `set_joint_limits`.
+        self.limits: dict[str, tuple[float, float]] = dict(ctx.limits)
+        self.iface = ctx.port or None
         self._bus = bus
         self._own_bus = bus is None
         self._clock, self._sleep, self._threaded = clock, sleep, threaded
@@ -251,8 +334,6 @@ class A1XArm(RobotBackend):
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        if self._connected and self.cfg.robot.torque_off_on_exit:
-            logger.warning("A1X nie ma hamulcow - momentu nie wylaczam (robot.torque_off_on_exit ignorowane)")
         with self._lock:
             self._p_target = self._g_target = None
             self._connected = False
@@ -413,7 +494,7 @@ class A1XArm(RobotBackend):
             self._link_silent = self._stale_now(now) or self._frozen()
             self._stale = list(self.arm) if self._link_silent else []
             out = {name: math.degrees(self._fb.pos[i] - self._off[i]) for i, name in enumerate(self.arm)}
-            out[GRIPPER] = self._grip_app()
+            out[self.gripper] = self._grip_app()
             return out
 
     def send_joints(self, targets: dict[str, float]) -> dict[str, float]:
@@ -436,15 +517,15 @@ class A1XArm(RobotBackend):
                 for i, name in enumerate(self.arm):
                     if name not in targets:
                         continue
-                    jc = self.cfg.joint(name)
+                    lo, hi = self.limits[name]
                     lo_b, hi_b = (math.degrees(b - self._off[i]) for b in self._bounds[i])
-                    v = min(max(float(targets[name]), jc.min, lo_b), jc.max, hi_b)
+                    v = min(max(float(targets[name]), lo, lo_b), hi, hi_b)
                     p[i] = math.radians(v) + self._off[i]
                     sent[name] = v
                 self._p_target = p
-            if GRIPPER in targets:
-                jc = self.cfg.joint(GRIPPER)
-                v = min(max(float(targets[GRIPPER]), jc.min, 0.0), jc.max, 100.0)
+            if self.gripper in targets:
+                lo, hi = self.limits[self.gripper]
+                v = min(max(float(targets[self.gripper]), lo, 0.0), hi, 100.0)
                 reported = self._grip_app()
                 if self._g_target is not None or abs(v - reported) > GRIP_START_DELTA:
                     want = self._pdes(v)
@@ -474,7 +555,7 @@ class A1XArm(RobotBackend):
                         else:
                             self._g_target = want
                     self._g_cmd = v
-                sent[GRIPPER] = v
+                sent[self.gripper] = v
             self._goal.update(sent)
             return sent
 
@@ -548,8 +629,11 @@ class A1XArm(RobotBackend):
         return {name: (math.degrees(lo - self._off[i]), math.degrees(hi - self._off[i]))
                 for i, (name, (lo, hi)) in enumerate(zip(self.arm, self._bounds))}
 
-    def gripper_ticks(self) -> None:
-        return None
+    def set_joint_limits(self, limits: Mapping[str, tuple[float, float]]) -> None:
+        with self._lock:
+            for name, (lo, hi) in limits.items():
+                if name in self.limits:
+                    self.limits[name] = (float(lo), float(hi))
 
     def gripper_known(self) -> bool:
         """Czy pozycja chwytaka jest znana: pomiar, rozkaz, ktory NAPRAWDE poszedl w 0x051, albo

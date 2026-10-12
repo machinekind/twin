@@ -1,7 +1,7 @@
 # Konfiguracja ramienia dla cyfrowego blizniaka (lerobot-twin).
 #
-# Kazda sekcja odpowiada jednej dataclassie z `lerobot_mp/twin/config.py`;
-# wartosci nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna
+# Sekcje `safety` i `robot` czyta blizniak (`lerobot_mp/twin/config.py`), kazda inna -
+# backend o tej nazwie. Wartosci nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna
 # nadpisac pojedynczy parametr bez przepisywania calosci. Nieznany klucz
 # w sekcji konczy sie bledem, a nie cichym zignorowaniem.
 #
@@ -17,32 +17,32 @@ safety:
   startup_ramp_s: 2.5       # plynne dojscie do pozycji domowej po starcie
   velocity_scale: 1.0       # globalny mnoznik limitow predkosci
   home_on_exit: true
-  # Poza gotowosci wyliczona odwrotna kinematyka do srodka przestrzeni roboczej.
-  home:
-    shoulder_pan: 0.0
-    shoulder_lift: -23.3
-    elbow_flex: 46.4
-    wrist_flex: 3.3
-    wrist_roll: 0.0
-    gripper: 35.0
+  # Poza domowa i limity stawow sa w opisie ramienia (robot.yaml w folderze ramienia);
+  # `safety.home` i `joints` w tym pliku nadpisuja je tylko dla ramienia o tych stawach.
 
 robot:
-  backend: sim         # sim | lerobot | feetech | a1x | auto
-  port: null           # np. /dev/ttyACM0, /dev/tty.usbmodem58FA0958121, COM5
-  robot_id: so101_follower
-  kind: so101          # so101 | so100
-  use_degrees: true
-  max_relative_target: 12.0   # sprzetowy limit skoku (null = wylaczony)
-  calibration_dir: null
-  read_state_hz: 10.0
-  # --- tylko backend `feetech` i blizniak (lerobot-twin) --------
-  # Blizniak przelicza chwytak 0..100 na kat szczeki przez te same tiki, wiec
-  # przy innym ramieniu trzeba je poprawic TUTAJ (w kopii pliku),
-  # inaczej `lift` sciska za mocno albo nie domyka.
+  backend: sim         # sim albo wtyczka backendu: feetech | lerobot | a1x (lerobot-twin check)
+  port: null           # np. /dev/ttyACM0, /dev/tty.usbmodem58FA0958121, COM5; dla a1x: can0, xcan
+
+# Kazda inna sekcja nalezy do backendu o tej nazwie - sprawdza ja sam backend.
+
+feetech:               # SO-101 wprost przez port szeregowy
   baudrate: 1000000          # predkosc portu; STS3215 w SO-101 fabrycznie 1 Mbaud
   center_ticks: 2048         # tik zera stawu (4096 tikow na obrot, montaz wysrodkowany)
   gripper_closed_ticks: 1986 # szczeka zamknieta = 0 w skali aplikacji
   gripper_open_ticks: 2670   # szczeka otwarta = 100; wartosci z EEPROM przykladowego ramienia
-  # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position
-  # serwa chwytaka (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u.
+  # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position serwa chwytaka
+  # (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u. Blizniak liczy
+  # kat szczeki z `gripper_range_q` w src/lerobot_mp/robot/so101/robot/robot.yaml - przy innym ramieniu popraw
+  # oba miejsca, inaczej panel ostrzega po polaczeniu, a `lift` sciska za mocno albo nie domyka.
   torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte
+
+lerobot:               # SO-101 przez LeRobota (pelny stos z kalibracja)
+  robot_id: so101_follower
+  kind: so101                # so101 | so100
+  use_degrees: true
+  max_relative_target: null  # przyciecie skoku przez LeRobota; null = nadzor blizniaka
+  calibration_dir: null
+  center_ticks: 2048
+
+# a1x:                 # Galaxea A1X po CAN-FD - klucze w docs/TWIN.md, rozdzial "Galaxea A1X"

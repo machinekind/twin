@@ -1,10 +1,16 @@
-"""Shared test helpers: no config file from the shell, and a toy arm."""
+"""Shared test helpers: no config file from the shell, and the test robot as if it were installed."""
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import pytest
 
-from lerobot_mp.twin.robots import RobotSpec
+from lerobot_mp.twin.robots import reload_robots
+
+#: The test robot's package (`examples/robots/testbot`): a robot folder and a backend plugin.
+TESTBOT = Path(__file__).resolve().parents[1] / "examples" / "robots" / "testbot"
 
 
 @pytest.fixture(autouse=True)
@@ -16,74 +22,39 @@ def _no_config_from_env(monkeypatch):
     monkeypatch.delenv("LEROBOT_MP_CONFIG")
 
 
-#: Zabawkowe ramie: dwa stawy obrotowe, chwytak na suwaku (0..2 cm) i druga szczeka
-#: sprzezona z nim rownoscia (`gripper_m = -gripper`), jak druga szczeka A1X.
-TOY_MJCF = """<mujoco model="toy">
-  <compiler angle="radian"/>
-  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"/>
-  <default>
-    <joint damping="0.5" armature="0.005"/>
-    <position kp="20" kv="1"/>
-  </default>
-  <worldbody>
-    <body name="base">
-      <geom name="base" type="cylinder" size="0.04 0.02" pos="0 0 0.02" mass="1"/>
-      <body name="link1" pos="0 0 0.04">
-        <joint name="j1" type="hinge" axis="0 0 1" range="-2 2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.015" mass="0.2"/>
-        <body name="link2" pos="0 0 0.1">
-          <joint name="j2" type="hinge" axis="0 1 0" range="-1.5 1.5"/>
-          <geom type="capsule" fromto="0 0 0 0.12 0 0" size="0.012" mass="0.1"/>
-          <body name="hand" pos="0.12 0 0">
-            <geom type="box" size="0.01 0.03 0.01" mass="0.05"/>
-            <site name="tcp" pos="0.04 0 0"/>
-            <body name="jaw1" pos="0.02 0 0">
-              <joint name="gripper" type="slide" axis="0 1 0" range="0 0.02"/>
-              <geom name="tip1" type="box" size="0.02 0.003 0.008" pos="0.02 0.005 0" mass="0.01"/>
-            </body>
-            <body name="jaw2" pos="0.02 0 0">
-              <joint name="gripper_m" type="slide" axis="0 1 0" range="-0.02 0"/>
-              <geom name="tip2" type="box" size="0.02 0.003 0.008" pos="0.02 -0.005 0" mass="0.01"/>
-            </body>
-          </body>
-        </body>
-      </body>
-    </body>
-  </worldbody>
-  <equality>
-    <joint joint1="gripper_m" joint2="gripper" polycoef="0 -1 0 0 0"/>
-  </equality>
-  <actuator>
-    <position name="j1" joint="j1"/>
-    <position name="j2" joint="j2"/>
-    <position name="gripper" joint="gripper" kp="50" kv="2"/>
-  </actuator>
-</mujoco>
-"""
+@pytest.fixture
+def install_dist(tmp_path, monkeypatch):
+    """Put a distribution on `sys.path` as `pip install` would leave it: its dist-info with these
+    entry points ({group: {name: value}}), and optional top-level modules ({module: source})."""
+    def install(name: str, entry_points: dict[str, dict[str, str]], modules: dict[str, str] | None = None,
+                version: str = "0.1.0") -> Path:
+        site = tmp_path / f"site-{name}"
+        dist = site / f"{name.replace('-', '_')}-{version}.dist-info"
+        dist.mkdir(parents=True)
+        (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+                                       encoding="utf-8")
+        groups = [f"[{group}]\n" + "".join(f"{ep} = {value}\n" for ep, value in eps.items())
+                  for group, eps in entry_points.items()]
+        (dist / "entry_points.txt").write_text("\n".join(groups), encoding="utf-8")
+        for module, source in (modules or {}).items():
+            (site / f"{module}.py").write_text(source, encoding="utf-8")
+        monkeypatch.syspath_prepend(str(site))
+        reload_robots()
+        return dist
+
+    yield install
+    monkeypatch.undo()
+    reload_robots()
 
 
-@pytest.fixture(scope="session")
-def toy_spec(tmp_path_factory) -> RobotSpec:
-    """Opis zabawkowego ramienia (`TOY_MJCF`) - dowod, ze blizniak nie zaklada SO-101."""
-    path = tmp_path_factory.mktemp("toy") / "toy.xml"
-    path.write_text(TOY_MJCF, encoding="utf-8")
-    return RobotSpec(
-        name="toy",
-        title="Zabawka",
-        mjcf=str(path),
-        joints=("j1", "j2", "gripper"),
-        gripper="gripper",
-        tcp_site="tcp",
-        hand_body="hand",
-        base_body="base",
-        home={"j1": 0.0, "j2": 20.0, "gripper": 50.0},
-        tcp_approach=(1.0, 0.0, 0.0),
-        tcp_closing=(0.0, 1.0, 0.0),
-        fingertips=("tip1", "tip2"),
-        wave_ranges={"j1": (-45.0, 45.0), "j2": (-30.0, 30.0)},
-        jaw_bodies=("jaw1", "jaw2"),
-        limits={"j1": (-90.0, 90.0), "j2": (-60.0, 60.0), "gripper": (0.0, 100.0)},
-        max_vel={"j1": 90.0, "j2": 90.0, "gripper": 300.0},
-        gripper_range_q=(0.0, 0.02),
-        mirror_joints={"gripper_m": ("gripper", -1.0)},
-    )
+@pytest.fixture
+def testbot(install_dist, monkeypatch):
+    """`pip install examples/robots/testbot` without pip: its package and a dist-info on `sys.path`.
+
+    The dist-info carries the entry points of the package's own `pyproject.toml`, so the twin
+    finds the robot and its backend the way it finds any installed plugin.
+    """
+    project = tomllib.loads((TESTBOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    monkeypatch.syspath_prepend(str(TESTBOT))
+    install_dist(project["name"], project["entry-points"], version=project["version"])
+    return "testbot"

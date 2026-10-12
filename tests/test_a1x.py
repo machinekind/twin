@@ -19,11 +19,12 @@ galaxeo = pytest.importorskip("galaxeo")
 from galaxeo import protocol as P  # noqa: E402
 from galaxeo.bus import Frame  # noqa: E402
 
-from lerobot_mp.twin.config import JointConfig, load_config  # noqa: E402
-from lerobot_mp.robot.a1x import A1XArm  # noqa: E402
+from lerobot_mp.twin.config import JointConfig  # noqa: E402
+from lerobot_mp.robot.a1x.backend import A1XArm, A1XConfig  # noqa: E402
+from lerobot_mp.robot.base import BackendContext  # noqa: E402
 
 ARM = tuple(f"arm_joint{i}" for i in range(1, 7))
-#: Stawy A1X w jednostkach aplikacji - lokalnie, bo opis A1X (robots.A1X) przychodzi z innej galezi.
+#: Stawy A1X w jednostkach aplikacji - wlasne limity testow, nie te z robot.yaml.
 A1X_JOINTS = {
     "arm_joint1": JointConfig(min=-160.0, max=160.0, max_vel=90.0),
     "arm_joint2": JointConfig(min=-2.0, max=175.0, max_vel=90.0),
@@ -38,10 +39,19 @@ STEP = 0.005                                   # jeden takt strumienia (200 Hz)
 LSB_DEG = math.degrees(1.0 / P.POS_SCALE)
 LSB = 2 / P.POS_SCALE                          # tolerancja p_des po kodowaniu
 #: Konce p_des chwytaka z domyslnej konfiguracji (zmierzone 2026-09-27: +0,08 zamkniety, -1,95 otwarty).
-_A = load_config(joints=A1X_JOINTS).a1x
+_A = A1XConfig()
 OPEN, CLOSED = _A.gripper_open_pdes, _A.gripper_closed_pdes
 #: Chwytak bez pomiaru (petla otwarta): testy zgadywanego rozwarcia (`gripper_start`, `assume_gripper`).
 OPEN_LOOP = {"gripper_fb_closed": None, "gripper_fb_open": None}
+
+
+def a1x_context(port=None, joints=None, **settings) -> BackendContext:
+    """What the twin hands the `a1x` backend: these joints, `port` and the `a1x:` section `settings`."""
+    joints = A1X_JOINTS if joints is None else joints
+    gripper = "gripper" if "gripper" in joints else None
+    return BackendContext(robot="a1x", joints=tuple(joints), gripper=gripper,
+                          limits={n: (jc.min, jc.max) for n, jc in joints.items()},
+                          max_vel={n: jc.max_vel for n, jc in joints.items()}, port=port, settings=settings)
 
 
 class Clock:
@@ -138,8 +148,8 @@ def make_arm(bus=None, clock=None, joints=None, **a1x):
             clock.t += secs / n
             bus.tick(secs / n)
 
-    cfg = load_config(overrides={"a1x": a1x} if a1x else None, joints=A1X_JOINTS if joints is None else joints)
-    arm = A1XArm(cfg, bus=bus, clock=clock, threaded=False, sleep=sleep, connect_timeout_s=0.05)
+    arm = A1XArm(a1x_context(joints=joints, **a1x), bus=bus, clock=clock, threaded=False, sleep=sleep,
+                 connect_timeout_s=0.05)
     return arm, bus, clock
 
 
@@ -496,11 +506,9 @@ def test_gripper_is_drivable_over_xcan_by_default_and_travel_time_covers_the_sle
     """Measured 2026-09-27: XCAN delivers 0x051. Every port drives the gripper unless the config says no."""
     monkeypatch.delenv("A1X_GRIPPER_XCAN", raising=False)
     for port, xcan in (("xcan", True), ("xcan:6", True), ("XCAN", True), ("can0", False), ("PCAN_USBBUS1", False)):
-        cfg = load_config(overrides={"robot": {"port": port}}, joints=A1X_JOINTS)
-        arm = A1XArm(cfg, bus=FakeA1XBus(), threaded=False)
+        arm = A1XArm(a1x_context(port), bus=FakeA1XBus(), threaded=False)
         assert arm.gripper_drivable() is True and arm.gripper_xcan_trial() is xcan, port
-        off = A1XArm(load_config(overrides={"robot": {"port": port}, "a1x": {"gripper_over_xcan": False}},
-                                joints=A1X_JOINTS), bus=FakeA1XBus(), threaded=False)
+        off = A1XArm(a1x_context(port, gripper_over_xcan=False), bus=FakeA1XBus(), threaded=False)
         assert off.gripper_drivable() is (not xcan), port
     arm, _, _ = make_arm()
     assert arm.gripper_travel_s() == pytest.approx(abs(OPEN - CLOSED) / 2.0 + 0.2)
@@ -573,10 +581,9 @@ def test_gripper_over_xcan_follows_the_config_flag_or_the_env_var(monkeypatch):
     monkeypatch.delenv("A1X_GRIPPER_XCAN", raising=False)
 
     def arm(port, flag=False):
-        cfg = load_config(overrides={"robot": {"port": port}, "a1x": {"gripper_over_xcan": flag}}, joints=A1X_JOINTS)
-        return A1XArm(cfg, bus=FakeA1XBus(), threaded=False)
+        return A1XArm(a1x_context(port, gripper_over_xcan=flag), bus=FakeA1XBus(), threaded=False)
 
-    assert load_config(joints=A1X_JOINTS).a1x.gripper_over_xcan is True
+    assert A1XConfig().gripper_over_xcan is True
     for port in ("xcan", "xcan:6"):
         a = arm(port, flag=True)
         assert a.gripper_drivable() and a.gripper_xcan_trial(), port
@@ -653,18 +660,15 @@ def test_kp_zero_never_reaches_the_bus():
         make_arm(gripper_kp=0.0)
 
 
-def test_disconnect_never_sends_a_release_frame(caplog):
+def test_disconnect_never_sends_a_release_frame():
     arm, bus, clock = make_arm()
-    arm.cfg.robot.torque_off_on_exit = True
     bus.tick(n=60)
     arm.connect()
     arm.send_joints({"arm_joint1": 15.0, "gripper": 20.0})
     run(arm, bus, clock, 0.3)
     arm.enable()
     run(arm, bus, clock, 0.1)
-    with caplog.at_level("WARNING"):
-        arm.disconnect()
-    assert "nie ma hamulcow" in caplog.text
+    arm.disconnect()
     assert bus.closed and not arm.is_connected
     released = [d for i, d, _ in bus.tx if i == P.FF_ID and d[0] in P.RELEASE_CODES]
     assert released == []
@@ -681,7 +685,9 @@ def test_twin_connects_to_a_fake_a1x_holds_pose_and_follows_a_target(monkeypatch
     from lerobot_mp.twin.runtime import Twin
     from lerobot_mp.twin.workspace import Workspace
 
-    spec = robots.REGISTRY["a1x"]
+    from lerobot_mp.robot import backend_context
+
+    spec = robots.get_spec("a1x")
     home = [spec.home.get(n, 0.0) for n in ARM]
     clock = Clock()
     bus = FakeA1XBus(home)
@@ -692,8 +698,9 @@ def test_twin_connects_to_a_fake_a1x_holds_pose_and_follows_a_target(monkeypatch
         clock.t += secs
         bus.tick(secs)
 
-    def create(cfg):
-        made["arm"] = A1XArm(cfg, bus=bus, clock=clock, threaded=False, sleep=sleep, connect_timeout_s=0.05)
+    def create(cfg, spec):
+        made["arm"] = A1XArm(backend_context(cfg, spec), bus=bus, clock=clock, threaded=False, sleep=sleep,
+                             connect_timeout_s=0.05)
         return made["arm"]
 
     monkeypatch.setattr(rt, "create_backend", create)

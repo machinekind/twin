@@ -1,45 +1,48 @@
-"""Rejestr ramion: jeden opis na model, wspolny dla symulacji, UI i kalibracji.
+"""Robot descriptions: one folder per robot, shared by the simulation, the panel and calibration.
 
-Opis mowi tylko to, czego nie da sie wyczytac z samego MJCF: ktore stawy sa
-ramieniem w kolejnosci aplikacji, ktory z nich jest chwytakiem, gdzie jest
-punkt narzedzia (TCP) i na jakim ciele jedzie karta kalibracyjna. Reszta -
-zakresy, masy, siatki - siedzi w MJCF i jest czytana z niego, a nie powielana.
+A robot is a folder holding `robot.yaml` and the MJCF model it names (meshes next to the model).
+The description says only what the MJCF cannot: which joints form the arm in app order, which
+one is the gripper, where the tool point (TCP) is, which body carries the calibration card, the
+app's joint limits and speeds (tighter than the mechanical ones), jaw thresholds, the desk the
+arm works on, and how the panel labels the joints and connects the arm. Ranges, masses and
+meshes stay in the MJCF and are read from it.
 
-Jednostki aplikacji sa jednostkami LeRobota: stawy w stopniach, chwytak w skali
-0..100. MJCF liczy w radianach (staw obrotowy) albo metrach (suwak), a chwytak
-to w nim kat albo wysuw szczeki. Przeliczenie jest w `kinematics.RobotKinematics`
-i tylko tam - dla chwytaka liniowo przez `RobotSpec.gripper_range_q`, gdy opis
-go podaje, a inaczej przez te same tiki serwa
-(`RobotConfig.gripper_closed_ticks..gripper_open_ticks`), co backend `feetech`,
-zeby 0..100 znaczylo ten sam kat szczeki w blizniaku i na ramieniu.
+App units are LeRobot's: joints in degrees, gripper 0..100. `kinematics.RobotKinematics` maps
+the gripper linearly onto `RobotSpec.gripper_range_q` (closed, open) in MJCF units, and a backend
+reports its own mapping (`gripper_range_q()`), so the twin can warn when the two disagree.
 
-Tu sa tez dane ramienia, ktorych MJCF nie zna: limity i predkosci stawow
-aplikacji (wezsze niz mechaniczne), progi szczeki w jednostkach MJCF i skala
-stolu, na ktorym ramie pracuje (`Desk`). `robot_config(spec)` sklada z nich
-konfiguracje aplikacji dla danego ramienia.
+Robots come only from installed packages (`robot_folders`): a robot's package registers its
+folder under the `lerobot_mp.robots` entry point group, named like the robot, loading to the path
+of the folder. The twin itself holds no robot.
+
+`robot_config(spec)` builds the twin configuration for one robot from its description.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
+from functools import lru_cache
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
-from .config import JointConfig, TwinConfig, config_from_data, read_config_data
+import yaml
 
-#: Korzen repozytorium (wspolny dla calego pakietu, patrz `lerobot_mp.paths`).
 from ..paths import REPO_ROOT
+from .config import JointConfig, TwinConfig, config_from_data, from_mapping, read_config_data
 
 logger = logging.getLogger(__name__)
 
+ROBOT_FILE = "robot.yaml"
+ENTRY_POINT_GROUP = "lerobot_mp.robots"
+
 
 def resolve_asset(path: str | Path) -> Path:
-    """Sciezka zasobu wzgledem biezacego katalogu albo korzenia repozytorium.
+    """A repository path, relative to the working directory first and then to the repository root.
 
-    Ta sama kolejnosc co w podgladzie 3D: najpierw katalog, z ktorego
-    uruchomiono aplikacje, potem repozytorium - zeby dzialalo i z klonu,
-    i z instalacji `pip install -e .`.
+    Same order as the 3D preview, so it works both from a clone and from `pip install -e .`.
     """
     candidate = Path(path)
     if candidate.is_absolute():
@@ -53,27 +56,24 @@ def resolve_asset(path: str | Path) -> Path:
 
 @dataclass(frozen=True)
 class JawThresholds:
-    """Progi szczeki w jednostkach MJCF stawu chwytaka (rad dla obrotu, m dla suwaka).
+    """Jaw thresholds in the MJCF units of the gripper joint (rad for a hinge, m for a slide)."""
 
-    Wartosci domyslne to SO-101 (szczeka obrotowa, radiany).
-    """
-
-    #: Szczeka "stoi" - zmiana miedzy taktami mniejsza niz tyle.
+    #: The jaw "stands still": it moved less than this between ticks.
     still: float = 0.02
-    #: Szczeka szersza niz rozkaz / niz zamknieta o tyle = cos ja rozpiera.
+    #: The jaw is wider than commanded / than closed by this much = something holds it apart.
     margin: float = 0.05
-    #: Najwieksze dopuszczalne domykanie sie szczeki w serii sukcesu.
+    #: The most the jaw may creep closed during a success streak.
     creep: float = 0.03
-    #: Szczeka szersza niz tyle = na pewno pusta.
+    #: Wider than this = surely empty.
     open: float = 0.40
 
 
 @dataclass(frozen=True)
 class Desk:
-    """Gdzie ramie pracuje na stole [m, rad], uklad podstawy.
+    """Where the arm works on the table [m, rad], in the base frame.
 
-    Wartosci domyslne to SO-101: pierscienie celow i kostki zadan RL, fala
-    kalibracyjna, losowanie kamer w symulacji i mapa stolu z gory.
+    Goal rings and cube placement of the RL tasks, the calibration wave, camera sampling in
+    simulation and the top-down table map.
     """
 
     goal_radius: tuple[float, float] = (0.13, 0.32)
@@ -90,254 +90,221 @@ class Desk:
 
 
 @dataclass(frozen=True)
+class Connection:
+    """One way the panel offers to connect the arm: a backend plugin and its port."""
+
+    label: str
+    backend: str
+    #: None = the port typed in the panel.
+    port: str | None = None
+    #: `platform.system()` this connection is the default for ("Darwin", "Linux", "Windows").
+    platform: str | None = None
+
+
+@dataclass(frozen=True)
 class RobotSpec:
-    """Wszystko, czego blizniak potrzebuje o ramieniu, poza samym MJCF."""
+    """Everything the twin needs about an arm besides the MJCF itself."""
 
     name: str
     title: str
-    #: Plik MJCF samego ramienia (bez stolu i swiatla) - scena dokleja reszte.
+    #: MJCF of the arm alone (no table, no light), relative to `root`; the scene adds the rest.
     mjcf: str
-    #: Stawy w kolejnosci aplikacji. Nazwy jak w MJCF.
+    #: Joints in app order. Names as in the MJCF.
     joints: tuple[str, ...]
-    #: Ktory ze stawow jest chwytakiem (jednostki aplikacji 0..100); None = brak.
+    #: Which joint is the gripper (app units 0..100); None = no gripper.
     gripper: str | None
-    #: Site punktu narzedzia - to jego poze liczy IK i do niego celuje UI.
+    #: Tool point site: IK solves for its pose and the panel aims it.
     tcp_site: str
-    #: Cialo, na ktorym jedzie karta kalibracyjna trzymana w szczekach.
+    #: Body that carries the calibration card held in the jaws.
     hand_body: str
-    #: Cialo podstawy - uklad, w ktorym podajemy pozy kamer i celow.
+    #: Base body: the frame in which camera poses and targets are given.
     base_body: str
-    #: Poza spoczynkowa w jednostkach aplikacji.
+    #: The robot's folder; `robot.yaml` never sets it.
+    root: Path = Path()
+    #: Rest pose in app units.
     home: dict[str, float] = field(default_factory=dict)
-    #: Kierunek podejscia (od nadgarstka przez koncowki szczek) i os zamykania
-    #: szczek, oba w ukladzie `tcp_site`. Z nich karta kalibracyjna wylicza swoja
-    #: nominalna poze: sterczy wzdluz podejscia, a jej normalna to os zamykania.
-    #: Sprawdza je test na geometrii modelu, a nie wiara w konwencje autora MJCF.
+    #: Approach direction (from the wrist through the jaw tips) and the jaw closing axis, both in
+    #: the `tcp_site` frame. The calibration card derives its nominal pose from them: it sticks out
+    #: along the approach and its normal is the closing axis. A test checks them on the model's
+    #: geometry instead of trusting the MJCF author's conventions.
     tcp_approach: tuple[float, float, float] = (1.0, 0.0, 0.0)
     tcp_closing: tuple[float, float, float] = (0.0, 0.0, 1.0)
-    #: Geomy czubkow obu szczek. Srodek miedzy nimi przy zamknietym chwytaku
-    #: to miejsce, w ktorym szczeki trzymaja karte kalibracyjna.
+    #: Geoms of both jaw tips. The midpoint between them with the gripper closed is where the jaws
+    #: hold the calibration card.
     fingertips: tuple[str, str] = ("", "")
-    #: Staw obracajacy narzedzie wokol kierunku podejscia. Fala kalibracyjna
-    #: dobiera go analitycznie, zeby karta patrzyla na kamere.
+    #: Joint that rolls the tool about the approach direction. The calibration wave sets it
+    #: analytically so the card faces the camera.
     roll_joint: str | None = None
-    #: Zakresy [jednostki aplikacji], z ktorych fala losuje pozostale stawy -
-    #: wezsze niz mechaniczne, zeby karta krazyla nad stolem, a nie za plecami.
+    #: Ranges [app units] the wave samples the other joints from: tighter than the mechanical ones,
+    #: so the card circles above the table and not behind the arm.
     wave_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
-    #: Kamery zamontowane na ramieniu (nazwy kamer w MJCF).
+    #: Cameras mounted on the arm (camera names in the MJCF).
     onboard_cameras: tuple[str, ...] = ()
-    #: Ciala obu szczek (stala, ruchoma) - czujniki kontaktu chwytu w zadaniach RL.
+    #: Bodies of both jaws (fixed, moving): grip contact sensors of the RL tasks.
     jaw_bodies: tuple[str, str] = ("", "")
-    #: Limity stawow [jednostki aplikacji] - wezsze niz mechaniczne z MJCF.
+    #: Joint limits [app units]: tighter than the mechanical ones in the MJCF.
     limits: dict[str, tuple[float, float]] = field(default_factory=dict)
-    #: Najwieksza predkosc zadana [jednostki aplikacji / s].
+    #: Highest commanded speed [app units / s].
     max_vel: dict[str, float] = field(default_factory=dict)
-    #: Chwytak 0..100 liniowo na (zamkniety, otwarty) w jednostkach MJCF;
-    #: None = przez tiki serwa STS3215 (backend `feetech`).
+    #: Gripper 0..100 maps linearly onto (closed, open) in the gripper joint's MJCF units.
     gripper_range_q: tuple[float, float] | None = None
-    #: Stawy MJCF sprzezone z innym stawem: staw -> (staw aplikacji, przelozenie).
-    #: Kinematyka wpisuje je przy kazdym zapisie qpos.
+    #: MJCF joints coupled to another joint: joint -> (app joint, ratio). Kinematics writes them
+    #: on every qpos write.
     mirror_joints: dict[str, tuple[str, float]] = field(default_factory=dict)
-    #: Progi szczeki w jednostkach MJCF chwytaka.
     jaw: JawThresholds = JawThresholds()
-    #: Skala stolu, na ktorym ramie pracuje.
     desk: Desk = Desk()
-    #: Dom etapami: grupy stawow jadace do pozy domowej jedna po drugiej (reszta stoi),
-    #: kazdy etap sprawdzony w blizniaku na kolizje przed ruchem. Puste = jedna rampa
-    #: wszystkich stawow naraz. Dla ramienia zlozonego na podstawie (A1X) prosta rampa
-    #: ze wszystkimi stawami naraz obracala nadgarstek w kolumne barku.
+    #: Staged home: joint groups that drive to the home pose one after another (the rest hold),
+    #: each stage collision-checked in the twin before it moves. Empty = one ramp of all joints.
     home_stages: tuple[tuple[str, ...], ...] = ()
+    #: Panel slider labels: joint -> (short label, full name for the hint).
+    joint_labels: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: How the panel offers to connect this arm, besides the simulation.
+    connections: tuple[Connection, ...] = ()
 
     @property
     def mjcf_path(self) -> Path:
-        return resolve_asset(self.mjcf)
+        return self.root / self.mjcf
 
     @property
     def arm_joints(self) -> tuple[str, ...]:
         return tuple(j for j in self.joints if j != self.gripper)
 
 
-SO101 = RobotSpec(
-    name="so101",
-    title="SO-101 (LeRobot)",
-    mjcf="assets/robots/so101/so101.xml",
-    joints=("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"),
-    gripper="gripper",
-    # `gripperframe` lezy miedzy szczekami, przy koncowkach - tam, gdzie chwyta.
-    tcp_site="gripperframe",
-    hand_body="gripper",
-    base_body="base",
-    home={
-        "shoulder_pan": 0.0,
-        "shoulder_lift": -23.3,
-        "elbow_flex": 46.4,
-        "wrist_flex": 3.3,
-        "wrist_roll": 0.0,
-        "gripper": 35.0,
-    },
-    fingertips=("fixed_jaw_sph_tip1", "moving_jaw_sph_tip1"),
-    roll_joint="wrist_roll",
-    wave_ranges={
-        "shoulder_pan": (-75.0, 75.0),
-        "shoulder_lift": (-80.0, 30.0),
-        "elbow_flex": (-30.0, 90.0),
-        "wrist_flex": (-70.0, 80.0),
-    },
-    onboard_cameras=("wrist_cam",),
-    jaw_bodies=("gripper", "moving_jaw_so101_v1"),
-    # Te same liczby co `config._default_joints` aplikacji dloni (test pilnuje).
-    limits={
-        "shoulder_pan": (-105.0, 105.0),
-        "shoulder_lift": (-95.0, 95.0),
-        "elbow_flex": (-92.0, 92.0),
-        "wrist_flex": (-95.0, 95.0),
-        "wrist_roll": (-150.0, 150.0),
-        "gripper": (0.0, 100.0),
-    },
-    max_vel={
-        "shoulder_pan": 140.0,
-        "shoulder_lift": 120.0,
-        "elbow_flex": 120.0,
-        "wrist_flex": 160.0,
-        "wrist_roll": 220.0,
-        "gripper": 300.0,
-    },
-)
-
-#: Galaxea A1X: szesc stawow obrotowych i chwytak na suwaku. MJCF generuje
-#: `scripts/import_a1x_model.py` z URDF producenta (`assets/robots/a1x/README.md`).
-A1X = RobotSpec(
-    name="a1x",
-    title="Galaxea A1X",
-    mjcf="assets/robots/a1x/a1x.xml",
-    joints=("arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "arm_joint6", "gripper"),
-    gripper="gripper",
-    tcp_site="tcp",
-    hand_body="gripper_link",
-    base_body="base_link",
-    # Keyframe `home` modelu (1,0 / -1,6 / 0,6 rad); chwytak zamkniety (0), jak dom stanowiska
-    # ("Ustaw dom = tu" zapisuje chwytak 0) i jak zglasza A1X bez pomiaru (`a1x.gripper_start`).
-    home={
-        "arm_joint1": 0.0,
-        "arm_joint2": 57.3,
-        "arm_joint3": -91.7,
-        "arm_joint4": 34.4,
-        "arm_joint5": 0.0,
-        "arm_joint6": 0.0,
-        "gripper": 0.0,
-    },
-    # Site `tcp` jak z generatora galaxeo: x - podejscie, y - zamykanie szczek.
-    tcp_approach=(1.0, 0.0, 0.0),
-    tcp_closing=(0.0, 1.0, 0.0),
-    # Kolejnosc tak, zeby od pierwszego do drugiego czubka szlo wzdluz `tcp_closing` (+y):
-    # szczeka 1 jedzie po +y, szczeka 2 po -y. Srodek miedzy nimi nie zalezy od kolejnosci.
-    fingertips=("finger2_tip", "finger1_tip"),
-    roll_joint="arm_joint6",
-    # Ramie i lokiec wysuniete do przodu, nadgarstek w dol: 85 % poz ma TCP 0,20-0,55 m
-    # od osi i nad blatem (mediana 0,35 m wysokosci). Szersze zakresy z planu (J2 20..120,
-    # J3 -150..-30, J4 +-60) dawaly 57 %, z karta zwykle ponad kadrem kamer przy stole.
-    wave_ranges={
-        "arm_joint1": (-75.0, 75.0),
-        "arm_joint2": (60.0, 130.0),
-        "arm_joint3": (-130.0, -60.0),
-        "arm_joint4": (0.0, 80.0),
-        "arm_joint5": (-45.0, 45.0),
-    },
-    jaw_bodies=("gripper_finger_link1", "gripper_finger_link2"),
-    # Zakresy URDF minus 3-5 st. zapasu: rozkaz nie dociska stawu do ogranicznika.
-    # Poza spoczynkowa ramienia (J2 ~ -0,2 st., J3 ~ +1,5 st.) lezy poza nimi celowo -
-    # nadzor wyprowadza z niej staw miekkimi limitami (`keep_outside`), jak ramie 2 SO-101.
-    limits={
-        "arm_joint1": (-160.0, 160.0),
-        "arm_joint2": (3.0, 177.0),
-        "arm_joint3": (-187.0, -3.0),
-        "arm_joint4": (-85.0, 85.0),
-        "arm_joint5": (-85.0, 85.0),
-        "arm_joint6": (-160.0, 160.0),
-        "gripper": (0.0, 100.0),
-    },
-    # 90 st/s = ogranicznik predkosci mostka; chwytak jak SO-101 (ten sam `grip_step` zadan RL).
-    max_vel={**{f"arm_joint{k}": 90.0 for k in range(1, 7)}, "gripper": 300.0},
-    # Wysuw szczeki [m]: 0 = plytki zsuniete (czubki 3 mm od siebie), 0,05 = pelne otwarcie.
-    gripper_range_q=(0.0, 0.05),
-    mirror_joints={"gripper_finger_joint2": ("gripper", -1.0)},
-    # Metry: 20 mm wysuwu = 43 mm miedzy czubkami, wiecej niz przekatna 42 mm kostki.
-    jaw=JawThresholds(still=0.001, margin=0.003, creep=0.002, open=0.020),
-    desk=Desk(
-        goal_radius=(0.25, 0.50),
-        goal_height=(0.03, 0.25),
-        cube_radius=(0.28, 0.45),
-        cube_bearing=(-0.7, 0.7),
-        wave_radius=(0.20, 0.55),
-        search_centre=(0.35, 0.0, 0.08),
-        search_dist=(0.6, 1.2),
-        camera_dist=(0.7, 1.1),
-        camera_centre=(0.35, 0.0, 0.08),
-        map_centre=(0.36, 0.0),
-        map_side=0.9,
-    ),
-    # Ze zlozonego spoczynku (J2 ~0, J3 ~0): najpierw lokiec rozklada przedramie w gore,
-    # potem nadgarstek, potem bark i podstawa - kolejnosc sprawdzona w blizniaku (path_clear);
-    # nadgarstek przed lokciem uderza chwytakiem w kolumne barku (arm_link1) po 7 % drogi.
-    home_stages=(("arm_joint3",), ("arm_joint4", "arm_joint5", "arm_joint6"),
-                 ("arm_joint2", "arm_joint1"), ("gripper",)),
-)
-
-REGISTRY: dict[str, RobotSpec] = {SO101.name: SO101, A1X.name: A1X}
+def load_robot(folder: str | Path) -> RobotSpec:
+    """The description in `folder/robot.yaml`, checked against itself and its model file."""
+    folder = Path(folder).resolve()
+    path = folder / ROBOT_FILE
+    if not path.is_file():
+        raise FileNotFoundError(f"{folder}: brak pliku {ROBOT_FILE}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: oczekiwano mapowania YAML")
+    if "root" in data:
+        raise ValueError(f"{path}: `root` wynika z polozenia folderu - usun to pole")
+    spec = from_mapping(RobotSpec, {**data, "root": folder}, str(path))
+    _check(spec, path)
+    return spec
 
 
+def _check(spec: RobotSpec, path: Path) -> None:
+    joints = set(spec.joints)
+    problems = []
+    if not spec.joints or len(joints) != len(spec.joints):
+        problems.append("`joints` musi byc niepusta lista bez powtorzen")
+    if spec.gripper is not None and spec.gripper not in joints:
+        problems.append(f"chwytak {spec.gripper!r} nie jest na liscie `joints`")
+    if spec.gripper is not None and spec.gripper_range_q is None:
+        problems.append("ramie z chwytakiem potrzebuje `gripper_range_q` (zamkniety, otwarty) "
+                        "w jednostkach MJCF")
+    for table in ("limits", "max_vel"):
+        missing = joints - set(getattr(spec, table))
+        if missing:
+            problems.append(f"`{table}` nie ma stawow {sorted(missing)}")
+    named = {
+        "home": set(spec.home),
+        "wave_ranges": set(spec.wave_ranges),
+        "joint_labels": set(spec.joint_labels),
+        "home_stages": {j for stage in spec.home_stages for j in stage},
+        "mirror_joints": {src for src, _ in spec.mirror_joints.values()},
+        "roll_joint": {spec.roll_joint} - {None},
+    }
+    for table, names in named.items():
+        if names - joints:
+            problems.append(f"`{table}` wymienia stawy spoza `joints`: {sorted(names - joints)}")
+    if not spec.mjcf_path.is_file():
+        problems.append(f"nie ma pliku modelu {spec.mjcf_path}")
+    if problems:
+        raise ValueError(f"{path}:\n  " + "\n  ".join(problems))
+
+
+@lru_cache(maxsize=1)
+def robot_folders() -> dict[str, Path]:
+    """Name -> folder of every robot an installed package registers."""
+    found: dict[str, Path] = {}
+
+    def add(name: str, folder: Path, source: str) -> None:
+        name = name.lower()
+        if name in found:
+            raise ValueError(f"Dwa ramiona o nazwie {name!r}: {found[name]} i {folder} ({source})")
+        found[name] = folder.resolve()
+
+    for ep in entry_points(group=ENTRY_POINT_GROUP):
+        # One broken package must not take the other robots down with it.
+        try:
+            target = ep.load()
+        except Exception:
+            logger.exception("Wtyczka ramienia %r (%s) nie laduje sie - pomijam ja", ep.name, ep.value)
+            continue
+        if not isinstance(target, (str, os.PathLike)):
+            logger.error("Wtyczka ramienia %r (%s) musi wskazywac sciezke folderu, a wskazuje %s - "
+                         "pomijam ja", ep.name, ep.value, type(target).__name__)
+            continue
+        add(ep.name, Path(target), f"pakiet {ep.dist.name if ep.dist else ep.value}")
+    return found
+
+
+@lru_cache(maxsize=None)
 def get_spec(name: str) -> RobotSpec:
+    folders = robot_folders()
     try:
-        return REGISTRY[name.lower()]
+        folder = folders[name.lower()]
     except KeyError as exc:
-        known = ", ".join(sorted(REGISTRY))
+        # Entry points live in the installed package's metadata: a checkout updated without
+        # `pip install -e .` registers no robots at all.
+        known = (", ".join(sorted(folders))
+                 or "zadne - po aktualizacji repozytorium uruchom ponownie pip install -e .")
         raise KeyError(f"Nieznane ramie {name!r}. Dostepne: {known}") from exc
+    spec = load_robot(folder)
+    if spec.name.lower() != name.lower():
+        raise ValueError(f"{folder / ROBOT_FILE}: `name: {spec.name}`, "
+                         f"a ramie jest zarejestrowane jako {name!r}")
+    return spec
+
+
+def robots() -> dict[str, RobotSpec]:
+    """Every robot the twin can load, by name."""
+    return {name: get_spec(name) for name in robot_folders()}
+
+
+def reload_robots() -> None:
+    """Forget the discovered robots: the next lookup scans installed packages and folders again."""
+    robot_folders.cache_clear()
+    get_spec.cache_clear()
 
 
 def joint_configs(spec: RobotSpec) -> dict[str, JointConfig]:
-    """JointConfig kazdego stawu opisu, w kolejnosci opisu.
-
-    `gain/invert/offset` zostaja domyslne - czyta je tylko mapowanie dloni,
-    blizniak nie.
-    """
+    """JointConfig of every joint of the description, in its order."""
     return {
         n: JointConfig(min=spec.limits[n][0], max=spec.limits[n][1], max_vel=spec.max_vel[n])
         for n in spec.joints
     }
 
 
-#: Pliki, z ktorych juz ostrzezono o pominietych tabelach SO-101 (raz na proces).
+#: Files whose foreign joint tables were already reported (once per process).
 _SKIP_WARNED: set[tuple[str, str]] = set()
 
 
 def robot_config(
     spec: RobotSpec, path: str | Path | None = None, overrides: dict[str, Any] | None = None
 ) -> TwinConfig:
-    """`load_config()` dla tego ramienia: stawy z opisu, poza domowa z opisu.
+    """`load_config()` for this robot: joints and the home pose from the description.
 
-    Plik YAML (`path` albo `LEROBOT_MP_CONFIG`) i `overrides` leza na wierzchu,
-    jak w `load_config`. Dwie zasady:
+    The YAML file (`path` or `LEROBOT_MP_CONFIG`) and `overrides` lie on top, as in `load_config`.
+    Two rules:
 
-    * Sekcje `joints` i `safety.home` pliku to tabele aplikacji dloni, kluczowane
-      stawami SO-101 (`safety.home` z `configs/default.yaml`; `joints` tylko z wlasnej
-      kopii w `configs/local.yaml`).
-      Stosuja sie tylko do ramienia o stawach SO-101 (te same co w aplikacji dloni);
-      innemu ramieniu plik ich nie daje - limity i poze domowa bierze z opisu
-      (nazwa `gripper` jest wspolna, wiec nawet pojedynczy wpis SO-101 dalby
-      mu zly zakres albo dom). `overrides` dzialaja zawsze i scisle.
-    * Poza domowa z opisu wchodzi tylko wtedy, gdy ani plik, ani `overrides` nie
-      maja `safety.home`. Czesciowa `home` z pliku zastepuje ja w calosci, tak
-      jak w `load_config` (brakujace stawy uzupelnia potem `SafetySupervisor`).
-
-    Dla SO-101 wynik rozni sie wiec od `load_config(path, overrides)` - w kazdym
-    przypadku - tylko `gain` stawow, ktorego blizniak nie czyta.
+    * The file's joint tables, `joints` and `safety.home`, apply only when every joint they name
+      belongs to this robot. A file written for another arm would otherwise hand this one its
+      limits or home pose; such tables are skipped with a warning. `overrides` always apply,
+      strictly.
+    * The home pose is the description's, with the joints the file's `safety.home` names on top,
+      and then `overrides` (the workspace's "Set home = here" names every joint). A partial home
+      never leaves the other joints at 0: on the A1X that is the folded pose at the end stops.
     """
-    data = read_config_data(path)
-    if tuple(spec.joints) != SO101.joints:
-        data = _without_hand_app_tables(data, spec, path)
-    if not (_has_home(data) or _has_home(overrides or {})):
-        safety = data.get("safety")
-        data = dict(data, safety=dict(safety if isinstance(safety, dict) else {}, home=dict(spec.home)))
+    data = _own_tables(read_config_data(path), spec, path)
+    safety = data.get("safety")
+    safety = dict(safety) if isinstance(safety, dict) else {}
+    safety["home"] = {**spec.home, **(safety.get("home") or {})}
+    data = dict(data, safety=safety)
     return config_from_data(data, overrides, joints=joint_configs(spec))
 
 
@@ -346,19 +313,20 @@ def _has_home(data: dict[str, Any]) -> bool:
     return isinstance(safety, dict) and "home" in safety
 
 
-def _without_hand_app_tables(data: dict[str, Any], spec: RobotSpec, path: str | Path | None) -> dict[str, Any]:
-    """Zawartosc pliku bez sekcji `joints` i `safety.home` (tabel SO-101)."""
+def _own_tables(data: dict[str, Any], spec: RobotSpec, path: str | Path | None) -> dict[str, Any]:
+    """File content without the joint tables that name joints this robot does not have."""
     data = dict(data)
     skipped = []
-    if "joints" in data:
+    joints = data.get("joints")
+    if isinstance(joints, dict) and set(joints) - set(spec.joints):
         del data["joints"]
         skipped.append("joints")
-    if _has_home(data):
+    if _has_home(data) and set(data["safety"]["home"]) - set(spec.joints):
         data["safety"] = {k: v for k, v in data["safety"].items() if k != "home"}
         skipped.append("safety.home")
     key = (str(path), spec.name)
     if skipped and key not in _SKIP_WARNED:
         _SKIP_WARNED.add(key)
-        logger.warning("Konfiguracja: sekcje %s pliku sa dla stawow SO-101 - ramie %s bierze je z opisu",
+        logger.warning("Konfiguracja: sekcje %s pliku sa dla innego ramienia - %s bierze je z opisu",
                        ", ".join(skipped), spec.name)
     return data

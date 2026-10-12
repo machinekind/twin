@@ -1,8 +1,8 @@
 """Identyfikacja dynamiki serw: nagranie prawdziwego ruchu i dopasowanie do niego symulacji.
 
-    rec = record(twin, excitation(spec.home))            # ~20 s ruchu pobudzajacego przez nadzor
-    dyn, err = fit(rec)                                    # tlumienie, armatura, opoznienie
-    ws.dynamics = dyn.to_dict(); ws.save()                 # srodek randomizacji w treningu
+    rec = record(twin, excitation(spec.home, joints=spec.arm_joints))  # ~20 s ruchu przez nadzor
+    dyn, err = fit(rec, spec)                                          # tlumienie, armatura, opoznienie
+    ws.dynamics = dyn.to_dict(); ws.save()                             # srodek randomizacji w treningu
 
 Model Menagerie ma wzmocnienia serw policzone z karty katalogowej, nie
 zmierzone na TWOIM ramieniu: inne zasilanie, inny egzemplarz STS3215, inne
@@ -59,13 +59,10 @@ from typing import Any
 import mujoco
 import numpy as np
 
-from ..config import GRIPPER
 from .. import scene as sc
-from ..robots import SO101, RobotSpec
+from ..robots import RobotSpec
 from .randomize import UNFITTED_RANGES, Dynamics
 
-#: Stawy SO-101 - kolumny nagran sprzed `Recording.joints` (i nazwa dla testow).
-JOINTS = SO101.joints
 #: Nazwa wlasciciela ramienia (`Twin.claim`) na czas nagrania.
 OWNER = "identyfikacja"
 
@@ -77,8 +74,14 @@ class Recording:
     measured: np.ndarray          # (T, n) zmierzone katy; NaN, gdy w tym takcie nie czytano
     meta: dict[str, Any] = field(default_factory=dict)
     #: Stawy kolumn `command`/`measured` (kolejnosc opisu ramienia, chwytak ostatni).
-    #: Na dysku w `meta["joints"]`; nagrania sprzed tego pola to SO-101.
-    joints: tuple[str, ...] = SO101.joints
+    #: Na dysku w `meta["joints"]`.
+    joints: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.joints = tuple(self.joints)
+        if np.ndim(self.command) == 2 and len(self.joints) != np.shape(self.command)[1]:
+            raise ValueError(f"nagranie: {np.shape(self.command)[1]} kolumn rozkazu, "
+                             f"a stawow {len(self.joints)} ({', '.join(self.joints) or 'brak'})")
 
     def save(self, path: str | Path) -> Path:
         path = Path(path)
@@ -91,7 +94,9 @@ class Recording:
     def load(path: str | Path) -> Recording:
         z = np.load(path, allow_pickle=False)
         meta = json.loads(str(z["meta"]))
-        joints = tuple(meta.pop("joints", SO101.joints))
+        if "joints" not in meta:
+            raise ValueError(f"{path}: nagranie bez listy stawow (`joints`) - nagraj je ponownie")
+        joints = tuple(meta.pop("joints"))
         return Recording(z["t"], z["command"], z["measured"], meta, joints)
 
 
@@ -130,10 +135,11 @@ def excitation(home: dict[str, float], amplitude: float = 12.0, hold: float = 0.
     Skok pokazuje wzmocnienie i opoznienie, powrot z przeciwnej strony -
     tarcie suche (histereza), ruch wszystkimi naraz - sprzezenia miedzy
     stawami. Amplituda mala (12 st.), zeby ramie nie wyjechalo nad stol.
-    `joints=None` - wszystkie stawy `home` poza chwytakiem, w kolejnosci `home`.
+    `joints=None` - wszystkie stawy `home`, w kolejnosci `home` (chwytak pomin przez
+    `joints=spec.arm_joints`).
     """
     if joints is None:
-        joints = tuple(n for n in home if n != GRIPPER)
+        joints = tuple(home)
     plan: list[tuple[float, dict[str, float]]] = [(0.0, dict(home))]
     t = hold
     for j in joints:
@@ -199,8 +205,7 @@ def record(twin, plan: list[tuple[float, dict[str, float]]], settle: float = 1.0
     """
     if not twin.connected:
         raise RuntimeError("ramie nie jest polaczone")
-    # Opis ramienia blizniaka (`Twin.spec`); obiekt bez niego (atrapy w testach) - SO-101.
-    spec = getattr(twin, "spec", None) or SO101
+    spec = twin.spec
     joints = tuple(spec.joints)
     stop = should_stop or (lambda: False)
     t_end = time.monotonic() + ramp_timeout
@@ -292,7 +297,7 @@ def record(twin, plan: list[tuple[float, dict[str, float]]], settle: float = 1.0
     return rec
 
 
-def _measurement(meas, joints: tuple[str, ...] = JOINTS) -> list[float] | None:
+def _measurement(meas, joints: tuple[str, ...]) -> list[float] | None:
     """Katy stawow `joints` z odczytu albo None, gdy odczytu nie ma lub nie jest pelny (NaN)."""
     if not meas:
         return None
@@ -309,7 +314,7 @@ class _TickLog:
 
     stamps = "tick"
 
-    def __init__(self, joints: tuple[str, ...] = JOINTS):
+    def __init__(self, joints: tuple[str, ...]):
         self.joints = joints
         self.samples: list[tuple[float, dict, list[float] | None, float]] = []
         self.fresh = 0
@@ -327,7 +332,7 @@ class _TickLog:
 
 
 def _rows_from_ticks(samples, start_cmd: dict[str, float],
-                     joints: tuple[str, ...] = JOINTS) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                     joints: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(t, rozkaz, pomiar) z taktow petli: (chwila taktu, wyslane w nim, odczyt albo None, measured_t).
 
     Wiersz = takt. Odczyt w takcie idzie PRZED wysylka (`Twin._tick`), wiec w wierszu pomiar
@@ -373,7 +378,7 @@ class _StatusLog:
     Petla i rejestrator licza na tym samym `time.monotonic` - gdy `measured_t` jest z innego zegara (`connect(threaded=False)`), zostaje zegar rejestratora.
     """
 
-    def __init__(self, joints: tuple[str, ...] = JOINTS):
+    def __init__(self, joints: tuple[str, ...]):
         self.joints = joints
         self.fresh = 0
         self.start_cmd: dict[str, float] = {}
@@ -435,7 +440,7 @@ class Replayer:
     #: dzialaja w tym samym procesie, gdy dopasowanie idzie w tle.
     threads = max(1, (os.cpu_count() or 2) // 2)
 
-    def __init__(self, spec: RobotSpec = SO101):
+    def __init__(self, spec: RobotSpec):
         self.scene = sc.build(sc.SceneConfig(spec))
         m = self.scene.model
         # Pobudzenie nie dotyka niczego (male ruchy wokol domu nad stolem) - bez
@@ -660,7 +665,7 @@ def _coordinate_scan(costs, x0s: list[np.ndarray], spans: np.ndarray, cycles: in
     return xs, fx
 
 
-def identify(rec: Recording, spec: RobotSpec = SO101, control_hz: float = 20.0, on_progress=None,
+def identify(rec: Recording, spec: RobotSpec, control_hz: float = 20.0, on_progress=None,
              free: tuple[str, ...] = IDENTIFIED) -> FitResult:
     """Parametry `free` (reszta = model Menagerie), przy ktorych symulacja powtarza nagranie,
     i ich niepewnosc (`FitResult.band`) przy tym, ze reszta jest NIEZNANA, a nie rowna modelowi."""
@@ -768,7 +773,8 @@ def identify(rec: Recording, spec: RobotSpec = SO101, control_hz: float = 20.0, 
     return FitResult(dyn, base, band, calls[0], profiles)
 
 
-def fit(rec: Recording, spec: RobotSpec = SO101, control_hz: float = 20.0, on_progress=None) -> tuple[Dynamics, float]:
+def fit(rec: Recording, spec: RobotSpec, control_hz: float = 20.0,
+        on_progress=None) -> tuple[Dynamics, float]:
     """`identify` w starym ksztalcie: (dynamika, blad symulacji nominalnej)."""
     out = identify(rec, spec, control_hz, on_progress)
     return out.dyn, out.base
