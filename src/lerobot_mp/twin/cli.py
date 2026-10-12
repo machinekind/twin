@@ -55,16 +55,17 @@ def _check(_: argparse.Namespace) -> int:
 
     try:
         from .kinematics import RobotKinematics
-        from .robots import REGISTRY
+        from .robots import get_spec, robot_folders
 
-        for spec in REGISTRY.values():
+        for name, folder in robot_folders().items():
             try:
+                spec = get_spec(name)
                 m = RobotKinematics(spec).model
-                line(f"model {spec.title}", f"{m.nbody} cial, {int(m.mesh_facenum.sum())} trojkatow")
+                line(f"model {spec.title}", f"{m.nbody} cial, {int(m.mesh_facenum.sum())} trojkatow ({folder})")
             except Exception as exc:  # noqa: BLE001 - zly model to wiersz raportu, nie wyjatek
-                line(f"model {spec.title}", f"{type(exc).__name__}: {exc}", False)
+                line(f"model {name}", f"{type(exc).__name__}: {exc}", False)
     except Exception as exc:
-        line("model SO-101", f"{type(exc).__name__}: {exc}", False)
+        line("ramiona", f"{type(exc).__name__}: {exc}", False)
 
     try:
         import serial.tools.list_ports as lp
@@ -452,8 +453,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="lerobot-twin", description="Cyfrowy blizniak stanowiska SO-101.")
-    config_help = ("plik YAML konfiguracji (np. configs/local.yaml: robot.center_ticks, "
-                   "gripper_*_ticks, baudrate); ustawia LEROBOT_MP_CONFIG")
+    config_help = ("plik YAML konfiguracji (np. configs/local.yaml: robot.port, sekcje backendow "
+                   "feetech/lerobot/a1x); ustawia LEROBOT_MP_CONFIG")
     ap.add_argument("--config", default=None, help=config_help)
     # To samo po nazwie polecenia (`lerobot-twin ui --config ...`); SUPPRESS nie nadpisuje wartosci sprzed niej.
     common = argparse.ArgumentParser(add_help=False)

@@ -25,12 +25,15 @@ a zwrot przez `joints.<nazwa>.invert`.
 from __future__ import annotations
 
 import logging
+import math
 import socket
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from ..twin.config import GRIPPER, JOINT_NAMES, TwinConfig
-from .base import RobotBackend, RobotInfo
+from ..twin.config import from_mapping
+from .base import BackendContext, RobotBackend, RobotInfo
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +59,6 @@ TICKS_PER_REV = 4096
 TICK_MIN = 0
 TICK_MAX = 4095
 
-#: SO-101 numeruje serwa od podstawy do chwytaka, czyli tak samo jak JOINT_NAMES.
-DEFAULT_IDS: dict[str, int] = {name: index for index, name in enumerate(JOINT_NAMES, start=1)}
 
 #: Ponizej tego napiecia serwo odpowiada (plytka zasila sie z USB), ale nie ma
 #: z czego ruszyc. Warto powiedziec to wprost, zamiast pozwolic uzytkownikowi
@@ -367,19 +368,48 @@ class FeetechBus:
         self._link.flush()
 
 
+@dataclass
+class FeetechSettings:
+    """The `feetech:` section of the twin's config."""
+
+    #: Port speed. The STS3215 servos in the SO-101 ship set to 1 Mbaud.
+    baudrate: int = 1_000_000
+    #: Tick that corresponds to joint zero. The servo has 4096 ticks per turn, and the standard
+    #: SO-101 assembly mounts it centred, which is 2048.
+    center_ticks: int = 2048
+    #: Gripper jaw range in ticks: 0 in app scale is `closed`, 100 is `open`. The values come
+    #: from the limits the gripper servo had stored in its own EEPROM, i.e. from the jaw travel
+    #: measured on a real arm. Check yours: open the jaw by hand and read `Present_Position`.
+    #: The robot description's `gripper_range_q` must match them, or the twin warns at connect.
+    gripper_closed_ticks: int = 1986
+    gripper_open_ticks: int = 2670
+    #: Torque off on exit. Off by default, because a limp arm drops under its own weight;
+    #: enable it only when you know the arm is supported.
+    torque_off_on_exit: bool = False
+
+
+def create(ctx: BackendContext) -> FeetechArm:
+    """Entry point of the `feetech` backend plugin."""
+    return FeetechArm(ctx)
+
+
 class FeetechArm(RobotBackend):
     """Ramie SO-101 sterowane wprost przez port szeregowy."""
 
-    def __init__(self, cfg: TwinConfig, bus: FeetechBus | None = None):
-        self.cfg = cfg
-        rc = cfg.robot
-        if not rc.port:
+    def __init__(self, ctx: BackendContext, bus: FeetechBus | None = None):
+        self.settings: FeetechSettings = from_mapping(FeetechSettings, ctx.settings, "feetech")
+        self.port = ctx.port
+        if not self.port:
             raise ValueError(
                 "Nie podano portu szeregowego ramienia. Uzyj --port COM5 (Windows) "
                 "albo --port /dev/ttyACM0 (Linux)."
             )
-        self.bus = bus or FeetechBus(rc.port, rc.baudrate)
-        self.ids = dict(DEFAULT_IDS)
+        self.joints = tuple(ctx.joints)
+        self.gripper = ctx.gripper
+        self.limits: dict[str, tuple[float, float]] = dict(ctx.limits)
+        self.bus = bus or FeetechBus(self.port, self.settings.baudrate)
+        # The SO-101 numbers its servos from the base to the gripper, in joint order.
+        self.ids = {name: index for index, name in enumerate(self.joints, start=1)}
         self._connected = False
         self._positions: dict[str, float] = {}
         #: Limity odczytane z serw [tiki]. Pusty wpis = serwo nie ogranicza.
@@ -399,14 +429,14 @@ class FeetechArm(RobotBackend):
         self._link_silent = False
         self.info = RobotInfo(
             name="SO-101 (feetech)",
-            description=f"port {rc.port} @ {rc.baudrate} bd",
+            description=f"port {self.port} @ {self.settings.baudrate} bd",
             simulated=False,
         )
 
     # ------------------------------------------------------------- przeliczenia
     def _to_ticks(self, name: str, value: float) -> int:
-        rc = self.cfg.robot
-        if name == GRIPPER:
+        rc = self.settings
+        if name == self.gripper:
             # Chwytak jedzie w 0..100 (0 = zwarty), a nie w stopniach.
             span = rc.gripper_open_ticks - rc.gripper_closed_ticks
             ticks = rc.gripper_closed_ticks + span * (value / 100.0)
@@ -415,8 +445,8 @@ class FeetechArm(RobotBackend):
         return int(round(min(max(ticks, TICK_MIN), TICK_MAX)))
 
     def _to_units(self, name: str, ticks: int) -> float:
-        rc = self.cfg.robot
-        if name == GRIPPER:
+        rc = self.settings
+        if name == self.gripper:
             span = rc.gripper_open_ticks - rc.gripper_closed_ticks
             if abs(span) < 1e-6:  # pragma: no cover - konfiguracja bez zakresu
                 return 0.0
@@ -460,7 +490,7 @@ class FeetechArm(RobotBackend):
         self._connected = True
         logger.info(
             "Polaczono z ramieniem na %s. Pozycja startowa: %s",
-            self.cfg.robot.port,
+            self.port,
             ", ".join(f"{name}={value:.1f}" for name, value in self._positions.items()),
         )
 
@@ -505,12 +535,12 @@ class FeetechArm(RobotBackend):
                 continue  # pelny zakres = serwo niczego nie ogranicza
             self.servo_limits[name] = (low, high)
 
-            jc = self.cfg.joint(name)
+            lo, hi = self.limits[name]
             servo_lo, servo_hi = self._to_units(name, low), self._to_units(name, high)
-            if servo_lo > jc.min + 1.0 or servo_hi < jc.max - 1.0:
+            if servo_lo > lo + 1.0 or servo_hi < hi - 1.0:
                 conflicts.append(
                     f"{name}: serwo {servo_lo:.0f}..{servo_hi:.0f}, "
-                    f"konfiguracja {jc.min:.0f}..{jc.max:.0f}"
+                    f"konfiguracja {lo:.0f}..{hi:.0f}"
                 )
 
         if conflicts:
@@ -523,7 +553,7 @@ class FeetechArm(RobotBackend):
 
     def _check_power(self) -> None:
         """Ostrzega, gdy ramie odpowiada, ale nie ma z czego ruszyc."""
-        raw = self.bus.read(self.ids[JOINT_NAMES[0]], ADDR_PRESENT_VOLTAGE, 1)
+        raw = self.bus.read(self.ids[self.joints[0]], ADDR_PRESENT_VOLTAGE, 1)
         if raw is None:
             return
         volts = raw / 10.0
@@ -542,7 +572,7 @@ class FeetechArm(RobotBackend):
             return
         # Momentu NIE wylaczamy: ramie zostaloby wtedy wiotkie i opadlo pod
         # wlasnym ciezarem. Zostaje tam, gdzie stanelo.
-        if self.cfg.robot.torque_off_on_exit:
+        if self.settings.torque_off_on_exit:
             for dev_id in self.ids.values():
                 try:
                     self.bus.write(dev_id, ADDR_TORQUE_ENABLE, 0, 1)
@@ -630,10 +660,16 @@ class FeetechArm(RobotBackend):
             logger.exception("Nie udalo sie sprawdzic stanu serw")
             return [f"nie udalo sie sprawdzic stanu serw: {exc}"]
 
-    def gripper_ticks(self) -> tuple[float, float, float]:
-        """(zamkniety, otwarty, zero) chwytaka w tikach - dokladnie te, ktorymi licza `_to_ticks`/`_to_units`."""
-        rc = self.cfg.robot
-        return float(rc.gripper_closed_ticks), float(rc.gripper_open_ticks), float(rc.center_ticks)
+    def gripper_range_q(self) -> tuple[float, float]:
+        """(closed, open) jaw angle [rad from joint zero]: exactly the ticks `_to_ticks`/`_to_units` use."""
+        rc = self.settings
+        rad = 2.0 * math.pi / TICKS_PER_REV
+        return (rc.gripper_closed_ticks - rc.center_ticks) * rad, (rc.gripper_open_ticks - rc.center_ticks) * rad
+
+    def set_joint_limits(self, limits: Mapping[str, tuple[float, float]]) -> None:
+        for name, (lo, hi) in limits.items():
+            if name in self.limits:
+                self.limits[name] = (float(lo), float(hi))
 
     def joint_limits(self) -> dict[str, tuple[float, float]]:
         """Limity kata z EEPROM serw w jednostkach aplikacji (tylko stawy, ktore je maja)."""
@@ -656,11 +692,11 @@ class FeetechArm(RobotBackend):
             return {}
         sent: dict[str, float] = {}
         ticks: dict[int, int] = {}
-        for name in JOINT_NAMES:
+        for name in self.joints:
             if name not in targets:
                 continue
-            jc = self.cfg.joint(name)
-            value = min(max(float(targets[name]), jc.min), jc.max)
+            lo, hi = self.limits[name]
+            value = min(max(float(targets[name]), lo), hi)
             tick = self._to_ticks(name, value)
 
             # Serwo i tak przytnie rozkaz do swojego zakresu. Robiac to tutaj,

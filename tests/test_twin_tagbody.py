@@ -19,9 +19,11 @@ from lerobot_mp.twin import scene as sc  # noqa: E402
 from lerobot_mp.twin.calib import tags  # noqa: E402
 from lerobot_mp.twin.calib.simulate import look_at  # noqa: E402
 from lerobot_mp.twin.kinematics import pose  # noqa: E402
-from lerobot_mp.twin.robots import SO101  # noqa: E402
+from lerobot_mp.twin.robots import get_spec  # noqa: E402
 from lerobot_mp.twin.tagbody import Observation, TagBody, learn_layout, locate, observe, optical_in_tag  # noqa: E402
 from lerobot_mp.twin.workspace import CameraRecord, Workspace  # noqa: E402
+
+SO101 = get_spec("so101")
 
 TAG = 0.03
 HALF = 0.02

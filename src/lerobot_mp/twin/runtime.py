@@ -32,6 +32,7 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 import mujoco
 import numpy as np
@@ -42,7 +43,7 @@ from ..robot.base import RobotBackend, RobotInfo
 from . import scene as sc
 from .cameras import CameraHub
 from .clock import Clock, VirtualClock, WallClock
-from .robots import robot_config
+from .robots import RobotSpec, robot_config
 from .workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -277,8 +278,9 @@ class Twin:
     grip_ease = 8.0
     #: Blad chwytaka dluzszy niz tyle sekund (mimo odciazenia) = STOP.
     grip_fault_s = 2.0
-    #: Roznica tikow chwytaka backend/blizniak, od ktorej panel ostrzega.
-    grip_ticks_tol = 20.0
+    #: Gap [rad] between the backend's gripper range and the description's that makes the panel
+    #: warn: 20 ticks of an STS3215 servo.
+    grip_range_tol = 0.03
     #: Dwa kolejne odczyty przy polaczeniu (i po kazdym milczeniu lacza) musza sie zgadzac
     #: do tylu jednostek.
     start_read_tol = 2.0
@@ -358,6 +360,8 @@ class Twin:
         self._fault = ""
         self._note, self._note_t = "", 0.0
         self._base_limits: dict[str, tuple[float, float]] = {}
+        #: The last limits handed to the backend (`_sync_backend_limits`).
+        self._pushed_limits: dict[str, tuple[float, float]] = {}
         #: Trwale ostrzezenia dla panelu (`RobotStatus.warnings`), po kluczu.
         self._warnings: dict[str, str] = {}
         #: Najciasniejszy dozwolony rozkaz chwytaka po jego bledzie (None = bez ograniczenia).
@@ -687,13 +691,7 @@ class Twin:
         ws = self.workspace
         backend = (backend or ws.backend).lower()
         port = port if port is not None else ws.port
-        # Bez `max_relative_target` (D3): LeRobot przycinal cel do +-12 st. od pozycji, wiec
-        # rozjazd pomiar-rozkaz nie przekraczal ~12 st., straznik rozjazdu (25 st.) nie mogl
-        # zadzialac, a serwo dociskalo do przeszkody bez konca (zmierzone na prawdziwym stosie
-        # LeRobota nad emulatorem; bez limitu STOP po 0,78 s). Nadzor blizniaka i tak ogranicza
-        # predkosc.
-        overrides = {"robot": {"backend": "sim" if backend == "sim" else backend,
-                               "port": port, "max_relative_target": None}}
+        overrides: dict[str, Any] = {"robot": {"backend": backend, "port": port}}
         if ws.home:                                    # "Ustaw dom = tu" tego stanowiska
             overrides["safety"] = {"home": {k: float(v) for k, v in ws.home.items()}}
         cfg = robot_config(self.spec, overrides=overrides)
@@ -702,7 +700,7 @@ class Twin:
             self._widen_limits_for_home(cfg, ws.home)
         b: RobotBackend | None = None
         try:
-            b = SceneBackend(self) if backend == "sim" else create_backend(cfg)
+            b = SceneBackend(self) if backend == "sim" else create_backend(cfg, self.spec)
             b.connect()
             measured = _stable_read(b, self.start_read_tol)
             _intersect_limits(cfg, b)
@@ -715,11 +713,11 @@ class Twin:
                     logger.exception("Blad przy rozlaczaniu po nieudanym polaczeniu")
             raise
         self._backend = b
-        # Nadzor dostaje WLASNA kopie konfiguracji: limity backendu (`cfg`, ta sama,
-        # ktora przycina `send_joints`) poszerzamy chwilowo dla stawu spoza zakresu
-        # (`_sync_backend_limits`), a nadzor musi dalej znac prawdziwe limity.
+        # Limity backendu poszerzamy chwilowo dla stawu spoza zakresu (`_sync_backend_limits`),
+        # a nadzor (z wlasna kopia konfiguracji) musi dalej znac prawdziwe limity.
         self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
-        self._supervisor = SafetySupervisor(copy.deepcopy(cfg))
+        self._pushed_limits = {}
+        self._supervisor = SafetySupervisor(copy.deepcopy(cfg), gripper=self.spec.gripper)
         # Staw poza limitami nie jest przycinany na starcie - patrz `SafetySupervisor.start`.
         # Ramie z domem etapami (`home_stages`) nie jedzie rampa nadzoru: start bez ruchu,
         # a dom etapami rusza po polaczeniu (na koncu tej metody) - patrz `_home_staged`.
@@ -739,10 +737,10 @@ class Twin:
         self._fault, self._note = "", ""
         self._grip_floor, self._grip_release = None, False
         self._warnings = {}
-        grip = _gripper_mismatch(b, self.grip_ticks_tol)
+        grip = _gripper_mismatch(b, self.spec, self.grip_range_tol)
         if grip:
             logger.warning(grip)
-            self._warnings["grip_ticks"] = grip
+            self._warnings["grip_range"] = grip
         # Backend `lerobot` liczy katy od srodka zakresu kalibracji, nie od tiku 2048 jak
         # blizniak: na typowej kalibracji -2 st. na shoulder_pan i -6,4 st. na elbow_flex,
         # przy jednostronnym zakresie (stary wrist_flex ramienia nr 1) ok. 35 st.
@@ -1689,16 +1687,16 @@ class Twin:
         przycina do limitow konfiguracji - bez poszerzenia pierwszy rozkaz i tak
         skakal do limitu (ramie nr 2: shoulder_lift -101 -> -95 st. z pelna predkoscia serwa).
         """
-        bcfg = getattr(b, "cfg", None)
-        if bcfg is None or not hasattr(bcfg, "joint") or not self._base_limits:
+        if not self._base_limits:
             return
+        limits = {}
         for name, (lo, hi) in self._base_limits.items():
-            try:
-                jc = bcfg.joint(name)
-            except Exception:                              # backend z inna konfiguracja stawow
-                continue
             s = outside.get(name)
-            jc.min, jc.max = (min(lo, s[0]), max(hi, s[1])) if s else (lo, hi)
+            limits[name] = (min(lo, s[0]), max(hi, s[1])) if s else (lo, hi)
+        fn = getattr(b, "set_joint_limits", None)
+        if fn is not None and limits != self._pushed_limits:
+            fn(limits)
+            self._pushed_limits = limits
 
     @property
     def safety_state(self) -> SafetyState | None:
@@ -1769,26 +1767,25 @@ def _stable_read(b: RobotBackend, tol: float, tries: int = 6) -> dict[str, float
                        "sprawdz lacze i czy ramie stoi")
 
 
-def _gripper_mismatch(b: RobotBackend, tol: float) -> str:
-    """Ostrzezenie, gdy backend mapuje chwytak 0..100 na inne tiki niz blizniak (kontrakt C1)."""
-    fn = getattr(b, "gripper_ticks", None)
+def _gripper_mismatch(b: RobotBackend, spec: RobotSpec, tol: float) -> str:
+    """A warning when the backend maps the gripper's 0..100 onto another jaw range than the description."""
+    fn = getattr(b, "gripper_range_q", None)
     if fn is None:
         return ""
     try:
         got = fn()
     except Exception:                                      # pragma: no cover - diagnostyka nie moze psuc polaczenia
-        logger.exception("gripper_ticks() backendu rzucilo wyjatek")
+        logger.exception("gripper_range_q() backendu rzucilo wyjatek")
         return ""
-    if not got:
+    want = spec.gripper_range_q
+    if not got or want is None:
         return ""
-    from .kinematics import backend_gripper_ticks
-
-    want = backend_gripper_ticks()
     if all(abs(float(a) - float(w)) <= tol for a, w in zip(got, want)):
         return ""
-    fmt = "zamkniety {:.0f}, otwarty {:.0f}, zero {:.0f}"
-    return (f"chwytak: backend ma tiki ({fmt.format(*got)}), a blizniak i polityki ({fmt.format(*want)}) - "
-            "kat szczek w blizniaku nie zgadza sie z serwem; popraw gripper_*_ticks w konfiguracji")
+    fmt = "zamkniety {:.3f}, otwarty {:.3f} rad"
+    return (f"chwytak: backend ma zakres ({fmt.format(*got)}), a opis ramienia ({fmt.format(*want)}) - "
+            "kat szczek w blizniaku nie zgadza sie z serwem; popraw gripper_range_q w robot.yaml "
+            "albo zakres chwytaka w sekcji backendu")
 
 
 def _gripper_measured(b: RobotBackend) -> bool:

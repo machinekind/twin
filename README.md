@@ -268,9 +268,10 @@ of memory add `--envs 2048` or `1024`.
 The twin uses the `feetech` backend (`pyserial` alone, without LeRobot and its
 calibration). The port is shown by `lerobot-twin check` or "Wykryj porty" in the
 panel (Windows `COMx`, Linux `/dev/ttyACM0`). The gripper ticks in the
-configuration (`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670)
-are the values of the example arm: check yours and put them in your copy of the
-configuration:
+`feetech:` section of the configuration (`gripper_closed_ticks` 1986 /
+`gripper_open_ticks` 2670) are the values of the example arm: check yours, put
+them in your copy of the configuration and match `gripper_range_q` in
+`assets/robots/so101/robot.yaml` (the panel warns when the two disagree):
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -395,13 +396,42 @@ The network carries the serial port here, not the image.
 
 The twin reads a configuration file only when one is given:
 `lerobot-twin --config configs/local.yaml ui` (also `train`, `eval`). The model
-is `configs/default.yaml` with the `safety` and `robot` sections, described by
-comments; a copy `configs/local.yaml` is in `.gitignore`. The file can be
-shortened: missing keys take their default values, and an unknown key inside a
-section ends with a clear error. The arm's backend and port are chosen by the
-panel, not by the file. The keys are described in
-[docs/TWIN.md](docs/TWIN.md): the paragraph "Konfiguracja ramienia" and the
-chapter [Galaxea A1X](docs/TWIN.md#galaxea-a1x), which has the `a1x` section.
+is `configs/default.yaml`, described by comments; a copy `configs/local.yaml` is
+in `.gitignore`. The twin reads the `safety` and `robot` (backend, port)
+sections; every other section belongs to the backend of that name (`feetech`,
+`lerobot`, `a1x`), which checks it itself. The file can be shortened: missing
+keys take their default values, and an unknown key inside a section ends with a
+clear error. The arm's backend and port are chosen by the panel, not by the
+file. The keys are described in [docs/TWIN.md](docs/TWIN.md): the paragraph
+"Konfiguracja ramienia" and the chapter [Galaxea A1X](docs/TWIN.md#galaxea-a1x),
+which has the `a1x` section.
+
+## Adding a robot
+
+A robot is a folder: `robot.yaml` and the MJCF model it names. `robot.yaml` holds
+what the model does not: the joints in app order, the gripper and its range in
+model units, the tool point, joint limits and speeds, the home pose, the desk the
+arm works on, and how the panel labels the joints and connects the arm. The
+loader (`lerobot_mp.twin.robots`) checks every field and every joint name.
+
+The twin finds robots in installed packages and in `assets/robots/` (SO-101 and
+A1X until they move to their own repositories). A robot's package registers its
+folder and its hardware backend through entry points and never imports the twin:
+
+```toml
+[project.entry-points."lerobot_mp.robots"]
+myarm = "myarm:ROBOT_DIR"              # a path to the folder with robot.yaml
+
+[project.entry-points."lerobot_mp.backends"]
+myarm = "myarm.backend:create"         # create(context) -> the backend
+```
+
+The backend is any object with `connect`, `disconnect`, `read_joints`,
+`send_joints` and `is_connected`; the optional methods are listed on
+`lerobot_mp.robot.base.BackendPlugin`. `create` gets a `BackendContext`: the
+robot's joints and limits, the port and the backend's own config section.
+[examples/robots/testbot](examples/robots/testbot) is a complete example, and the
+tests load it.
 
 ## How it is built
 
@@ -411,7 +441,7 @@ src/lerobot_mp/
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
 │   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
 │   └── ui/        browser panel (viser)
-├── robot/         backends of the real arms: feetech, lerobot, a1x (CAN-FD), the COM<->TCP bridge
+├── robot/         the backend contract and plugin registry; backends feetech, lerobot, a1x (CAN-FD); COM<->TCP bridge
 └── paths.py       default data paths counted from the clone's root
 ```
 

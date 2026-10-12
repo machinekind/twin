@@ -6,8 +6,10 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from lerobot_mp.twin.robots import A1X  # noqa: E402
+from lerobot_mp.twin.robots import get_spec  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+
+A1X = get_spec("a1x")
 
 
 def test_a1x_home_goes_in_stages_elbow_first_and_stops_on_a_collision(monkeypatch):

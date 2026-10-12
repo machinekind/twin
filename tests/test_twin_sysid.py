@@ -21,14 +21,17 @@ pytest.importorskip("mujoco")
 
 from lerobot_mp.twin.rl.randomize import Dynamics, Randomization  # noqa: E402
 from lerobot_mp.twin.rl.sysid import (  # noqa: E402
-    IDENTIFIED, JOINTS, OWNER, Recording, Replayer, excitation, identify, plan_target, record,
+    IDENTIFIED, OWNER, Recording, Replayer, excitation, identify, plan_target, record,
 )
-from lerobot_mp.twin.robots import SO101  # noqa: E402
+from lerobot_mp.twin.robots import get_spec  # noqa: E402
+
+SO101 = get_spec("so101")
+JOINTS = SO101.joints
 
 
 def synthetic_recording(truth: Dynamics, delay: float, joints=None, hold=0.7):
     """Nagranie jak z `record`: `joints=None` - pelne pobudzenie panelu (`excitation(home)`)."""
-    plan = excitation(SO101.home) if joints is None else excitation(SO101.home, joints=joints, hold=hold)
+    plan = excitation(SO101.home, joints=SO101.arm_joints if joints is None else joints, **({} if joints is None else {"hold": hold}))
     hz = 50.0
     t = np.arange(0, plan[-1][0] + 0.5, 1 / hz)
     cur = np.array([SO101.home[j] for j in JOINTS])
@@ -38,16 +41,16 @@ def synthetic_recording(truth: Dynamics, delay: float, joints=None, hold=0.7):
         cur = cur + np.clip(want - cur, -120 / hz, 120 / hz)
         cmd.append(cur.copy())
     cmd = np.array(cmd)
-    q = Replayer().run(Recording(t, cmd, np.full_like(cmd, np.nan)), truth, delay)
+    q = Replayer(SO101).run(Recording(t, cmd, np.full_like(cmd, np.nan), joints=JOINTS), truth, delay)
     meas = q + np.random.default_rng(0).normal(0, 0.05, q.shape)
     meas[1::2] = np.nan                             # serwa czytane co drugi takt
-    return Recording(t, cmd, meas, {"backend": "test", "time": "test"})
+    return Recording(t, cmd, meas, {"backend": "test", "time": "test"}, JOINTS)
 
 
 def test_identification_on_the_panel_excitation_is_as_good_as_it_says():
     truth, delay = Dynamics(kp=0.8, damping=1.4, armature=1.3, frictionloss=0.7), 0.055  # z przegladu: armatura -13 %
     rec = synthetic_recording(truth, delay)
-    out = identify(rec)
+    out = identify(rec, SO101)
     dyn = out.dyn
     assert dyn.fit_deg < 0.1 * out.base              # symulacja po dopasowaniu wyraznie blizej nagrania
     assert dyn.fit_deg < 0.15                        # blisko szumu (0,05 st.) mimo kp i tarcia z modelu
@@ -137,7 +140,8 @@ class JitterArm:
                  settle: float = 0.5, seed: int = 3):
         rng = np.random.default_rng(seed)
         self.rng = rng
-        plan = excitation(SO101.home)
+        self.spec = SO101
+        plan = excitation(SO101.home, joints=SO101.arm_joints)
         span = plan[-1][0] + settle + 1.0
         tau = [0.0]
         while tau[-1] < span:
@@ -153,7 +157,7 @@ class JitterArm:
         cmd = np.array(cmd)
         tf = np.arange(0, span, 0.001)
         kf = np.searchsorted(self.tau, tf, side="right") - 1
-        q = Replayer().run(Recording(tf, cmd[kf], np.full((len(tf), 6), np.nan)), truth, delay)
+        q = Replayer(SO101).run(Recording(tf, cmd[kf], np.full((len(tf), 6), np.nan), joints=JOINTS), truth, delay)
         lag = rng.uniform(0.0, 0.004, len(self.tau))           # serwo podaje pozycje chwile po starcie taktu
         meas = np.array([np.interp(self.tau + lag, tf, q[:, j]) for j in range(6)]).T
         meas += rng.normal(0, 0.05, meas.shape)
@@ -225,10 +229,10 @@ def test_record_under_real_arm_timing_keeps_the_documented_accuracy(monkeypatch)
     truth, delay = Dynamics(kp=0.85, damping=1.1, armature=0.9, frictionloss=1.2), 0.03
     arm = JitterArm(truth, delay)
     monkeypatch.setattr(sysid, "time", arm.time)
-    rec = record(arm, excitation(SO101.home), settle=0.5)
+    rec = record(arm, excitation(SO101.home, joints=SO101.arm_joints), settle=0.5)
     assert rec.meta["stamps"] == "tick"
     assert not arm.listeners                                   # sluchacz zdjety po nagraniu
-    out = identify(rec)
+    out = identify(rec, SO101)
     dyn = out.dyn
     errs = {"damping": dyn.damping / truth.damping - 1, "armature": dyn.armature / truth.armature - 1,
             "delay_ms": 1000 * (dyn.delay / 20 - delay)}

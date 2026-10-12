@@ -18,7 +18,9 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 
 from lerobot_mp.twin.kinematics import RobotKinematics, inverse  # noqa: E402
-from lerobot_mp.twin.robots import SO101  # noqa: E402
+from lerobot_mp.twin.robots import get_spec  # noqa: E402
+
+SO101 = get_spec("so101")
 
 
 @pytest.fixture(scope="module")
@@ -64,18 +66,20 @@ def test_gripper_angle_is_the_servo_angle_of_the_feetech_backend(kin):
     `feetech` rozciaga je na tiki 1986..2670 (60 st. skoku serwa) - jednostka
     chwytaka byla w symulacji 1,8 raza wieksza niz na ramieniu.
     """
-    from lerobot_mp.twin.config import load_config
+    from lerobot_mp.robot import backend_context
     from lerobot_mp.robot.feetech import FeetechArm
+    from lerobot_mp.twin.robots import robot_config
 
-    cfg = load_config(overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})
-    arm = FeetechArm(cfg, bus=object())                   # tylko przeliczenia, bez portu
-    rc = cfg.robot
+    cfg = robot_config(SO101, overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})
+    arm = FeetechArm(backend_context(cfg, SO101), bus=object())   # tylko przeliczenia, bez portu
+    rc = arm.settings
     k = SO101.joints.index("gripper")
-    for ticks in (rc.gripper_closed_ticks, 2100, 2300, rc.gripper_open_ticks):
+    # robot.yaml gives the range to 1e-7 rad: 6e-6 degrees.
+    for ticks in (rc.gripper_closed_ticks, 2100, 2300, rc.gripper_open_ticks, 2700):
         servo_deg = (ticks - rc.center_ticks) * 360.0 / 4096
         units = arm._to_units("gripper", ticks)
-        assert np.degrees(kin.to_q({"gripper": units})[k]) == pytest.approx(servo_deg, abs=1e-6)
-        assert kin.from_q(kin.to_q({"gripper": units}))["gripper"] == pytest.approx(units, abs=1e-6)
+        assert np.degrees(kin.to_q({"gripper": units})[k]) == pytest.approx(servo_deg, abs=1e-4)
+        assert kin.from_q(kin.to_q({"gripper": units}))["gripper"] == pytest.approx(units, abs=1e-4)
     # Poza zakresem stawu MJCF kat jest przyciety, a nie zawiniety.
     assert kin.to_q({"gripper": 1000.0})[k] == pytest.approx(kin.hi[k])
     assert kin.to_q({"gripper": -1000.0})[k] == pytest.approx(kin.lo[k])

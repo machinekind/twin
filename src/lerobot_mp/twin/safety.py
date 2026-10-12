@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .config import GRIPPER, TwinConfig
+from .config import TwinConfig
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,10 @@ def _smoothstep(t: float) -> float:
 class SafetySupervisor:
     """Position and speed limits, hand watchdog, emergency stop."""
 
-    def __init__(self, cfg: TwinConfig):
+    def __init__(self, cfg: TwinConfig, gripper: str | None = None):
         self.cfg = cfg
+        #: The gripper joint: the speed cap of `set_speed` leaves it alone.
+        self.gripper = gripper
         self.state = SafetyState.STARTING
         self._limiters: dict[str, RateLimiter] = {}
         self._command: dict[str, float] = {}
@@ -90,8 +92,8 @@ class SafetySupervisor:
         self._no_hand_for = 0.0
         self._estop = False
         self._was_active = False
-        #: Supervised joints: those of the configuration, in its order (the SO-101 in the hand
-        #: app, the arm's own joints from its description in the twin, `robots.robot_config`).
+        #: Supervised joints: those of the configuration, in its order (the robot description's,
+        #: `robots.robot_config`).
         self.names: tuple[str, ...] = tuple(cfg.joints)
         self.home = self._clamped_home()
         #: Twin mode (`start(..., keep_outside=True)`): a joint standing outside the configured
@@ -128,7 +130,7 @@ class SafetySupervisor:
     def _max_vel(self, name: str) -> float:
         v = max(self.cfg.joint(name).max_vel * self.cfg.safety.velocity_scale, 1e-3)
         cap = getattr(self, "speed_cap", None)
-        if cap is not None and name != GRIPPER:
+        if cap is not None and name != self.gripper:
             v = min(v, cap)
         return v
 

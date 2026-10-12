@@ -1,14 +1,62 @@
-"""Wspolny interfejs backendow robota.
+"""The robot backend contract: how the twin talks to an arm.
 
-Cala reszta aplikacji rozmawia z robotem wylacznie przez ten interfejs, wiec
-symulator i prawdziwe ramie sa w pelni wymienne - ten sam kod sterowania
-dziala w obu przypadkach.
+The twin talks to every arm through `RobotBackend`, so its simulated arm and a real one are
+interchangeable. A backend from another package (a robot's own repository) does not import the
+twin: it implements the `BackendPlugin` protocol, and `factory.create_backend` wraps it into a
+`RobotBackend`. Such a package registers a factory under the `lerobot_mp.backends` entry point
+group; the twin calls it with a `BackendContext`, plain data with everything the backend may use.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class BackendContext:
+    """What the twin hands a backend factory. Plain data: a plugin never imports the twin."""
+
+    #: Name of the robot description the twin runs (`robot.yaml`'s `name`).
+    robot: str
+    #: Joints in app order: degrees, the gripper 0..100.
+    joints: tuple[str, ...]
+    #: The gripper joint, None without one.
+    gripper: str | None
+    #: Joint limits [app units] at connect time; the twin narrows or widens them later through
+    #: `set_joint_limits`.
+    limits: Mapping[str, tuple[float, float]]
+    #: Highest commanded speed [app units / s].
+    max_vel: Mapping[str, float]
+    #: Where to find the arm (serial port, CAN interface); None = the backend's default.
+    port: str | None
+    #: The backend's own section of the twin's YAML config, unvalidated: the plugin checks it.
+    settings: Mapping[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class BackendPlugin(Protocol):
+    """What a backend from another package implements; units as in `BackendContext`.
+
+    Required: `connect`, `disconnect`, `read_joints`, `send_joints`, `is_connected`. Optional,
+    with the meaning given on `RobotBackend`: `info` (an object with `name`, `description`,
+    `simulated`), `link_silent`, `faults()`, `joint_limits()`, `set_joint_limits(limits)`,
+    `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`. Any other public
+    method stays reachable through the wrapper (the panel looks some up by name).
+    """
+
+    def connect(self) -> None: ...
+
+    def disconnect(self) -> None: ...
+
+    def read_joints(self) -> dict[str, float]: ...
+
+    def send_joints(self, targets: dict[str, float]) -> dict[str, float]: ...
+
+    @property
+    def is_connected(self) -> bool: ...
 
 
 @dataclass
@@ -81,14 +129,20 @@ class RobotBackend(ABC):
         """
         return {}
 
-    def gripper_ticks(self) -> tuple[float, float, float] | None:
-        """(zamkniety, otwarty, zero) chwytaka w surowych tikach serwa - to, na co TEN backend
-        naprawde przelicza skale aplikacji: 0 = zamkniety, 100 = otwarty, zero = zero stawu.
+    def set_joint_limits(self, limits: Mapping[str, tuple[float, float]]) -> None:  # noqa: B027
+        """The limits [app units] `send_joints` clamps to from now on; joints not given keep theirs.
 
-        Blizniak liczy kat szczeki z tikow konfiguracji `feetech`. Backend, ktory
-        mapuje 0..100 inaczej (LeRobot - po swoim zakresie z kalibracji), dawal
-        polityce i sledzeniu kostki inny kat szczeki niz prawdziwy, a nikt tego
-        nie widzial. None = backend nie ma tikow (symulator) albo ich nie zna.
+        The twin narrows them to the hardware's own limits and widens them for a joint that stands
+        outside its range and is being led back. Without it a backend clamping to its connect-time
+        limits made the first command of such a joint jump to the limit at full servo speed.
+        """
+
+    def gripper_range_q(self) -> tuple[float, float] | None:
+        """(closed, open) of the gripper joint [rad of the jaw joint] that THIS backend maps 0..100 onto.
+
+        The twin compares it with the robot description's `gripper_range_q`. A backend mapping 0..100
+        differently (LeRobot, by its own calibration range) gave the policy and the cube tracking a
+        different jaw angle than the real one, and nothing showed it. None = no mapping to report.
         """
         return None
 

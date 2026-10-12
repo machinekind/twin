@@ -17,7 +17,8 @@ import enum
 
 import pytest
 
-from lerobot_mp.twin.config import load_config
+from lerobot_mp.robot import backend_context
+from lerobot_mp.twin.robots import get_spec, robot_config
 from lerobot_mp.robot.lerobot_backend import STATUS_EVERY_READS, LeRobotArm
 
 
@@ -195,8 +196,9 @@ def arm(monkeypatch):
         raise AssertionError("backend zapytal o cos w konsoli serwera")
 
     monkeypatch.setattr(builtins, "input", no_console)
-    cfg = load_config(overrides={"robot": {"backend": "lerobot", "port": "COM_TEST"}})
-    return LeRobotArm(cfg)
+    spec = get_spec("so101")
+    cfg = robot_config(spec, overrides={"robot": {"backend": "lerobot", "port": "COM_TEST"}})
+    return LeRobotArm(backend_context(cfg, spec))
 
 
 def test_missing_calibration_file_is_refused_before_touching_the_port(arm):
