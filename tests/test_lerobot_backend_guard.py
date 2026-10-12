@@ -19,7 +19,7 @@ import pytest
 
 from lerobot_mp.robot import backend_context
 from lerobot_mp.twin.robots import get_spec, robot_config
-from lerobot_mp.robot.lerobot_backend import STATUS_EVERY_READS, LeRobotArm
+from lerobot_mp.robot.so101.lerobot_backend import STATUS_EVERY_READS, LeRobotArm
 
 
 @dataclasses.dataclass

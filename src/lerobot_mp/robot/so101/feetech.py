@@ -32,8 +32,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..twin.config import from_mapping
-from .base import BackendContext, RobotBackend, RobotInfo
+from ...twin.config import from_mapping
+from ..base import BackendContext, RobotBackend, RobotInfo
 
 logger = logging.getLogger(__name__)
 

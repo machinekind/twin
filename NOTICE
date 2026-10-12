@@ -3,10 +3,10 @@ Licencja projektu: Apache-2.0 (pyproject.toml).
 
 Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
 
-1. assets/robots/so101/  (so101.xml, siatki STL w assets/)
+1. src/lerobot_mp/robot/so101/robot/  (so101.xml, siatki STL w assets/)
    Model SO-101 z MuJoCo Menagerie (Google DeepMind),
    https://github.com/google-deepmind/mujoco_menagerie/tree/ac6b2b09983786f3036cab1000221017fa2193b4/robotstudio_so101
-   commit ac6b2b0, skopiowany bez zmian. Licencja Apache-2.0: assets/robots/so101/LICENSE.
+   commit ac6b2b0, skopiowany bez zmian. Licencja Apache-2.0: src/lerobot_mp/robot/so101/robot/LICENSE.
    Menagerie wywodzi model z TheRobotStudio/SO-ARM100 (Apache-2.0).
 
 2. assets/so101_preview.npz
@@ -16,13 +16,13 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    vendor/lerobot-so101; skrypt scripts/import_articulus_model.py).
    Plik jest przetworzeniem (uproszczona siatka + łańcuch kinematyczny).
 
-3. assets/robots/a1x/  (a1x.urdf, siatki STL w assets/, a1x.xml)
+3. src/lerobot_mp/robot/a1x/robot/  (a1x.urdf, siatki STL w assets/, a1x.xml)
    URDF i siatki ramienia Galaxea A1X od producenta (Galaxea), przez pakiet
    ros2_ws/src/galaxea_a1xy_description repozytorium galaxeo-manipulators
    (package.xml: licencja "Proprietary", źródło "userguide-galaxea/URDF").
    Warunki licencji producenta nie są podane - te pliki NIE są objęte
    licencją Apache-2.0 projektu. a1x.xml to przetworzenie URDF wygenerowane
-   skryptem scripts/import_a1x_model.py (reguły w assets/robots/a1x/README.md).
+   skryptem scripts/import_a1x_model.py (reguły w src/lerobot_mp/robot/a1x/robot/README.md).
 
 4. galaxeo.xcan_usb  (NIE w tym repozytorium - zależność opcjonalna)
    Backend a1x (src/lerobot_mp/robot/a1x.py) importuje pakiet galaxeo

@@ -3,7 +3,7 @@
 A package registers a backend factory under the `lerobot_mp.backends` entry point group:
 
     [project.entry-points."lerobot_mp.backends"]
-    feetech = "lerobot_mp.robot.feetech:create"
+    feetech = "lerobot_mp.robot.so101.feetech:create"
 
 `create(context: BackendContext)` returns the backend, a `RobotBackend` or any object following
 `BackendPlugin`. The backend's settings are the config section named like the backend

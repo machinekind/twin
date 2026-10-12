@@ -67,7 +67,7 @@ def test_gripper_angle_is_the_servo_angle_of_the_feetech_backend(kin):
     chwytaka byla w symulacji 1,8 raza wieksza niz na ramieniu.
     """
     from lerobot_mp.robot import backend_context
-    from lerobot_mp.robot.feetech import FeetechArm
+    from lerobot_mp.robot.so101.feetech import FeetechArm
     from lerobot_mp.twin.robots import robot_config
 
     cfg = robot_config(SO101, overrides={"robot": {"backend": "feetech", "port": "COM_TEST"}})

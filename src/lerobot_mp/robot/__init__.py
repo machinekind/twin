@@ -1,8 +1,8 @@
-"""Robot backends: the contract (`base`), the plugin registry (`factory`) and the backends that
-still live here - SO-101 (`feetech`, `lerobot`) and Galaxea A1X (`a1x`), registered as plugins
-in this repository's `pyproject.toml` until they move to their robots' repositories.
+"""Robot backends: the contract (`base`) and the plugin registry (`factory`).
 
-The twin's simulated arm is `twin.runtime.SceneBackend`, not a backend from this package.
+`so101/` and `a1x/` are robot packages that still live here: each holds its robot folder and its
+backends, registered in this repository's `pyproject.toml` like any robot package until they move
+to the so101 repository and to galaxeo. The twin's simulated arm is `twin.runtime.SceneBackend`.
 """
 
 from .base import BackendContext, BackendPlugin, RobotBackend, RobotInfo

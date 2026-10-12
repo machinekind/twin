@@ -35,7 +35,7 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
 Klon ma wszystko do uruchomienia — instalacja per platforma:
 README, „Szybki start na nowym komputerze”.
 
-- **W repozytorium:** model ramienia i siatki (`assets/robots/so101`),
+- **W repozytorium:** model ramienia i siatki (`src/lerobot_mp/robot/so101/robot`),
   model referencyjny Articulusa do testu zgodności MJCF (`assets/so101_preview.npz`),
   polityki bazowe (`assets/policies`),
   przykładowe stanowisko w symulacji (`examples/twin.sim.json`,
@@ -68,10 +68,10 @@ README, „Szybki start na nowym komputerze”.
 | `twin/rl/runner.py` | polityka na `Twin`, stop przy rozjeździe > 25° (w zmierzonej pozie), stop po wykonaniu zadania, czekanie na kostkę | test na bliźniaku; pełny łańcuch z kamerami w czasie symulowanym (`test_twin_lift_from_cameras`) |
 | `twin/ui/*` | panel (viser), zadania w tle, most sceny, strażnik kamer | test startu panelu + scenariusz w przeglądarce |
 | `twin/runtime.py` | pętla ramienia: jeden właściciel ruchu, STOP/Dom w zmierzonej pozie, reakcja na błędy serw i utratę łącza, render bez blokady pętli | `tests/test_twin_runtime.py` (czas symulowany) |
-| `robot/feetech.py` | + `socket://` (most, `TCP_NODELAY`), SYNC READ z powrotem do odczytów po kolei, suma kontrolna odpowiedzi, bity błędów serw (`faults()`), limity z EEPROM (`joint_limits()`) | testy na symulowanej magistrali |
+| `robot/so101/feetech.py` | + `socket://` (most, `TCP_NODELAY`), SYNC READ z powrotem do odczytów po kolei, suma kontrolna odpowiedzi, bity błędów serw (`faults()`), limity z EEPROM (`joint_limits()`) | testy na symulowanej magistrali |
 | `twin/robots.py` (`RobotSpec`, `A1X`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia; drugi opis — **Galaxea A1X** | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_a1x_sim.py` |
-| `assets/robots/a1x/`, `scripts/import_a1x_model.py` | model A1X z URDF producenta, każda reguła przetworzenia z testem, skrypt odtwarza plik bajt w bajt | kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm), fala 85 % póz z kartą nad stołem, fizyka RL przy 5 ms bez NaN, szczęki symetryczne do 5,8 mm |
-| `robot/a1x.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
+| `src/lerobot_mp/robot/a1x/robot/`, `scripts/import_a1x_model.py` | model A1X z URDF producenta, każda reguła przetworzenia z testem, skrypt odtwarza plik bajt w bajt | kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm), fala 85 % póz z kartą nad stołem, fizyka RL przy 5 ms bez NaN, szczęki symetryczne do 5,8 mm |
+| `robot/a1x/backend.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
 | `twin/tagbody.py` | **bryła z kilkoma AprilTagami**: układ tagów uczony z kadrów kamer stanowiska (pary w jednym kadrze + wspólne dopasowanie wszystkich rogów), poza bryły z kamer z pozą. Dziś nic w panelu go nie używa | `tests/test_twin_tagbody.py` (układ 0,1 mm, poza 1 mm / 1° od prawdy w symulacji) |
 
 Testy: `pytest -q`. Zestaw to wyłącznie testy integracyjne (łańcuch przez kilka
@@ -153,7 +153,7 @@ psujących stanowisko albo przeniesienie sim-real.
    przy 90°/s).
 7. **`pickplace` na GPU** (zadanie scalone, ekspert IK rozwiązuje je na CPU na obu
    ramionach): najpierw 5 linii próby `mujoco_warp.put_model` z
-   `assets/robots/a1x/a1x.xml` (równość szczęk, bryły z siatek) i pomiar
+   `src/lerobot_mp/robot/a1x/robot/a1x.xml` (równość szczęk, bryły z siatek) i pomiar
    `nconmax/njmax` dla A1X (w `batch.py` wpisano nie zmierzone 64/384; na CPU szczyt
    12 kontaktów / 49 wierszy), potem porównanie GPU z CPU
    (test `test_gpu_pickplace_matches_the_cpu_env` usunięty przy odchudzaniu — odtworzyć
@@ -173,7 +173,7 @@ psujących stanowisko albo przeniesienie sim-real.
 1. **Licencja galaxeo-manipulators** — `calib/tags.py`, `calib/handeye.py`
    i idea `calib/topdown.py` przeniesione z atrybucją; zakładamy zgodę machinekind.
 2. Które zadania po `reach` i `lift`: pick-and-place, nalewanie, sortowanie?
-3. **Licencja URDF i siatek A1X** (`assets/robots/a1x/`) — od producenta przez
+3. **Licencja URDF i siatek A1X** (`src/lerobot_mp/robot/a1x/robot/`) — od producenta przez
    galaxeo-manipulators, `package.xml`: „Proprietary”, warunki nieznane. W repozytorium
    Apache-2.0 są wydzielone i opisane w `NOTICE`; do decyzji: zgoda Galaxea, albo
    zamiast kopii ścieżka do zewnętrznego klonu i `scripts/import_a1x_model.py --urdf`.

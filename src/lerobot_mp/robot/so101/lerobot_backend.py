@@ -17,8 +17,8 @@ from dataclasses import dataclass
 import time
 from typing import Any
 
-from ..twin.config import from_mapping
-from .base import BackendContext, RobotBackend, RobotInfo
+from ...twin.config import from_mapping
+from ..base import BackendContext, RobotBackend, RobotInfo
 from .feetech import LINK_LOSS_CYCLES, describe_servo_error
 
 logger = logging.getLogger(__name__)

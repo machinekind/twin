@@ -17,7 +17,7 @@ safety:
   startup_ramp_s: 2.5       # plynne dojscie do pozycji domowej po starcie
   velocity_scale: 1.0       # globalny mnoznik limitow predkosci
   home_on_exit: true
-  # Poza domowa i limity stawow sa w opisie ramienia (assets/robots/<ramie>/robot.yaml);
+  # Poza domowa i limity stawow sa w opisie ramienia (robot.yaml w folderze ramienia);
   # `safety.home` i `joints` w tym pliku nadpisuja je tylko dla ramienia o tych stawach.
 
 robot:
@@ -33,7 +33,7 @@ feetech:               # SO-101 wprost przez port szeregowy
   gripper_open_ticks: 2670   # szczeka otwarta = 100; wartosci z EEPROM przykladowego ramienia
   # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position serwa chwytaka
   # (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u. Blizniak liczy
-  # kat szczeki z `gripper_range_q` w assets/robots/so101/robot.yaml - przy innym ramieniu popraw
+  # kat szczeki z `gripper_range_q` w src/lerobot_mp/robot/so101/robot/robot.yaml - przy innym ramieniu popraw
   # oba miejsca, inaczej panel ostrzega po polaczeniu, a `lift` sciska za mocno albo nie domyka.
   torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte
 

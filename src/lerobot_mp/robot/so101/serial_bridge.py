@@ -23,7 +23,7 @@ zaczyna zglaszac bledy odczytu. `--stats` pokazuje, ile faktycznie schodzi.
 
 Uruchomienie
 ------------
-    python -m lerobot_mp.robot.serial_bridge --port COM5 --listen 0.0.0.0:5555 --allow 1.2.3.4
+    python -m lerobot_mp.robot.so101.serial_bridge --port COM5 --listen 0.0.0.0:5555 --allow 1.2.3.4
 """
 
 from __future__ import annotations

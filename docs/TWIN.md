@@ -103,7 +103,8 @@ sam backend. Sekcja `feetech:` (opisana w `configs/default.yaml`): `center_ticks
 i 100 w skali aplikacji; domyślne 1986 / 2670 to przykładowe ramię), `baudrate`
 (1 000 000). Backend `lerobot` ma sekcję `lerobot:`, Galaxea A1X — `a1x:`, patrz
 [Galaxea A1X](#galaxea-a1x). Opis samego ramienia (stawy, limity, poza domowa,
-zakres szczęki) leży w `assets/robots/<ramię>/robot.yaml`.
+zakres szczęki) leży w `robot.yaml` w folderze ramienia (SO-101:
+`src/lerobot_mp/robot/so101/robot/`, A1X: `src/lerobot_mp/robot/a1x/robot/`).
 
 ## Panel
 
@@ -299,7 +300,7 @@ jest 6 cm nad blatem przez 10 taktów — liczonych tylko ze świeżej pozy (kam
 albo „w dłoni”), nigdy z ostatnio widzianej.
 
 **Chwytak.** 0..100 w panelu to w bliźniaku kąt szczęki liniowo na zakresie
-`gripper_range_q` z `assets/robots/so101/robot.yaml`: 0 = −5,4°, 100 = 54,7°,
+`gripper_range_q` z `src/lerobot_mp/robot/so101/robot/robot.yaml`: 0 = −5,4°, 100 = 54,7°,
 czyli tiki serwa 1986 … 2670 przy zerze w 2048 — te same, co w sekcji `feetech:`.
 Domyślne tiki pochodzą z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź
 na ramieniu, że przy 0 szczęki się stykają — jeśli nie, zero szczęki w MJCF nie
@@ -318,9 +319,9 @@ oba miejsca się rozjeżdżają. Panel uruchamiaj przez
 Drugie ramię bliźniaka: 6 stawów i chwytak z wysuwanymi szczękami, sterowane
 po CAN-FD. Ten sam panel, ten sam nadzór i ta sama procedura co przy SO-101.
 Różnice siedzą w trzech miejscach. Stanowisko ma `"robot": "a1x"`
-(`workspace/twin.json`), więc bliźniak bierze model `assets/robots/a1x`
-i opis ramienia `assets/robots/a1x/robot.yaml`. Ze sprzętem rozmawia backend `a1x`
-(`src/lerobot_mp/robot/a1x.py`). Protokół i łącze CAN dostarcza pakiet
+(`workspace/twin.json`), więc bliźniak bierze model `src/lerobot_mp/robot/a1x/robot`
+i opis ramienia `src/lerobot_mp/robot/a1x/robot/robot.yaml`. Ze sprzętem rozmawia backend `a1x`
+(`src/lerobot_mp/robot/a1x/backend.py`). Protokół i łącze CAN dostarcza pakiet
 `galaxeo` z repozytorium galaxeo-manipulators — to samo źródło, z którego
 korzystają narzędzia galaxeo (`jog_a1x.py`, `so101_bridge.py`). Szczegóły
 protokołu i pomiary: `docs/PROTOCOL.md`, `docs/STEERING.md`, `docs/HARDWARE.md`
@@ -690,7 +691,7 @@ lerobot-twin calib-sim --robot a1x --n 3 --cameras 2
 ```
 
 Model generuje `scripts/import_a1x_model.py` z URDF producenta. Reguły
-przetwarzania są w `assets/robots/a1x/README.md`, każda z testem. Szczęka 2
+przetwarzania są w `src/lerobot_mp/robot/a1x/robot/README.md`, każda z testem. Szczęka 2
 idzie za szczęką 1 przez równość w MJCF, usztywnioną regułą 6 (`solref`,
 `solimp`). Wyniki z `tests/test_twin_a1x_sim.py` i `tests/test_twin_calib.py`:
 
@@ -949,7 +950,7 @@ zachowanie **dostarczanych** plików polityk, nie tylko środowiska.
 
 ```
 src/lerobot_mp/twin/
-├── robots.py        opisy ramion z folderów (`robot.yaml`): wtyczki `lerobot_mp.robots` i assets/robots/
+├── robots.py        opisy ramion z folderów (`robot.yaml`), tylko z wtyczek `lerobot_mp.robots`
 ├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów surowe (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
 ├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu
@@ -986,7 +987,12 @@ src/lerobot_mp/twin/
     ├── jobs.py        zadania w tle: trening (proces), kalibracje, identyfikacja
     └── watch.py       wykrywanie przestawionej kamery
 
-assets/robots/so101/   model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
-assets/robots/a1x/     Galaxea A1X: URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
-src/lerobot_mp/robot/a1x.py   backend a1x (CAN-FD przez pakiet galaxeo)
+src/lerobot_mp/robot/
+├── base.py, factory.py   kontrakt backendu i rejestr wtyczek
+├── so101/                pakiet SO-101 (wyjdzie do repozytorium so101)
+│   ├── robot/            robot.yaml i model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
+│   └── feetech.py, lerobot_backend.py, serial_bridge.py
+└── a1x/                  pakiet A1X (wyjdzie do galaxeo)
+    ├── robot/            robot.yaml, URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
+    └── backend.py        backend a1x (CAN-FD przez pakiet galaxeo)
 ```

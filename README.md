@@ -102,8 +102,8 @@ The repository holds everything needed to run it, including models and data:
 
 | Directory | What is in it | In the repository? |
 |---|---|---|
-| `assets/robots/so101/` | arm model from MuJoCo Menagerie with STL meshes | yes |
-| `assets/robots/a1x/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
+| `src/lerobot_mp/robot/so101/robot/` | arm model from MuJoCo Menagerie with STL meshes | yes |
+| `src/lerobot_mp/robot/a1x/robot/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
 | `assets/so101_preview.npz` | SO-101 reference model from Articulus: a test compares the twin's MJCF with it (rebuilt by `scripts/import_articulus_model.py`) | yes |
 | `assets/policies/` | base policies `reach-v3` and `lift-v3` (a start for fine-tuning) | yes |
 | `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration | yes |
@@ -271,7 +271,7 @@ panel (Windows `COMx`, Linux `/dev/ttyACM0`). The gripper ticks in the
 `feetech:` section of the configuration (`gripper_closed_ticks` 1986 /
 `gripper_open_ticks` 2670) are the values of the example arm: check yours, put
 them in your copy of the configuration and match `gripper_range_q` in
-`assets/robots/so101/robot.yaml` (the panel warns when the two disagree):
+`src/lerobot_mp/robot/so101/robot/robot.yaml` (the panel warns when the two disagree):
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -414,9 +414,12 @@ model units, the tool point, joint limits and speeds, the home pose, the desk th
 arm works on, and how the panel labels the joints and connects the arm. The
 loader (`lerobot_mp.twin.robots`) checks every field and every joint name.
 
-The twin finds robots in installed packages and in `assets/robots/` (SO-101 and
-A1X until they move to their own repositories). A robot's package registers its
-folder and its hardware backend through entry points and never imports the twin:
+The twin holds no robot: it finds them only in installed packages. A robot's
+package registers its folder and its hardware backend through entry points and
+never imports the twin. SO-101 and A1X still live here as such packages,
+`src/lerobot_mp/robot/so101/` and `src/lerobot_mp/robot/a1x/`, registered in this
+repository's `pyproject.toml` until they move to the so101 repository and to
+galaxeo:
 
 ```toml
 [project.entry-points."lerobot_mp.robots"]
@@ -443,7 +446,9 @@ src/lerobot_mp/
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
 │   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
 │   └── ui/        browser panel (viser)
-├── robot/         the backend contract and plugin registry; backends feetech, lerobot, a1x (CAN-FD); COM<->TCP bridge
+├── robot/         the backend contract and plugin registry
+│   ├── so101/     SO-101 package, leaving for its repo: robot folder, backends feetech and lerobot, COM<->TCP bridge
+│   └── a1x/       A1X package, leaving for galaxeo: robot folder, backend a1x (CAN-FD)
 └── paths.py       default data paths counted from the clone's root
 ```
 

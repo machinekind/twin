@@ -11,11 +11,9 @@ App units are LeRobot's: joints in degrees, gripper 0..100. `kinematics.RobotKin
 the gripper linearly onto `RobotSpec.gripper_range_q` (closed, open) in MJCF units, and a backend
 reports its own mapping (`gripper_range_q()`), so the twin can warn when the two disagree.
 
-Where robots come from (`robot_folders`):
-
-* installed packages, through the `lerobot_mp.robots` entry point group: the entry point's name
-  is the robot's name and it loads to the path of the robot's folder;
-* `assets/robots/<name>/` in this repository, for robots not yet moved to their own repository.
+Robots come only from installed packages (`robot_folders`): a robot's package registers its
+folder under the `lerobot_mp.robots` entry point group, named like the robot, loading to the path
+of the folder. The twin itself holds no robot.
 
 `robot_config(spec)` builds the twin configuration for one robot from its description.
 """
@@ -39,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 ROBOT_FILE = "robot.yaml"
 ENTRY_POINT_GROUP = "lerobot_mp.robots"
-LOCAL_ROBOTS = Path("assets") / "robots"
 
 
 def resolve_asset(path: str | Path) -> Path:
@@ -222,14 +219,14 @@ def _check(spec: RobotSpec, path: Path) -> None:
 
 @lru_cache(maxsize=1)
 def robot_folders() -> dict[str, Path]:
-    """Name -> folder of every robot the twin can load: installed packages, then this repository."""
+    """Name -> folder of every robot an installed package registers."""
     found: dict[str, Path] = {}
 
     def add(name: str, folder: Path, source: str) -> None:
         name = name.lower()
         if name in found:
             raise ValueError(f"Dwa ramiona o nazwie {name!r}: {found[name]} i {folder} ({source})")
-        found[name] = folder
+        found[name] = folder.resolve()
 
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         # One broken package must not take the other robots down with it.
@@ -243,17 +240,6 @@ def robot_folders() -> dict[str, Path]:
                          "pomijam ja", ep.name, ep.value, type(target).__name__)
             continue
         add(ep.name, Path(target), f"pakiet {ep.dist.name if ep.dist else ep.value}")
-
-    # Both roots, like `resolve_asset` for a single file: an `assets/robots/` in the working
-    # directory must not hide the repository's.
-    seen: set[Path] = set()
-    for root in (Path.cwd(), REPO_ROOT):
-        local = (root / LOCAL_ROBOTS).resolve()
-        if local in seen or not local.is_dir():
-            continue
-        seen.add(local)
-        for path in sorted(local.glob(f"*/{ROBOT_FILE}")):
-            add(path.parent.name, path.parent, str(local))
     return found
 
 
@@ -263,7 +249,10 @@ def get_spec(name: str) -> RobotSpec:
     try:
         folder = folders[name.lower()]
     except KeyError as exc:
-        known = ", ".join(sorted(folders)) or "zadne"
+        # Entry points live in the installed package's metadata: a checkout updated without
+        # `pip install -e .` registers no robots at all.
+        known = (", ".join(sorted(folders))
+                 or "zadne - po aktualizacji repozytorium uruchom ponownie pip install -e .")
         raise KeyError(f"Nieznane ramie {name!r}. Dostepne: {known}") from exc
     spec = load_robot(folder)
     if spec.name.lower() != name.lower():

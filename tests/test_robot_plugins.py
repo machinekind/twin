@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from importlib.metadata import entry_points
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from lerobot_mp.robot import backend_context, backends, create_backend  # noqa: 
 from lerobot_mp.robot.factory import PluginBackend  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.robots import (  # noqa: E402
-    ROBOT_FILE, get_spec, load_robot, reload_robots, robot_config, robot_folders,
+    ROBOT_FILE, get_spec, load_robot, robot_config, robot_folders,
 )
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -32,9 +33,12 @@ def run(twin: Twin, seconds: float) -> None:
 
 # ------------------------------------------------------------ robot folders
 @pytest.mark.parametrize("name", ["so101", "a1x"])
-def test_robots_still_in_this_repository_load_from_their_folders(name):
+def test_so101_and_a1x_register_like_any_robot_package(name):
+    """They still live here, as packages that leave whole: folder and backends in `lerobot_mp.robot.<x>`."""
+    eps = {ep.name: ep.value for ep in entry_points(group="lerobot_mp.robots")}
+    assert eps[name] == f"lerobot_mp.robot.{name}:ROBOT_DIR"
     folder = robot_folders()[name]
-    assert folder.resolve() == (REPO / "assets" / "robots" / name).resolve()
+    assert folder == (REPO / "src" / "lerobot_mp" / "robot" / name / "robot").resolve()
     spec = get_spec(name)
     assert spec.name == name and spec.root == folder.resolve()
     assert spec.mjcf_path.parent == spec.root and spec.mjcf_path.is_file()
@@ -49,28 +53,31 @@ def test_a_robot_folder_from_an_installed_package_is_found_through_its_entry_poi
     assert [c.backend for c in spec.connections] == ["testbot"]
 
 
-def test_robot_folders_in_the_working_directory_do_not_hide_the_repositorys(tmp_path, monkeypatch):
-    (tmp_path / "assets" / "robots").mkdir(parents=True)
-    monkeypatch.chdir(tmp_path)
-    reload_robots()
-    assert {"so101", "a1x"} <= set(robot_folders())
+def test_the_twin_itself_holds_no_robot_folder():
+    package = REPO / "src" / "lerobot_mp"
+    found = {p.parent.relative_to(package).parts[:2] for p in package.rglob("robot.yaml")}
+    assert found <= {("robot", "so101"), ("robot", "a1x")}      # the two packages that still have to leave
+    assert not (REPO / "assets" / "robots").exists()
 
 
-def test_a_robot_plugin_that_does_not_load_leaves_the_others(testbot, tmp_path, caplog):
-    broken = next(tmp_path.glob("*.dist-info")) / "entry_points.txt"
-    extra = "\n[lerobot_mp.robots]\nbroken = no_such_module:DIR\n"
-    broken.write_text(broken.read_text(encoding="utf-8") + extra, encoding="utf-8")
-    reload_robots()
+def test_a_robot_plugin_that_does_not_load_leaves_the_others(install_dist, caplog):
+    install_dist("broken-robot", {"lerobot_mp.robots": {"broken": "no_such_module:DIR"}})
     folders = robot_folders()
-    assert "broken" not in folders and {testbot, "so101", "a1x"} <= set(folders)
+    assert "broken" not in folders and {"so101", "a1x"} <= set(folders)
     assert "broken" in caplog.text
 
 
-def test_two_robots_with_one_name_are_refused(testbot, tmp_path, monkeypatch):
-    local = tmp_path / "assets" / "robots" / testbot
-    shutil.copytree(TESTBOT / "testbot" / "robot", local)
-    monkeypatch.chdir(tmp_path)                       # local robot folders: working directory and repository
-    reload_robots()
+def a_folder_package(install_dist, tmp_path, dist: str, name: str) -> Path:
+    """Another installed package registering a copy of the test robot's folder as robot `name`."""
+    folder = tmp_path / f"{dist}-folder"
+    shutil.copytree(TESTBOT / "testbot" / "robot", folder)
+    module = dist.replace("-", "_")
+    install_dist(dist, {"lerobot_mp.robots": {name: f"{module}:DIR"}}, {module: f"DIR = {str(folder)!r}\n"})
+    return folder
+
+
+def test_two_robots_with_one_name_are_refused(testbot, install_dist, tmp_path):
+    a_folder_package(install_dist, tmp_path, "second-testbot", testbot)
     with pytest.raises(ValueError, match="Dwa ramiona o nazwie 'testbot'"):
         robot_folders()
 
@@ -109,11 +116,8 @@ def test_a_broken_description_names_what_is_wrong(folder, changes, error):
         load_robot(folder)
 
 
-def test_the_description_names_the_robot_it_is_registered_as(testbot, tmp_path, monkeypatch):
-    local = tmp_path / "assets" / "robots" / "other"
-    shutil.copytree(TESTBOT / "testbot" / "robot", local)
-    monkeypatch.chdir(tmp_path)
-    reload_robots()
+def test_the_description_names_the_robot_it_is_registered_as(install_dist, tmp_path):
+    a_folder_package(install_dist, tmp_path, "renamed-robot", "other")
     with pytest.raises(ValueError, match="name: testbot.*'other'"):
         get_spec("other")
 
@@ -177,9 +181,9 @@ def test_a_backend_section_reaches_its_plugin_raw(testbot):
 def test_backends_of_this_repository_are_registered_like_any_plugin():
     found = backends()
     assert {name: found[name].value for name in ("feetech", "lerobot", "a1x")} == {
-        "feetech": "lerobot_mp.robot.feetech:create",
-        "lerobot": "lerobot_mp.robot.lerobot_backend:create",
-        "a1x": "lerobot_mp.robot.a1x:create",
+        "feetech": "lerobot_mp.robot.so101.feetech:create",
+        "lerobot": "lerobot_mp.robot.so101.lerobot_backend:create",
+        "a1x": "lerobot_mp.robot.a1x.backend:create",
     }
 
 

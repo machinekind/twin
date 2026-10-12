@@ -20,7 +20,7 @@ from galaxeo import protocol as P  # noqa: E402
 from galaxeo.bus import Frame  # noqa: E402
 
 from lerobot_mp.twin.config import JointConfig  # noqa: E402
-from lerobot_mp.robot.a1x import A1XArm, A1XConfig  # noqa: E402
+from lerobot_mp.robot.a1x.backend import A1XArm, A1XConfig  # noqa: E402
 from lerobot_mp.robot.base import BackendContext  # noqa: E402
 
 ARM = tuple(f"arm_joint{i}" for i in range(1, 7))

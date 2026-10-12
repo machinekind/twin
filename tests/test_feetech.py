@@ -13,9 +13,10 @@ import time
 
 import pytest
 
-from lerobot_mp.robot import backend_context, serial_bridge
+from lerobot_mp.robot import backend_context
+from lerobot_mp.robot.so101 import serial_bridge
 from lerobot_mp.twin.robots import get_spec, robot_config
-from lerobot_mp.robot.feetech import (
+from lerobot_mp.robot.so101.feetech import (
     ADDR_GOAL_POSITION,
     ADDR_MAX_ANGLE_LIMIT,
     ADDR_MIN_ANGLE_LIMIT,

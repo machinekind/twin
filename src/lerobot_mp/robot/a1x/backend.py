@@ -49,8 +49,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..twin.config import from_mapping
-from .base import BackendContext, RobotBackend, RobotInfo
+from ...twin.config import from_mapping
+from ..base import BackendContext, RobotBackend, RobotInfo
 
 #: A1X_GRIPPER_XCAN=1 (albo true / yes / tak) = to samo co `a1x.gripper_over_xcan: true`.
 GRIPPER_XCAN_ENV = "A1X_GRIPPER_XCAN"
