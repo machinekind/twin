@@ -402,10 +402,6 @@ def add_demo_ant(data: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------ mrowka na koncu blatu
 #: Mrowka w `add_ant`: srodek tyle przed daleka krawedzia blatu [m].
 TABLE_END_INSET = 0.20
-#: Polowa obrysu kolizyjnego mrowki z nogami na boki [m] (caly obrys ~0,30 m).
-FOOTPRINT_HALF = 0.15
-#: Najblizsza krawedz obrysu co najmniej tyle za pudelkiem zasiegu okularow (`reach.ReachVolume.hi[0]`) [m].
-REACH_CLEARANCE = 0.15
 
 
 def table_far_x(table: Mapping[str, Any]) -> float:
@@ -422,26 +418,13 @@ def table_far_x(table: Mapping[str, Any]) -> float:
 
 
 def ant_xy_at_table_end(data: Mapping[str, Any]) -> tuple[float, float]:
-    """(x, y) mrowki na dalekim koncu blatu w ukladzie podstawy; ValueError, gdy wypadlaby za blisko pudelka zasiegu
-    (albo poza blatem)."""
-    from .reach import ReachVolume
-    from .robots import get_spec
-
+    """(x, y) mrowki na dalekim koncu blatu w ukladzie podstawy."""
     far = table_far_x(dict(data.get("table") or {}))
-    x = far - TABLE_END_INSET
-    reach = data.get("reach")
-    vol = ReachVolume.from_dict(reach) if reach else ReachVolume.from_spec(get_spec(str(data.get("robot", "so101"))))
-    need = float(vol.hi[0]) + REACH_CLEARANCE
-    if x - FOOTPRINT_HALF < need:
-        raise ValueError(
-            f"mrowka na koncu blatu stalaby w x = {x:.2f} m: jej obrys ({x - FOOTPRINT_HALF:.2f}..{x + FOOTPRINT_HALF:.2f} m)"
-            f" zaczyna sie blizej niz {REACH_CLEARANCE:.2f} m za pudelkiem zasiegu (x do {vol.hi[0]:.2f} m, "
-            f"potrzeba >= {need:.2f} m) - dluzszy blat albo mniejsze pudelko (`reach`)")
-    return x, 0.0
+    return far - TABLE_END_INSET, 0.0
 
 
 def add_ant(data: dict[str, Any], xy: tuple[float, float] | None = None) -> dict[str, Any]:
     """Stanowisko + symulowana mrowka stojaca na ISTNIEJACYM blacie, domyslnie na jego dalekim koncu
-    (`ant_xy_at_table_end`: 20 cm przed krawedzia, y = 0, obrys >= 15 cm za pudelkiem zasiegu), i dwie kamery
+    (`ant_xy_at_table_end`: 20 cm przed krawedzia, y = 0), i dwie kamery
     symulowane patrzace na nia. Blat bez zmian (`add_demo_ant` go powieksza)."""
     return _sim_ant(data, ant_xy_at_table_end(data) if xy is None else (float(xy[0]), float(xy[1])))

@@ -147,7 +147,7 @@ def test_ant_round_trip_scene_only_in_the_twin_and_live_pose(tmp_path):
     assert np.allclose(back.tag_poses()[1], ant.tag_poses()[1])
     assert zyx(mount_matrix(MOUNT)[:3, :3]) == pytest.approx((MOUNT["yaw"], MOUNT["pitch"], MOUNT["roll"]))
 
-    # Srodowiska RL, kolizje i Spectacles biora `scene_config()` - bez mrowki; runtime z mrowka.
+    # Srodowiska RL i kolizje biora `scene_config()` - bez mrowki; runtime z mrowka.
     assert ws.scene_config().ant is None
     tw = rt.Twin(ws)
     try:
@@ -168,11 +168,10 @@ def test_ant_round_trip_scene_only_in_the_twin_and_live_pose(tmp_path):
         tw.close()
 
 
-def test_add_ant_stands_it_at_the_far_table_end_clear_of_the_reach_box():
-    """The user's A1X table (1.2 x 0.8 m, base 0.45 m behind its centre): the ant's collision footprint (from the
-    scene, legs out) starts >= 15 cm beyond the reach box and stays on the table."""
+def test_add_ant_stands_it_at_the_far_table_end():
+    """The user's A1X table (1.2 x 0.8 m, base 0.45 m behind its centre): the ant stands 20 cm before the far
+    table end and its collision footprint (from the scene, legs out) stays on the table."""
     from lerobot_mp.twin.ant import add_ant, table_far_x
-    from lerobot_mp.twin.reach import ReachVolume
 
     ws = Workspace(robot="a1x")
     ws.table = {**ws.table, "size": [1.2, 0.8], "base_xy": [-0.45, 0.0]}
@@ -191,9 +190,4 @@ def test_add_ant_stands_it_at_the_far_table_end_clear_of_the_reach_box():
         if m.body(m.geom_bodyid[g]).name.startswith(sc.ANT_PREFIX) and m.geom_contype[g]:
             c = (to_base @ np.r_[d.geom_xpos[g], 1.0])[:3]
             lo, hi = np.minimum(lo, c - m.geom_rbound[g]), np.maximum(hi, c + m.geom_rbound[g])
-    vol = ReachVolume.from_workspace(ws)
-    assert lo[0] >= vol.hi[0] + 0.15, (lo, vol.hi)
     assert hi[0] <= 1.05 and lo[1] >= -0.40 and hi[1] <= 0.40, (lo, hi)
-    # A table too short for that is refused, not squeezed in.
-    with pytest.raises(ValueError, match="pudelkiem zasiegu"):
-        add_ant({**ws.to_dict(), "table": {**ws.table, "size": [0.9, 0.8]}})

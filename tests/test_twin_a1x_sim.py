@@ -20,7 +20,6 @@ def test_a1x_home_goes_in_stages_elbow_first_and_stops_on_a_collision(monkeypatc
     Blizniak na zegarze wirtualnym, krokami testu (`twinbench.Bench`): watek domu (`dom`) i `move`
     jada w tym samym czasie symulowanym.
     """
-    pytest.importorskip("websockets")
     from twinbench import Bench
 
     from lerobot_mp.twin import collision

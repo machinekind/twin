@@ -295,10 +295,10 @@ class Twin:
 
     def __init__(self, workspace: Workspace, loop_hz: float = 50.0, clock: Clock | None = None):
         self.workspace = workspace
-        #: Zegar petli i wszystkiego, co na nia czeka (kierowca okularow): `WallClock` w aplikacji.
+        #: Zegar petli i wszystkiego, co na nia czeka: `WallClock` w aplikacji.
         #: Bez `clock` blizniak wybiera sam przy `connect`: z watkiem - zegar sciany, bez watku
         #: (`threaded=False`) - nowy `VirtualClock` od 0 s, ktory przesuwa `step(dt)`. Testy, w ktorych
-        #: kierowca i petla maja dzielic czas, podaja wlasny `VirtualClock`.
+        #: watki czekajace na petle (rampa `move`, dom etapami) maja dzielic z nia czas, podaja wlasny `VirtualClock`.
         self._own_clock = clock is None
         self.clock: Clock = clock if clock is not None else WallClock()
         #: Opis ramienia stanowiska. Ramie stanowiska nie zmienia sie po zbudowaniu
@@ -1340,7 +1340,7 @@ class Twin:
     def step(self, dt: float) -> None:
         """Jeden takt petli w czasie symulowanym - tylko po `connect(threaded=False)`.
 
-        Najpierw zegar (`VirtualClock.advance(dt)`: watki czekajace na ten czas, np. rampa kierowcy,
+        Najpierw zegar (`VirtualClock.advance(dt)`: watki czekajace na ten czas, np. rampa `move`,
         licza swoj rozkaz), potem takt petli z nowym czasem - jak petla 50 Hz za watkiem 50 Hz.
         """
         if not self._manual:

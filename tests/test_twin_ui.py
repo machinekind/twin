@@ -425,26 +425,6 @@ def test_status_line_mentions_the_gripper_over_xcan(app, monkeypatch):
     assert "XCAN" not in app._status_text()
     app.twin._backend = None
 
-def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app):
-    specs = app.specs
-    specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nothing listens; the driver keeps retrying
-    specs.mode.value = "real"
-    specs.real_ok.value = True
-    specs.start()
-    try:
-        drv = specs.driver
-        assert drv is not None and drv.mode == "real" and drv.real_ok
-        drv._phase = "moving"                                         # pretend a move is in progress
-        specs.mode.value = "dry"
-        specs.apply_mode()
-        assert drv.mode == "dry"
-        assert drv._cancel.is_set() and drv._cause == "mode"
-        drv._phase = "idle"
-    finally:
-        specs.stop()
-    assert specs.driver is None
-    assert specs.real_ok.value is False                               # consent doesn't carry to the next connection
-
 
 def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
     """Bez kamer: podpowiedz i dodawanie; wybrana kamera i jej przyciski schowane."""
@@ -737,30 +717,7 @@ def test_pmd_camera_with_tags_on_its_housing_is_learned_found_drawn_and_saved(ap
         app._refresh_cameras()
 
 
-def test_startup_flags_connect_the_arm_and_start_the_glasses(app):
-    """`lerobot-twin ui --arm --specs sim --i-know`: ramie, pola folderu i sterownik - bez klikania."""
-    specs = app.specs
-    url = f"ws://127.0.0.1:{free_port()}/twin"                      # nothing listens; the driver keeps retrying
-    app._startup(arm=True, specs="sim", i_know=True, relay=url, follow_speed=0.1, hold_off=0.5)
-    try:
-        assert app.twin.connected and app.twin.status.simulated
-        assert specs.mode.value == "sim" and specs.url.value == url
-        assert specs.follow_speed.value == pytest.approx(0.1) and specs.hold_off.value == pytest.approx(0.5)
-        assert specs.real_ok.value is True
-        assert specs.driver is not None and specs.driver.mode == "sim" and specs.driver.real_ok
-        assert "lacze z" in specs.md.content or "sesja" in specs.md.content
-    finally:
-        specs.stop()                                                 # also clears the consent
-        assert specs.real_ok.value is False
-        specs.follow_speed.value, specs.hold_off.value, specs.mode.value = 0.0, 1.0, "dry"
-
-
-def test_ui_specs_real_without_i_know_refuses_before_the_panel(capsys):
-    from lerobot_mp.twin import cli
-    from lerobot_mp.twin.ui import app as ui_app
-
-    assert cli.main(["ui", "--port", str(free_port()), "--specs", "real"]) == 2
-    assert "--i-know" in capsys.readouterr().err
-    with pytest.raises(SystemExit) as exc:
-        ui_app.main(["--port", str(free_port()), "--specs", "real"])
-    assert exc.value.code == 2
+def test_startup_flag_connects_the_arm(app):
+    """`lerobot-twin ui --arm`: ramie polaczone przy starcie - bez klikania."""
+    app._startup(arm=True)
+    assert app.twin.connected and app.twin.status.simulated

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import html as _html
 import logging
-import os
 import threading
 import time
 from collections import deque
@@ -47,7 +46,6 @@ from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
 from .ant_panel import AntTab
-from .specs_panel import add_specs_folder
 from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
 
@@ -608,50 +606,24 @@ class TwinApp:
         logger.info("Panel gotowy w %.1f s", time.monotonic() - t_start)
         if self.stream is not None:
             self.stream.start()
-        # SPECS_CONNECT=1: polacz z przekaznikiem od razu (tryb dry - ramie stoi), bez klikania w panelu.
-        opts = dict(startup or {})
-        if opts.get("specs") is None and os.environ.get("SPECS_CONNECT", "").strip().lower() in (
-                "1", "true", "yes", "tak"):
-            opts["specs"] = self.specs.mode.value
-        self._startup(**opts)
+        self._startup(**(startup or {}))
 
-    def _startup(self, arm: bool = False, specs: str | None = None, i_know: bool = False,
-                 relay: str | None = None, follow_speed: float | None = None,
-                 hold_off: float | None = None) -> None:
-        """Flagi `lerobot-twin ui --arm --specs ...`: to samo, co klikniecia w panelu, w tej kolejnosci.
+    def _startup(self, arm: bool = False) -> None:
+        """Flaga `lerobot-twin ui --arm`: to samo, co "Polacz" w panelu (backend i port stanowiska, bez domu).
 
-        Najpierw ramie (jak "Polacz" z backendem i portem stanowiska, bez domu), potem pola folderu
-        Spectacles, na koncu sterownik okularow. Blad trafia do logu i statusu panelu, panel dziala dalej.
+        Blad trafia do logu, panel dziala dalej.
         """
-        if arm:
-            try:
-                self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
-                st = self.twin.status
-                logger.info("Start: ramie %s (%s), %s", st.backend, "symulacja" if st.simulated else "prawdziwe",
-                            st.state)
-            except Exception as exc:
-                logger.exception("Start: nie polaczono z ramieniem")
-                self.specs.md.content = f"Okulary: nie wystartowaly - nie polaczono z ramieniem: {exc}"
-                return
-            finally:
-                self._guard("ramie", self._render_arm, True)
-        f = self.specs
-        if relay:
-            f.url.value = relay
-        if follow_speed is not None:
-            f.follow_speed.value = float(follow_speed)
-        if hold_off is not None:
-            f.hold_off.value = float(hold_off)
-        if specs is None:
+        if not arm:
             return
-        f.mode.value = specs
-        f.real_ok.value = bool(i_know)
         try:
-            f.start()
-            logger.info("Start: okulary %s, tryb %s", str(f.url.value), specs)
-        except Exception as exc:
-            logger.exception("Start: okulary nie wystartowaly")
-            f.md.content = f"Okulary: blad - {exc}"
+            self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
+            st = self.twin.status
+            logger.info("Start: ramie %s (%s), %s", st.backend, "symulacja" if st.simulated else "prawdziwe",
+                        st.state)
+        except Exception:
+            logger.exception("Start: nie polaczono z ramieniem")
+        finally:
+            self._guard("ramie", self._render_arm, True)
 
     # ================================================================ narzedzia
     def _safe(self, fn):
@@ -2975,7 +2947,6 @@ class TwinApp:
                                          "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
                                          "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
             self.tag_md = g.add_markdown("")
-        self.specs = add_specs_folder(self, g)
         self._tag_fix = None
         self.goal_node = self.server.scene.add_icosphere("/cel", radius=0.012, color=(255, 196, 0), visible=False)
         self.goal_gizmo = self.server.scene.add_transform_controls("/cel_uchwyt", scale=0.08, disable_rotations=True,
@@ -3806,7 +3777,6 @@ class TwinApp:
         self._guard("mrowka", self.antp.tick, frames)
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
-        self._guard("spectacles", self.specs.tick)
         return frames
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
@@ -3923,9 +3893,6 @@ class TwinApp:
             antp = getattr(self, "antp", None)             # mrowka: petla i pulpit WSAD
             if antp is not None:
                 self._guard("mrowka", antp.close)
-            specs = getattr(self, "specs", None)           # release the arm before disconnecting
-            if specs is not None:
-                self._guard("spectacles", specs.stop)
             for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
                 job.stop()
         finally:
@@ -3951,21 +3918,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stream-port", type=int, default=None)
     ap.add_argument("--stream-host", default="0.0.0.0")
     ap.add_argument("--arm", action="store_true", help="polacz ramie przy starcie (backend i port stanowiska)")
-    ap.add_argument("--specs", choices=("dry", "sim", "real"), default=None,
-                    help="tryb okularow i polaczenie z przekaznikiem przy starcie")
-    ap.add_argument("--i-know", action="store_true", help="zgoda na ruch prawdziwym ramieniem (--specs real)")
-    ap.add_argument("--relay", default=None, help="adres przekaznika (domyslnie SPECS_RELAY)")
-    ap.add_argument("--follow-speed", type=float, default=None, help="sledzenie dloni [m/s]")
-    ap.add_argument("--hold-off", type=float, default=None, help="odczekanie przed ruchem [s]")
     a = ap.parse_args(argv)
-    if a.specs == "real" and not a.i_know:
-        ap.error("--specs real rusza prawdziwym ramieniem - dodaj --i-know")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Sondy HTTP (HEAD, niedokonczone polaczenia) nie sa bledami panelu - websockets
     # drukuje po kilkadziesiat linii stosu na kazda, zasypujac to, co wazne.
     logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-    startup = dict(arm=a.arm, specs=a.specs, i_know=a.i_know, relay=a.relay, follow_speed=a.follow_speed,
-                   hold_off=a.hold_off)
+    startup = dict(arm=a.arm)
     TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host,
             startup=startup).run()
     return 0

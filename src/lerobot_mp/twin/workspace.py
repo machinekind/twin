@@ -184,9 +184,6 @@ class Workspace:
     #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
     #: pusta = model Menagerie. Srodek randomizacji w treningu.
     dynamics: dict[str, Any] = field(default_factory=dict)
-    #: Reach box for the glasses (`reach.ReachVolume`), base frame [m]: {"lo": [x, y, z], "hi": [x, y, z]}.
-    #: None = arm default; None is not written, so older files without the key still load.
-    reach: dict[str, Any] | None = None
     #: Kamera PMD (CamBoard nano) z tagami na obudowie (`tagbody.TagBody.to_dict` + ostatnia
     #: poza `T_body2base` w ukladzie podstawy); None = brak, nie jest zapisywane.
     pmd: dict[str, Any] | None = None
@@ -247,7 +244,7 @@ class Workspace:
         """Scena z tego stanowiska: stol, ramie i kazda WLACZONA, umiejscowiona kamera.
 
         `with_ant` - takze mrowka, gdy stanowisko wie, gdzie stoi. Tylko scena blizniaka (runtime):
-        srodowiska RL, sprawdzacz kolizji i Spectacles jej nie biora.
+        srodowiska RL i sprawdzacz kolizji jej nie biora.
         """
         views = [v for c in self.cameras if c.enabled for v in [c.view()] if v is not None]
         ant = self.ant_obj() if with_ant else None
@@ -365,7 +362,7 @@ class Workspace:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("path", None)
-        for key in ("reach", "pmd", "ant"):
+        for key in ("pmd", "ant"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data
