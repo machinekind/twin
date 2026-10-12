@@ -960,6 +960,8 @@ src/lerobot_mp/twin/
 ├── camera_stream.py wątek kamery: zawsze najnowsza klatka, bez kolejki
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
 ├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
+├── strategy.py      kontrakt strategii sterowania: `Observation`, `Strategy`, `Action`, `StrategyRunner`
+├── waypoints.py     strategia testowa: przejazd przez zadane pozy
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
 ├── cli.py           lerobot-twin
 ├── calib/
