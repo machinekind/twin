@@ -370,12 +370,12 @@ def test_the_existing_commands_come_first_in_their_old_order_and_the_grasp_comma
 
 @pytest.mark.parametrize(("argv", "fn", "expected"), [
     (["check"], "_check", {"cmd": "check"}),
-    (["demo"], "_demo", {"cmd": "demo", "path": None, "force": False, "robot": "so101"}),
+    (["demo"], "_demo", {"cmd": "demo", "path": None, "force": False, "robot": "so101", "ant": False}),
     (["card"], "_card", {"cmd": "card", "out": "karta_kalibracyjna.png", "tag_mm": 50.0, "dpi": 300}),
     (["board"], "_board", {"cmd": "board", "out": "tablica_charuco.png", "square_mm": 28.0, "dpi": 300}),
     (["calib-sim"], "_calib_sim", {"cmd": "calib-sim", "n": 5, "cameras": 2, "seed": 0, "extreme": False,
                                    "robot": "so101", "verbose": False}),
-    (["workspace"], "_workspace", {"cmd": "workspace", "path": None}),
+    (["workspace"], "_workspace", {"cmd": "workspace", "path": None, "ant": False}),
     (["train"], "_train", {"cmd": "train", "task": "reach", "envs": 4096, "iters": 300, "seed": 0,
                            "name": None, "out": None, "workspace": None, "no_rand": False, "spread": 1.0,
                            "eval_episodes": 50, "stop_file": None, "init": None}),
@@ -383,15 +383,16 @@ def test_the_existing_commands_come_first_in_their_old_order_and_the_grasp_comma
                                  "workspace": None}),
     (["policies"], "_policies", {"cmd": "policies", "dir": None}),
     (["ui"], None, {"cmd": "ui", "host": "127.0.0.1", "port": 8080, "workspace": None, "stream_port": None,
-                    "stream_host": "0.0.0.0"}),
+                    "stream_host": "0.0.0.0", "arm": False, "specs": None, "i_know": False, "relay": None,
+                    "follow_speed": None, "hold_off": None}),
     (["specs"], "_specs", {"cmd": "specs", "relay": "ws://127.0.0.1:8080/twin", "backend": None, "port": None,
                            "mode": "dry", "grasp": False, "trusted_only": False, "i_know": False,
-                           "max_jump_deg": 150.0, "hold_off": 1.0, "start_center": False, "seconds": None,
+                           "max_jump_deg": 150.0, "hold_off": 1.0, "start_center": False, "follow_speed": None, "follow_floor": 0.01, "seconds": None,
                            "workspace": None}),
     (["specs", "--mode", "real", "--i-know", "--backend", "a1x", "--start-center", "--hold-off", "0"],
      "_specs", {"cmd": "specs", "relay": "ws://127.0.0.1:8080/twin", "backend": "a1x", "port": None,
                 "mode": "real", "grasp": False, "trusted_only": False, "i_know": True, "max_jump_deg": 150.0,
-                "hold_off": 0.0, "start_center": True, "seconds": None, "workspace": None}),
+                "hold_off": 0.0, "start_center": True, "follow_speed": None, "follow_floor": 0.01, "seconds": None, "workspace": None}),
 ])
 def test_the_existing_commands_parse_as_before(argv, fn, expected):
     a = vars(cli.parser().parse_args(argv))

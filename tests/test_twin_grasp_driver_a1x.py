@@ -1,7 +1,7 @@
 """`GraspDriver` on the `a1x` backend over a fake CAN bus (`FakeA1XBus`), no hardware.
 
 The twin runs with `threaded=False`. The driver runs on the test's thread with the twin's own
-clock (`twin._clock`) and a `sleep` that ticks the bus and steps the twin until that much twin
+clock (`twin.clock.now()`) and a `sleep` that ticks the bus and steps the twin until that much twin
 time has passed, so every run is deterministic and needs no wall-clock time. Frames are fake,
 stamped with the same clock.
 """
@@ -75,7 +75,7 @@ class Frames:
 
     def latest(self) -> Frame:
         self.seq += 1
-        return Frame(np.zeros((120, 160, 3), np.uint8), self.twin._clock, self.seq)
+        return Frame(np.zeros((120, 160, 3), np.uint8), self.twin.clock.now(), self.seq)
 
     def close(self) -> None:
         pass
@@ -126,9 +126,9 @@ class Rig:
 
     def sleep(self, secs: float) -> None:
         """At least one loop step, then until `secs` of twin time have passed."""
-        t_end = self.twin._clock + secs
+        t_end = self.twin.clock.now() + secs
         self.step()
-        while self.twin._clock < t_end - 1e-9:
+        while self.twin.clock.now() < t_end - 1e-9:
             self.step()
 
     def pump(self, secs: float) -> None:
@@ -138,7 +138,7 @@ class Rig:
     def driver(self, script, *, mode: str = "real", **kw) -> GraspDriver:
         kw.setdefault("sleep", self.sleep)
         return GraspDriver(self.twin, Scripted(script), Frames(self.twin), WristCamera(), GraspRig.for_sim(),
-                           mode=mode, real_ok=True, clock=lambda: self.twin._clock, **kw)
+                           mode=mode, real_ok=True, clock=self.twin.clock.now, **kw)
 
     def streamed(self) -> float:
         assert self.arm is not None
@@ -346,14 +346,14 @@ def test_feedback_frames_0_2_s_old_skip_with_stale_feedback_although_the_twin_sa
     silent: dict[str, float] = {}
 
     def resume() -> None:
-        if rig.bus.silent and rig.twin._clock - silent["t"] >= 0.22:
+        if rig.bus.silent and rig.twin.clock.now() - silent["t"] >= 0.22:
             rig.bus.silent = False
 
     def on_tick(rec: TickRecord) -> None:
         recs.append(rec)
         if len(recs) == 5:
             rig.bus.silent = True
-            silent["t"] = rig.twin._clock
+            silent["t"] = rig.twin.clock.now()
             rig.hooks.append(resume)
 
     drv = rig.driver(segments((40, STILL)), max_ticks=25, on_tick=on_tick)

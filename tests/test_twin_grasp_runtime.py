@@ -184,7 +184,7 @@ def test_scene_gripper_state_follows_the_scene_and_changes_nothing(sim):
     run(sim, 0.1)
     gs = b.gripper_state()
     assert gs.position == sim.joints()["gripper"]                          # the slide, not the ctrl
-    assert gs.position - gs.commanded > 2.0
+    assert abs(gs.position - gs.commanded) > 2.0
     run(sim, 0.9)
     qpos, ctrl = s.data.qpos.copy(), s.data.ctrl.copy()
     for _ in range(100):

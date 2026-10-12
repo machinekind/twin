@@ -328,24 +328,24 @@ def test_on_the_sim_backend_the_scene_source_gives_the_fingertip_gap_training_me
         units = 50.0
         scene, model = GripperEstimator(source="scene"), GripperEstimator(units_s=units, source="model")
         for est in (scene, model):
-            est.reset(100.0, twin._clock)
-        assert scene.update(twin._clock, 100.0, twin.backend.gripper_state()) == pytest.approx(
+            est.reset(100.0, twin.clock.now())
+        assert scene.update(twin.clock.now(), 100.0, twin.backend.gripper_state()) == pytest.approx(
             fingertip_gap(), abs=1e-6)
 
-        t0 = twin._clock
+        t0 = twin.clock.now()
         twin.set_target({"gripper": 0.0})
         moving = 0.0
         for _ in range(125):
             twin.step(0.02)
             gs = twin.backend.gripper_state()
-            gap = scene.update(twin._clock, 0.0, gs)
-            model.update(twin._clock, 0.0, gs)
+            gap = scene.update(twin.clock.now(), 0.0, gs)
+            model.update(twin.clock.now(), 0.0, gs)
             # The second finger follows the first through a soft equality, so it trails while moving.
             moving = max(moving, abs(gap - fingertip_gap()))
             assert scene.opening == min(max(gs.position, 0.0), 100.0)
             # The scene's jaw command leads the jaw; the model follows it at the jaw speed.
             assert gs.streamed <= model.opening + 1e-9
-            assert model.opening == pytest.approx(max(0.0, 100.0 - units * (twin._clock - t0)), abs=1e-9)
+            assert model.opening == pytest.approx(max(0.0, 100.0 - units * (twin.clock.now() - t0)), abs=1e-9)
         assert moving <= 1e-3, moving
         assert gap == pytest.approx(fingertip_gap(), abs=1e-6) and gap == pytest.approx(GAP_CLOSED, abs=1e-6)
         print(f"scene gap against the fingertip gap: {moving * 1000:.2f} mm while closing")

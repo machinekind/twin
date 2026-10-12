@@ -188,10 +188,10 @@ def _stepper(twin: rt.Twin):
     period = 1.0 / twin.loop_hz
 
     def sleep(dt: float) -> None:
-        t_end = twin._clock + dt
+        t_end = twin.clock.now() + dt
         twin.step(min(period, max(dt, 1e-3)))
-        while twin._clock < t_end - 1e-9:
-            twin.step(min(period, t_end - twin._clock))
+        while twin.clock.now() < t_end - 1e-9:
+            twin.step(min(period, t_end - twin.clock.now()))
 
     return sleep
 
@@ -883,7 +883,7 @@ def test_with_the_checkpoint_six_sim_episodes_at_seed_50000_grasp_at_least_three
     twin.connect("sim", go_home=False, threaded=False)
     try:
         res = ev.evaluate(twin, policy, episodes=6, seed=50000, jaw="sim", out=tmp_path / "ckpt.json",
-                          clock=lambda: twin._clock, sleep=_stepper(twin))
+                          clock=twin.clock.now, sleep=_stepper(twin))
     finally:
         twin.close()
     with capsys.disabled():

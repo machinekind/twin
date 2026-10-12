@@ -122,7 +122,7 @@ class SimBench:
         self.twin.connect("sim", threaded=False)
         bench.configure_sim(self.twin)
         self.kin = RobotKinematics(self.twin.spec)
-        self.t = self.twin._clock
+        self.t = self.twin.clock.now()
         self.hooks: list = []
 
     def clock(self) -> float:
@@ -130,7 +130,7 @@ class SimBench:
 
     def sleep(self, dt: float) -> None:
         self.t += max(float(dt), 0.0)
-        while self.twin._clock + DT <= self.t + 1e-12 and self.twin.connected:
+        while self.twin.clock.now() + DT <= self.t + 1e-12 and self.twin.connected:
             self.twin.step(DT)
             for hook in self.hooks:
                 hook()
@@ -245,7 +245,7 @@ class A1XBench:
         self.twin = Twin(Workspace(robot="a1x"))
         self.twin.connect("a1x", port="fake", threaded=False)
         self.kin = RobotKinematics(self.twin.spec)
-        self.t = self.twin._clock
+        self.t = self.twin.clock.now()
         self.t_io = self.t
 
     def clock(self) -> float:
@@ -255,7 +255,7 @@ class A1XBench:
         self.t += max(float(dt), 0.0)
         while True:
             next_io = self.t_io + self.io
-            next_tw = self.twin._clock + DT if self.twin.connected else math.inf
+            next_tw = self.twin.clock.now() + DT if self.twin.connected else math.inf
             if min(next_io, next_tw) > self.t + 1e-12:
                 return
             if next_io <= next_tw:
