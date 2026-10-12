@@ -45,6 +45,8 @@ class Observation:
     tag_id: int = -1
     mount: str = "card"
     camera: str = "cam"
+    #: Numer pozy fali, z ktorej jest ta obserwacja (-1 = nieznany) - do diagnostyki.
+    pose: int = -1
 
 
 @dataclass
@@ -59,6 +61,11 @@ class CameraFit:
     spread_deg: float
     trusted: bool = False
     reason: str = ""
+    #: Residuum kazdej obserwacji tej kamery [px, rms po 4 rogach] i (poza, tag) obok - diagnostyka.
+    per_obs_px: list[float] = field(default_factory=list)
+    obs_ids: list[tuple[int, int]] = field(default_factory=list)
+    #: Obserwacje odrzucone jako odstajace (kadr w ruchu, zla detekcja) przed koncowym dopasowaniem.
+    dropped: int = 0
 
 
 @dataclass
@@ -69,6 +76,7 @@ class Fit:
     max_px: float = float("nan")
     n_obs: int = 0
     init: str = ""                                                 # which starting point won
+    dropped: int = 0
 
     @property
     def trusted(self) -> bool:
@@ -96,13 +104,30 @@ def _inv(T):
     return out
 
 
+def _median_R(Rs, R_ref):
+    """Mediana obrotow w przestrzeni stycznej w `R_ref`: R_ref @ exp(median(log(R_ref^T R_i)))."""
+    rv = np.array([cv2.Rodrigues(R_ref.T @ R)[0].ravel() for R in Rs])
+    dR, _ = cv2.Rodrigues(np.median(rv, axis=0))
+    return R_ref @ dR
+
+
 def _median_T(Ts):
-    """Elementwise median of a list of transforms, re-orthonormalised."""
+    """Elementwise median of a list of transforms, re-orthonormalised.
+
+    Mediana obrotow NIE jest liczona po wektorach Rodriguesa w ukladzie
+    globalnym: dla obrotu blisko 180 st. (kamera z boku podstawy) kolejne
+    przyblizenia wypadaja po obu stronach zawiniecia +-pi (wektory ~ +v i ~ -v)
+    i ich mediana to obrot odlegly o ~180 st. od kazdego z nich. Zamiast tego
+    mediana wektorow obrotu wzgledem jednego z wejsc (tam katy sa male, z dala
+    od zawiniecia), a potem drugi raz wzgledem wyniku - na wypadek, gdyby
+    pierwsze wejscie bylo odstajace."""
+    Ts = [np.asarray(T, float) for T in Ts]
     t = np.median([T[:3, 3] for T in Ts], axis=0)
-    rv = np.array([cv2.Rodrigues(T[:3, :3])[0].ravel() for T in Ts])
-    R, _ = cv2.Rodrigues(np.median(rv, axis=0))
+    Rs = [T[:3, :3] for T in Ts]
+    R = _median_R(Rs, _median_R(Rs, Rs[0]))
+    U, _, Vt = np.linalg.svd(R)                        # usuwa dryf numeryczny z iloczynow
     out = np.eye(4)
-    out[:3, :3], out[:3, 3] = R, t
+    out[:3, :3], out[:3, 3] = U @ Vt, t
     return out
 
 
@@ -281,6 +306,7 @@ def _lm(p, problem, iters=60):
 
 def _fit(p, r, problem, obs, tag=""):
     per_corner = np.linalg.norm(r.reshape(-1, 2), axis=1).reshape(-1, 4)   # (N, 4)
+    per_obs = np.sqrt(np.mean(per_corner**2, axis=1))                       # (N,)
     cams, mounts = problem.unpack(p)
     out = {}
     for k, name in enumerate(problem.names_cam):
@@ -289,13 +315,15 @@ def _fit(p, r, problem, obs, tag=""):
         mine = [o for o, s in zip(obs, sel) if s]
         out[name] = CameraFit(cams[k], float(np.sqrt(np.mean(e**2))) if e.size else float("inf"),
                               float(e.max()) if e.size else float("inf"), int(sel.sum()),
-                              rotation_spread(mine))
+                              rotation_spread(mine),
+                              per_obs_px=[float(v) for v in per_obs[sel]],
+                              obs_ids=[(int(o.pose), int(o.tag_id)) for o in mine])
     e = per_corner.ravel()
     return Fit(out, dict(zip(problem.names_mount, mounts)), float(np.sqrt(np.mean(e**2))),
                float(e.max()), len(obs), tag)
 
 
-def solve(obs, cameras, tag_size, mounts_nominal, iters=60, restarts=5, max_px=1.5, seed=0):
+def solve(obs, cameras, tag_size, mounts_nominal, iters=60, restarts=5, max_px=1.5, seed=0, min_keep=6):
     """Levenberg-Marquardt on the reprojection error, from the best of several starts.
 
     `cameras` maps every camera name appearing in `obs` to `(K, dist)`;
@@ -357,7 +385,48 @@ def solve(obs, cameras, tag_size, mounts_nominal, iters=60, restarts=5, max_px=1
                 best = fit
             if best.rms_px <= max_px:
                 break
-    return best
+    return _drop_outliers(best, obs, cameras, tag_size, names_cam, names_mount, iters, max_px, min_keep)
+
+
+def _drop_outliers(best, obs, cameras, tag_size, names_cam, names_mount, iters, max_px, min_keep=6):
+    """Odstajace obserwacje (kadr zlapany w ruchu, zla detekcja, karta drgajaca na uchwycie)
+    psuja residuum calej kamery: fala z 20 dobrymi kadrami i 3 zlymi wychodzila 6,9 px.
+    Prog: 3 x mediana, nie mniej niz 2 x `max_px`. Odrzucamy najwyzej 30 % obserwacji kamery
+    i tylko, gdy zostaje ich co najmniej `min_keep` (sesja podaje swoje `min_obs`: kamera z 14
+    kadrami i jednym odstajacym zostawala z 13 i przepadala); dopasowanie od nowa."""
+    per_obs = np.empty(len(obs))
+    for k, name in enumerate(names_cam):
+        sel = np.array([o.camera == name for o in obs])
+        per_obs[sel] = best.cameras[name].per_obs_px
+    keep = np.ones(len(obs), bool)
+    dropped = {}
+    for name in names_cam:
+        sel = np.array([o.camera == name for o in obs])
+        e = per_obs[sel]
+        keep_at_least = max(6, int(min_keep))
+        if e.size <= keep_at_least:
+            continue
+        thr = max(3.0 * float(np.median(e)), 2.0 * max_px)
+        bad = np.where(sel)[0][e > thr]
+        limit = min(int(0.3 * e.size), e.size - keep_at_least)
+        if bad.size > limit:                      # najgorsze najpierw
+            bad = bad[np.argsort(-per_obs[bad])[:limit]]
+        if bad.size:
+            keep[bad] = False
+            dropped[name] = int(bad.size)
+    if not dropped:
+        return best
+    inliers = [o for o, k in zip(obs, keep) if k]
+    problem = _Problem(inliers, cameras, tag_size, names_cam, names_mount)
+    cams0 = [best.cameras[c].T_cam2base for c in names_cam]
+    p, r = _lm(_params(cams0, [best.mounts[n] for n in names_mount]), problem, iters)
+    fit = _fit(p, r, problem, inliers, best.init + "+odstajace")
+    if fit.rms_px >= best.rms_px:
+        return best
+    for name, n in dropped.items():
+        fit.cameras[name].dropped = n
+    fit.dropped = sum(dropped.values())
+    return fit
 
 
 def judge(fit, max_px=1.5, min_spread=8.0, min_obs=14):
@@ -376,7 +445,10 @@ def judge(fit, max_px=1.5, min_spread=8.0, min_obs=14):
             reasons.append(f"rozrzut obrotow {cam.spread_deg:.1f} st. < {min_spread} st. (zdegenerowana fala)")
         if cam.n_obs < min_obs:
             reasons.append(f"tylko {cam.n_obs} obserwacji, potrzeba {min_obs}")
-        cam.trusted, cam.reason = not reasons, "; ".join(reasons)
+        cam.trusted = not reasons
+        if cam.dropped:
+            reasons.append(f"odrzucono {cam.dropped} odstajacych kadrow")
+        cam.reason = "; ".join(reasons)
     return fit
 
 

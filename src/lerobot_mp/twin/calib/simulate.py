@@ -74,14 +74,15 @@ def look_at(eye, target, up=(0.0, 0.0, 1.0)) -> np.ndarray:
     return pose(np.column_stack([x, np.cross(z, x), z]), np.asarray(eye, float))
 
 
-#: Gdzie losujemy kamery - w skali SO-101 na biurku (galaxeo: laptop przed A1X).
-CAMERAS = dict(W=640, H=480, fovy=(46.0, 60.0), dist=(0.45, 0.75), bearing=(-1.7, 1.7),
-               height=(0.12, 0.40), centre=(0.20, 0.0, 0.06), jitter=0.04, spread=0.9)
+#: Gdzie losujemy kamery (galaxeo: laptop przed A1X). Odleglosc i srodek zaleza od
+#: skali stolu ramienia (`spec.desk.camera_dist/camera_centre`), reszta jest wspolna.
+CAMERAS = dict(W=640, H=480, fovy=(46.0, 60.0), bearing=(-1.7, 1.7),
+               height=(0.12, 0.40), jitter=0.04, spread=0.9)
 
 
-def sample_cameras(rng: np.random.Generator, n: int) -> list[sc.CameraView]:
+def sample_cameras(rng: np.random.Generator, n: int, spec: RobotSpec = SO101) -> list[sc.CameraView]:
     """N kamer w przedniej polplaszczyznie, rozstawionych co najmniej `spread` rad."""
-    cfg = CAMERAS
+    cfg = dict(CAMERAS, dist=spec.desk.camera_dist, centre=spec.desk.camera_centre)
     centre = np.asarray(cfg["centre"], float)
     bearings: list[float] = []
     while len(bearings) < n:
@@ -120,12 +121,12 @@ def run(seed: int, n_cameras: int = 1, spec: RobotSpec = SO101, card: Card | Non
         extreme: bool = False, cfg: WaveConfig | None = None, on_step=None) -> Result:
     rng = np.random.default_rng(seed)
     card = card or Card()
-    views = sample_cameras(rng, n_cameras)
+    views = sample_cameras(rng, n_cameras, spec)
 
     from ..kinematics import RobotKinematics
 
     kin_free = RobotKinematics(spec)
-    nominal = card.nominal(pinch_point(kin_free))
+    nominal = card.nominal(pinch_point(kin_free), spec)
     truth = perturb(nominal, rng, extreme=extreme)     # tam, gdzie karta NAPRAWDE siedzi
 
     world = sc.build(sc.SceneConfig(spec, cameras=views, card=card, card_pose=truth))
@@ -153,7 +154,8 @@ def run(seed: int, n_cameras: int = 1, spec: RobotSpec = SO101, card: Card | Non
         dt, dr = pose_error(v.T_cam2base, cam.T_cam2base)
         err_mm[v.name], err_deg[v.name], rms[v.name] = dt * 1000, np.degrees(dr), cam.rms_px
         trusted[v.name], reasons[v.name] = cam.trusted, cam.reason
-    ct, cr = pose_error(truth, fit.mounts["card"])
+    tid0 = card.ids[0]
+    ct, cr = pose_error(truth @ card.tag_poses()[tid0], fit.mounts[f"tag{tid0}"])
     return Result(seed, session.index, trusted, reasons, rms, err_mm, err_deg, ct * 1000, np.degrees(cr))
 
 

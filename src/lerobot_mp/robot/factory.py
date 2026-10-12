@@ -17,7 +17,7 @@ def lerobot_available() -> bool:
 
 
 def create_backend(cfg: AppConfig) -> RobotBackend:
-    """Tworzy backend: `sim`, `lerobot`, `feetech` albo `auto` (co jest dostepne)."""
+    """Tworzy backend: `sim`, `lerobot`, `feetech`, `a1x` albo `auto` (co jest dostepne)."""
     backend = cfg.robot.backend.lower()
 
     if backend == "sim":
@@ -32,6 +32,12 @@ def create_backend(cfg: AppConfig) -> RobotBackend:
         from .feetech import FeetechArm
 
         return FeetechArm(cfg)
+
+    if backend == "a1x":
+        # Galaxea A1X po CAN (pakiet galaxeo, importowany leniwie) - tylko dla stawow A1X.
+        from .a1x import A1XArm
+
+        return A1XArm(cfg)
 
     if backend == "auto":
         if not cfg.robot.port:
@@ -49,5 +55,5 @@ def create_backend(cfg: AppConfig) -> RobotBackend:
         return FeetechArm(cfg)
 
     raise ValueError(
-        f"Nieznany backend robota: {cfg.robot.backend!r} (sim|lerobot|feetech|auto)"
+        f"Nieznany backend robota: {cfg.robot.backend!r} (sim|lerobot|feetech|a1x|auto)"
     )

@@ -73,11 +73,13 @@ class PolicyMeta:
     #: Wyniki ewaluacji: {"gpu": ..., "cpu": ..., "real": ...} - uzupelniane pozniej.
     evals: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
+    #: Ramie, na ktorym polityka sie uczyla (`RobotSpec.name`). Polityki sprzed tego pola - SO-101.
+    robot: str = "so101"
 
     def task_config(self) -> tk.TaskConfig:
         # Pola dodane pozniej (np. `end_on_success`) biora wartosc zadania z `make_task`,
         # a nie zero z klasy: stara lift-v2 ma sie na ramieniu zatrzymac po sukcesie tak
-        # samo jak nowa, a douczana z niej - dostac nowe kary.
+        # samo jak nowa, a douczana z niej - dostac nowe kary. Bez `n_joints` - SO-101 (6).
         data = {**asdict(tk.make_task(self.task.get("name", "reach"))), **self.task}
         for k, v in data.items():
             if isinstance(v, list):

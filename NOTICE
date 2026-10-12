@@ -22,6 +22,40 @@ Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
    według kart modeli MediaPipe. Skopiowane bez zmian; źródła i sumy SHA-256
    w models/README.md.
 
+4. assets/robots/a1x/  (a1x.urdf, siatki STL w assets/, a1x.xml)
+   URDF i siatki ramienia Galaxea A1X od producenta (Galaxea), przez pakiet
+   ros2_ws/src/galaxea_a1xy_description repozytorium galaxeo-manipulators
+   (package.xml: licencja "Proprietary", źródło "userguide-galaxea/URDF").
+   Warunki licencji producenta nie są podane - te pliki NIE są objęte
+   licencją Apache-2.0 projektu. a1x.xml to przetworzenie URDF wygenerowane
+   skryptem scripts/import_a1x_model.py (reguły w assets/robots/a1x/README.md).
+
+5. galaxeo.xcan_usb  (NIE w tym repozytorium - zależność opcjonalna)
+   Backend a1x (src/lerobot_mp/robot/a1x.py) importuje pakiet galaxeo
+   z repozytorium machinekind/galaxeo-manipulators (extra "a1x" w pyproject.toml,
+   instalowany z gita; repozytorium nie ma pliku licencji). Jego moduł
+   galaxeo/xcan_usb.py - sterownik przejściówki XCAN / PCAN-USB FD przez libusb,
+   używany tylko na macOS - zawiera układy komend i rekordów przepisane ze
+   źródeł jądra Linuksa (drivers/net/can/usb/peak_usb/pcan_usb_fd.c,
+   include/linux/can/dev/peak_canfd.h), licencja GPL-2.0. Moduł jest wydzielony
+   w galaxeo i nie jest tu kopiowany ani rozpowszechniany; czy projekt
+   Apache-2.0 może na nim polegać - do decyzji (HANDOFF.md, sekcja 5).
+
+6. assets/robots/realant/  (realant.xml, siatki STL w meshes/)
+   Model fizyczny mrówki RealAnt v2 z repozytorium semberecki/realant-rl
+   (gałąź mjx-v2-walk, commit 599042c: realant_sim/realant_v2.xml, generator
+   realant_sim/build_realant_v2.py) - licencja MIT (Aalto University, Ote
+   Robotics Ltd): assets/robots/realant/LICENSE_realant-rl. Siatki STL części
+   OteRobotics/realant (licencja MIT: LICENSE_OteRobotics_realant). realant.xml
+   różni się od oryginału tylko ścieżką meshdir.
+
+7. assets/policies/ant/exp004_smooth2/  (params_*.pkl, config.json, analysis_*.json)
+   Polityka chodu mrówki (brax PPO, MJX) z semberecki/realant-rl
+   (policies/exp004_smooth2), licencja MIT jak wyżej. Wczytanie bez JAX,
+   obserwacja, mapy serw i chód w czterech kierunkach przeniesione z
+   robot_policy.py / robot_teleop.py (gałąź new_policies, 20a6d0d) do
+   src/lerobot_mp/twin/antwalk.py i antdrive.py.
+
 Polityki assets/policies/*/policy.pt zostały wytrenowane w tym projekcie
 (lerobot-twin train) i są objęte licencją projektu.
 

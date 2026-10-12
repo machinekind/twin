@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import mujoco
+from collections.abc import Callable
+
 import numpy as np
 
 from .robots import RobotSpec
@@ -87,8 +89,15 @@ class RobotKinematics:
     def __init__(self, spec: RobotSpec, model: mujoco.MjModel | None = None, prefix: str = "",
                  gripper_ticks: tuple[float, float, float] | None = None):
         self.spec = spec
-        #: (zamkniety, otwarty, zero) chwytaka w tikach serwa - patrz `to_q`.
-        self.gripper_ticks = gripper_ticks if gripper_ticks is not None else backend_gripper_ticks()
+        if spec.gripper_range_q is None:
+            #: (zamkniety, otwarty, zero) chwytaka w tikach serwa - patrz `to_q`.
+            self.gripper_ticks = gripper_ticks if gripper_ticks is not None else backend_gripper_ticks()
+            self._grip_lin: tuple[float, float] | None = None
+        else:
+            # Chwytak liniowo na (zamkniety, otwarty) w jednostkach MJCF - tiki serwa
+            # nic tu nie znacza, wiec konfiguracji backendu `feetech` nawet nie czytamy.
+            self.gripper_ticks = None
+            self._grip_lin = tuple(float(v) for v in spec.gripper_range_q)
         self.prefix = prefix
         self.model = model if model is not None else mujoco.MjModel.from_xml_path(str(spec.mjcf_path))
         self.data = mujoco.MjData(self.model)
@@ -105,6 +114,15 @@ class RobotKinematics:
         self.base_id = m.body(prefix + spec.base_body).id
         self._approach = np.asarray(spec.tcp_approach, float)
         self._closing = np.asarray(spec.tcp_closing, float)
+        #: Stawy sprzezone (`spec.mirror_joints`): (indeks stawu opisu, adres qpos, przelozenie).
+        #: Wpisuje je `write_qpos` - przy kazdym zapisie pozy, nie tylko tutaj.
+        self.mirror: list[tuple[int, int, float]] = [
+            (spec.joints.index(src), int(m.jnt_qposadr[m.joint(prefix + slaved).id]), float(gain))
+            for slaved, (src, gain) in spec.mirror_joints.items()
+        ]
+        #: Adresy qvel stawow sprzezonych - zeruje je `stop_qvel` razem ze stawami opisu.
+        self.mirror_dadr = np.array(
+            [m.jnt_dofadr[m.joint(prefix + slaved).id] for slaved in spec.mirror_joints], dtype=int)
 
     # ------------------------------------------------------------ jednostki
     def to_q(self, joints: Mapping[str, float]) -> np.ndarray:
@@ -129,6 +147,10 @@ class RobotKinematics:
         return q
 
     def _grip_to_q(self, k: int, value: float) -> float:
+        if self._grip_lin is not None:
+            closed, opened = self._grip_lin
+            q = closed + min(max(value / 100.0, 0.0), 1.0) * (opened - closed)
+            return float(min(max(q, self.lo[k]), self.hi[k]))
         closed, opened, center = self.gripper_ticks
         if abs(opened - closed) < 1e-9:                    # konfiguracja bez zakresu - liniowo na MJCF
             fraction = min(max(value / 100.0, 0.0), 1.0)
@@ -138,6 +160,9 @@ class RobotKinematics:
         return float(min(max(q, self.lo[k]), self.hi[k]))
 
     def _grip_from_q(self, k: int, q: float) -> float:
+        if self._grip_lin is not None:
+            closed, opened = self._grip_lin
+            return float((q - closed) * 100.0 / (opened - closed)) if opened != closed else 0.0
         closed, opened, center = self.gripper_ticks
         if abs(opened - closed) < 1e-9:
             span = self.hi[k] - self.lo[k]
@@ -160,8 +185,28 @@ class RobotKinematics:
         return self.from_q(np.clip(self.to_q(joints), self.lo, self.hi))
 
     # ------------------------------------------------------------ kinematyka
+    def write_qpos(self, qpos: np.ndarray, q: np.ndarray) -> None:
+        """Wpisuje poze `q` (kolejnosc opisu, jednostki MJCF) do `qpos` modelu razem ze stawami sprzezonymi.
+
+        Kazde miejsce, ktore ustawia poze ramienia wprost (bez dynamiki), idzie tedy:
+        inaczej staw sprzezony rownoscia (druga szczeka A1X) zostawalby w starym miejscu,
+        a solver szarpalby go do pary dopiero w nastepnym kroku.
+        """
+        qpos[self.qadr] = q
+        for k, adr, g in self.mirror:
+            qpos[adr] = g * q[k]
+
+    def stop_qvel(self, qvel: np.ndarray) -> None:
+        """Zeruje predkosci stawow ramienia i stawow sprzezonych - para do `write_qpos`.
+
+        Poza wpisana bez dynamiki ma stac: staw sprzezony z predkoscia z poprzedniego
+        kroku odjezdzalby od wpisanej pozy i przez rownosc ciagnal za soba chwytak.
+        """
+        qvel[self.dadr] = 0.0
+        qvel[self.mirror_dadr] = 0.0
+
     def _apply(self, q: np.ndarray) -> None:
-        self.data.qpos[self.qadr] = q
+        self.write_qpos(self.data.qpos, q)
         mujoco.mj_kinematics(self.model, self.data)
 
     def _base_inv(self) -> np.ndarray:
@@ -206,6 +251,7 @@ class RobotKinematics:
         damping: float = 0.02,
         restarts: int = 6,
         rng: np.random.Generator | None = None,
+        accept: Callable[[Joints], bool] | None = None,
     ) -> IKSolution:
         """Stawy, przy ktorych TCP trafia w `position`, obrocony jak najblizej `rotation`.
 
@@ -228,15 +274,41 @@ class RobotKinematics:
         for q0 in starts:
             q, e_pos, e_rot = self._solve(q0, target, rotation, rot_gain, iters, damping, tol)
             hit = e_pos < tol
-            # Najpierw "trafil w punkt", potem mniejszy blad tego, co jeszcze do poprawienia.
-            key = (not hit, e_rot if hit else e_pos)
+            # A hit the caller refuses (a collision) counts as a miss, so another start can win.
+            if hit and accept is not None and not accept(self.from_q(q)):
+                hit = False
+            # Hits first; among hits the rotation error (when one was asked for), then the pose
+            # nearest the seed, so a reachable point does not come back on the other elbow branch.
+            far = float(np.max(np.abs(q - q_seed)))
+            key = (not hit, round(e_rot, 2) if (hit and rotation is not None) else 0.0, far if hit else e_pos)
             if best is None or key < best[0]:
                 best = (key, q, e_pos, e_rot)
-            if hit and (rotation is None or e_rot < 0.02):
-                break  # lepiej sie nie da - szkoda liczyc dalsze starty
 
         assert best is not None
         _, q, e_pos, e_rot = best
+        return IKSolution(self.from_q(q), float(e_pos), float(e_rot), bool(e_pos < tol))
+
+    def ik_step(
+        self,
+        position: np.ndarray,
+        rotation: np.ndarray | None = None,
+        seed: Mapping[str, float] | None = None,
+        *,
+        iters: int = 30,
+        rot_gain: float = 0.5,
+        tol: float = 1e-3,
+        damping: float = 0.02,
+    ) -> IKSolution:
+        """Jeden start z `seed` (bez restartow i bez `accept`) - do sledzenia punktu w kazdym takcie petli.
+
+        Cel przesuwa sie miedzy taktami o milimetry, wiec rozwiazanie z poprzedniego taktu
+        jest dobrym startem: `_solve` zbiega w kilku iteracjach (~0,8 ms razem z `config_clear`),
+        a pelne `ik` z osmioma startami to kilkadziesiat ms. Wynik zostaje blisko `seed` - bez
+        przeskoku na inna galaz lokcia, ktory moglby wybrac losowy start.
+        """
+        seed = dict(seed) if seed is not None else dict(self.spec.home)
+        q, e_pos, e_rot = self._solve(self.to_q(seed), np.asarray(position, float), rotation, rot_gain, iters,
+                                      damping, tol)
         return IKSolution(self.from_q(q), float(e_pos), float(e_rot), bool(e_pos < tol))
 
     def _solve(

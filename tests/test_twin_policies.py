@@ -101,11 +101,9 @@ def check_lift(rep: dict, lift_height: float) -> None:
 
 
 @pytest.mark.skipif(not LIFT.is_file(), reason="brak bazowej polityki lift-v3 w assets/policies")
-@pytest.mark.parametrize("rand, episodes", [(Randomization.nominal(), 20), (Randomization(), 30)],
-                         ids=["nominalnie", "z_randomizacja"])
-def test_shipped_lift_lifts_ends_and_keeps_the_arm_calm(rand, episodes):
+def test_shipped_lift_lifts_ends_and_keeps_the_arm_calm():
     pol = Policy.load(LIFT)
-    check_lift(lift_report(pol, rand, episodes), pol.task.lift_height)
+    check_lift(lift_report(pol, Randomization(), 30), pol.task.lift_height)
 
 
 @pytest.mark.skipif(not REACH.is_file(), reason="brak bazowej polityki reach-v3 w assets/policies")

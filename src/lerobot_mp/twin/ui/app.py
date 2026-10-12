@@ -15,7 +15,9 @@ zawsze widoczny.
 
 from __future__ import annotations
 
+import html as _html
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -31,15 +33,28 @@ from viser import uplot
 
 from .. import scene as sc
 from ..calib.card import Card
+from ..calib import intrinsics as intr
 from ..calib.intrinsics import Board
 from ..kinematics import inverse, pose
 from ..perception import CubeDetector, CubeTracker, TableMapper
 from ..runtime import Twin
+from ..calib import tags as aptags
+from ..pmd import is_pmd
+from ..tagbody import OPTICAL_AXES, TagBody, learn_layout, locate, observe
+from ...paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
+from .ant_panel import AntTab
+from .specs_panel import add_specs_folder
+from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
+
+#: Gotowe obiektywy z innych kalibracji (pliki tekstowe: K, dystorsja) - do wczytania w kroku 1.
+LENS_DIR = REPO_ROOT / "assets" / "calib"
+#: Co ile sekund panel probuje na nowo otworzyc kamere, ktorej strumien padl albo sie nie otworzyl.
+HEAL_S = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +70,8 @@ GIZMO_MAX_STEP_DEG = 15.0
 GIZMO_IDLE_S = 0.5
 #: Kadr starszy niz tyle [s] nie jest kadrem "na zywo" (zamrozony strumien).
 FRAME_MAX_AGE = 1.0
-#: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje USB
-#: na Shadow ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
+#: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje
+#: przekazania USB ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
 GUIDE_FRAME_LOST = 3.0
 #: Detekcja kostki starsza niz tyle [s] nie trafia do polityki jako nowa.
 CUBE_MAX_AGE = 0.5
@@ -81,8 +96,11 @@ def _skip_unchanged_markdown() -> None:
         return
 
     def fset(self, content: str) -> None:
-        if getattr(self, "_content", None) != content:
+        # Porownanie z tym, co naprawde WYSLANO: `add_markdown` wpisuje `_content` przed pierwszym
+        # wyslaniem, wiec porownanie z `_content` gubilo kazdy staly tekst (pusty w przegladarce).
+        if getattr(self, "_tw_sent", None) != content:
             prop.fset(self, content)
+            self._tw_sent = content
     fset._dedup = True
     GuiMarkdownHandle.content = property(prop.fget, fset)
 
@@ -96,36 +114,13 @@ CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 
                "zolta": ((20, 100, 90), (35, 255, 255), (20, 100, 90), (35, 255, 255))}
 
 
-#: "Jak uzywac" na gorze kazdej zakladki: kolejnosc dzialan w tej zakladce.
+#: "Jak uzywac" na gorze zakladek Mapa, Trening, Polityki i Sim-Real (Ramie, Kamery i Kalibracja prowadza same).
 TAB_HELP = {
-    "Ramie": (
-        "1. **Polaczenie**: Ramie = sim (proba bez sprzetu) albo feetech (SO-101), Port, **Polacz** - przy "
-        "pierwszym polaczeniu bez jazdy do domu.\n"
-        "2. Suwaki pokazuja zmierzone katy. Ruch: zaznacz **Sprzeglo** i przesun jeden suwak o kilka stopni.\n"
-        "3. **Uchwyt koncowki w 3D** - to samo myszka (tez tylko ze sprzeglem).\n"
-        "4. **Pozycja domowa** i **STOP** odbieraja ramie kazdemu; po STOP-ie **Skasuj STOP**.\n"
-        "5. **Stanowisko (stol)**: zmierz blat i polozenie podstawy, **Zastosuj**."),
-    "Kamery": (
-        "1. **Dodaj kamere**: USB (**Szukaj kamer USB**, **Dodaj kamere USB**) albo symulowana "
-        "(przed ramieniem / w miejscu widoku 3D).\n"
-        "2. Tabela: zrodlo, K i poza. Piramidy w 3D: zielona = zaufana, pomaranczowa = niezaufana, "
-        "czerwona = przestawiona, niebieska / szara = nieskalibrowana (symulowana / USB); cienka szara obok "
-        "symulowanej = jej poza z kalibracji.\n"
-        "3. **Wybrana kamera**: podglad, wlacz/wylacz, przesuwanie symulowanej w 3D, usuwanie.\n"
-        "4. Dalej: zakladka **Kalibracja**."),
-    "Kalibracja": (
-        "Kamera symulowana zna swoje K - tylko punkt 2.\n"
-        "1. Kazda prawdziwa kamera - **Intrynsyki**: arkusz tablicy, zmierzony bok kwadratu, **Zbieraj kadry**, "
-        "**Oblicz i zapisz K**.\n"
-        "2. Wszystkie kamery naraz - **Polozenie**: arkusz karty, zmierzony bok taga, karta w szczekach, "
-        "potwierdzenie, **Start fali**, **Zapisz wynik kalibracji**.\n"
-        "3. Czerwona piramida (kamera przestawiona): **Szybka relokalizacja** i **Relokalizuj wybrana**.\n"
-        "4. **Przerwij** konczy fale (ramie wraca do domu) i zbieranie kadrow - bez zapisu."),
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
         "1. Sprawdz pokrycie blatu pod mapa.\n"
         "2. Wybierz **Kolor kostki**, poloz kostke 3 cm przed ramieniem - ma sie pojawic ramka i polozenie.\n"
-        "3. **lift** z kamer (Polityki) potrzebuje wlaczonych **Mapy na zywo** i **Szukaj kostki**."),
+        "3. **lift** i **pickplace** z kamer (Polityki) potrzebuja wlaczonych **Mapy na zywo** i **Szukaj kostki**."),
     "Trening": (
         "1. **Dynamika serw**: polacz ramie, **Identyfikuj** (~20 s ruchu), **Zapisz jako dynamike stanowiska**.\n"
         "2. Najszybciej douczanie: **Start z polityki** reach-v3 / lift-v3, 100-300 iteracji, **Ucz**.\n"
@@ -135,7 +130,8 @@ TAB_HELP = {
     "Polityki": (
         "1. Wybierz polityke - wyniki GPU i CPU pod lista; **Ewaluuj na CPU** nie rusza ramieniem.\n"
         "2. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
-        "3. reach: przeciagaj zolta kulke celu w 3D. lift na prawdziwym ramieniu: kostka z **kamer**.\n"
+        "3. reach: przeciagaj zolta kulke celu w 3D; pickplace: kulka to cel odlozenia (rzutowany na blat). "
+        "lift i pickplace na prawdziwym ramieniu: kostka z **kamer**.\n"
         "4. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
     "Sim-Real": (
         "1. **Kamera**: prawdziwa, z zaufana poza (Kalibracja).\n"
@@ -233,6 +229,239 @@ def smear_mask(mask: np.ndarray, shifts: list[tuple[float, float]]) -> np.ndarra
     return out
 
 
+#: Suwaki stawow: krotka etykieta i pelna nazwa (do podpowiedzi) zamiast nazw z MJCF.
+JOINT_LABELS: dict[str, dict[str, tuple[str, str]]] = {
+    "so101": {"shoulder_pan": ("Podstawa", "Obrot podstawy"), "shoulder_lift": ("Bark", "Bark"),
+              "elbow_flex": ("Lokiec", "Lokiec"), "wrist_flex": ("Nadg. zgiecie", "Nadgarstek - zgiecie"),
+              "wrist_roll": ("Nadg. obrot", "Nadgarstek - obrot"), "gripper": ("Chwytak", "Chwytak")},
+    "a1x": {"arm_joint1": ("J1 Podstawa", "J1 - obrot podstawy"), "arm_joint2": ("J2 Bark", "J2 - bark"),
+            "arm_joint3": ("J3 Lokiec", "J3 - lokiec"), "arm_joint4": ("J4 Nadg. gora", "J4 - nadgarstek gora/dol"),
+            "arm_joint5": ("J5 Nadg. bok", "J5 - nadgarstek na bok"), "arm_joint6": ("J6 Obrot", "J6 - obrot chwytaka"),
+            "gripper": ("Chwytak", "Chwytak")},
+}
+
+#: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
+ARM_OVERRIDES = {
+    "off": lambda who: ("UZBROJ - najpierw Polacz", "gray", viser.Icon.PLUG_CONNECTED_X),
+    "estop": lambda who: ("UZBROJ - najpierw Skasuj STOP", "gray", viser.Icon.HAND_STOP),
+    "busy": lambda who: (f"UZBROJ - ramie ma: {who}", "gray", viser.Icon.LOCK),
+    "homing": lambda who: ("UZBROJ - czekaj, jedzie do domu", "gray", viser.Icon.HOME),
+    "lost": lambda who: ("UZBROJ - petla padla: Rozlacz, Polacz", "gray", viser.Icon.PLUG_CONNECTED_X),
+}
+GIZMO_ON_ARMED = ("Uchwyt 3D: wl. - ciagnij strzalki", "blue", viser.Icon.ARROWS_MOVE)
+GIZMO_ON_IDLE = ("Uchwyt 3D: wl. (bez UZBROJ nie rusza)", "blue", viser.Icon.ARROWS_MOVE)
+GIZMO_OFF = ("Uchwyt 3D: wyl.", "gray", viser.Icon.ARROWS_MOVE)
+GIZMO_ESTOP = ("Uchwyt 3D: STOP aktywny", "gray", viser.Icon.ARROWS_MOVE)
+CAM_ON = ("Wlaczona - kliknij, by wylaczyc", "green", viser.Icon.EYE)
+CAM_OFF = ("Wylaczona - kliknij, by wlaczyc", "gray", viser.Icon.EYE_OFF)
+MOVE_ON = ("Przesuwanie w 3D: wl. - ciagnij uchwyt", "blue", viser.Icon.ARROWS_MOVE)
+MOVE_OFF = ("Przesuwaj w 3D", "gray", viser.Icon.ARROWS_MOVE)
+#: Tyle [s] czeka pytanie na przycisku z potwierdzeniem drugim kliknieciem (`_TwoClick`).
+CONFIRM_S = 8.0
+
+#: Styl panelu: STOP i plakietka stanu przyklejone u gory (widoczne przy kazdym przewinieciu), Skasuj STOP pod nimi,
+#: duze przyciski UZBROJ / Uchwyt 3D, plakietka stanu. Kotwice `<span id="tw-...">` stoja tuz przed
+#: przyciskiem, ktory stylujemy (`div:has(> #tw-x) + div` = nastepny element visera). Selektory
+#: opieraja sie na stalych klasach Mantine i atrybutach data-dock visera 1.1.x; gdy sie nie
+#: dopasuja, STOP zostaje zwyklym czerwonym przyciskiem, ktory dalej dziala.
+PANEL_CSS = """<style>
+div[style*="grid-template-rows"] > div:has(#tw-stop){overflow:clip !important}
+/* siatka panelu rosla do najszerszego elementu (o szerokosc paska przewijania) - obciete prawe krawedzie */
+div[style*="grid-template-rows"]{grid-template-columns:minmax(0,1fr)}
+div:has(> #tw-stop) + div{position:sticky;top:0;z-index:60;background:var(--mantine-color-body);
+  margin-inline:0 !important;padding:6px var(--mantine-spacing-xs) 6px !important;
+  box-shadow:0 8px 10px -8px rgba(0,0,0,.7)}
+div:has(> #tw-stop) + div > button{height:56px !important;font-size:1.35rem;font-weight:800;letter-spacing:.14em}
+div:has(> #tw-stop) + div > button .mantine-Button-section > div{width:26px;height:26px}
+div:has(> #tw-stop) + div > button .mantine-Button-section svg{width:26px;height:26px;position:static;transform:none}
+div:has(> #tw-stop) + div > button .mantine-Button-section[data-position="left"]{margin-right:.6em !important}
+div:has(> .tw-chip){position:sticky;top:68px;z-index:59;background:var(--mantine-color-body);padding-bottom:6px}
+div:has(> #tw-clear) + div:has(> button){position:sticky;top:103px;z-index:58;background:var(--mantine-color-body);
+  margin-inline:0 !important;padding:0 var(--mantine-spacing-xs) 6px !important}
+div:has(> #tw-clear) + div:has(> button) > button{height:40px !important;font-weight:700}
+.tw-chip{display:flex;align-items:center;gap:.6em;margin:0 var(--mantine-spacing-xs);border-radius:4px;
+  padding:.3em .7em;font-size:.8rem}
+.tw-word{font-weight:800;letter-spacing:.06em;font-size:.95rem}
+.tw-meta{opacity:.8;margin-left:auto;text-align:right}
+.tw-off{background:var(--mantine-color-dark-6);color:var(--mantine-color-dark-1)}
+.tw-idle{background:var(--mantine-color-dark-5);color:var(--mantine-color-gray-3)}
+.tw-armed{background:var(--mantine-color-orange-8);color:#fff}
+.tw-busy{background:var(--mantine-color-blue-8);color:#fff}
+.tw-estop{background:var(--mantine-color-red-9);color:#fff}
+.tw-lost{background:var(--mantine-color-red-9);color:#fff}
+.tw-homing{background:var(--mantine-color-orange-8);color:#fff}
+div:has(> #tw-arm) + div > button{height:auto !important;min-height:3.2em;font-size:1.1rem;font-weight:800;
+  letter-spacing:.04em}
+div:has(> #tw-arm) + div > button .mantine-Button-label{white-space:normal;line-height:1.15}
+div:has(> #tw-arm) + div > button:disabled{opacity:.9;font-weight:600}
+div:has(> #tw-3d) + div > button{height:2.6em !important;font-weight:700}
+/* zakladki w jednym rzedzie: nieaktywne tylko ikona (nazwa w dymku), aktywna z nazwa */
+div:has(> .tw-big) + div > button{height:auto !important;min-height:3em;font-size:1.05rem;font-weight:800;
+  letter-spacing:.03em}
+div:has(> .tw-big) + div > button .mantine-Button-label{white-space:normal;line-height:1.15}
+.tw-cams{display:flex;flex-direction:column;gap:4px;margin:0 var(--mantine-spacing-xs);min-width:0}
+.tw-cam{display:flex;flex-wrap:wrap;align-items:center;gap:.3em .5em;padding:.3em .5em;border-radius:4px;min-width:0;
+  background:var(--mantine-color-dark-6);font-size:.8rem}
+.tw-cam b{font-size:.9rem}
+.tw-src{opacity:.6}
+.tw-badges{margin-left:auto;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+.tw-badge{font-weight:800;letter-spacing:.04em;padding:.1em .45em;border-radius:3px;font-size:.72rem;
+  white-space:nowrap}
+.tw-ok{background:var(--mantine-color-green-8);color:#fff}
+.tw-warn{background:var(--mantine-color-orange-8);color:#fff}
+.tw-bad{background:var(--mantine-color-red-9);color:#fff}
+.tw-none{background:var(--mantine-color-dark-4);color:var(--mantine-color-gray-3)}
+.tw-sim{background:var(--mantine-color-blue-8);color:#fff}
+.tw-empty{margin:0 var(--mantine-spacing-xs);padding:.6em .7em;border:1px dashed var(--mantine-color-dark-3);
+  border-radius:4px;font-size:.85rem;opacity:.85}
+[data-dock-strip] [data-dock-tab]{padding:0 .55em !important}
+[data-dock-strip] [data-dock-tab] svg{width:1.35em;height:1.35em}
+[data-dock-strip] [data-dock-tab][aria-selected="false"] > span{display:none !important}
+[data-dock-strip] [data-dock-tab][aria-selected="false"] > div:first-child{margin-right:0 !important;opacity:.9}
+</style>"""
+
+
+def set_if(handle, attr: str, value) -> None:
+    """Zapis wlasciwosci visera tylko przy zmianie (kazdy zapis to komunikat do przegladarki)."""
+    if getattr(handle, attr) != value:
+        setattr(handle, attr, value)
+
+
+class _Toggle:
+    """Wlacznik z przyciskow o semantyce checkboxa visera: `.value` (bool), zapis z kodu wola
+    `on_update` ze zdarzeniem bez `client` (jak checkbox), klik - z prawdziwym zdarzeniem.
+
+    Z przyciskiem `release` zamiar kliku jest BEZWZGLEDNY: `primary` = wlacz, `release` = wylacz,
+    wiec klik na nieodswiezonej stronie nie odwroci zamiaru operatora (UZBROJ). Bez `release`
+    jeden przycisk przelacza (Uchwyt 3D - tylko widok, nic nie rusza).
+    """
+
+    def __init__(self, primary, release=None, on_look=None, off_look=None):
+        self.primary, self.release = primary, release
+        self.on_look, self.off_look = on_look, off_look
+        self._value, self._override, self._cbs = False, None, []
+        self._t_off = 0.0                               # chwila ostatniego wylaczenia (blokada dwukliku)
+        self._lock = threading.RLock()
+        if release is None:
+            primary.on_click(lambda e: self._clicked(e, None))
+        else:
+            primary.on_click(lambda e: self._clicked(e, True))
+            release.on_click(lambda e: self._clicked(e, False))
+        self._apply()
+
+    @property
+    def value(self) -> bool:
+        return self._value
+
+    @value.setter
+    def value(self, v) -> None:
+        v = bool(v)
+        with self._lock:
+            if v == self._value:
+                return                                  # jak viser: bez zmiany nie ma zdarzenia
+            self._value = v
+            if not v:
+                self._t_off = time.monotonic()
+            self._apply()
+        ev = viser.GuiEvent(client=None, client_id=None, target=self.primary)
+        for cb in list(self._cbs):
+            cb(ev)
+
+    def _clicked(self, event, want) -> None:
+        if event.client is None:
+            return
+        with self._lock:
+            want = (not self._value) if want is None else want
+            if want == self._value:                     # nieodswiezona strona: tylko przemaluj
+                self._apply()
+                return
+            if want and self.release is not None and time.monotonic() - self._t_off < 0.5:
+                self._apply()                           # drugi klik dwukliku "rozbroj" trafil w UZBROJ
+                return
+            self._value = want
+            if not want:
+                self._t_off = time.monotonic()
+            self._apply()
+        for cb in list(self._cbs):
+            cb(event)
+
+    def on_update(self, fn):
+        self._cbs.append(fn)
+        return fn
+
+    def set_override(self, look) -> None:
+        """None albo (etykieta, kolor, ikona): przycisk zablokowany z powodem na etykiecie."""
+        with self._lock:
+            if look != self._override:
+                self._override = look
+                self._apply()
+
+    @property
+    def disabled(self) -> bool:
+        return self._override is not None
+
+    @property
+    def hint(self):
+        return self.primary.hint
+
+    def _apply(self) -> None:
+        """Same zapisy wlasciwosci - nigdy nie czyta stanu blizniaka i nigdy nie rzuca (po nim idzie
+        zwolnienie sprzegla albo powiadomienie o STOP-ie)."""
+        try:
+            if self._override is not None:
+                label, color, icon = self._override
+                self._show(self.primary, label, color, icon, disabled=True)
+                if self.release is not None:
+                    set_if(self.release, "visible", False)
+            elif self.release is not None:
+                set_if(self.primary, "visible", not self._value)
+                set_if(self.primary, "disabled", False)
+                set_if(self.release, "visible", self._value)
+                if not self._value:
+                    self._show(self.primary, "UZBROJ", "gray", viser.Icon.LOCK, disabled=False)
+            else:
+                label, color, icon = self.on_look if self._value else self.off_look
+                self._show(self.primary, label, color, icon, disabled=False)
+        except Exception:
+            logger.exception("Przemalowanie wlacznika")
+
+    @staticmethod
+    def _show(b, label, color, icon, disabled) -> None:
+        set_if(b, "visible", True)
+        set_if(b, "label", label)
+        set_if(b, "color", color)
+        set_if(b, "icon", icon)
+        set_if(b, "disabled", disabled)
+
+
+class _TwoClick:
+    """Potwierdzenie drugim kliknieciem: pierwszy klik (`ask` -> False) zapamietuje zamiar `key`,
+    przycisk pokazuje pytanie (`pending`); drugi klik tego samego zamiaru w ciagu CONFIRM_S s -> True.
+    Uplyw czasu, inny zamiar albo `reset` (Polacz, start fali) - od nowa."""
+
+    def __init__(self, window: float = CONFIRM_S):
+        self.window = window
+        self._key, self._t = None, 0.0
+        self._lock = threading.Lock()
+
+    def ask(self, key) -> bool:
+        with self._lock:
+            now = time.monotonic()
+            if self._key == key and now - self._t < self.window:
+                self._key = None
+                return True
+            self._key, self._t = key, now
+            return False
+
+    def pending(self, key=None) -> bool:
+        k, t = self._key, self._t
+        return k is not None and time.monotonic() - t < self.window and (key is None or k == key)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._key = None
+
+
 def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240)) -> np.ndarray:
     img = np.zeros((size[1], size[0], 3), np.uint8)
     cv2.putText(img, text, (20, size[1] // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (230, 60, 60), 2, cv2.LINE_AA)
@@ -240,8 +469,13 @@ def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240))
 
 
 class TwinApp:
-    def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080):
+    def __init__(self, workspace: str | Path | None = None, host: str = "127.0.0.1", port: int = 8080,
+                 stream_port: int | None = None, stream_host: str = "0.0.0.0", startup: dict | None = None):
         self.host = host
+        #: Podglad kamer po HTTP (MJPEG) na osobnym porcie - tylko do odczytu, wiec domyslnie cala siec.
+        self.stream: FrameServer | None = None
+        if stream_port is not None:
+            self.stream = FrameServer(self.stream_frames, host=stream_host, port=stream_port)
         self.ws = Workspace.load(workspace)
         self.ws_path = Path(self.ws.path).resolve() if self.ws.path else None
         self.twin = Twin(self.ws)
@@ -263,7 +497,7 @@ class TwinApp:
         #: (`_motion_mark`, `_take_arm`) - STOP wcisniety w trakcie ladowania polityki ginal.
         self._motion_gen = 0
         self.cube_det = CubeDetector()
-        self.cube_tracker = CubeTracker()
+        self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
         self.last_cube = None
         #: Chwila kadrow ostatniej detekcji podanej polityce - ta sama detekcja nie idzie drugi raz.
         self._cube_used_t = 0.0
@@ -309,13 +543,23 @@ class TwinApp:
         self._runner_backend = ""
         self._frame_seen: dict[str, float] = {}
         self._policy_list: list[dict] = []
+        # Widok zakladki Ramie: klucz ostatniego przemalowania (`_render_arm`), stan suwakow,
+        # ostatnia plakietka stanu - przemalowanie tylko przy zmianie.
+        self._arm_key = None
+        self._sliders_armed = None
+        self._render_lock = threading.RLock()
+        self._heal_t = 0.0                          # ostatnia proba `_heal_cameras`
+        self._chip_last = ""
+        #: Ostatni przewodnik (`_tick_guide`) - linia "Teraz" zakladki Kalibracja bierze z niego kroki 1-3.
+        self._guide_last: gd.Guide | None = None
         t_start = time.monotonic()
 
         # Serwer powstaje DOPIERO teraz, gdy cale ciezkie przygotowanie (scena, torch,
         # stanowisko) jest za nami: viser slucha od chwili utworzenia, a przegladarka
         # polaczona w polowie budowy panelu potrafila zostac z pustym widokiem.
         # Potem od razu panel (lekki), a na koncu siatki ramienia (~350 tys. trojkatow).
-        self.server = viser.ViserServer(host=host, port=port, label="Blizniak SO-101", verbose=False)
+        self.server = viser.ViserServer(host=host, port=port, label=f"Blizniak {self.ws.robot.upper()}",
+                                        verbose=False)
         s = self.server
         s.gui.configure_theme(control_width="large", dark_mode=True, show_logo=False,
                               show_share_button=False, brand_color=(255, 196, 0))
@@ -342,6 +586,8 @@ class TwinApp:
             self._build_policies()
         with tabs.add_tab("Sim-Real", icon=viser.Icon.ARROWS_DIFF):
             self._build_simreal()
+        with tabs.add_tab("Mrowka", icon=viser.Icon.BUG):
+            self.antp = AntTab(self, s.gui)
 
         # Oswietlenie widoku (nie symulacji): rozproszone z nieba (+z) i jedno kierunkowe z gory.
         # three.js bierze kierunek swiatla polkuli z POLOZENIA swiatla (obrot nic nie zmienia):
@@ -360,6 +606,52 @@ class TwinApp:
         self._refresh_cameras()
         self._guard("przewodnik", self._tick_guide)
         logger.info("Panel gotowy w %.1f s", time.monotonic() - t_start)
+        if self.stream is not None:
+            self.stream.start()
+        # SPECS_CONNECT=1: polacz z przekaznikiem od razu (tryb dry - ramie stoi), bez klikania w panelu.
+        opts = dict(startup or {})
+        if opts.get("specs") is None and os.environ.get("SPECS_CONNECT", "").strip().lower() in (
+                "1", "true", "yes", "tak"):
+            opts["specs"] = self.specs.mode.value
+        self._startup(**opts)
+
+    def _startup(self, arm: bool = False, specs: str | None = None, i_know: bool = False,
+                 relay: str | None = None, follow_speed: float | None = None,
+                 hold_off: float | None = None) -> None:
+        """Flagi `lerobot-twin ui --arm --specs ...`: to samo, co klikniecia w panelu, w tej kolejnosci.
+
+        Najpierw ramie (jak "Polacz" z backendem i portem stanowiska, bez domu), potem pola folderu
+        Spectacles, na koncu sterownik okularow. Blad trafia do logu i statusu panelu, panel dziala dalej.
+        """
+        if arm:
+            try:
+                self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
+                st = self.twin.status
+                logger.info("Start: ramie %s (%s), %s", st.backend, "symulacja" if st.simulated else "prawdziwe",
+                            st.state)
+            except Exception as exc:
+                logger.exception("Start: nie polaczono z ramieniem")
+                self.specs.md.content = f"Okulary: nie wystartowaly - nie polaczono z ramieniem: {exc}"
+                return
+            finally:
+                self._guard("ramie", self._render_arm, True)
+        f = self.specs
+        if relay:
+            f.url.value = relay
+        if follow_speed is not None:
+            f.follow_speed.value = float(follow_speed)
+        if hold_off is not None:
+            f.hold_off.value = float(hold_off)
+        if specs is None:
+            return
+        f.mode.value = specs
+        f.real_ok.value = bool(i_know)
+        try:
+            f.start()
+            logger.info("Start: okulary %s, tryb %s", str(f.url.value), specs)
+        except Exception as exc:
+            logger.exception("Start: okulary nie wystartowaly")
+            f.md.content = f"Okulary: blad - {exc}"
 
     # ================================================================ narzedzia
     def _safe(self, fn):
@@ -403,20 +695,35 @@ class TwinApp:
 
     # ================================================================ naglowek
     def _build_header(self) -> None:
+        """Nad zakladkami: STOP przyklejony u gory, Skasuj STOP (tylko przy STOP-ie), plakietka stanu
+        ramienia, wyjatki w statusie, jedna linia przewodnika "Teraz"; uwagi i kroki zwiniete."""
         g = self.server.gui
-        self.status_md = g.add_markdown("**Blizniak** - uruchamianie...")
+        # Styl + kotwica STOP-u; naglowek nigdy nie znika, wiec styl jest zawsze na stronie.
+        self._css = g.add_html(PANEL_CSS + '<span id="tw-stop"></span>')
         stop = g.add_button("STOP", color="red", icon=viser.Icon.HAND_STOP,
                             hint="Zatrzymanie awaryjne, zawsze dostepne: ramie staje w zmierzonej pozie, polityka, "
-                                 "fala i nagranie identyfikacji sie koncza, sprzeglo gasnie. Sciskajacy chwytak "
-                                 "dalej sciska. Ruszyc dalej: Ramie > Skasuj STOP.")
-        # Przewodnik zawsze nad zakladkami: gdzie operator jest w procedurze (docs/TWIN.md,
-        # kroki 0-8) i jedna nastepna akcja. Logika w `guide.py`, tu tylko wyswietlanie.
-        # Widoczne zawsze tylko "Teraz" i uwagi; lista krokow zwinieta - inaczej zabierala
-        # ok. 190 px nad kazda zakladka (Polacz ladowal na dole ekranu 1366x768).
-        with g.add_folder("Przewodnik", expand_by_default=True):
-            self.guide_md = g.add_markdown("")
-            with g.add_folder("Kroki 0-8", expand_by_default=False):
-                self.guide_steps_md = g.add_markdown("")
+                                 "fala i nagranie identyfikacji sie koncza, panel sie rozbraja. Sciskajacy chwytak "
+                                 "dalej sciska. Ruszyc dalej: Skasuj STOP (zolty, pod STOP-em).")
+        self.state_html = g.add_html(self._state_chip_html("off", ""))
+        g.add_html('<span id="tw-clear"></span>')
+        self.clear_btn = g.add_button("Skasuj STOP", color="yellow", icon=viser.Icon.RESTORE, visible=False,
+                                      hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne. "
+                                           "Ramie samo nie rusza - potem UZBROJ, zeby sterowac.")
+        self.status_md = g.add_markdown("", visible=False)
+        # Przewodnik: gdzie operator jest w procedurze (docs/TWIN.md, kroki 0-8) i jedna nastepna
+        # akcja. Logika w `guide.py`, tu tylko wyswietlanie. Widoczna zawsze tylko linia "Teraz";
+        # uwagi i lista krokow zwiniete - rozwiniete zabieraly ok. 190-400 px nad kazda zakladka.
+        self.guide_md = g.add_markdown("")
+        self.guide_folder = g.add_folder("Kroki 0-8", expand_by_default=False)
+        with self.guide_folder:
+            self.guide_notes_md = g.add_markdown("")
+            self.guide_steps_md = g.add_markdown("")
+
+        @self.clear_btn.on_click
+        @self._safe
+        def _(event):
+            self.twin.clear_estop()
+            self._notify(event, "STOP skasowany", "Ramie stoi. UZBROJ, zeby sterowac.")
 
         @stop.on_click
         async def _(event):
@@ -435,9 +742,14 @@ class TwinApp:
                 self.runner.stop("STOP z panelu")
             self.calib_job.stop()
             self.sysid_job.stop()                       # tylko nagranie - dopasowanie jest chronione
+            self.antp.stop("STOP z panelu")             # mrowka ma wlasna petle - staje w pozie startowej
             self.arm_engage.value = False
             self._gizmo_seed = None
-        self._notify(event, "STOP", "Ramie zatrzymane. Skasuj STOP w zakladce Ramie, zeby ruszyc dalej.", error=True)
+        if self._estop_active():
+            self._notify(event, "STOP", "Ramie zatrzymane. Skasuj STOP (zolty, pod STOP-em), zeby ruszyc dalej.",
+                         error=True)
+        else:
+            self._notify(event, "STOP", "Ramie niepolaczone - nic nie jedzie; zadania w tle przerwane.", error=True)
 
     # ------------------------------------------------ kto steruje ramieniem
     def _busy(self, me: str) -> str:
@@ -447,7 +759,7 @@ class TwinApp:
         przejezdzie, a do tego czasu (przebudowa sceny, sprawdzacz kolizji) jest juz w toku.
         """
         if me != jobs.CALIB_OWNER and self.calib_job.running:
-            return "fala kalibracyjna"
+            return "kalibracja kamer"
         if me != jobs.SYSID_OWNER and self.sysid_job.running and "recording" not in self.sysid_job.data:
             return "identyfikacja dynamiki"
         if me != POLICY_OWNER and self.runner is not None and self.runner.status.running:
@@ -521,43 +833,62 @@ class TwinApp:
 
     def _reset_confirmations(self) -> None:
         """Kazdy przejazd prawdziwego ramienia wymaga swiezego potwierdzenia (karta, wolne miejsce)."""
-        for box in (self.calib_confirm, self.dyn_confirm, self.pol_confirm):
+        self.calib_ask.reset()
+        for box in (self.dyn_confirm, self.pol_confirm):
             box.value = False
 
     def _status_text(self) -> str:
+        """Same wyjatki (pusty tekst = nic sie nie dzieje); stan ramienia jest na plakietce."""
         st = self.twin.status
-        arm = (f"{st.backend} - {st.state} - {st.loop_hz:.0f} Hz" + (f", steruje: **{self.twin.owner}**"
-                                                                      if self.twin.owner else "")
-               + (f" - **{st.error}**" if st.error else "") if st.connected
-               else ("rozlaczone" + (f" ({st.error})" if st.error else "")))
-        cams = [c for c in self.ws.cameras if c.enabled]
-        trusted = sum(1 for c in cams if c.trusted)
-        moved = [c.name for c in cams if self.watch.moved(c.name)]
-        cam_txt = f"{len(cams)} ({trusted} skalibr.)" + (f" - **przestawiona: {', '.join(moved)}**" if moved else "")
-        pol = "-"
-        if self.runner is not None:
-            rs = self.runner.status
-            pol = (f"jedzie ({rs.step} krokow, {rs.hz:.0f} Hz)" if rs.running
-                   else f"stoi ({rs.stopped_because})")
-        tr = "-"
+        parts = []
+        moved = [c.name for c in self.ws.cameras if c.enabled and self.watch.moved(c.name)]
+        if moved:
+            parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
+        if self.runner is not None and self.runner.status.running:
+            parts.append(f"Polityka: jedzie ({self.runner.status.step} krokow)")
         if self.train.running:
             p = self.train.progress() or {}
-            tr = f"{p.get('iteration', 0)}/{p.get('iterations', '?')} it., sukces {p.get('success', 0):.0%}"
+            parts.append(f"Trening: {p.get('iteration', 0)}/{p.get('iterations', '?')} it.")
         # Trwale ostrzezenia ramienia (kalibracja chwytaka niezgodna z blizniakiem, chwytak
         # poluzowany po przeciazeniu) - `RobotStatus.warnings`; starszy status ich nie ma.
         warns = [str(w) for w in (getattr(st, "warnings", None) or [])]
-        warn_txt = f" | **Uwaga:** {'; '.join(warns)}" if warns else ""
-        return f"**Ramie:** {arm} | **Kamery:** {cam_txt} | **Polityka:** {pol} | **Trening:** {tr}{warn_txt}"
+        if warns:
+            parts.append(f"**Uwaga:** {'; '.join(warns)}")
+        if st.connected and not self._gripper_drivable():
+            parts.append("**chwytak wylaczony** (a1x.gripper_over_xcan: false) - rozkazy chwytaka odrzucane")
+        elif st.connected and self._gripper_xcan_trial():
+            measured = getattr(self.twin.backend, "gripper_measured", None)
+            blind = measured is not None and not measured()
+            parts.append("chwytak przez XCAN (zmierzone 2026-09-27)"
+                         + ("; bez sprzezenia panel pokazuje rozkaz" if blind else ""))
+        if st.error:
+            parts.append(f"**blad ramienia:** {st.error}")
+        return " | ".join(parts)
+
+    def _gripper_xcan_trial(self) -> bool:
+        """A1X przez XCAN z wlaczona proba chwytaka. Backend bez tej metody: nie."""
+        fn = getattr(self.twin.backend, "gripper_xcan_trial", None)
+        try:
+            return False if fn is None else bool(fn())
+        except Exception:                          # pragma: no cover - linia stanu nie moze wysypac panelu
+            return False
+
+    def _gripper_drivable(self) -> bool:
+        """Czy rozkaz chwytaka dochodzi do ramienia (A1X przez XCAN: nie). Backend bez tej metody: tak."""
+        fn = getattr(self.twin.backend, "gripper_drivable", None)
+        try:
+            return True if fn is None else bool(fn())
+        except Exception:                          # pragma: no cover - linia stanu nie moze wysypac panelu
+            return True
 
     # ------------------------------------------------------------ przewodnik
     def _guide_snapshot(self) -> gd.GuideSnapshot:
         """Stan panelu dla przewodnika - same odczyty z pamieci (bez dysku, renderu i kamer)."""
         st = self.twin.status
         connected = bool(st.connected)
-        backend = st.backend if connected else str(self.arm_backend.value)
+        backend = st.backend if connected else self._preset_backend()
         simulated = bool(st.simulated) if connected else backend == "sim"
-        safety = self.twin.safety_state
-        estop = safety is not None and getattr(safety, "value", safety) == "ESTOP"
+        estop = self._estop_active()
         now = time.monotonic()
         with self.frame_lock:
             live = set(self.frames)
@@ -581,7 +912,7 @@ class TwinApp:
             # RUSZYLA (`_start_policy`), nie pod obecnym: stary runner z sukcesem w sim po
             # Polacz feetech zaliczal "lift z kamer" prawdziwemu ramieniu, ktore nie drgnelo.
             self._ran.setdefault(self._runner_backend, set()).add(runner.task.name + ("-kamery" if vision else ""))
-        jobs_on = (("fala kalibracyjna", self.calib_job.running), ("intrynsyki", self.intr_job.running),
+        jobs_on = (("kalibracja kamer", self.calib_job.running), ("pomiar obiektywu", self.intr_job.running),
                    ("identyfikacja", self.sysid_job.running), ("trening", self.train.running),
                    ("ewaluacja", self.eval_job.running))
         dyn = self.ws.dynamics
@@ -594,70 +925,195 @@ class TwinApp:
             dyn_result_useful=bool(self.sysid_job.data.get("useful", True)),
             policies=tuple((p["name"], p["task"], bool(p.get("bundled"))) for p in self._policy_list),
             jobs=tuple(n for n, on in jobs_on if on), policy_running=runner.task.name if running else "",
-            policy_from_cameras=running and vision, calib_result_pending=bool(self.calib_apply.visible),
+            policy_from_cameras=running and vision, calib_result_pending=self._calib_pending,
             dyn_result_pending=bool(self.dyn_keep.visible),
             calib_progress=float(self.calib_job.progress) if self.calib_job.running else None,
             ran=frozenset(self._ran.get(backend, ()) if connected else ()),
             intr_camera=str(self.intr_job.data.get("camera", "")) if self.intr_job.running else "")
 
     def _tick_guide(self) -> None:
+        note = getattr(self.twin, "home_note", "")
+        if note and self.home_md.content != f"**{note}**":
+            self._msg(self.home_md, f"**{note}**")
         # Przypisanie tej samej tresci nic nie wysyla (`_skip_unchanged_markdown`).
         guide = gd.build(self._guide_snapshot())
-        self.guide_md.content = gd.render_head(guide)
+        self._guide_last = guide
+        self.guide_md.content = gd.render_now(guide)
+        notes = gd.render_notes(guide)
+        self.guide_notes_md.content = notes
         self.guide_steps_md.content = gd.render_steps(guide)
+        n = notes.count("**Uwaga:**")
+        set_if(self.guide_folder, "label", f"Uwagi ({n}) i kroki 0-8" if n else "Kroki 0-8")
 
     # ================================================================== ramie
     def _build_arm(self) -> None:
+        """Zakladka Ramie jak pilot jog: rozlaczone - zestaw i Polacz; polaczone - duzy UZBROJ,
+        Uchwyt 3D, Dom, Ustaw dom = tu, predkosc, suwaki stawow, Rozlacz; stol zwiniety na dole."""
         g = self.server.gui
-        self._tab_help("Ramie")
-        with g.add_folder("Polaczenie"):
-            self.arm_backend = g.add_dropdown("Ramie", ("sim", "feetech", "lerobot"), initial_value=self.ws.backend
-                                              if self.ws.backend in ("sim", "feetech", "lerobot") else "sim",
-                                              hint="sim - blizniak jest ramieniem (proba bez sprzetu); feetech - "
-                                                   "serwa SO-101 wprost przez port (do blizniaka ten); lerobot - "
-                                                   "przez kalibracje LeRobota (katy przesuniete). Dziala po Polacz.")
-            self.arm_port = g.add_text("Port", self.ws.port or "",
-                                       hint="Port dla feetech/lerobot: COMx (Windows), /dev/ttyACM0 (Linux) albo "
-                                            "socket://adres:5555 (most lerobot-mp-bridge). Dla sim nieuzywany.")
-            self.ports_md = g.add_markdown("")
-            scan = g.add_button("Wykryj porty", icon=viser.Icon.SEARCH,
-                                hint="Wypisuje porty USB-serial; pierwsza przejsciowke CH34x (WCH, typowa w "
-                                     "plytkach serw SO-101) wpisuje w pole Port, gdy jest puste. Niczym nie rusza.")
-            self.arm_home_on_connect = g.add_checkbox(
-                "Po polaczeniu jedz do pozycji domowej", False,
-                hint="Zaznaczone: zaraz po Polacz ramie jedzie rampa do domu. Przy pierwszym polaczeniu "
-                     "prawdziwego ramienia zostaw odznaczone - ramie zostaje tam, gdzie stoi.")
+        presets = self._arm_presets()
+        labels = tuple(presets)
+        current = next((k for k, (b, p) in presets.items()
+                        if b == self.ws.backend and (p is None or p == (self.ws.port or p))), labels[0])
+        # --- rozlaczone: zestaw, port, Polacz (folder bez etykiety = bez ramki)
+        self.conn_box = g.add_folder(None)
+        with self.conn_box:
+            self.arm_backend = g.add_dropdown("Ramie", labels, initial_value=current,
+                                              hint="Gotowe zestawy dla ramienia tego stanowiska: symulacja albo "
+                                                   "sprzet z domyslnym laczem (A1X: xcan na macOS, can0 na Linuksie, "
+                                                   "PCAN na Windows; SO-101: feetech przez port). Zestaw wpisuje "
+                                                   "Port, ktory mozna potem poprawic. Dziala po Polacz.")
+            self.arm_port = g.add_text("Port", self.ws.port or (presets[current][1] or ""),
+                                       hint="feetech/lerobot: COMx, /dev/ttyACM0 albo socket://adres:5555 "
+                                            "(`lerobot-twin check` wypisuje porty). a1x: can0 (Linux), xcan "
+                                            "albo xcan:6 (macOS), PCAN_USBBUS1 (Windows); pusty = domyslny. "
+                                            "sim: nieuzywany.")
             connect = g.add_button("Polacz", icon=viser.Icon.PLUG_CONNECTED, color="green",
-                                   hint="Konczy wszystko, co jezdzi (polityka, fala, nagranie identyfikacji), "
-                                        "kasuje potwierdzenia i laczy wybrane ramie; bez jazdy do domu ramie "
-                                        "stoi. Sciskajacy chwytak sciska dalej, gdy backend zna cel serwa (sim; "
-                                        "inaczej pierwszy ruch go puszcza). Backend i port zapisuje w stanowisku.")
-            disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X,
-                                      hint="Konczy polityke, fale i nagranie identyfikacji, odbiera ramie "
-                                           "wszystkim i rozlacza backend. Potwierdzenia trzeba potem dac od nowa.")
+                                   hint="Laczy wybrane ramie BEZ ruchu: ramie zostaje tam, gdzie stoi, suwaki "
+                                        "pokazuja zmierzona poze. Konczy wszystko, co jezdzi, i kasuje "
+                                        "potwierdzenia. Backend i port zapisuje w stanowisku.")
 
-        @scan.on_click
+        @self.arm_backend.on_update
+        def _(event):
+            port = presets.get(self.arm_backend.value, (None, None))[1]
+            if port is not None:
+                self.arm_port.value = port
+            self._render_arm(force=True)
+
+        # --- polaczone: sterowanie
+        self.ctl_box = g.add_folder(None)
+        with self.ctl_box:
+            g.add_html('<span id="tw-arm"></span>')
+            arm_on = g.add_button("UZBROJ", color="gray", icon=viser.Icon.LOCK,
+                                  hint="Uzbrojony panel RUSZA ramieniem: suwaki i Uchwyt 3D ustawiaja cel od "
+                                       "ZMIERZONEJ pozy. Odmowa przy STOP-ie albo gdy ramie ma polityka, fala, "
+                                       "identyfikacja; STOP, Dom i Polacz rozbrajaja.")
+            arm_off = g.add_button("UZBROJONE - kliknij, by rozbroic", color="orange", icon=viser.Icon.BOLT,
+                                   visible=False,
+                                   hint="Rozbraja panel: ramie trzyma poze, suwaki znow pokazuja zmierzone katy.")
+            self.arm_engage = _Toggle(arm_on, arm_off)
+            g.add_html('<span id="tw-3d"></span>')
+            gz_btn = g.add_button("Uchwyt 3D: wyl.", color="gray", icon=viser.Icon.ARROWS_MOVE,
+                                  hint="Strzalki na koncowce w 3D. Uzbrojony panel: przeciaganie rusza "
+                                       "ramieniem (IK, sama pozycja); skok stawu > 15 st. jest odrzucany - "
+                                       "ciagnij malymi krokami. Klik = pokaz/ukryj.")
+            self.tcp_gizmo_on = _Toggle(gz_btn, on_look=GIZMO_ON_IDLE, off_look=GIZMO_OFF)
+            self.tcp_md = g.add_markdown("", visible=False)
+            self.home_btn = g.add_button("Dom", icon=viser.Icon.HOME, color="orange",
+                                         hint="Jedzie do pozycji domowej stanowiska (Ustaw dom = tu) albo z modelu - "
+                                              "RUSZA ramieniem, odbiera je kazdemu. A1X: etapami (lokiec, "
+                                              "nadgarstek, bark), kazdy etap sprawdzony na kolizje w blizniaku; "
+                                              "kolizja = ramie stoi, powod nizej. Sciskajacy chwytak zostaje "
+                                              "zamkniety. Przy STOP-ie nie rusza.")
+            self.home_md = g.add_markdown("", visible=False)
+            self.set_home_btn = g.add_button("Ustaw dom = tu", icon=viser.Icon.MAP_PIN, color="gray",
+                                             hint="Zmierzona poza, dokladnie ta, staje sie domem tego stanowiska "
+                                                  "(zapis w twin.json); limity poszerzaja sie, zeby ja objac. Zrob "
+                                                  "to w pozie, w ktorej ramie naprawde spoczywa (zlozone na "
+                                                  "podstawie). Chwytak domu = ZAMKNIETY: najpierw zamknij szczeki "
+                                                  "(puste) naprawde, bo A1X bez pomiaru chwytaka przyjmuje od tej "
+                                                  "chwili, ze sa zamkniete. Niczym nie rusza.")
+            top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
+            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
+                                          hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "
+                                               "w jog_a1x). Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
+                                               "rampa nadzoru.")
+            spec = self.ws.spec()
+            kin = self.twin.scene.kin
+            names = JOINT_LABELS.get(self.ws.robot, {})
+            self.sliders = {}
+            self.slider_range = {}
+            order = [n for n in spec.joints if n != spec.gripper] + ([spec.gripper] if spec.gripper in spec.joints
+                                                                      else [])
+            for name in order:
+                k = list(spec.joints).index(name)
+                if name == spec.gripper:
+                    g.add_divider()
+                    lo, hi = 0.0, 100.0
+                    tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (SO-101: tiki serwa jak w "
+                           "feetech; A1X: skok palca 0..5 cm). Uzbrojony panel ustawia cel. Chwytak, ktory po "
+                           "STOP-ie dalej sciska: Skasuj STOP, UZBROJ, potem ten suwak.")
+                else:
+                    # Zaokraglone do 0,5 st. do srodka zakresu MJCF - ladne liczby na suwaku, zadnej poza zakresem.
+                    lo = float(np.ceil(np.degrees(kin.lo[k]) * 2) / 2)
+                    hi = float(np.floor(np.degrees(kin.hi[k]) * 2) / 2)
+                    tip = (f"Kat stawu [st.], suwak {lo:g}..{hi:g} (zakres modelu). Uzbrojony panel ustawia cel - "
+                           f"nadzor przycina go do limitow z konfiguracji i EEPROM serwa; rozbrojony pokazuje "
+                           f"zmierzony kat.")
+                label, full = names.get(name, (name, name))
+                s = g.add_slider(label, lo, hi, 0.5, float(np.clip(spec.home.get(name, 0.0), lo, hi)),
+                                 hint=f"{full} ({name}). {tip}")
+                self.sliders[name] = s
+                self.slider_range[name] = (lo, hi)
+
+                def on_slide(event, name=name):
+                    if event.client is None or not self.arm_engage.value:
+                        return                          # zmiana z petli (sprzezenie zwrotne) albo bez uzbrojenia
+                    self._gizmo_seed = None             # cel zmienil sie obok uchwytu TCP
+                    try:
+                        self.twin.set_target({name: float(self.sliders[name].value)}, owner=PANEL_OWNER)
+                    except RuntimeError:                # ramie odebrane panelowi w miedzyczasie
+                        self.arm_engage.value = False
+                s.on_update(on_slide)
+
+            disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X, color="gray",
+                                      hint="Konczy polityke, fale i identyfikacje, odbiera ramie wszystkim i "
+                                           "rozlacza backend. Silnikow nie zwalnia - ramie trzyma poze. "
+                                           "Zmiana zestawu: Rozlacz, potem Polacz.")
+            # Galaxea A1X: sekwencja wlaczenia FF 1-5-6 tylko recznie (zasilone od nowa ramie slucha od
+            # razu, a FF 5 na chwile puszcza silniki). Widoczne tylko z polaczonym backendem a1x.
+            self.a1x_folder = g.add_folder("Silniki A1X", expand_by_default=False)
+            with self.a1x_folder:
+                self.a1x_confirm = g.add_checkbox(
+                    "Prawdziwe ramie: rozumiem, ze silniki na chwile puszcza", False,
+                    hint="Potwierdzenie przed kazdym Wlacz silniki A1X (gasnie po uzyciu). FF 5 na ulamek sekundy "
+                         "zwalnia silniki - ramie bez hamulcow moze lekko opasc; podeprzyj je.")
+                a1x_enable = g.add_button("Wlacz silniki A1X (FF 1-5-6)", icon=viser.Icon.BOLT,
+                                          hint="Tylko gdy ramie zglasza sie, ale nie slucha rozkazow (blad 'gluche "
+                                               "na 0x050'). Wysyla FF 1 -> 5 -> 6 z celem = zmierzona poza przed, "
+                                               "miedzy i po kazdym kodzie. Odmowa, gdy panel jest uzbrojony albo "
+                                               "ramie ma polityka / fala / identyfikacja.")
+                self.a1x_md = g.add_markdown("")
+
+        def show_a1x() -> None:
+            on = self.twin.status.connected and self.twin.status.backend == "a1x"
+            self.a1x_folder.visible = on
+            if not on:
+                self.a1x_confirm.value = False
+
+        show_a1x()
+
+        @a1x_enable.on_click
         @self._safe
         def _(event):
-            import serial.tools.list_ports as lp
-            lines = []
-            for p in lp.comports():
-                if p.vid is None:
-                    continue
-                # 0x1A86 = WCH (CH340/CH343/CH9102) - na nim jest typowa plytka serw SO-101, ale
-                # nie jedyna mozliwa; inne przejsciowki wpisuje sie recznie.
-                tag = " **(WCH CH34x - typowa dla SO-101)**" if p.vid == 0x1A86 else ""
-                lines.append(f"- `{p.device}` {p.description}{tag}")
-                if p.vid == 0x1A86 and not self.arm_port.value:
-                    self.arm_port.value = p.device
-            self.ports_md.content = "\n".join(lines) or (
-                "Brak przejsciowek USB-serial. Na maszynie wirtualnej/zdalnej (np. Shadow): przepusc urzadzenie "
-                "USB w kliencie albo uzyj mostu `lerobot-mp-bridge` i portu `socket://adres:5555`.")
+            st, b = self.twin.status, self.twin.backend
+            if not (st.connected and st.backend == "a1x") or not hasattr(b, "enable"):
+                raise RuntimeError("wlaczenie silnikow tylko dla polaczonego ramienia a1x")
+            if self.arm_engage.value:
+                raise RuntimeError("najpierw rozbroj panel (kliknij UZBROJONE)")
+            busy = self._busy(PANEL_OWNER)
+            if busy:
+                raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
+            if not self.a1x_confirm.value:
+                raise RuntimeError("zaznacz potwierdzenie, ze silniki na chwile puszcza")
+            self.a1x_confirm.value = False
+            self.a1x_md.content = "wlaczanie: FF 1 -> 5 -> 6, cel = zmierzona poza..."
+
+            def work():
+                try:
+                    self.a1x_md.content = f"**Silniki A1X:** {b.enable()}"
+                except Exception as exc:                  # odmowa backendu (cisza na laczu, FF 2)
+                    logger.exception("Wlaczanie silnikow A1X")
+                    self.a1x_md.content = f"**Silniki A1X:** odmowa - {exc}"
+            threading.Thread(target=work, name="a1x-wlacz", daemon=True).start()
 
         @connect.on_click
         @self._safe
         def _(event):
-            self._connect(self.arm_backend.value, self.arm_port.value.strip() or None, self.arm_home_on_connect.value)
+            try:
+                self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
+            finally:
+                show_a1x()
+                self._render_arm(force=True)
             self._notify(event, "Polaczono", f"{self.twin.status.backend}: {self.twin.status.state}")
 
         @disconnect.on_click
@@ -666,76 +1122,153 @@ class TwinApp:
             self._stop_motion("rozlaczenie")
             self._reset_confirmations()
             self.twin.disconnect()
+            show_a1x()
+            self._render_arm(force=True)
 
-        with g.add_folder("Sterowanie"):
-            self.arm_engage = g.add_checkbox("Sprzeglo: panel steruje ramieniem", False,
-                                             hint="Panel bierze ramie: suwaki i uchwyt koncowki RUSZAJA ramieniem. "
-                                                  "Odmowa przy aktywnym STOP-ie albo gdy ramie ma polityka, fala albo "
-                                                  "identyfikacja; STOP, Dom i Polacz je gasza. Bez sprzegla suwaki "
-                                                  "tylko pokazuja katy.")
-            home = g.add_button("Pozycja domowa", icon=viser.Icon.HOME,
-                                hint="Odbiera ramie kazdemu (panel, polityka, fala, identyfikacja) i jedzie rampa "
-                                     "do domu - RUSZA ramieniem. Sciskajacy chwytak zostaje zamkniety. Przy "
-                                     "aktywnym STOP-ie nie rusza - najpierw Skasuj STOP.")
-            clear = g.add_button("Skasuj STOP", icon=viser.Icon.RESTORE,
-                                 hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne; ramie "
-                                      "samo nie rusza, ale nastepne polecenia juz przejda.")
-            self.tcp_gizmo_on = g.add_checkbox("Uchwyt koncowki w 3D", False,
-                                               hint="Strzalki na koncowce w 3D. Ze sprzeglem przeciaganie rusza "
-                                                    "ramieniem (IK, sama pozycja); skok stawu > 15 st. jest "
-                                                    "odrzucany - ciagnij malymi krokami.")
-            self.tcp_md = g.add_markdown("")
-            spec = self.ws.spec()
-            kin = self.twin.scene.kin
-            self.sliders = {}
-            self.slider_range = {}
-            for k, name in enumerate(spec.joints):
-                if name == spec.gripper:
-                    lo, hi = 0.0, 100.0
-                else:
-                    # Zaokraglone do 0,5 st. do srodka zakresu MJCF - ladne liczby na suwaku, zadnej poza zakresem.
-                    lo = float(np.ceil(np.degrees(kin.lo[k]) * 2) / 2)
-                    hi = float(np.floor(np.degrees(kin.hi[k]) * 2) / 2)
-                if name == spec.gripper:
-                    tip = ("Chwytak 0..100: 0 = szczeki zamkniete, 100 = otwarte (tiki serwa jak w feetech). Ze "
-                           "sprzeglem ustawia cel. Chwytak, ktory po STOP-ie dalej sciska: Skasuj STOP, "
-                           "sprzeglo, potem ten suwak (przy STOP-ie sprzeglo sie nie wlacza).")
-                else:
-                    tip = (f"Kat stawu [st.], suwak {lo:g}..{hi:g} (zakres modelu). Ze sprzeglem ustawia cel - "
-                           f"nadzor przycina go do limitow z konfiguracji i EEPROM serwa, wiec ostatnie stopnie "
-                           f"suwaka moga nic nie dawac; bez sprzegla pokazuje zmierzony kat.")
-                s = g.add_slider(name, lo, hi, 0.5, float(np.clip(spec.home.get(name, 0.0), lo, hi)), hint=tip)
-                self.sliders[name] = s
-                self.slider_range[name] = (lo, hi)
+        # --- stol (zawsze, zwiniete)
+        with g.add_folder("Stanowisko (stol)", expand_by_default=False):
+            self._build_table()
 
-                def on_slide(event, name=name):
-                    if event.client is None or not self.arm_engage.value:
-                        return                          # zmiana z petli (sprzezenie zwrotne) albo bez sprzegla
-                    self._gizmo_seed = None             # cel zmienil sie obok uchwytu TCP
-                    try:
-                        self.twin.set_target({name: float(self.sliders[name].value)}, owner=PANEL_OWNER)
-                    except RuntimeError:                # ramie odebrane panelowi w miedzyczasie
-                        self.arm_engage.value = False
-                s.on_update(on_slide)
+        self.twin.set_speed(self.arm_speed.value)
+
+        @self.arm_speed.on_update
+        def _(event):
+            self.twin.set_speed(float(self.arm_speed.value))
 
         @self.arm_engage.on_update
         def _(event):
             self._on_engage(event)
 
-        @home.on_click
+        @self.arm_engage.on_update
+        def _(event):
+            self._render_arm()                          # suwaki, uchwyt, plakietka od razu po zmianie
+
+        @self.tcp_gizmo_on.on_update
+        def _(event):
+            self._render_arm()
+
+        @self.home_btn.on_click
         @self._safe
         def _(event):
+            self._msg(self.home_md, "")
             self._go_home()
 
-        @clear.on_click
+        @self.set_home_btn.on_click
+        @self._safe
         def _(event):
-            self.twin.clear_estop()
+            h = self.twin.set_home_here()
+            self._notify(event, "Dom zapisany", ", ".join(f"{names.get(k, (k, k))[0]} {v:.1f}" for k, v in h.items()))
 
-        self._build_table()
+        self._render_arm(force=True)
+
+    # ---------------------------------------------------------- widok Ramie
+    @staticmethod
+    def _msg(md, text: str) -> None:
+        """Markdown widoczny tylko, gdy ma tresc."""
+        md.content = text
+        set_if(md, "visible", bool(text))
+
+    def _estop_active(self) -> bool:
+        s = self.twin.safety_state                      # None bez nadzoru (rozlaczone)
+        return s is not None and getattr(s, "value", s) == "ESTOP"
+
+    def _arm_mode(self) -> tuple[str, str]:
+        """(tryb, kto): jedno zrodlo dla plakietki i przycisku UZBROJ."""
+        if self._estop_active():
+            return "estop", ""
+        if not self.twin.connected:
+            # Petla padla (blad lacza), a backend wciaz otwarty: Rozlacz musi byc dostepne.
+            return ("lost" if self.twin.backend is not None else "off"), ""
+        o = self.twin.owner
+        if o is not None and o != PANEL_OWNER:
+            return "busy", str(o)
+        st = self.twin.safety_state
+        if o is None and getattr(st, "value", st) in ("HOMING", "STARTING"):
+            return "homing", ""                          # rampa do domu bez wlasciciela (SO-101)
+        return ("armed" if self.arm_engage.value else "idle"), ""
+
+    def _render_arm(self, force: bool = False) -> None:
+        """Przemalowanie zakladki Ramie do stanu blizniaka (tylko przy zmianie klucza; same zapisy
+        wlasciwosci, zadnych ruchow). Wolane z petli (30 Hz), po Polacz/Rozlacz i po zmianie wlacznikow."""
+        with self._render_lock:
+            mode, who = self._arm_mode()
+            estop = mode == "estop"
+            conn = self.twin.connected or self.twin.backend is not None      # Rozlacz takze po padnieciu petli
+            armed = self.arm_engage.value
+            key = (mode, who, armed, conn, self.tcp_gizmo_on.value, self._preset_backend(),
+                   bool(self.tcp_md.content), bool(self.home_md.content), self.twin.status.backend if conn else None)
+            if key == self._arm_key and not force:
+                return
+            self._arm_key = key
+            set_if(self.conn_box, "visible", not conn)
+            set_if(self.ctl_box, "visible", conn)
+            set_if(self.arm_port, "visible", self._preset_backend() != "sim")
+            set_if(self.clear_btn, "visible", estop)
+            look = ARM_OVERRIDES.get(mode)
+            self.arm_engage.set_override(look(who) if look else None)
+            self.tcp_gizmo_on.on_look = GIZMO_ON_ARMED if armed else GIZMO_ON_IDLE
+            self.tcp_gizmo_on.set_override(GIZMO_ESTOP if estop else None)
+            self.tcp_gizmo_on._apply()
+            set_if(self.home_btn, "disabled", not conn)     # Dom takze pod STOP-em: sam go kasuje
+            set_if(self.set_home_btn, "disabled", not conn)
+            if armed != self._sliders_armed:
+                self._sliders_armed = armed
+                for s in self.sliders.values():
+                    set_if(s, "disabled", not armed)
+            for md in (self.tcp_md, self.home_md):
+                set_if(md, "visible", bool(md.content))
+            self._render_chip(mode, who)
+
+    def _state_chip_html(self, mode: str, who: str) -> str:
+        word = {"off": "ROZLACZONE", "idle": "ROZBROJONE", "armed": "UZBROJONE", "homing": "JEDZIE DO DOMU",
+                "busy": f"STERUJE: {who.upper()}", "estop": "STOP AKTYWNY", "lost": "PETLA PADLA"}[mode]
+        st = self.twin.status
+        if mode == "lost":
+            meta = (str(st.error) or "blad lacza") + " - Rozlacz"
+        elif st.connected:
+            backend = "symulacja" if st.backend == "sim" else str(st.backend)
+            port = f" {self.ws.port}" if self.ws.port and st.backend != "sim" else ""
+            meta = f"{backend}{port} - {round(float(st.loop_hz or 0.0) / 5) * 5:.0f} Hz"
+        else:
+            meta = "wybierz zestaw i Polacz"
+        return (f'<div class="tw-chip tw-{mode}"><span class="tw-word">{_html.escape(word)}</span>'
+                f'<span class="tw-meta">{_html.escape(meta)}</span></div>')
+
+    def _render_chip(self, mode: str, who: str) -> None:
+        s = self._state_chip_html(mode, who)
+        if s != self._chip_last:
+            self._chip_last = s
+            self.state_html.content = s
+
+    def _arm_presets(self) -> dict[str, tuple[str, str | None]]:
+        """Zestawy Ramie -> (backend, port albo None = z pola). Pierwszy = domyslny dla tego systemu."""
+        import platform
+        sim = {"symulacja (blizniak jest ramieniem)": ("sim", "")}
+        if self.ws.robot == "a1x":
+            can = {"Galaxea A1X po xcan (macOS)": ("a1x", "xcan"),
+                   "Galaxea A1X po can0 (Linux)": ("a1x", "can0"),
+                   "Galaxea A1X po PCAN (Windows)": ("a1x", "PCAN_USBBUS1")}
+            first = {"Darwin": "Galaxea A1X po xcan (macOS)", "Linux": "Galaxea A1X po can0 (Linux)",
+                     "Windows": "Galaxea A1X po PCAN (Windows)"}.get(platform.system())
+            ordered = {}
+            if first:
+                ordered[first] = can[first]
+            ordered.update(can)
+            ordered.update(sim)
+            return ordered
+        return {"SO-101 przez port (feetech)": ("feetech", None), **sim,
+                "SO-101 przez LeRobota (lerobot)": ("lerobot", None)}
+
+    def _preset_backend(self) -> str:
+        return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]
 
     def _go_home(self) -> None:
-        """Pozycja domowa: odbiera ramie kazdemu (panel, polityka, fala) - takze startowi w toku."""
+        """Pozycja domowa: odbiera ramie kazdemu (panel, polityka, fala) - takze startowi w toku.
+        Pod STOP-em najpierw go kasuje: po zatrzymaniu zawsze ma byc jedno klikniecie do domu
+        (ramie bez hamulcow w gorze - operator nie ma szukac zoltego przycisku)."""
         self._motion_gen += 1
+        if self._estop_active():
+            self.twin.clear_estop()
         self.twin.home()
         self._gizmo_seed = None
 
@@ -773,7 +1306,7 @@ class TwinApp:
             self.twin.claim(PANEL_OWNER, preempt=self._panel_preempted)
         except RuntimeError as exc:
             self.arm_engage.value = False
-            self._notify(event, "Sprzeglo", f"{exc} - zatrzymaj je najpierw.", error=True)
+            self._notify(event, "UZBROJ", f"{exc} - zatrzymaj je najpierw.", error=True)
             return
         self._gizmo_seed = None
         self._gizmo_t = 0.0                         # uchwyt TCP od razu na koncowce
@@ -781,30 +1314,31 @@ class TwinApp:
         # (pod blokada wlasnosci w `Twin`); odebrane (STOP, Dom) miedzy claim a sprzeglem - odmowa.
         if not self.twin.set_engaged(True, owner=PANEL_OWNER):
             self.arm_engage.value = False
+            if self._estop_active():
+                self._notify(event, "UZBROJ", "STOP aktywny - najpierw Skasuj STOP.", error=True)
 
     def _build_table(self) -> None:
-        """Stol i uchwyt TCP w 3D."""
+        """Stol (zwiniety folder na dole zakladki Ramie) i uchwyt TCP w 3D."""
         g = self.server.gui
-        with g.add_folder("Stanowisko (stol)", expand_by_default=False):
-            t = self.ws.table_obj()
-            g.add_markdown("Blat i to, gdzie na nim stoi podstawa - zmierz na biurku. Kamery sa "
-                           "skalibrowane wzgledem PODSTAWY, wiec zmiana stolu ich nie rusza.")
-            self.tab_size = g.add_vector2("Blat: szerokosc, glebokosc [m]", tuple(t.size), min=(0.2, 0.2),
-                                          max=(3.0, 3.0), step=0.01,
-                                          hint="Wymiary blatu [m] (0,2-3,0), zmierz na biurku. Dziala po Zastosuj.")
-            self.tab_base = g.add_vector2("Podstawa od srodka blatu [m]", tuple(t.base_xy), min=(-1.5, -1.5),
-                                          max=(1.5, 1.5), step=0.005,
-                                          hint="Gdzie stoi podstawa ramienia wzgledem srodka blatu, x i y [m]. "
-                                               "Dziala po Zastosuj.")
-            self.tab_yaw = g.add_number("Obrot podstawy [st.]", float(np.degrees(t.base_yaw)), min=-180.0,
-                                        max=180.0, step=1.0,
-                                        hint="Obrot podstawy wokol osi pionowej [st.], -180..180. Dziala po Zastosuj.")
-            self.tab_h = g.add_number("Wysokosc blatu nad podloga [m]", float(t.height), min=0.3, max=1.5,
-                                      step=0.01, hint="Wysokosc blatu [m] (0,3-1,5); zle ustawiona psuje Sim-Real. "
-                                                      "Dziala po Zastosuj.")
-            apply_table = g.add_button("Zastosuj", icon=viser.Icon.CHECK,
-                                       hint="Zapisuje stol i przebudowuje scene blizniaka. Ramieniem nie rusza, "
-                                            "kamer nie przestawia (sa wzgledem podstawy).")
+        t = self.ws.table_obj()
+        g.add_markdown("Zmierz blat i polozenie podstawy. Kamery sa wzgledem PODSTAWY, zmiana stolu ich "
+                       "nie rusza.")
+        self.tab_size = g.add_vector2("Blat: szerokosc, glebokosc [m]", tuple(t.size), min=(0.2, 0.2),
+                                      max=(3.0, 3.0), step=0.01,
+                                      hint="Wymiary blatu [m] (0,2-3,0), zmierz na biurku. Dziala po Zastosuj.")
+        self.tab_base = g.add_vector2("Podstawa od srodka blatu [m]", tuple(t.base_xy), min=(-1.5, -1.5),
+                                      max=(1.5, 1.5), step=0.005,
+                                      hint="Gdzie stoi podstawa ramienia wzgledem srodka blatu, x i y [m]. "
+                                           "Dziala po Zastosuj.")
+        self.tab_yaw = g.add_number("Obrot podstawy [st.]", float(np.degrees(t.base_yaw)), min=-180.0,
+                                    max=180.0, step=1.0,
+                                    hint="Obrot podstawy wokol osi pionowej [st.], -180..180. Dziala po Zastosuj.")
+        self.tab_h = g.add_number("Wysokosc blatu nad podloga [m]", float(t.height), min=0.3, max=1.5,
+                                  step=0.01, hint="Wysokosc blatu [m] (0,3-1,5); zle ustawiona psuje Sim-Real. "
+                                                  "Dziala po Zastosuj.")
+        apply_table = g.add_button("Zastosuj", icon=viser.Icon.CHECK, color="gray",
+                                   hint="Zapisuje stol i przebudowuje scene blizniaka. Ramieniem nie rusza, "
+                                        "kamer nie przestawia (sa wzgledem podstawy).")
 
         @apply_table.on_click
         @self._safe
@@ -853,16 +1387,16 @@ class TwinApp:
             # wygrywa tylko, gdy start z `seed` nie trafil, i wtedy odrzuca ja limit skoku.
             sol = self._kin_gizmo.ik(p_base, seed=seed, restarts=0)
             if not sol.ok:
-                self.tcp_md.content = "uchwyt poza zasiegiem ramienia - cel bez zmian"
+                self._msg(self.tcp_md, "uchwyt poza zasiegiem ramienia - cel bez zmian")
                 return
             arm = {k: float(v) for k, v in sol.joints.items() if k != gripper}
             jump = max((abs(v - float(seed.get(k, v))) for k, v in arm.items()), default=0.0)
             if jump > GIZMO_MAX_STEP_DEG:
-                self.tcp_md.content = (f"odrzucone: IK chcialo skoku {jump:.0f} st. (inna galaz) - "
+                self._msg(self.tcp_md, f"odrzucone: IK chcialo skoku {jump:.0f} st. (inna galaz) - "
                                        f"przeciagaj mniejszymi krokami")
                 return
             self._gizmo_seed = {**seed, **arm}
-        self.tcp_md.content = ""
+        self._msg(self.tcp_md, "")
         try:
             self.twin.set_target(arm, owner=PANEL_OWNER)
         except RuntimeError:                            # ramie odebrane panelowi w miedzyczasie
@@ -876,9 +1410,6 @@ class TwinApp:
             # Ramie odebrane panelowi (STOP, Dom, polaczenie, petla padla) albo wziete przez zadanie.
             self.arm_engage.value = False
             self._gizmo_seed = None
-        other = owner is not None and owner != PANEL_OWNER
-        if self.arm_engage.disabled != other:
-            self.arm_engage.disabled = other
         if not self.arm_engage.value:
             for name, s in self.sliders.items():
                 if name in joints:
@@ -894,63 +1425,85 @@ class TwinApp:
             if np.abs(np.asarray(self.tcp_gizmo.position) - p).max() > 1e-4:
                 self.tcp_gizmo.position = p
             self._gizmo_seed = None
+        self._render_arm()
 
     # ================================================================= kamery
-    def _build_cameras(self) -> None:
+    def _big_button(self, label: str, **kw):
+        """Duzy przycisk we wlasnym pudelku bez ramki: kotwica stylu `.tw-big` i przycisk.
+        Pokazuje sie i chowa pudelko - ukryty przycisk nie oddaje stylu sasiadowi."""
         g = self.server.gui
-        self._tab_help("Kamery")
-        self.cams_md = g.add_markdown("")
-        self.cam_pick = g.add_dropdown("Kamera", ("-",), initial_value="-",
-                                       hint="Kamera, ktorej dotycza podglad i przyciski w Wybrana kamera.")
-        self.cam_preview = g.add_image(np.zeros((240, 320, 3), np.uint8), label="Podglad", format="jpeg",
-                                       jpeg_quality=70)
-        self.cam_info = g.add_markdown("")
-        with g.add_folder("Wybrana kamera"):
-            self.cam_enabled = g.add_checkbox("Wlaczona", True,
-                                              hint="Wylaczona kamera znika ze sceny, mapy, fali i Sim-Real, ale "
-                                                   "zostaje w stanowisku. Zmiana przebudowuje scene.")
-            self.cam_move = g.add_checkbox("Przesuwaj w 3D (kamera symulowana)", False,
-                                           hint="Tylko kamera symulowana: uchwyt w 3D - przeciagnij, zeby ja "
-                                                "przestawic (zmienia sie prawda, nie kalibracja).")
-            here = g.add_button("Ustaw w miejscu widoku 3D", icon=viser.Icon.CAMERA_SELFIE,
-                                hint="Kamera symulowana staje tam, skad teraz patrzysz na scene 3D. "
-                                     "Prawdziwej kamery nie przestawia (odmowa).")
-            remember = g.add_button("Zapamietaj kadr odniesienia", icon=viser.Icon.PHOTO_CHECK,
-                                    hint="Biezacy kadr jako odniesienie: od niego straznik liczy przestawienie "
-                                         "kamery (co 2 s, prog 3 px). Po zapisie kalibracji robi sie samo.")
-            truth = g.add_button("Symulowana: uznaj prawdziwa poze za kalibracje", icon=viser.Icon.CHECK,
-                                 hint="Skrot w symulacji: kalibracja = prawdziwa poza kamery symulowanej "
-                                      "(zaufana), bez fali. Do proby procedury lepiej Start fali.")
-            remove = g.add_button("Usun kamere", icon=viser.Icon.TRASH, color="red",
-                                  hint="Usuwa wybrana kamere razem z jej kalibracja - od razu, bez pytania.")
-        with g.add_folder("Dodaj kamere", expand_by_default=False):
-            probe = g.add_button("Szukaj kamer USB", icon=viser.Icon.SEARCH,
-                                 hint="Szuka kamer USB, ktorych nie ma jeszcze w stanowisku. Na maszynie "
-                                      "wirtualnej/zdalnej (np. Shadow) kamera musi byc przepuszczona w kliencie USB.")
-            self.usb_pick = g.add_dropdown("Znalezione", ("-",), initial_value="-",
-                                           hint="Kamera z ostatniego Szukaj kamer USB: indeks i rozdzielczosc.")
-            add_usb = g.add_button("Dodaj kamere USB", icon=viser.Icon.PLUS,
-                                   hint="Dodaje wybrana kamere USB z nominalnym K - potem Kalibracja, krok 1.")
-            self.sim_fov = g.add_slider("Pole widzenia kamery sym. [st.]", 40.0, 90.0, 1.0, 62.0,
+        box = g.add_folder(None)
+        with box:
+            g.add_html('<span class="tw-big"></span>')
+            b = g.add_button(label, **kw)
+        return box, b
+
+    def _build_cameras(self) -> None:
+        """Zakladka Kamery: lista z jedna plakietka stanu na kamere, wybrana kamera (podglad i tylko
+        przyciski, ktore do niej pasuja), na dole dodawanie. Bez kamer - podpowiedz i dodawanie."""
+        g = self.server.gui
+        self.cams_html = g.add_html("")
+        self.cam_box = g.add_folder(None)
+        with self.cam_box:
+            self.cam_pick = g.add_dropdown("Kamera", ("-",), initial_value="-",
+                                           hint="Kamera, ktorej dotyczy podglad i przyciski ponizej.")
+            self.cam_preview = g.add_image(np.zeros((240, 320, 3), np.uint8), format="jpeg", jpeg_quality=70)
+            self.cam_info = g.add_markdown("")
+            en = g.add_button(CAM_ON[0], hint="Wylaczona kamera znika ze sceny, mapy, fali i Sim-Real, ale zostaje "
+                                              "w stanowisku razem z kalibracja. Zmiana przebudowuje scene.")
+            self.cam_enabled = _Toggle(en, on_look=CAM_ON, off_look=CAM_OFF)
+            self.cam_enabled.value = True
+            self.cam_sim_box = g.add_folder(None)
+            with self.cam_sim_box:
+                mv = g.add_button(MOVE_OFF[0], hint="Kamera symulowana: uchwyt w 3D - przeciagnij, zeby ja przestawic "
+                                                    "(zmienia sie prawda, nie kalibracja).")
+                self.cam_move = _Toggle(mv, on_look=MOVE_ON, off_look=MOVE_OFF)
+                here = g.add_button("Postaw tu, skad patrzysz w 3D", icon=viser.Icon.CAMERA_SELFIE, color="gray",
+                                    hint="Kamera symulowana staje tam, skad teraz patrzysz na scene 3D.")
+            self.cam_remove = g.add_button("Usun kamere", icon=viser.Icon.TRASH, color="red",
+                                           hint="Usuwa kamere razem z jej kalibracja. Drugie klikniecie potwierdza.")
+            with g.add_folder("Szczegoly", expand_by_default=False):
+                self.cam_detail = g.add_markdown("")
+                remember = g.add_button("Zapamietaj kadr odniesienia", icon=viser.Icon.PHOTO_CHECK,
+                                        hint="Biezacy kadr jako odniesienie: od niego straznik liczy przestawienie "
+                                             "kamery (co 2 s, prog 3 px). Po zapisie kalibracji robi sie samo.")
+        g.add_divider()
+        g.add_markdown("**Dodaj kamere**")
+        add_front = g.add_button("Dodaj symulowana przed ramieniem", icon=viser.Icon.CAMERA_PLUS,
+                                 hint="Nowa kamera symulowana 640x480 ok. 0,55 m od ramienia, patrzaca na blat; "
+                                      "kolejne staja z innych stron. Przestawiasz ja potem uchwytem w 3D.")
+        probe = g.add_button("Szukaj kamer USB", icon=viser.Icon.SEARCH,
+                             hint="Szuka kamer USB (IDS uEye, gdy jest pyueye; pmd CamBoard nano, gdy jest "
+                                  "PMDSDK), ktorych nie ma jeszcze w "
+                                  "stanowisku. Na maszynie wirtualnej/zdalnej kamera musi byc "
+                                  "przepuszczona w kliencie USB.")
+        self.usb_box = g.add_folder(None, visible=False)
+        with self.usb_box:
+            self.usb_pick = g.add_dropdown("Znaleziona", ("-",), initial_value="-",
+                                           hint="Kamera z ostatniego Szukaj kamer USB: zrodlo i rozdzielczosc.")
+            add_usb = g.add_button("Dodaj kamere USB", icon=viser.Icon.PLUS, color="green",
+                                   hint="Dodaje wybrana kamere USB z nominalnym K - potem zakladka Kalibracja. "
+                                        "Kamera pmd dostaje K z wlasnej kalibracji, a poze z tagow na obudowie "
+                                        "(folder Kamera PMD ponizej).")
+        with g.add_folder("Nowa symulowana: pole widzenia", expand_by_default=False):
+            self.sim_fov = g.add_slider("Pole widzenia [st.]", 40.0, 90.0, 1.0, 62.0,
                                         hint="Pionowe pole widzenia NOWEJ kamery symulowanej [st.], 40-90; "
                                              "typowa kamera USB ok. 60.")
-            add_view = g.add_button("Dodaj symulowana w miejscu widoku 3D", icon=viser.Icon.CAMERA_PLUS,
-                                    hint="Nowa kamera symulowana 640x480 tam, skad patrzysz na scene 3D.")
-            add_front = g.add_button("Dodaj symulowana przed ramieniem", icon=viser.Icon.CAMERA_PLUS,
-                                     hint="Nowa kamera symulowana 640x480 ok. 0,55 m od ramienia, patrzaca na blat; "
-                                          "kolejne staja z innych stron.")
+        self._build_pmd(g)
         self.cam_gizmo = self.server.scene.add_transform_controls("/uchwyt_kamery", scale=0.1, visible=False)
         self._found_usb: list[dict] = []
+        self.cam_ask = _TwoClick()
 
         @self.cam_pick.on_update
         def _(event):
+            self.cam_ask.reset()
             self._select_camera()
 
         @self.cam_enabled.on_update
         @self._safe
         def _(event):
             if event.client is None:
-                return
+                return                                  # ustawione z kodu przy wyborze kamery
             rec = self._cam()
             if rec is not None:
                 rec.enabled = self.cam_enabled.value
@@ -988,24 +1541,14 @@ class TwinApp:
             self._remember_reference(rec.name)
             self._notify(event, "Zapamietano", f"{rec.name}: kadr odniesienia do wykrywania przestawienia.")
 
-        @truth.on_click
-        @self._safe
-        def _(event):
-            rec = self._cam()
-            if rec is None or not rec.simulated or rec.sim_pose is None:
-                raise RuntimeError("tylko kamera symulowana z ustawiona poza")
-            rec.T_cam2base = [list(r) for r in rec.sim_pose]
-            rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.0, "source": "prawda symulacji",
-                               "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
-            self._save()
-            self._refresh_cameras()
-            self._remember_reference(rec.name)
-
-        @remove.on_click
+        @self.cam_remove.on_click
         @self._safe
         def _(event):
             rec = self._cam()
             if rec is None:
+                return
+            if not self.cam_ask.ask(("usun", rec.name)):
+                self._render_cameras()                  # pytanie na przycisku, nic nie usuniete
                 return
             self.ws.remove_camera(rec.name)
             self.watch.forget(rec.name)
@@ -1017,14 +1560,15 @@ class TwinApp:
         @probe.on_click
         @self._safe
         def _(event):
-            from ..cameras import probe_devices
+            from ..cameras import probe_all
             used = {c.source for c in self.ws.cameras}
-            self._found_usb = [d for d in probe_devices() if str(d["index"]) not in used]
-            opts = tuple(f"{d['index']}: {d['width']}x{d['height']}" for d in self._found_usb) or ("-",)
+            self._found_usb = [d for d in probe_all() if d["source"] not in used]
+            opts = tuple(d["label"] for d in self._found_usb) or ("-",)
             self.usb_pick.options = opts
             self.usb_pick.value = opts[0]
+            self.usb_box.visible = bool(self._found_usb)
             if not self._found_usb:
-                self._notify(event, "Brak nowych kamer", "Sprawdz kabel; na maszynie wirtualnej/zdalnej (np. Shadow) "
+                self._notify(event, "Brak nowych kamer", "Sprawdz kabel; na maszynie wirtualnej/zdalnej "
                                                          "kamere trzeba przepuscic w kliencie USB.")
 
         @add_usb.on_click
@@ -1032,18 +1576,17 @@ class TwinApp:
         def _(event):
             if not self._found_usb or self.usb_pick.value == "-":
                 raise RuntimeError("najpierw wyszukaj kamery")
-            d = self._found_usb[[f"{x['index']}: {x['width']}x{x['height']}" for x in self._found_usb]
-                                .index(self.usb_pick.value)]
-            rec = self.ws.add_camera(CameraRecord(self.ws.free_name("kamera"), str(d["index"]), d["width"],
-                                                  d["height"]))
+            d = self._found_usb[[x["label"] for x in self._found_usb].index(self.usb_pick.value)]
+            stem = "ueye" if d["source"].startswith("ueye") else ("pmd" if is_pmd(d["source"]) else "kamera")
+            rec = CameraRecord(self.ws.free_name(stem), d["source"], d["width"], d["height"])
+            if d.get("K") is not None:                  # pmd: K z kalibracji fabrycznej (xyz z SDK)
+                rec.K, rec.intrinsics_from = [list(map(float, r)) for r in d["K"]], "pmd"
+            rec = self.ws.add_camera(rec)
+            self._found_usb = []
+            self.usb_box.visible = False
             self._save()
             self.twin.cameras.sync()
             self._refresh_cameras(select=rec.name)
-
-        @add_view.on_click
-        @self._safe
-        def _(event):
-            self._add_sim_camera(self._viewer_pose(event))
 
         @add_front.on_click
         @self._safe
@@ -1228,6 +1771,73 @@ class TwinApp:
             out[n] = m
         return out
 
+    def _has_frame(self, c: CameraRecord) -> bool:
+        """Kadr byl w ostatnich GUIDE_FRAME_LOST s (znacznik `_frame_seen` z przewodnika; nowa kamera - tak)."""
+        seen = self._frame_seen.get(c.name)
+        return seen is None or time.monotonic() - seen < GUIDE_FRAME_LOST
+
+    def _cam_badge(self, c: CameraRecord) -> tuple[str, str]:
+        """(slowo, klasa) stanu kamery w zakladce Kamery - kolory jak piramidy w 3D."""
+        if not c.enabled:
+            return "WYLACZONA", "tw-none"
+        if not self._has_frame(c):
+            return "BEZ OBRAZU", "tw-bad"
+        if self.watch.moved(c.name):
+            return "PORUSZONA", "tw-bad"
+        if not c.calibrated:
+            return "DO KALIBRACJI", "tw-sim" if c.simulated else "tw-none"
+        if c.trusted:
+            return "SKALIBROWANA", "tw-ok"
+        return "KALIBRACJA NIEPEWNA", "tw-warn"
+
+    @staticmethod
+    def _k_badge(c: CameraRecord) -> tuple[str, str]:
+        if c.simulated or not c.intrinsics_problem():
+            return "OBIEKTYW OK", "tw-ok"
+        if c.intrinsics_from != "szachownica" or c.K is None:
+            return "OBIEKTYW: KROK 1", "tw-none"
+        return "OBIEKTYW: POWTORZ", "tw-warn"
+
+    def _pose_badge(self, c: CameraRecord) -> tuple[str, str]:
+        if not c.enabled:
+            return "WYLACZONA", "tw-none"
+        if c.calibrated and self.watch.moved(c.name):
+            return "PORUSZONA", "tw-bad"
+        if not c.calibrated:
+            return "POLOZENIE: KROK 2", "tw-none"
+        if c.trusted and not c.intrinsics_problem():
+            return "POLOZENIE OK", "tw-ok"
+        return "POLOZENIE: POWTORZ", "tw-warn"
+
+    def _cams_html(self, calib: bool) -> str:
+        """Lista kamer: nazwa, zrodlo i plakietki (Kamery: stan; Kalibracja: K i poza)."""
+        if not self.ws.cameras:
+            text = ("Brak kamer - dodaj je w zakladce Kamery." if calib else
+                    "Brak kamer. Dodaj symulowana albo USB ponizej. Gotowe stanowisko z dwiema skalibrowanymi "
+                    "kamerami w symulacji: zamknij panel, w konsoli lerobot-twin demo, uruchom panel ponownie.")
+            return f'<div class="tw-empty">{_html.escape(text)}</div>'
+        rows = []
+        for c in self.ws.cameras:
+            src = "symulowana" if c.simulated else (f"glebia {c.source}" if is_pmd(c.source) else f"USB {c.source}")
+            badges = [self._k_badge(c), self._pose_badge(c)] if calib else [self._cam_badge(c)]
+            b = "".join(f'<span class="tw-badge {cls}">{_html.escape(w)}</span>' for w, cls in badges)
+            rows.append(f'<div class="tw-cam"><b>{_html.escape(c.name)}</b><span class="tw-src">{_html.escape(src)}'
+                        f'</span><span class="tw-badges">{b}</span></div>')
+        return '<div class="tw-cams">' + "".join(rows) + "</div>"
+
+    def _render_cameras(self) -> None:
+        """Lista i przycisk Usun (pytanie wygasa samo) - co takt petli, zapisy tylko przy zmianie."""
+        set_if(self.cams_html, "content", self._cams_html(calib=False))
+        has = bool(self.ws.cameras)
+        set_if(self.cam_box, "visible", has)
+        rec = self._cam()
+        if rec is not None and self.cam_ask.pending(("usun", rec.name)):
+            set_if(self.cam_remove, "label", f"Na pewno usunac {rec.name}? Kliknij ponownie")
+            set_if(self.cam_remove, "icon", viser.Icon.ALERT_TRIANGLE)
+        else:
+            set_if(self.cam_remove, "label", "Usun kamere")
+            set_if(self.cam_remove, "icon", viser.Icon.TRASH)
+
     def _refresh_cameras(self, select: str | None = None) -> None:
         names = tuple(c.name for c in self.ws.cameras) or ("-",)
         self.cam_pick.options = names
@@ -1235,24 +1845,6 @@ class TwinApp:
             self.cam_pick.value = select
         elif self.cam_pick.value not in names:
             self.cam_pick.value = names[0]
-        rows = ["| kamera | zrodlo | K | poza | przestawiona |", "|---|---|---|---|---|"]
-        for c in self.ws.cameras:
-            if not c.calibrated:
-                cal = "nieskalibrowana"
-            elif c.trusted:
-                cal = f"zaufana ({c.calibration.get('rms_px', 0):.2f} px)"
-            else:
-                # Zapisana zaufana, ale K kamery inne niz to, z ktorym ja liczono (`CameraRecord.trusted`).
-                why = (c.calibration.get("reason", "") if not c.calibration.get("trusted")
-                       else "intrynsyki zmienione od kalibracji polozenia - skalibruj ponownie")
-                cal = f"niezaufana: {why}"
-            sh = self.watch.shift.get(c.name)
-            moved = "-" if sh is None else (f"**TAK {_px(sh)}**" if self.watch.moved(c.name) else f"nie ({_px(sh)})")
-            rows.append(f"| {c.name}{'' if c.enabled else ' (wyl.)'} | {c.source} | {c.intrinsics_from} | {cal} | {moved} |")
-        self.cams_md.content = "\n".join(rows) if self.ws.cameras else \
-            ("Brak kamer. Dodaj kamere USB albo symulowana (ponizej). Gotowy przyklad w symulacji (dwie "
-             "skalibrowane kamery): zamknij panel, w konsoli `lerobot-twin demo` (examples/twin.sim.json), "
-             "uruchom panel ponownie.")
         with self.scene_lock:
             for n in list(self.frustums):
                 if n not in {c.name for c in self.ws.cameras}:
@@ -1263,6 +1855,7 @@ class TwinApp:
         for c in self.ws.cameras:
             self._update_frustum(c)
         self._select_camera()
+        self._render_cameras()
         self._mapper_key = None
 
     def _update_frustum(self, c: CameraRecord) -> None:
@@ -1311,24 +1904,56 @@ class TwinApp:
         rec = self._cam()
         if rec is None:
             self.cam_info.content = ""
+            self.cam_detail.content = ""
             self.cam_gizmo.visible = False
             return
         self.cam_enabled.value = rec.enabled
-        K, dist = rec.intrinsics()
-        lines = [f"**{rec.name}** - zrodlo `{rec.source}`, {rec.width}x{rec.height}, "
-                 f"fx {K[0, 0]:.0f} fy {K[1, 1]:.0f} cx {K[0, 2]:.0f} cy {K[1, 2]:.0f} ({rec.intrinsics_from})"]
-        if rec.intrinsics_info:
-            ii = rec.intrinsics_info
-            lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow, "
-                         f"pokrycie {ii.get('coverage', 0):.0%}{'' if ii.get('trusted') else ' - ' + ii.get('reason', '')}")
+        if not rec.simulated and self.cam_move.value:
+            self.cam_move.value = False                 # prawdziwej nie przestawia sie z panelu
+        set_if(self.cam_sim_box, "visible", rec.simulated)
+        # Jedna linia: co z ta kamera i co dalej; liczby w Szczegoly.
+        if not rec.enabled:
+            info = "wylaczona - nie ma jej w scenie, mapie ani kalibracji"
+        elif self.watch.moved(rec.name):
+            info = (f"**poruszona** od kalibracji (obraz przesunal sie o "
+                    f"{_px(self.watch.shift.get(rec.name, float('inf')))}) - zakladka **Kalibracja**, "
+                    f"pomaranczowy przycisk")
+        elif not rec.calibrated and is_pmd(rec.source):
+            info = ("poza z tagow na obudowie: folder **Kamera PMD** ponizej (os optyczna, Znajdz PMD); "
+                    "K juz jest - z kalibracji fabrycznej")
+        elif not rec.calibrated:
+            info = "jeszcze nieskalibrowana - dalej zakladka **Kalibracja**"
+        elif rec.trusted:
+            info = "skalibrowana - gotowa do uzycia"
+        else:
+            why = (rec.calibration.get("reason", "") if not rec.calibration.get("trusted")
+                   else "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz")
+            info = f"kalibracja niepewna: {why}"
         if rec.simulated and rec.calibrated and rec.sim_pose is not None:
             from ..calib.handeye import pose_error
             dt, dr = pose_error(np.asarray(rec.sim_pose), np.asarray(rec.T_cam2base))
-            lines.append(f"kalibracja wzgledem prawdy: **{dt * 1000:.2f} mm, {np.degrees(dr):.3f} st.**")
+            info += f"  \nod prawdy symulacji: **{dt * 1000:.2f} mm, {np.degrees(dr):.3f} st.**"
         err = self.twin.cameras.error(rec.name)
         if err:
-            lines.append(f"blad kamery: {err}")
-        self.cam_info.content = "  \n".join(lines)
+            info += f"  \n**blad kamery:** {err}"
+        self.cam_info.content = info
+        K, dist = rec.intrinsics()
+        lines = [f"zrodlo `{rec.source}`, {rec.width}x{rec.height}",
+                 f"K ({rec.intrinsics_from}): fx {K[0, 0]:.0f} fy {K[1, 1]:.0f} cx {K[0, 2]:.0f} cy {K[1, 2]:.0f}"]
+        if rec.intrinsics_info:
+            ii = rec.intrinsics_info
+            if str(ii.get("reason", "")).startswith("z pliku "):
+                rms = ii.get("rms_px", 0)
+                lines.append(f"intrynsyki {ii['reason']}, {ii.get('n_views', 0)} kadrow"
+                             + (f", residuum {rms:.2f} px" if rms else ""))
+            else:
+                lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow, "
+                             f"pokrycie {ii.get('coverage', 0):.0%}"
+                             f"{'' if ii.get('trusted') else ' - ' + ii.get('reason', '')}")
+        sh = self.watch.shift.get(rec.name)
+        if sh is not None:
+            lines.append(f"przesuniecie kadru od odniesienia: {_px(sh)}")
+        self.cam_detail.content = "  \n".join(lines)
         T = rec.true_pose()
         # Wylaczonej kamery nie ma w scenie - uchwyt przy niej przebudowywal scene co ruch myszy.
         show = rec.simulated and rec.enabled and self.cam_move.value and T is not None
@@ -1336,68 +1961,116 @@ class TwinApp:
             Tw = self.T_b2w @ T
             self.cam_gizmo.position, self.cam_gizmo.wxyz = Tw[:3, 3], mat_to_wxyz(Tw[:3, :3])
         self.cam_gizmo.visible = show
+        self._render_cameras()
 
     # ============================================================= kalibracja
     def _build_calibration(self) -> None:
+        """Zakladka Kalibracja dla kogos, kto nie zna slow "intrynsyki" i "fala": po co to jest,
+        kamery z plakietkami OBIEKTYW i POLOZENIE, linia "Teraz", dwa kroki z ponumerowana instrukcja.
+        Widac tylko to, co w danej chwili dziala; stan przemalowuje `_render_calibration` co takt."""
         g = self.server.gui
-        self._tab_help("Kalibracja")               # kolejnosc 1 (tablica w reku) / 2 (karta, fala) jest w notce
-        with g.add_folder("1. Intrynsyki - tablica ChArUco"):
-            self.board_mm = g.add_number("Zmierzony bok kwadratu [mm]", 28.0, min=5.0, max=100.0, step=0.1,
-                                         hint="Bok kwadratu tablicy zmierzony linijka na wydruku [mm] "
-                                              "(nominalnie 28) - ustala skale ukladu tablicy.")
-            sheet = g.add_button("Pobierz arkusz tablicy (A4, PNG)", icon=viser.Icon.DOWNLOAD,
-                                 hint="PNG tablicy ChArUco z bokiem jak wyzej. Drukuj w skali 100%.")
+        g.add_markdown("Kalibracja uczy blizniaka dwoch rzeczy o kazdej kamerze: **jak jej obiektyw wygina obraz** "
+                       "(krok 1) i **gdzie kamera stoi wzgledem ramienia** (krok 2). Bez tego mapa stolu i szukanie "
+                       "kostki nie dzialaja. Robisz to raz - powtarzasz tylko po poruszeniu kamery.")
+        self.calib_html = g.add_html("")
+        self.calib_now_md = g.add_markdown("")
+        # --- krok 1: obiektyw (intrynsyki - K i dystorsja)
+        self.intr_box = g.add_folder(None)
+        with self.intr_box:
+            g.add_divider()
+            self.intr_title = g.add_markdown("")
+            self.intr_help = g.add_markdown(
+                "Kazdy obiektyw troche wygina obraz. Program zmierzy to na wydrukowanej szachownicy. "
+                "Raz dla kazdej kamery; ramie stoi.\n\n"
+                "1. Pobierz szachownice i wydrukuj ja w skali **100%** (bez \"dopasuj do strony\").\n"
+                "2. Zmierz linijka bok jednego kwadratu na wydruku i wpisz go nizej.\n"
+                "3. Kliknij **Zacznij** (przy kilku kamerach najpierw wybierz kamere).\n"
+                "4. Pokazuj szachownice kamerze, az licznik dojdzie do 12, potem **Gotowe**.")
+            self.intr_sheet_box = g.add_folder(None)
+            with self.intr_sheet_box:
+                sheet = g.add_button("Pobierz szachownice do druku (A4)", icon=viser.Icon.DOWNLOAD, color="gray",
+                                     hint="Plik PNG z szachownica ChArUco. Drukuj w skali 100%.")
+                self.board_mm = g.add_number("Bok kwadratu na wydruku [mm]", 28.0, min=5.0, max=100.0, step=0.1,
+                                             hint="Zmierzony linijka bok jednego kwadratu szachownicy (nominalnie 28 "
+                                                  "mm - drukarka potrafi zmienic skale).")
             self.intr_cam = g.add_dropdown("Kamera", ("-",), initial_value="-",
-                                           hint="Kamera, z ktorej zbierasz kadry tablicy (prawdziwa - "
-                                                "symulowana zna swoje K).")
-            start = g.add_button("Zbieraj kadry", icon=viser.Icon.PLAYER_RECORD,
-                                 hint="Zbiera kadry tablicy z wybranej kamery; kadr zapisuje sie sam, gdy wnosi nowe "
-                                      "ujecie. Pokazuj tablice w rogach, blizej, dalej, pochylona (12+ kadrow). "
-                                      "Ramieniem nie rusza.")
-            solve = g.add_button("Oblicz i zapisz K", icon=viser.Icon.CALCULATOR, color="green",
-                                 hint="Konczy zbieranie, liczy K i dystorsje i zapisuje w kamerze (dobrze: residuum "
-                                      "do 0,6 px). Poza liczona z poprzednim K przestaje byc zaufana.")
-            self.intr_md = g.add_markdown("")
+                                           hint="Kamera, ktorej obiektyw teraz mierzysz. Na starcie: pierwsza, "
+                                                "ktora tego jeszcze nie ma.")
+            self.intr_start_box, self.intr_start = self._big_button(
+                "Zacznij", icon=viser.Icon.PLAYER_RECORD, color="green",
+                hint="Wlacza robienie zdjec szachownicy z wybranej kamery. Zdjecie robi sie samo, gdy szachownica "
+                     "jest w nowym miejscu. Ramieniem nie rusza.")
+            self.lens_file_box = g.add_folder(None, visible=False)
+            with self.lens_file_box:
+                self.lens_file = g.add_dropdown("Gotowy obiektyw z pliku", ("-",), initial_value="-",
+                                                hint=f"Obiektyw zmierzony gdzie indziej: pliki .txt w {LENS_DIR} "
+                                                     "(camera_matrix i dist_coeffs, opcjonalnie image_size).")
+                lens_load = g.add_button("Wczytaj obiektyw z pliku", icon=viser.Icon.FILE_IMPORT, color="gray",
+                                         hint="Zamiast szachownicy: wpisuje K i dystorsje z pliku do wybranej "
+                                              "kamery. Plik musi byc z tej samej rozdzielczosci.")
             self.intr_img = g.add_image(np.zeros((240, 320, 3), np.uint8), format="jpeg", jpeg_quality=70,
                                         visible=False)
-        with g.add_folder("2. Polozenie kamer - karta w chwytaku"):
-            self.tag_mm = g.add_number("Zmierzony bok taga [mm]", float(self.ws.card_obj().tag_size * 1000),
-                                       min=10.0, max=120.0, step=0.1,
-                                       hint="Bok taga na karcie zmierzony linijka [mm]. Uzywany przy fali; "
-                                            "zmieniony po fali blokuje zapis wyniku.")
-            card = g.add_button("Pobierz arkusz karty (A4, PNG)", icon=viser.Icon.DOWNLOAD,
-                                hint="PNG karty z dwoma tagami (300 dpi). Drukuj 100%, zegnij, wolny koniec w "
-                                     "szczeki (ok. 70 mm ma wystawac).")
-            self.calib_confirm = g.add_checkbox("Karta w szczekach, przestrzen nad stolem wolna", False,
-                                                hint="Prawdziwe ramie: potwierdzenie przed kazda fala (gasnie po "
-                                                     "starcie). Pierwszy ruch zamyka chwytak na karcie. W sim "
-                                                     "niepotrzebne.")
-            wave = g.add_button("Start fali (wszystkie wlaczone kamery)", icon=viser.Icon.WAVE_SINE, color="green",
-                                hint="RUSZA ramieniem: ~20 poz z karta, wszystkie wlaczone kamery z kadrem licza "
-                                     "swoja poze; na koniec ramie wraca do domu. Odmowa, gdy ramie ma polityka "
-                                     "albo identyfikacja.")
-            self.reloc_cam = g.add_dropdown("Szybka relokalizacja kamery", ("-",), initial_value="-",
-                                            hint="Przestawiona kamera (czerwona piramida) do krotkiej fali.")
-            reloc = g.add_button("Relokalizuj wybrana (krotka fala)", icon=viser.Icon.CURRENT_LOCATION,
-                                 hint="Krotka fala tylko dla wybranej kamery - RUSZA ramieniem; karta w szczekach "
-                                      "i potwierdzenie jak przy Start fali.")
-            cancel = g.add_button("Przerwij", icon=viser.Icon.PLAYER_STOP,
-                                  hint="Konczy fale (ramie wraca do domu, wyniku nie ma) i zbieranie kadrow "
-                                       "intrynsyk (K zostaje, jakie bylo).")
+            self.intr_md = g.add_markdown("")
+            self.intr_run_box = g.add_folder(None, visible=False)
+            with self.intr_run_box:
+                self.intr_solve = g.add_button("Gotowe - policz obiektyw", icon=viser.Icon.CALCULATOR,
+                                               color="green",
+                                               hint="Konczy zdjecia i liczy obiektyw kamery (zapisuje sie sam).")
+                icancel = g.add_button("Anuluj (nic nie zapisze)", icon=viser.Icon.X, color="gray",
+                                       hint="Konczy zdjecia bez liczenia - kamera zostaje, jaka byla.")
+        # --- krok 2: polozenie (fala z karta)
+        self.pose_box = g.add_folder(None)
+        with self.pose_box:
+            g.add_divider()
+            self.pose_title = g.add_markdown("")
+            self.pose_help = g.add_markdown("")
+            self.pose_sheet_box = g.add_folder(None)
+            with self.pose_sheet_box:
+                card = g.add_button("Pobierz karte do druku (A4)", icon=viser.Icon.DOWNLOAD, color="gray",
+                                    hint="Plik PNG z karta z dwoma kodami (300 dpi). Drukuj w skali 100%.")
+                self.tag_mm = g.add_number("Bok kodu na wydruku [mm]", float(self.ws.card_obj().tag_size * 1000),
+                                           min=10.0, max=120.0, step=0.1,
+                                           hint="Zmierzony linijka bok kwadratowego kodu (czarna ramka) na karcie. "
+                                                "Zmieniony po pomiarze blokuje zapis wyniku.")
+            self.wave_box, self.wave_btn = self._big_button(
+                "Start", icon=viser.Icon.WAVE_SINE, color="green",
+                hint="RUSZA ramieniem: ok. 20 miejsc z karta nad stolem, potem ramie wraca na miejsce. Prawdziwe "
+                     "ramie: drugie klikniecie potwierdza, ze karta jest w chwytaku, a stol pusty.")
+            self.reloc_box, self.reloc_btn = self._big_button(
+                "Kamera poruszona", icon=viser.Icon.CURRENT_LOCATION, color="orange",
+                hint="Krotki pomiar tylko dla poruszonej kamery - RUSZA ramieniem; karta w chwytaku. Prawdziwe "
+                     "ramie: drugie klikniecie potwierdza.")
+            self.wave_md = g.add_markdown("")
+            self.truth_btn = g.add_button("Symulacja: pomin - wpisz prawdziwe polozenie kamer", icon=viser.Icon.CHECK,
+                                          color="gray",
+                                          hint="Skrot tylko w symulacji: program zna prawdziwe polozenie kamer "
+                                               "symulowanych. Do proby calej procedury - Start.")
             self.calib_bar = g.add_progress_bar(0.0, animated=True, visible=False)
             self.calib_md = g.add_markdown("")
-            apply = g.add_button("Zapisz wynik kalibracji", icon=viser.Icon.DEVICE_FLOPPY, color="green",
-                                 visible=False,
-                                 hint="Zapisuje pozy kamer z fali (z uzytym bokiem taga i K) i kadry odniesienia. "
-                                      "Niezaufane kamery zapisuja sie z powodem.")
-            self.calib_apply = apply
+            self.calib_cancel = g.add_button("Zatrzymaj (ramie wroci na miejsce, nic nie zapisze)",
+                                             icon=viser.Icon.PLAYER_STOP, color="gray", visible=False)
+            self.calib_apply_box, self.calib_apply = self._big_button(
+                "Zapisz wynik", icon=viser.Icon.DEVICE_FLOPPY, color="green",
+                hint="Zapisuje polozenie kamer. Kamery z wynikiem 'zle' zapisuja sie jako niepewne, z powodem.")
+            with self.calib_apply_box:
+                discard = g.add_button("Odrzuc (nic nie zapisze)", icon=viser.Icon.X, color="gray",
+                                       hint="Wynik znika, kamery zostaja, jakie byly.")
+            self.preset_box = g.add_folder(None, visible=False)
+            with self.preset_box:
+                self.preset_pick = g.add_dropdown(
+                    "Zapisane polozenia kamer", ("-",), initial_value="-",
+                    hint="Kazdy zapis kroku 2 to osobny plik w workspace/calib/ - nic nie nadpisuje "
+                         "poprzedniego. Domyslnie wgrany jest najnowszy; wybierz starszy, zeby do niego wrocic.")
+                self.preset_md = g.add_markdown("")
+        self.calib_ask = _TwoClick()
+        self._calib_pending = False
 
         @sheet.on_click
         @self._safe
         def _(event):
             img = Board(square=self.board_mm.value / 1000, marker=0.75 * self.board_mm.value / 1000).image()
             ok, buf = cv2.imencode(".png", img)
-            event.client.send_file_download("tablica_charuco.png", buf.tobytes())
+            event.client.send_file_download("szachownica.png", buf.tobytes())
 
         @card.on_click
         @self._safe
@@ -1406,67 +2079,381 @@ class TwinApp:
             ok, buf = cv2.imencode(".png", sheet_img[..., ::-1])
             event.client.send_file_download("karta_kalibracyjna.png", buf.tobytes())
 
-        @start.on_click
+        @self.intr_start.on_click
         @self._safe
         def _(event):
             name = self.intr_cam.value
-            rec = self.ws.camera(name)
+            try:
+                rec = self.ws.camera(name)
+            except KeyError:
+                raise RuntimeError("wybierz kamere") from None
+            if rec.simulated:
+                raise RuntimeError("kamera symulowana nie potrzebuje kroku 1")
+            if self.calib_job.running:
+                raise RuntimeError("ramie pokazuje karte - poczekaj na koniec albo Zatrzymaj")
             board = Board(square=self.board_mm.value / 1000, marker=0.75 * self.board_mm.value / 1000)
             solve_evt = threading.Event()
             self.intr_job.start(lambda job: jobs.run_intrinsics(job, self.twin.cameras, name, board,
                                                                  (rec.width, rec.height), solve=solve_evt))
             self._intr_solve = solve_evt
-            self.intr_img.visible = True
+            self.intr_md.content = ""
+            self.calib_ask.reset()
+            self._render_calibration()
 
-        @solve.on_click
+        @lens_load.on_click
+        @self._safe
+        def _(event):
+            if self.intr_job.running:
+                raise RuntimeError("trwa mierzenie szachownica - Gotowe albo Anuluj")
+            name = self._import_lens(self.intr_cam.value, self.lens_file.value)
+            self._notify(event, "Obiektyw wczytany", f"{name}: {self.ws.camera(name).intrinsics_info['reason']}")
+
+        @self.intr_solve.on_click
         @self._safe
         def _(event):
             if not self.intr_job.running:
-                raise RuntimeError("najpierw zbieraj kadry")
-            self._intr_solve.set()                      # "Przerwij" to osobny sygnal - bez liczenia K
+                raise RuntimeError("najpierw Zacznij")
+            self._intr_solve.set()                      # "Anuluj" to osobny sygnal - bez liczenia
 
-        @wave.on_click
+        @icancel.on_click
+        def _(event):
+            self.intr_job.stop()                        # przerwanie: K zostaje, jakie bylo
+
+        @self.wave_btn.on_click
         @self._safe
         def _(event):
-            self._start_card_calibration(event, [c.name for c in self.ws.cameras
-                                                 if c.enabled and self.twin.cameras.frame(c.name) is not None],
-                                         quick=False)
+            cams = self._wave_cameras()
+            if self._confirm_motion(("fala", tuple(cams))):
+                self._start_card_calibration(event, cams, quick=False)
 
-        @reloc.on_click
+        @self.reloc_btn.on_click
         @self._safe
         def _(event):
-            self._start_card_calibration(event, [self.reloc_cam.value], quick=True)
+            moved = self._moved_cameras()
+            if not moved:
+                raise RuntimeError("zadna kamera nie jest poruszona")
+            if self._confirm_motion(("reloc", moved[0])):
+                self._start_card_calibration(event, [moved[0]], quick=True)
 
-        @cancel.on_click
+        @self.truth_btn.on_click
+        @self._safe
+        def _(event):
+            names = [c.name for c in self._truth_cameras()]
+            if not names:
+                raise RuntimeError("brak kamer symulowanych do wpisania")
+            for n in names:
+                rec = self.ws.camera(n)
+                rec.T_cam2base = [list(r) for r in rec.sim_pose]
+                rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.0, "source": "prawda symulacji",
+                                   "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            self._save()
+            self._refresh_cameras()
+            for n in names:
+                try:
+                    self._remember_reference(n)
+                except RuntimeError:
+                    pass
+            self.calib_md.content = f"Wpisano prawdziwe polozenie: {', '.join(names)}."
+            self._notify(event, "Gotowe", f"Polozenie z symulacji: {', '.join(names)}")
+
+        @self.calib_cancel.on_click
         def _(event):
             self.calib_job.stop()
-            if self.intr_job.running:
-                self.intr_job.stop()                    # przerwanie: K zostaje, jakie bylo
 
-        @apply.on_click
+        @self.calib_apply.on_click
         @self._safe
         def _(event):
             names = self._apply_calibration()
             bad = [f"{n}: {self.ws.camera(n).calibration.get('reason', '')}" for n in names
                    if not self.ws.camera(n).trusted]
-            self._notify(event, "Zapisano", f"Kalibracja kamer: {', '.join(names)}"
-                         + (f". NIEZAUFANE: {'; '.join(bad)}" if bad else ""), error=bool(bad))
+            self._notify(event, "Zapisano", f"Polozenie kamer: {', '.join(names)}"
+                         + (f". NIEPEWNE: {'; '.join(bad)}" if bad else ""), error=bool(bad))
+
+        @discard.on_click
+        def _(event):
+            self._calib_pending = False
+            self.calib_md.content = "Wynik odrzucony - kamery bez zmian."
+            self._render_calibration()
+
+        @self.preset_pick.on_update
+        @self._safe
+        def _(event):
+            name = self.preset_pick.value
+            if name == "-" or name == self.ws.calib_preset:
+                return
+            names = self.ws.load_preset(name)
+            self._poses_changed(names)
+            self._notify(event, "Polozenie kamer", f"Wgrano {name}: {', '.join(names) or 'zadna kamera nie pasuje'}.")
+            self._render_calibration()
+
+    # ---------------------------------------------------- kalibracja: stan
+    def _wave_cameras(self) -> list[str]:
+        """Kamery, ktore wezma udzial w kroku 2: wlaczone i z kadrem w ostatnim odczycie petli (`_grab`).
+        Nie `cameras.frame` - ten renderuje kazda symulowana od nowa, a to jest wolane co takt."""
+        with self.frame_lock:
+            live = set(self.frames)
+        return [c.name for c in self.ws.cameras if c.enabled and c.name in live]
+
+    def _moved_cameras(self) -> list[str]:
+        return [c.name for c in self.ws.cameras if c.enabled and c.calibrated and self.watch.moved(c.name)]
+
+    def _truth_cameras(self) -> list[CameraRecord]:
+        """Symulowane, ktorym skrot "pomin" cos da: nieskalibrowane, niepewne albo poruszone."""
+        return [c for c in self.ws.cameras if c.enabled and c.simulated and c.sim_pose is not None
+                and (not c.trusted or self.watch.moved(c.name))]
+
+    def _set_lens(self, rec: CameraRecord, res: intr.Result) -> None:
+        """Zapis obiektywu (K, dystorsja) kamery - z szachownicy albo z pliku. Poza ustalona ze starym K
+        przestaje byc zaufana: krok 2 trzeba powtorzyc."""
+        rec.K, rec.dist = res.K.tolist(), res.dist.tolist()
+        rec.intrinsics_from = "szachownica"
+        self._simreal_px.pop(rec.name, None)            # nowe K - Sim-Real do sprawdzenia od nowa
+        rec.intrinsics_info = {"rms_px": res.rms_px, "n_views": res.n_views, "coverage": res.coverage,
+                               "trusted": res.trusted, "reason": res.reason,
+                               "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if rec.calibrated:
+            rec.calibration["reason"] = "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
+            rec.calibration["trusted"] = False
+        self._save()
+        self.twin.rebuild()
+        self._refresh_cameras()
+
+    def _lens_files(self) -> list[str]:
+        """Nazwy plikow z gotowym obiektywem w `LENS_DIR` (posortowane)."""
+        return sorted(f.name for f in LENS_DIR.glob("*.txt")) if LENS_DIR.is_dir() else []
+
+    def _import_lens(self, name: str, filename: str) -> str:
+        """Obiektyw kamery `name` z pliku `LENS_DIR/filename`. Odmawia, gdy plik jest z innej
+        rozdzielczosci (K zalezy od niej) - albo, bez `image_size` w pliku, gdy punkt glowny
+        lezy daleko od srodka kadru kamery."""
+        try:
+            rec = self.ws.camera(name)
+        except KeyError:
+            raise RuntimeError("wybierz kamere") from None
+        if rec.simulated:
+            raise RuntimeError("kamera symulowana nie potrzebuje kroku 1")
+        if filename == "-" or not filename:
+            raise RuntimeError(f"brak pliku z obiektywem - wgraj .txt do {LENS_DIR}")
+        path = LENS_DIR / filename
+        if not path.is_file():
+            raise RuntimeError(f"nie ma pliku {path}")
+        try:
+            res = intr.read_file(path)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from None
+        W, H = rec.width, rec.height
+        if res.size != (0, 0) and res.size != (W, H):
+            raise RuntimeError(f"{filename} jest z rozdzielczosci {res.size[0]}x{res.size[1]}, "
+                               f"a kamera {name} ma {W}x{H}")
+        cx, cy = res.K[0, 2], res.K[1, 2]
+        if res.size == (0, 0) and (abs(2 * cx - W) > 0.3 * W or abs(2 * cy - H) > 0.3 * H):
+            raise RuntimeError(f"{filename}: punkt glowny ({cx:.0f}, {cy:.0f}) nie pasuje do kadru {W}x{H} "
+                               f"kamery {name} - plik z innej rozdzielczosci?")
+        self._set_lens(rec, res)
+        self.intr_md.content = f"Obiektyw **{name}** wczytany {res.reason}."
+        todo = self._lens_todo()
+        if todo and self.intr_cam.value not in todo:
+            self.intr_cam.value = todo[0]
+        return name
+
+    def _lens_todo(self) -> list[str]:
+        """Prawdziwe wlaczone kamery bez zmierzonego obiektywu (krok 1)."""
+        return [c.name for c in self.ws.cameras if c.enabled and not c.simulated and c.intrinsics_problem()]
+
+    def _wave_block(self) -> str:
+        """Dlaczego krok 2 nie moze teraz ruszyc ("" = moze) - przycisk wylaczony z tym powodem."""
+        if self.intr_job.running:
+            return "Najpierw skoncz krok 1 (Gotowe albo Anuluj)."
+        todo = self._lens_todo()
+        if todo:
+            return f"Najpierw krok 1 dla: {', '.join(todo)}."
+        if not self.twin.connected:
+            return "Najpierw polacz ramie: zakladka Ramie, przycisk Polacz."
+        if self._estop_active():
+            return "Aktywny STOP - najpierw zolty przycisk Skasuj STOP na gorze."
+        busy = self._busy(jobs.CALIB_OWNER)
+        if busy:
+            return f"Ramie jest zajete ({busy}) - poczekaj albo je zatrzymaj."
+        if not self._wave_cameras():
+            return "Zadna kamera nie daje obrazu - sprawdz zakladke Kamery."
+        return ""
+
+    def _confirm_motion(self, key) -> bool:
+        """Sim: od razu. Prawdziwe ramie: pierwszy klik pyta (przycisk zmienia sie w pytanie), drugi rusza."""
+        why = self._wave_block()
+        if why:
+            raise RuntimeError(why)
+        if self.twin.status.simulated or self.calib_ask.ask(key):
+            return True
+        self._render_calibration()
+        return False
+
+    def _render_calibration(self) -> None:
+        """Przemalowanie zakladki Kalibracja do stanu (co takt; zapisy tylko przy zmianie)."""
+        with self._render_lock:
+            set_if(self.calib_html, "content", self._cams_html(calib=True))
+            set_if(self.calib_now_md, "content", f"**Teraz:** {self._calib_now()}")
+            ij, cj = self.intr_job, self.calib_job
+            sim = bool(self.twin.status.simulated) if self.twin.connected else self._preset_backend() == "sim"
+            # --- krok 1: tylko przy prawdziwej kamerze
+            real = [c for c in self.ws.cameras if c.enabled and not c.simulated]
+            todo = self._lens_todo()
+            set_if(self.intr_box, "visible", bool(real) or ij.running)
+            opts = tuple(c.name for c in real) or ("-",)
+            if tuple(self.intr_cam.options) != opts:
+                cur = self.intr_cam.value
+                self.intr_cam.options = opts
+                self.intr_cam.value = cur if cur in opts else (todo[0] if todo else opts[0])
+            done = bool(real) and not todo
+            set_if(self.intr_title, "content", "**Krok 1 z 2: zmierz obiektyw kazdej kamery**" + (
+                " - gotowe" if done else f" - zostalo: {', '.join(todo)}"))
+            set_if(self.intr_help, "visible", not done and not ij.running)
+            set_if(self.intr_sheet_box, "visible", not done and not ij.running)
+            set_if(self.intr_cam, "visible", not ij.running and len(real) > 1)
+            set_if(self.intr_start_box, "visible", not ij.running)
+            files = tuple(self._lens_files())
+            set_if(self.lens_file_box, "visible", bool(files) and not ij.running)
+            if files and tuple(self.lens_file.options) != files:
+                cur = self.lens_file.value
+                self.lens_file.options = files
+                self.lens_file.value = cur if cur in files else files[0]
+            cam = self.intr_cam.value
+            label = (f"Zmierz jeszcze raz: {cam}" if cam not in todo else
+                     f"Zacznij: pokazuj szachownice kamerze {cam}")
+            set_if(self.intr_start, "label", label)
+            set_if(self.intr_start, "color", "green" if cam in todo else "gray")
+            set_if(self.intr_start, "disabled", cj.running)
+            set_if(self.intr_run_box, "visible", ij.running)
+            set_if(self.intr_img, "visible", ij.running)
+            col = ij.data.get("collector") if ij.running else None
+            enough = col is not None and len(col.views) >= 12 and col.coverage >= 0.55
+            set_if(self.intr_solve, "label", f"Gotowe - policz obiektyw {ij.data.get('camera', '')}" if enough else
+                   "Gotowe - policz obiektyw (jeszcze za malo zdjec)")
+            set_if(self.intr_solve, "color", "green" if enough else "gray")
+            # --- krok 2
+            cams = self._wave_cameras()
+            moved = self._moved_cameras()
+            enabled = [c for c in self.ws.cameras if c.enabled]
+            poses_done = bool(enabled) and not moved and all(c.trusted and not c.intrinsics_problem()
+                                                             for c in enabled)
+            idle = not cj.running and not self._calib_pending
+            set_if(self.pose_title, "content", "**Krok 2 z 2: ustal, gdzie stoja kamery**" + (
+                " - gotowe" if poses_done else ""))
+            if sim:
+                help_ = ("Ramie samo pokaze kamerom karte z kodem w ok. 20 miejscach nad stolem (ok. 2-3 min); "
+                         "z tego program liczy, gdzie stoi kazda kamera. W symulacji karta jest w chwytaku sama - "
+                         "kliknij **Start**. Szybciej: **Symulacja: pomin** nizej.")
+            else:
+                help_ = ("Ramie samo pokaze kamerom karte z kodem w ok. 20 miejscach nad stolem (ok. 2-3 min); "
+                         "z tego program liczy, gdzie stoi kazda kamera. Wszystkie kamery naraz.\n\n"
+                         "1. Pobierz karte i wydrukuj ja w skali **100%**.\n"
+                         "2. Zmierz linijka bok kwadratowego kodu (czarna ramka) i wpisz go nizej.\n"
+                         "3. Zegnij karte na linii; wolny koniec wloz w szczeki chwytaka - ok. **7 cm** ma wystawac.\n"
+                         "4. Zabierz wszystko ze stolu, odsun sie od ramienia i kliknij **Start** (dwa razy - "
+                         "drugie klikniecie potwierdza).")
+            set_if(self.pose_help, "content", help_)
+            set_if(self.pose_help, "visible", idle and not poses_done and not moved)
+            set_if(self.pose_sheet_box, "visible", idle and not poses_done and not moved and not sim)
+            why = self._wave_block()
+            set_if(self.wave_box, "visible", idle)
+            names = ", ".join(cams) or "brak kamer z obrazem"
+            if why:
+                look = ("Start: ramie pokaze karte kamerom", "gray", viser.Icon.WAVE_SINE)
+            elif self.calib_ask.pending(("fala", tuple(cams))):
+                look = ("Karta w chwytaku, stol pusty, stoisz z daleka? Kliknij jeszcze raz - ramie ruszy",
+                        "orange", viser.Icon.ALERT_TRIANGLE)
+            elif poses_done or moved:
+                look = (f"Zrob krok 2 jeszcze raz ({names})", "gray", viser.Icon.WAVE_SINE)
+            else:
+                look = (f"Start: ramie pokaze karte kamerom ({names})", "green", viser.Icon.WAVE_SINE)
+            _Toggle._show(self.wave_btn, *look, disabled=bool(why))
+            set_if(self.reloc_box, "visible", idle and bool(moved))
+            if moved:
+                if self.calib_ask.pending(("reloc", moved[0])):
+                    look = (f"Karta w chwytaku, stol pusty? Kliknij jeszcze raz - ramie pokaze karte {moved[0]}",
+                            "orange", viser.Icon.ALERT_TRIANGLE)
+                else:
+                    look = (f"Kamera {moved[0]} zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)",
+                            "orange", viser.Icon.CURRENT_LOCATION)
+                _Toggle._show(self.reloc_btn, *look, disabled=bool(why))
+            notes = []
+            if idle and why:
+                notes.append(why)
+            elif idle and moved:
+                notes.append(f"Kamera {moved[0]} przesunela sie od kalibracji. " +
+                             ("" if sim else "Wloz karte w chwytak i ") + "kliknij pomaranczowy przycisk - "
+                             "ramie pokaze karte tylko tej kamerze.")
+            set_if(self.wave_md, "content", "  \n".join(notes))
+            set_if(self.wave_md, "visible", bool(notes))
+            set_if(self.truth_btn, "visible", idle and sim and bool(self._truth_cameras()))
+            set_if(self.calib_bar, "visible", cj.running)
+            set_if(self.calib_cancel, "visible", cj.running)
+            set_if(self.calib_apply_box, "visible", self._calib_pending)
+            used = cj.data.get("tag_size")
+            changed = used is not None and abs(self.tag_mm.value / 1000 - used) > 1e-6
+            if changed:
+                look = (f"Nie da sie zapisac: bok kodu zmieniony po pomiarze ({used * 1000:.1f} -> "
+                        f"{self.tag_mm.value:.1f} mm) - zrob krok 2 jeszcze raz", "gray", viser.Icon.DEVICE_FLOPPY)
+            else:
+                look = ("Zapisz wynik", "green", viser.Icon.DEVICE_FLOPPY)
+            _Toggle._show(self.calib_apply, *look, disabled=changed)
+            presets = tuple(self.ws.presets())
+            set_if(self.preset_pick, "options", presets or ("-",))
+            current = self.ws.calib_preset
+            if current in presets:
+                # Tylko wgrany zestaw: zapis z kodu wola on_update, a ten wgrany pomija - bez petli.
+                set_if(self.preset_pick, "value", current)
+            set_if(self.preset_md, "content", "" if not presets or current == presets[0]
+                   else f"Wgrany starszy zestaw; najnowszy to {presets[0]}.")
+            set_if(self.preset_box, "visible", idle and bool(presets))
+
+    def _calib_now(self) -> str:
+        """Jedna nastepna akcja w tej zakladce - z krokow 1-3 przewodnika, zeby nie mowic czego innego niz naglowek."""
+        cj, ij = self.calib_job, self.intr_job
+        if cj.running:
+            return f"ramie pokazuje karte kamerom ({int(100 * cj.progress)}%) - nie wchodz w jego zasieg."
+        if self._calib_pending:
+            return "sprawdz wynik ponizej i kliknij **Zapisz wynik** (albo Odrzuc)."
+        if ij.running:
+            return (f"pokazuj szachownice kamerze {ij.data.get('camera', '')} (opis pod obrazem), potem "
+                    f"**Gotowe - policz obiektyw**.")
+        g = self._guide_last
+        if g is not None:
+            for st in g.steps:
+                if st.number in (1, 2, 3) and st.status not in (gd.DONE, gd.SKIP):
+                    why = self._wave_block() if st.number == 3 else ""
+                    if why:                             # przycisk kroku 2 zablokowany - najpierw powod
+                        return why[0].lower() + why[1:].rstrip(".") + "."
+                    text = st.action or st.detail
+                    for prefix in ("Kalibracja > ", "Kalibracja: ", "Kalibracja, "):
+                        text = text.removeprefix(prefix)
+                    return f"{text[0].lower() + text[1:]}."
+        return "wszystkie kamery skalibrowane. Gdy ktoras poruszysz, pojawi sie tu przycisk dla niej."
 
     def _apply_calibration(self) -> list[str]:
-        """Zapis wyniku fali - z bokiem taga i K, z ktorymi ja liczono."""
+        """Zapis wyniku kroku 2 - z bokiem kodu i K, z ktorymi go liczono."""
         fit = self.calib_job.result
         if fit is None:
-            raise RuntimeError("brak wyniku kalibracji")
+            raise RuntimeError("brak wyniku")
         used = self.calib_job.data.get("tag_size")
         if used is None:
-            raise RuntimeError("wynik bez boku taga - uruchom fale ponownie")
+            raise RuntimeError("wynik bez boku taga - zrob krok 2 jeszcze raz")
         if abs(self.tag_mm.value / 1000 - used) > 1e-6:
             # Poza policzona z innym bokiem taga jest przeskalowana (50,0 -> 49,2 mm: 1,6%
             # translacji) - zapis z nowym bokiem ukrylby te niezgodnosc na zawsze.
-            raise RuntimeError(f"bok taga zmieniony od fali ({used * 1000:.1f} -> {self.tag_mm.value:.1f} mm) "
-                               f"- uruchom fale ponownie z nowym bokiem")
+            raise RuntimeError(f"bok taga zmieniony od pomiaru ({used * 1000:.1f} -> {self.tag_mm.value:.1f} mm) "
+                               f"- zrob krok 2 jeszcze raz z nowym bokiem")
         self.ws.card["tag_size"] = used
         names = self.ws.apply_fit(fit, tag_size=used, intrinsics=self.calib_job.data.get("intrinsics"))
+        preset = self.ws.save_preset()                  # nowy plik - poprzednie zapisy zostaja
+        self._poses_changed(names)
+        self._calib_pending = False
+        self.calib_md.content = f"Zapisano polozenie: {', '.join(names)} (zestaw {preset.stem})."
+        self._render_calibration()
+        return names
+
+    def _poses_changed(self, names: list[str]) -> None:
+        """Po nowej pozie kamer (zapis kroku 2 albo wgranie zestawu): plik, scena, kadry odniesienia."""
         for n in names:
             self._simreal_px.pop(n, None)               # nowa poza - Sim-Real do sprawdzenia od nowa
         self._save()
@@ -1477,63 +2464,64 @@ class TwinApp:
             except RuntimeError:
                 pass
         self._refresh_cameras()
-        self.calib_apply.visible = False
-        return names
 
     def _start_card_calibration(self, event, cameras: list[str], quick: bool) -> None:
         mark = self._motion_mark()                      # STOP/Dom/Polacz od teraz - fala nie bierze ramienia
         if not self.twin.connected:
             raise RuntimeError("polacz ramie (sim albo prawdziwe) w zakladce Ramie")
         if not cameras or cameras == ["-"]:
-            raise RuntimeError("zadna wlaczona kamera nie daje kadru")
-        if not self.twin.status.simulated and not self.calib_confirm.value:
-            raise RuntimeError("potwierdz, ze karta jest w szczekach, a przestrzen nad stolem wolna")
+            raise RuntimeError("zadna wlaczona kamera nie daje obrazu")
         if self.calib_job.running:
-            raise RuntimeError("fala juz trwa")
+            raise RuntimeError("ramie juz pokazuje karte")
         # Fala bierze ramie na wlasnosc PRZED startem: jedzie polityka albo identyfikacja -
         # odmowa z powodem (wczesniej trzy watki pisaly cel na zmiane i ramie skakalo).
         # Odebranie ramienia (Dom, STOP, polaczenie) przerywa fale przez `calib_job.stop`.
         self._take_arm(jobs.CALIB_OWNER, preempt=self.calib_job.stop, mark=mark)
         self.ws.card["tag_size"] = self.tag_mm.value / 1000
-        self.calib_apply.visible = False
+        self._calib_pending = False
+        self.calib_md.content = ""
         try:
             self.calib_job.start(lambda job: jobs.run_card_calibration(job, self.twin, cameras, quick))
         except Exception:
             self.twin.release(jobs.CALIB_OWNER)
             raise
-        self.calib_confirm.value = False                # nastepna fala (np. relokalizacja) - nowe potwierdzenie
+        self.calib_ask.reset()                          # nastepny start (np. poruszona kamera) - nowe potwierdzenie
+        self._render_calibration()
 
     def _tick_calibration(self) -> None:
         j = self.calib_job
-        self.calib_bar.visible = j.running
         if j.running:
             self.calib_bar.value = 100 * j.progress
             prog = j.data.get("progress", {})
-            rows = [f"- {c}: {o} obs., {p} poz, rozrzut {s:.0f} st." for c, (o, p, s) in prog.items()]
-            self.calib_md.content = f"{j.message}\n\n" + "\n".join(rows)
-        elif j.state == jobs.DONE and j.result is not None and not self.calib_apply.visible and \
+            rows = [f"- {c}: widziala karte {o} razy" for c, (o, p, s) in prog.items()]
+            self.calib_md.content = ("**Ramie pokazuje karte kamerom - nie wchodz w jego zasieg.**\n\n"
+                                     + "\n".join(rows))
+        elif j.state == jobs.DONE and j.result is not None and not self._calib_pending and \
                 j.data.get("shown") is not j.result:
             fit = j.result
-            rows = ["| kamera | residuum | obs. | rozrzut | werdykt |", "|---|---|---|---|---|"]
+            rows = ["**Wynik** - kliknij Zapisz wynik:", "", "| kamera | wynik |", "|---|---|"]
             for n, c in fit.cameras.items():
                 extra = ""
                 rec = next((r for r in self.ws.cameras if r.name == n), None)
                 if rec is not None and rec.simulated and rec.sim_pose is not None:
                     from ..calib.handeye import pose_error
                     dt, dr = pose_error(np.asarray(rec.sim_pose), c.T_cam2base)
-                    extra = f" (wzgl. prawdy {dt * 1000:.2f} mm, {np.degrees(dr):.3f} st.)"
+                    extra = f" (od prawdy symulacji: {dt * 1000:.1f} mm)"
                 # Ten sam werdykt, ktory zapisze `Workspace.apply_fit`: K, z ktorym LICZONO poze
                 # (z fali), musi byc zaufane i wciaz takie samo jak w kamerze.
                 k_problem = rec.fit_problem((j.data.get("intrinsics") or {}).get(n)) if rec is not None else ""
-                verdict = f"NIE: {c.reason}" if not c.trusted else (f"NIE: {k_problem}" if k_problem else "zaufana")
-                rows.append(f"| {n} | {c.rms_px:.2f} px | {c.n_obs} | {c.spread_deg:.0f} st. | {verdict}{extra} |")
+                bad = c.reason if not c.trusted else k_problem
+                verdict = (f"**zle** - {bad}; popraw ustawienie kamery i zrob krok 2 jeszcze raz" if bad else
+                           f"**dobrze** (dokladnosc {c.rms_px:.2f} px){extra}")
+                rows.append(f"| {n} | {verdict} |")
             self.calib_md.content = "\n".join(rows)
-            self.calib_apply.visible = True
+            self._calib_pending = True
             j.data["shown"] = fit
         elif j.state in (jobs.FAILED, jobs.CANCELLED) and j.data.get("shown") != j.state:
-            # Przerwana przez operatora (STOP, Dom, Przerwij) to nie blad (`jobs.interrupted_by_operator`).
-            self.calib_md.content = (f"**Przerwane**: {j.message or 'fala przerwana'} - bez wyniku"
-                                     if j.state == jobs.CANCELLED else f"**Blad**: {j.error or j.message}")
+            # Przerwana przez operatora (STOP, Dom, Zatrzymaj) to nie blad (`jobs.interrupted_by_operator`).
+            self.calib_md.content = (f"**Zatrzymane** ({j.message or 'przerwane'}) - nic nie zapisano."
+                                     if j.state == jobs.CANCELLED else
+                                     f"**Nie udalo sie:** {j.error or j.message}")
             j.data["shown"] = j.state
 
         ij = self.intr_job
@@ -1548,9 +2536,11 @@ class TwinApp:
                         cv2.circle(vis, (int(u), int(v)), 3, (0, 255, 0), -1)
                 self.intr_img.image = thumb(vis, 480)
             if col is not None:
-                self.intr_md.content = (f"kadry: **{len(col.views)}** (zalecane 12+), pokrycie kadru "
-                                        f"**{col.coverage:.0%}** - {ij.message}. Przesuwaj, przybliz i pochylaj "
-                                        f"tablice; kadr zapisuje sie sam, gdy wnosi nowe ujecie.")
+                self.intr_md.content = (
+                    f"**Trzymaj szachownice przed kamera {ij.data.get('camera', '')} i powoli nia ruszaj:** w kazdym "
+                    f"rogu obrazu, blisko i daleko, pochylona w lewo, w prawo, w gore i w dol. Zdjecia robia sie "
+                    f"same (zielone kropki = szachownica widoczna).\n\n"
+                    f"Zdjecia: **{len(col.views)} z 12** - pokrycie obrazu: **{col.coverage:.0%} z 55%**")
         elif ij.state == jobs.DONE and ij.result is not None and ij.data.get("saved") is not ij.result:
             res = ij.result
             ij.data["saved"] = res
@@ -1560,29 +2550,22 @@ class TwinApp:
             try:
                 rec = self.ws.camera(name)
             except KeyError:
-                self.intr_md.content = f"**Kamery {name} juz nie ma** - K nie zapisane"
+                self.intr_md.content = f"**Kamery {name} juz nie ma** - nic nie zapisano"
                 return
-            rec.K, rec.dist = res.K.tolist(), res.dist.tolist()
-            rec.intrinsics_from = "szachownica"
-            self._simreal_px.pop(name, None)            # nowe K - Sim-Real do sprawdzenia od nowa
-            rec.intrinsics_info = {"rms_px": res.rms_px, "n_views": res.n_views, "coverage": res.coverage,
-                                   "trusted": res.trusted, "reason": res.reason,
-                                   "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
-            if rec.calibrated:
-                rec.calibration["reason"] = "intrynsyki zmienione po kalibracji polozenia - skalibruj ponownie"
-                rec.calibration["trusted"] = False
-            self._save()
-            self.twin.rebuild()
-            self._refresh_cameras()
-            self.intr_md.content = (f"Zapisano K ({name}): fx {res.K[0, 0]:.1f}, fy {res.K[1, 1]:.1f}, "
-                                    f"cx {res.K[0, 2]:.1f}, cy {res.K[1, 2]:.1f}; residuum **{res.rms_px:.3f} px**, "
-                                    f"{res.n_views} kadrow" + ("" if res.trusted else f" - uwaga: {res.reason}"))
+            self._set_lens(rec, res)
+            self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze." if res.trusted else
+                                    f"Obiektyw **{name}**: wynik niepewny ({res.reason}). Zmierz jeszcze raz - "
+                                    f"wiecej pochylen i rogow obrazu.")
+            todo = self._lens_todo()
+            if todo and self.intr_cam.value not in todo:
+                self.intr_cam.value = todo[0]           # nastepna kamera bez obiektywu
         elif ij.state == jobs.FAILED and ij.data.get("saved") != "err":
-            self.intr_md.content = f"**Blad**: {ij.error}"
+            self.intr_md.content = f"**Nie udalo sie:** {ij.error}"
             ij.data["saved"] = "err"
         elif ij.state == jobs.CANCELLED and ij.data.get("saved") != "cancel":
-            self.intr_md.content = "Przerwano - intrynsyki kamery bez zmian."
+            self.intr_md.content = "Anulowano - kamera bez zmian."
             ij.data["saved"] = "cancel"
+        self._render_calibration()
 
     # ================================================================== mapa
     def _build_map(self) -> None:
@@ -1719,8 +2702,9 @@ class TwinApp:
         g = self.server.gui
         self._tab_help("Trening")
         with g.add_folder("Nowy trening (PPO na GPU, MuJoCo Warp)"):
-            self.tr_task = g.add_dropdown("Zadanie", ("reach", "lift"), initial_value="reach",
-                                          hint="reach - koncowka do punktu; lift - chwyt i podniesienie kostki. "
+            self.tr_task = g.add_dropdown("Zadanie", ("reach", "lift", "pickplace"), initial_value="reach",
+                                          hint="reach - koncowka do punktu; lift - chwyt i podniesienie kostki; "
+                                               "pickplace - kostka przeniesiona na cel na blacie i puszczona. "
                                                "Przy Start z polityki zadanie bierze sie z polityki.")
             self.tr_envs = g.add_dropdown("Swiatow naraz", ("1024", "2048", "4096", "8192"), initial_value="4096",
                                           hint="Ile swiatow MuJoCo Warp naraz na GPU; 4096 sprawdzone na A4500, "
@@ -1954,9 +2938,9 @@ class TwinApp:
                                "polityce (bazowych z repozytorium nie nadpisuje). Ramieniem nie rusza.")
         self.pol_eval_md = g.add_markdown("")
         with g.add_folder("Uruchom na blizniaku"):
-            self.pol_cube_src = g.add_dropdown("lift: skad polozenie kostki", ("symulacja", "kamery"),
+            self.pol_cube_src = g.add_dropdown("lift/pickplace: skad polozenie kostki", ("symulacja", "kamery"),
                                                initial_value="symulacja",
-                                               hint="Tylko lift. symulacja - kostka z blizniaka (tylko ramie sim); "
+                                               hint="Tylko lift i pickplace. symulacja - kostka z blizniaka (tylko ramie sim); "
                                                     "kamery - ta sama percepcja co na biurku (zakladka Mapa, zaufana "
                                                     "kamera). Prawdziwe ramie: tylko kamery.")
             self.pol_confirm = g.add_checkbox("Prawdziwe ramie: rozumiem, ze sie ruszy", False,
@@ -1965,7 +2949,7 @@ class TwinApp:
             run = g.add_button("Uruchom", icon=viser.Icon.PLAYER_PLAY, color="green",
                                hint="Polityka jedzie na polaczonym ramieniu (przez nadzor) - RUSZA ramieniem. "
                                     "Odmowa przy aktywnym STOP-ie albo gdy ramie ma fala / identyfikacja; "
-                                    "STOP, Dom albo Zatrzymaj w trakcie startu - nie rusza. Sprzeglo panelu gasnie.")
+                                    "STOP, Dom albo Zatrzymaj w trakcie startu - nie rusza. Panel sie rozbraja.")
             halt = g.add_button("Zatrzymaj", icon=viser.Icon.PLAYER_STOP,
                                 hint="Zatrzymuje polityke - takze jeszcze ladowana po Uruchom; ramie trzyma "
                                      "ostatni cel.")
@@ -1976,6 +2960,23 @@ class TwinApp:
                                     hint="Tylko w blizniaku: kladzie kostke w losowym miejscu blatu symulacji "
                                          "(dodaje ja do sceny, gdy jej nie ma). Ramieniem nie rusza.")
             self.pol_run_md = g.add_markdown("")
+        with g.add_folder("Tag na biurku"):
+            self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
+                                       hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
+                                            "'Zmierzony bok taga' w zakladce Kamery.")
+            self.tag_above_cm = g.add_number("wysokosc nad tagiem [cm]", 8.0, min=2.0, max=30.0, step=1.0,
+                                             hint="Ile nad srodkiem taga (wzdluz osi z podstawy) ma stanac "
+                                                  "koncowka po 'Jedz nad tag'.")
+            find_tag = g.add_button("Znajdz tag w kamerach", icon=viser.Icon.TARGET,
+                                    hint="Kadry wlaczonych kamer z zaufana poza -> poza taga w ukladzie "
+                                         "podstawy (mediana z kamer), zielona plytka w 3D. Ramieniem nie rusza.")
+            goto_tag = g.add_button("Jedz nad tag", icon=viser.Icon.PLAYER_PLAY, color="orange",
+                                    hint="RUSZA ramieniem: IK do punktu nad znalezionym tagiem, rampa przez "
+                                         "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
+                                         "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
+            self.tag_md = g.add_markdown("")
+        self.specs = add_specs_folder(self, g)
+        self._tag_fix = None
         self.goal_node = self.server.scene.add_icosphere("/cel", radius=0.012, color=(255, 196, 0), visible=False)
         self.goal_gizmo = self.server.scene.add_transform_controls("/cel_uchwyt", scale=0.08, disable_rotations=True,
                                                                    visible=False)
@@ -2003,13 +3004,23 @@ class TwinApp:
         @self._safe
         def _(event):
             from ..rl import task as tk
-            g_ = tk.sample_goals(self.twin.scene.kin, tk.make_task("reach"), np.random.default_rng(), 1)[0]
+            g_ = tk.sample_goals(self.twin.scene.kin, tk.make_task("reach", self.ws.spec()), np.random.default_rng(), 1)[0]
             self._set_goal(g_)
 
         @new_cube.on_click
         @self._safe
         def _(event):
             self._place_cube_randomly()
+
+        @find_tag.on_click
+        @self._safe
+        def _(event):
+            self._find_tag()
+
+        @goto_tag.on_click
+        @self._safe
+        def _(event):
+            self._goto_tag()
 
         @run.on_click
         @self._safe
@@ -2068,13 +3079,20 @@ class TwinApp:
         """
         from ..rl import task as tk
         from ..rl.runner import project_goal
-        runner = self.runner if self.runner is not None and self.runner.task.name == "reach" else None
-        if runner is not None:
+        runner = self.runner if self.runner is not None and self.runner.task.name in ("reach", "pickplace") \
+            else None
+        if runner is not None and runner.task.target:
+            # pickplace: cel odlozenia na blacie (z = 0) i w pierscieniu celow z treningu;
+            # podkladka celu w blizniaku idzie za nim.
+            runner.goal = np.asarray(p_base, float)
+            g = np.asarray(runner.target, float)
+            self._show_target_pad(g)
+        elif runner is not None:
             runner.goal = np.asarray(p_base, float)       # setter rzutuje na obszar zadania tej polityki
             g = np.asarray(runner.goal, float)
         else:
             if self._reach_task is None:
-                self._reach_task = tk.make_task("reach")
+                self._reach_task = tk.make_task("reach", self.ws.spec())
             g = project_goal(self._reach_task, np.asarray(p_base, float))
         self._goal_base = g
         pw = (self.T_b2w @ np.r_[g, 1.0])[:3]
@@ -2083,16 +3101,385 @@ class TwinApp:
             self.goal_gizmo.position = pw
 
     def _cube_in_scene(self) -> bool:
+        return self._body_in_scene("cube")
+
+    def _body_in_scene(self, name: str) -> bool:
         with self.twin.lock:
-            return "cube" in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
+            return name in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
+
+    def _configure_objects(self, cube: bool, pad: bool) -> None:
+        """Kostka i/lub podkladka celu pickplace w scenie blizniaka (przebudowa, stan zostaje)."""
+        from ..rl import task as tk
+        from ..rl.env import TARGET_RGBA, TARGET_SIZE
+        task = tk.make_task("lift", self.ws.spec())
+        h = task.cube_half
+        objs, sensors = [], []
+        if cube:
+            objs.append(sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0), mass=task.cube_mass))
+            sensors.append("cube")
+        if pad:
+            # Tylko do ogladania (mocap, bez kolizji) - kostka przez nia przenika.
+            objs.append(sc.Box("target", TARGET_SIZE, (0.3, 0.1), rgba=TARGET_RGBA, free=False, mocap=True))
+        self.twin.configure(objects=objs, grasp_sensors=sensors)
+
+    def _show_target_pad(self, target_base: np.ndarray) -> None:
+        """Podkladka celu pickplace w blizniaku na `target_base` (uklad podstawy, blat)."""
+        from ..rl.env import TARGET_SIZE
+        if not self._body_in_scene("target"):
+            return
+        with self.twin.lock:
+            s = self.twin.scene
+            k = int(s.model.body_mocapid[s.model.body("target").id])
+            T = s.T_base2world
+            s.data.mocap_pos[k] = T[:3, :3] @ np.array([target_base[0], target_base[1], TARGET_SIZE[2]]) + T[:3, 3]
+
+    # ------------------------------------------------------------ kamera PMD z tagami
+    def _build_pmd(self, g) -> None:
+        """Folder "Kamera PMD" w zakladce Kamery: tagi na obudowie -> uklad tagow z kadrow -> poza w 3D.
+
+        Stan: `self.pmd` (`TagBody`: numery, bok, uklad, os optyczna), `_pmd_obs` (kadry do nauki
+        ukladu), `_pmd_T` (ostatnia poza w ukladzie podstawy), `_pmd_nodes` (wezly 3D pod /pmd).
+        Z pliku stanowiska (sekcja `pmd`) wraca uklad, os i poza - PMD jest w 3D od startu.
+        """
+        self.pmd = TagBody.from_dict(self.ws.pmd) if self.ws.pmd else TagBody()
+        self._pmd_obs: list = []
+        self._pmd_fix = None
+        self._pmd_T: np.ndarray | None = None
+        if self.ws.pmd and self.ws.pmd.get("T_body2base") is not None:
+            self._pmd_T = np.asarray(self.ws.pmd["T_body2base"], float)
+        self._pmd_nodes: dict[str, Any] = {}
+        self._pmd_key = None
+        with g.add_folder("Kamera PMD (tagi na obudowie)", expand_by_default=False):
+            g.add_markdown("Kamera glebi (pmd CamBoard nano) z tagami 36h11 naklejonymi na obudowie: kamery "
+                           "stanowiska, ktore maja poze, widza tagi - stad miejsce PMD w 3D.")
+            self.pmd_ids = g.add_text("id tagow", " ".join(str(i) for i in self.pmd.ids),
+                                      hint="Numery AprilTag 36h11 na obudowie, po spacji. PIERWSZY to uklad kamery PMD "
+                                           "(srodek w srodku tego taga, z = jego normalna). Karta kalibracyjna ma 0 i 1: "
+                                           "te same numery na obudowie myla fale, gdy PMD jest w kadrze.")
+            self.pmd_mm = g.add_number("Bok tagu na obudowie [mm]", round(self.pmd.tag_size * 1000, 1), min=5.0,
+                                       max=100.0, step=0.5,
+                                       hint="Bok CZARNEGO kwadratu taga na obudowie, zmierzony linijka. Zmiana "
+                                            "przeskalowuje nauczony uklad.")
+            self.pmd_optical = g.add_dropdown("Kamera patrzy wzdluz", self._pmd_axis_options(self.pmd.ids),
+                                              initial_value=self._pmd_axis_label(self.pmd.optical),
+                                              hint="Os optyczna PMD wzgledem jednego z tagow: '-z taga 0' = tag 0 na "
+                                                   "tylnej sciance (kamera patrzy od niego); '+x/-x' = tag na bocznej; "
+                                                   "'+y/-y' = tag na gornej. Rysuje piramide pola widzenia 90 x 69 st. "
+                                                   "'nieznana' = same tagi.")
+            learn = g.add_button("Ucz ukladu tagow: dodaj kadr", icon=viser.Icon.CAMERA_PLUS,
+                                 hint="Biezacy kadr kazdej wlaczonej kamery z K (poza kamery niepotrzebna) doklada "
+                                      "do nauki, gdzie na obudowie sa tagi wzgledem siebie. Kilka kadrow z roznych "
+                                      "stron, az kazdy tag ma poze. Ramieniem nie rusza.")
+            forget = g.add_button("Nauka od nowa", icon=viser.Icon.TRASH, color="gray",
+                                  hint="Wyrzuca zebrane kadry i uklad tagow (np. po przeklejeniu taga).")
+            find = g.add_button("Znajdz PMD w kamerach", icon=viser.Icon.TARGET,
+                                hint="Kadry kamer z poza -> poza kamery PMD w ukladzie podstawy (mediana z kamer); "
+                                     "tagi, osie i piramida w 3D. Ramieniem nie rusza.")
+            self.pmd_follow = g.add_checkbox("Sledz na zywo", False,
+                                             hint="Szuka PMD w kazdym takcie panelu i przesuwa ja w 3D - do "
+                                                  "ustawiania kamery na stanowisku.")
+            save = g.add_button("Zapisz do stanowiska", icon=viser.Icon.DEVICE_FLOPPY, color="green",
+                                hint="Numery, bok, uklad tagow, os optyczna i ostatnia znaleziona poza do "
+                                     "twin.json (sekcja pmd) - po restarcie PMD od razu jest w 3D.")
+            self.pmd_md = g.add_markdown("")
+        if self._pmd_T is not None:
+            self._pmd_draw(self._pmd_T)
+            self._pmd_note("poza z pliku stanowiska - Znajdz PMD w kamerach odswieza")
+
+        @learn.on_click
+        @self._safe
+        def _(event):
+            self._pmd_learn()
+
+        @forget.on_click
+        @self._safe
+        def _(event):
+            self._pmd_forget()
+
+        @find.on_click
+        @self._safe
+        def _(event):
+            self._pmd_find(self._grab())
+
+        @save.on_click
+        @self._safe
+        def _(event):
+            self._pmd_save(event)
+
+        @self.pmd_optical.on_update
+        @self._safe
+        def _(event):
+            if event.client is None:
+                return                                  # ustawione z kodu (zmiana numerow)
+            self._pmd_sync()
+            if self._pmd_T is not None:
+                self._pmd_draw(self._pmd_T)
+
+    @staticmethod
+    def _pmd_axis_options(ids) -> tuple[str, ...]:
+        return ("nieznana",) + tuple(f"{axis} taga {i}" for i in ids for axis in OPTICAL_AXES)
+
+    @staticmethod
+    def _pmd_axis_label(optical) -> str:
+        return "nieznana" if optical is None else f"{optical[1]} taga {int(optical[0])}"
+
+    def _pmd_sync(self) -> TagBody:
+        """Bryla PMD z pol panelu. Nowe numery zeruja uklad i nauke; nowy bok skaluje uklad."""
+        try:
+            ids = tuple(int(t) for t in self.pmd_ids.value.replace(",", " ").split())
+        except ValueError:
+            raise ValueError(f"id tagow: liczby po spacji, jest {self.pmd_ids.value!r}") from None
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError("id tagow: co najmniej jeden numer, bez powtorzen")
+        size = float(self.pmd_mm.value) / 1000.0
+        body = self.pmd
+        if ids != body.ids:
+            body = TagBody(body.name, ids, size, {}, None, body.fov_deg, body.resolution)
+            self._pmd_obs, self._pmd_fix = [], None
+            self.pmd_optical.options = self._pmd_axis_options(ids)
+            self.pmd_optical.value = "nieznana"
+        elif abs(size - body.tag_size) > 1e-9:
+            k = size / body.tag_size
+            layout = {i: T.copy() for i, T in body.layout.items()}
+            for T in layout.values():
+                T[:3, 3] *= k
+            body = TagBody(body.name, ids, size, layout, body.optical, body.fov_deg, body.resolution)
+            self._pmd_obs = []                          # pozy tagow w kadrach liczone starym bokiem
+        label = self.pmd_optical.value
+        body.optical = None if label == "nieznana" else (int(label.split()[2]), label.split()[0])
+        self.pmd = body
+        return body
+
+    def _pmd_note(self, text: str) -> None:
+        """Tekst pod przyciskami, z ostrzezeniem o numerach wspolnych z karta kalibracyjna."""
+        shared = sorted(set(self.pmd.ids) & set(self.ws.card_obj().ids))
+        if shared:
+            text += (f"\n\n**Uwaga:** tagi {', '.join(map(str, shared))} sa tez na karcie kalibracyjnej - PMD "
+                     f"w kadrze podczas fali myli kalibracje; bezpieczniej inne numery na obudowie.")
+        self.pmd_md.content = text
+
+    def _pmd_learn(self) -> None:
+        body = self._pmd_sync()
+        obs = observe(self._grab(), self.ws.cameras, body)
+        if not obs:
+            with_k = [c.name for c in self.ws.cameras if c.enabled and c.K is not None]
+            self._pmd_note(f"zadna kamera nie widzi tagow {', '.join(map(str, body.ids))} "
+                           f"(wlaczone z K: {', '.join(with_k) or 'brak - najpierw Kalibracja, krok 1'})")
+            return
+        self._pmd_obs.extend(obs)
+        fit = learn_layout(self._pmd_obs, body)
+        body.layout = fit.layout
+        seen = "; ".join(f"{o.camera}: tagi {', '.join(map(str, o.ids))}" for o in obs)
+        pairs = ", ".join(f"{a}-{b} x{n}" for (a, b), n in sorted(fit.pairs.items()))
+        missing = fit.missing(body.ids)
+        text = f"kadr {len(self._pmd_obs)}: {seen}. Pary tagow w jednym kadrze: {pairs or 'brak'}. "
+        if missing:
+            text += (f"**Bez pozy: tag {', '.join(map(str, missing))}** - pokaz go kamerze razem z tagiem, "
+                     f"ktory juz ma poze.")
+        else:
+            text += "Uklad kompletny - Znajdz PMD w kamerach."
+        self._pmd_note(text)
+        if self._pmd_T is not None:
+            self._pmd_draw(self._pmd_T)
+
+    def _pmd_forget(self) -> None:
+        body = self._pmd_sync()
+        body.layout = {body.ref: np.eye(4)}
+        self._pmd_obs, self._pmd_fix = [], None
+        self._pmd_note("nauka ukladu od nowa - dodaj kadry, w ktorych widac po dwa tagi naraz")
+        if self._pmd_T is not None:
+            self._pmd_draw(self._pmd_T)
+
+    def _pmd_find(self, frames: dict[str, np.ndarray]) -> None:
+        """Poza PMD z kadrow kamer z poza -> wezly 3D i tekst z rozrzutem miedzy kamerami."""
+        body = self._pmd_sync()
+        fix = locate(frames, self.ws.cameras, body)
+        self._pmd_fix = fix
+        if fix is None:
+            posed = [c.name for c in self.ws.cameras if c.enabled and c.T_cam2base is not None and c.K is not None]
+            self._pmd_note(f"tagi {', '.join(map(str, body.known()))} nie widziane (kamery z poza: "
+                           f"{', '.join(posed) or 'brak - najpierw Kalibracja'})")
+            return
+        self._pmd_T = fix.T_body2base
+        self._pmd_draw(fix.T_body2base)
+        self._pmd_pose_to_record(fix)
+        p = fix.position
+        cams = "; ".join(f"{n}: tagi {', '.join(map(str, fix.tags_seen[n]))}, {r:.2f} px"
+                         for n, r in fix.reproj_px.items())
+        text = (f"PMD (tag {body.ref}): x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, z {p[2] * 1000:.0f} mm; "
+                f"{cams}; rozrzut miedzy kamerami {fix.spread_mm:.1f} mm")
+        untrusted = [n for n in fix.per_camera if not self.ws.camera(n).trusted]
+        if untrusted:
+            text += (f". Kamery bez zaufanej pozy: {', '.join(untrusted)} - poza PMD jest tylko tak dobra, "
+                     f"jak ich kalibracja.")
+        self._pmd_note(text)
+
+    def _pmd_records(self) -> list[CameraRecord]:
+        return [c for c in self.ws.cameras if is_pmd(c.source)]
+
+    def _pmd_pose_to_record(self, fix) -> None:
+        """Poza z tagow -> `T_cam2base` kamery stanowiska o zrodle `pmd` (gdy wybrano os optyczna).
+
+        Poza jest NIEZAUFANA z zalozenia: uklad optyczny zaczyna sie w srodku wybranego taga,
+        nie w obiektywie (kilka-kilkanascie mm), a wchodzi przez kalibracje kamer stanowiska.
+        Do sceny i piramidy w 3D wystarcza; mapa i percepcja biora tylko kamery zaufane.
+        """
+        To = self.pmd.T_optical2body()
+        recs = self._pmd_records()
+        if To is None or not recs:
+            return
+        T = np.asarray(fix.T_body2base, float) @ To
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for rec in recs:
+            rec.T_cam2base = T.tolist()
+            rec.calibration = dict(rms_px=float(max(fix.reproj_px.values())), max_px=float(max(fix.reproj_px.values())),
+                                   n_obs=len(fix.per_camera), spread_deg=0.0, trusted=False,
+                                   reason="poza z tagow na obudowie (srodek w tagu, nie w obiektywie)", time=now,
+                                   spread_mm=float(fix.spread_mm), tags=[int(self.pmd.optical[0]), self.pmd.optical[1]])
+            self._update_frustum(rec)
+        self._dirty_rebuild = time.monotonic()          # kamera w scenie MuJoCo - przebudowa po chwili spokoju
+
+    def _tick_pmd(self, frames: dict[str, np.ndarray]) -> None:
+        if self.pmd_follow.value:
+            self._pmd_find(frames)
+
+    def _pmd_draw(self, T_body2base: np.ndarray) -> None:
+        """Tagi (obrazy), osie ukladu PMD i piramida pola widzenia pod /pmd w scenie 3D.
+
+        Wezly powstaja raz na zestaw (tagi, os, bok) i potem tylko sie przesuwaja - w trybie
+        "sledz na zywo" nie ma co slac obrazow tagow co takt.
+        """
+        body = self.pmd
+        Tw = self.T_b2w @ np.asarray(T_body2base, float)
+        has_record = any(c.enabled and c.T_cam2base is not None for c in self._pmd_records())
+        key = (tuple(body.known()), body.optical, round(body.tag_size, 6), has_record)
+        with self.scene_lock:
+            sc_ = self.server.scene
+            if self._pmd_key != key:
+                for h in self._pmd_nodes.values():
+                    h.remove()
+                self._pmd_nodes = {}
+                self._pmd_key = key
+            plate = body.tag_size / aptags.MARKER_FRACTION
+            poses: dict[str, np.ndarray] = {"os": Tw, "etykieta": Tw}
+            for i in body.known():
+                # Plytka 0,5 mm przed srodkiem taga, zeby nie migotala z obudowa / plytka sasiada.
+                poses[f"tag{i}"] = Tw @ body.layout[i] @ pose(np.eye(3), np.array([0.0, 0.0, 0.0005]))
+            To = body.T_optical2body()
+            own_frustum = not any(c.enabled and c.T_cam2base is not None for c in self._pmd_records())
+            if To is not None and own_frustum:          # kamera pmd w stanowisku ma wlasna piramide z obrazem
+                poses["kamera"] = Tw @ To
+            for name, T in poses.items():
+                h = self._pmd_nodes.get(name)
+                if h is not None:
+                    h.position, h.wxyz = T[:3, 3], mat_to_wxyz(T[:3, :3])
+                    continue
+                q = mat_to_wxyz(T[:3, :3])
+                if name == "os":
+                    h = sc_.add_frame("/pmd/os", axes_length=0.03, axes_radius=0.0015, wxyz=q, position=T[:3, 3])
+                elif name == "etykieta":
+                    h = sc_.add_label("/pmd/etykieta", "PMD", wxyz=q, position=T[:3, 3] + np.array([0.0, 0.0, 0.04]))
+                elif name == "kamera":
+                    h = sc_.add_camera_frustum("/pmd/kamera", fov=float(np.radians(body.fov_deg[1])),
+                                               aspect=body.resolution[0] / body.resolution[1], scale=0.05,
+                                               color=(120, 200, 255), thickness=0.002, wxyz=q, position=T[:3, 3])
+                else:
+                    # Wiersz 0 obrazu viser kladzie na -y (jak mapa blatu, `table[::-1]`); tag ma gore na +y.
+                    img = aptags.render(int(name[3:]), 100)[::-1]
+                    img = np.ascontiguousarray(np.repeat(img[:, :, None], 3, axis=2))
+                    h = sc_.add_image(f"/pmd/{name}", img, plate, plate, format="png", wxyz=q, position=T[:3, 3])
+                self._pmd_nodes[name] = h
+
+    def _pmd_save(self, event) -> None:
+        body = self._pmd_sync()
+        data = body.to_dict()
+        if self._pmd_T is not None:
+            data["T_body2base"] = np.asarray(self._pmd_T, float).tolist()
+        self.ws.pmd = data
+        self._save()
+        self._notify(event, "Zapisano", f"kamera PMD w {self.ws_path.name}: tagi {', '.join(map(str, body.ids))}, "
+                                        f"uklad {len(body.known())}/{len(body.ids)}, "
+                                        f"poza {'zapisana' if self._pmd_T is not None else 'jeszcze nieznana'}")
+
+    # ------------------------------------------------------------ tag na biurku
+    def _find_tag(self) -> None:
+        """Poza taga z kadrow zaufanych kamer -> zielona plytka w 3D i tekst z rozrzutem miedzy kamerami."""
+        from ..tagreach import tag_from_frames
+        frames = self._grab()
+        fix = tag_from_frames(frames, self.ws.cameras, int(self.tag_id.value), self.tag_mm.value / 1000.0)
+        self._tag_fix = fix
+        if fix is None:
+            trusted = [c.name for c in self.ws.cameras if c.enabled and c.T_cam2base is not None]
+            self.tag_md.content = (f"tag {int(self.tag_id.value)} nie widziany (kamery z zaufana poza: "
+                                   f"{', '.join(trusted) or 'brak - najpierw kalibracja'})")
+            return
+        self._show_tag(fix.T_tag2base)
+        p = fix.position
+        cams = ", ".join(f"{n} {r:.2f} px" for n, r in fix.reproj_px.items())
+        self.tag_md.content = (f"tag {int(self.tag_id.value)}: x {p[0] * 1000:.0f} mm, y {p[1] * 1000:.0f} mm, "
+                               f"z {p[2] * 1000:.0f} mm; kamery: {cams}; rozrzut miedzy kamerami "
+                               f"{fix.spread_mm:.1f} mm")
+
+    def _show_tag(self, T_tag2base: np.ndarray) -> None:
+        """Plytka taga w scenie blizniaka (mocap, bez kolizji) w zmierzonej pozie."""
+        half = self.tag_mm.value / 2000.0
+        if not self._body_in_scene("tag"):
+            objs = [o for o in self.twin.extras.get("objects", []) if o.name != "tag"]
+            objs.append(sc.Box("tag", (half, half, 0.001), (0.0, 0.0), rgba=(0.15, 0.85, 0.35, 1.0),
+                               free=False, mocap=True))
+            self.twin.configure(**{**self.twin.extras, "objects": objs})
+        with self.twin.lock:
+            s = self.twin.scene
+            k = int(s.model.body_mocapid[s.model.body("tag").id])
+            T = s.T_base2world @ np.asarray(T_tag2base, float)
+            q = np.zeros(4)
+            mujoco.mju_mat2Quat(q, np.ascontiguousarray(T[:3, :3]).ravel())
+            s.data.mocap_pos[k] = T[:3, 3] + T[:3, :3] @ np.array([0.0, 0.0, 0.001])
+            s.data.mocap_quat[k] = q
+
+    def _goto_tag(self) -> None:
+        """IK do punktu nad tagiem i rampa przez nadzor - w watku, ramie jako wlasciciel 'tag'."""
+        from ..tagreach import hover_point
+        fix = self._tag_fix
+        if fix is None:
+            raise RuntimeError("najpierw Znajdz tag w kamerach")
+        if not self.twin.connected:
+            raise RuntimeError("ramie nie jest polaczone")
+        if self.twin.owner is not None:
+            raise RuntimeError(f"ramie zajete: {self.twin.owner} - rozbroj panel / zatrzymaj")
+        if not self.twin.status.simulated and not self.pol_confirm.value:
+            raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie w zakladce Polityki")
+        p = hover_point(fix.T_tag2base, self.tag_above_cm.value / 100.0)
+        cmd = {k: float(v) for k, v in (self.twin.status.command or self.twin.joints()).items()}
+        sol = self._kin_gizmo.ik(p, seed=cmd)
+        if not sol.ok:
+            raise RuntimeError(f"punkt nad tagiem poza zasiegiem (blad {sol.pos_err * 1000:.0f} mm)")
+        gripper = self.ws.spec().gripper
+        target = {k: float(v) for k, v in sol.joints.items() if k != gripper}
+        jump = max(abs(target[k] - cmd.get(k, target[k])) for k in target)
+        duration = max(2.0, jump / 20.0)                     # najwyzej 20 st./s, nadzor i tak ogranicza
+        self.pol_confirm.value = False
+        self.tag_md.content = f"jade nad tag: {jump:.0f} st. najwiekszy skok, {duration:.1f} s"
+
+        def run():
+            try:
+                self.twin.move(target, duration, owner="tag")
+                self.tag_md.content = f"nad tagiem: {p[0] * 1000:.0f}, {p[1] * 1000:.0f}, {p[2] * 1000:.0f} mm"
+            except Exception as exc:
+                self.tag_md.content = f"przerwane: {exc}"
+            finally:
+                try:
+                    self.twin.release("tag")
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, name="tag-move", daemon=True).start()
 
     def _place_cube_randomly(self) -> None:
         from ..rl import task as tk
-        task = tk.make_task("lift")
+        task = tk.make_task("lift", self.ws.spec())
         if not self._cube_in_scene():
-            h = task.cube_half
-            self.twin.configure(objects=[sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0),
-                                                mass=task.cube_mass)], grasp_sensors=["cube"])
+            self._configure_objects(cube=True, pad=self._body_in_scene("target"))
         pos, quat = tk.sample_cubes(task, np.random.default_rng(), 1)
         with self.twin.lock:
             s = self.twin.scene
@@ -2132,11 +3519,12 @@ class TwinApp:
         # tracker nie widzial "sciska" i nie bral kostki "w dloni" - polityka stawala z
         # "kamery jej nie widza" (verify2, s1).
         grip = kin.spec.gripper
+        k = kin.spec.joints.index(grip)
         sent = (getattr(st, "command", None) or {}).get(grip)
         if sent is not None:
-            cmd = kin.to_q({**joints, grip: float(sent)})[kin.spec.joints.index(grip)]
+            cmd = kin.to_q({**joints, grip: float(sent)})[k]
         else:
-            cmd = self.runner.q_cmd[5] if self.runner is not None else q[5]
+            cmd = self.runner.q_cmd[k] if self.runner is not None else q[k]
         now = time.monotonic()
         det = self.last_cube
         if det is not None and (det.confidence <= 0.4 or not det.t or det.t <= self._cube_used_t
@@ -2144,7 +3532,7 @@ class TwinApp:
             det = None
         if det is not None:
             self._cube_used_t = det.t
-        return self.cube_tracker.update(det, kin.tcp(joints), q[5], cmd, self._grip_closed_q(), now)
+        return self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
 
     def _grip_closed_q(self) -> float:
         """Kat szczeki [rad] pustego, zamknietego chwytaka (chwytak 0) - `grip_closed` trackera.
@@ -2156,7 +3544,7 @@ class TwinApp:
         """
         runner = self.runner
         if runner is not None and getattr(runner, "limits", None) is not None:
-            return float(runner.limits.lo[5])
+            return float(runner.limits.lo[runner.limits.grip])
         kin = self._kin_vision
         return float(kin.to_q({kin.spec.gripper: 0.0})[kin.spec.joints.index(kin.spec.gripper)])
 
@@ -2170,8 +3558,8 @@ class TwinApp:
             raise RuntimeError("polacz ramie w zakladce Ramie (sim, zeby bezpiecznie sprawdzic)")
         if not self.twin.status.simulated and not self.pol_confirm.value:
             raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie, ze sie ruszy")
-        if self.twin.safety_state is not None and self.twin.safety_state.value == "ESTOP":
-            raise RuntimeError("aktywny STOP - skasuj go w zakladce Ramie")
+        if self._estop_active():
+            raise RuntimeError("aktywny STOP - Skasuj STOP (zolty, pod STOP-em)")
         busy = self._busy(POLICY_OWNER)
         if busy:
             raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
@@ -2179,7 +3567,10 @@ class TwinApp:
             self.runner.stop("nowa polityka")
         pol = Policy.load(self._policy_path())
         provider = None
-        if pol.task.name == "lift":
+        if pol.task.target and not self._body_in_scene("target"):
+            # Podkladka celu (tylko do ogladania); kostka zostaje, jesli juz byla w scenie.
+            self._configure_objects(cube=self._cube_in_scene(), pad=True)
+        if pol.task.cube:
             if self.pol_cube_src.value == "symulacja":
                 if not self.twin.status.simulated:
                     raise RuntimeError("na prawdziwym ramieniu kostka musi pochodzic z kamer")
@@ -2191,7 +3582,7 @@ class TwinApp:
                     raise RuntimeError("kostka z kamer wymaga co najmniej jednej skalibrowanej kamery (zakladka Mapa)")
                 if not (self.map_on.value and self.cube_on.value):
                     raise RuntimeError("kostka z kamer wymaga wlaczonej mapy i szukania kostki (zakladka Mapa)")
-                self.cube_tracker = CubeTracker()
+                self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
                 self._cube_used_t = 0.0
                 provider = self._vision_cube
         self._release_panel()
@@ -2208,7 +3599,16 @@ class TwinApp:
                 p = tk.sample_goals(self.twin.scene.kin, pol.task, np.random.default_rng(), 1)[0]
             self._set_goal(p)
             self.runner.episode_limit = False                # cel przeciagany na zywo - bez limitu epizodu
-        self.goal_node.visible = self.goal_gizmo.visible = pol.task.name == "reach"
+        elif pol.task.target:
+            # pickplace: cel odlozenia z uchwytu celu (rzutowany na blat), a gdy go nie widac -
+            # losowany jak w treningu, co najmniej `target_min_sep` od kostki.
+            p = (inverse(self.T_b2w) @ np.r_[self.goal_gizmo.position, 1.0])[:3]
+            if not self.goal_node.visible:
+                from ..rl import task as tk
+                cube = self._sim_cube()[0] if self._cube_in_scene() else np.array([0.2, 0.0, pol.task.cube_half])
+                p = tk.sample_targets(pol.task, np.random.default_rng(), cube[None])[0]
+            self._set_goal(p)
+        self.goal_node.visible = self.goal_gizmo.visible = pol.task.name in ("reach", "pickplace")
         try:
             # Bierze ramie ("polityka") albo RuntimeError: zajete, aktywny STOP, odebrane od `mark`.
             self.runner.start(**self._claim_kw(mark))
@@ -2225,9 +3625,14 @@ class TwinApp:
                 txt += f", do celu **{rs.distance * 1000:.0f} mm**" + (" (w celu)" if rs.success else "")
                 if rs.goal_clamped:
                     txt += " - cel przyciety do obszaru z treningu"
+            if self.runner.task.target and np.isfinite(rs.distance):
+                # pickplace: odleglosc kostki od celu odlozenia (xy)
+                txt += f", kostka do celu **{rs.distance * 1000:.0f} mm**" + (" (niesiona)" if rs.carried else "")
+                if rs.goal_clamped:
+                    txt += " - cel przesuniety na obszar z treningu"
             if self.runner.cube_provider == self._vision_cube:
                 txt += f", kostka: **{self.cube_tracker.source}**"
-            if self.runner.task.name == "lift" and self.twin.status.simulated and self._cube_in_scene():
+            if self.runner.task.cube and self.twin.status.simulated and self._cube_in_scene():
                 pos, _ = self._sim_cube()
                 txt += f"  \nprawda symulacji: kostka **{100 * (pos[2] - self.runner.task.cube_half):.1f} cm** nad blatem"
             if not rs.running and rs.stopped_because:
@@ -2317,7 +3722,7 @@ class TwinApp:
         """Kadry wlaczonych kamer z chwilami ich wykonania (`frame_times`).
 
         Kadr starszy niz `FRAME_MAX_AGE` jest pomijany: strumien, ktory stanal
-        (przekazanie USB na Shadow), oddawal te sama klatke w nieskonczonosc,
+        (zerwane przekazanie USB), oddawal te sama klatke w nieskonczonosc,
         a mapa co takt "widziala" w niej kostke od nowa.
         """
         frames, times = {}, {}
@@ -2338,6 +3743,12 @@ class TwinApp:
             self._t_grab = now
         return frames
 
+    def stream_frames(self) -> dict[str, tuple[np.ndarray, float]]:
+        """Kadry z ostatniego `_grab` z chwilami wykonania - dla `FrameServer` (inny watek, tylko odczyt).
+        Nie `cameras.frame_t`: symulowane renderuja sie w MuJoCo, a to nie jest bezpieczne z innego watku."""
+        with self.frame_lock:
+            return {n: (img, self.frame_times.get(n, 0.0)) for n, img in self.frames.items()}
+
     def _fresh_frames(self, max_age: float) -> dict[str, np.ndarray]:
         """Kadry z ostatniego `_grab`, jesli sa mlodsze niz `max_age` [s], inaczej nowe."""
         with self.frame_lock:
@@ -2345,16 +3756,35 @@ class TwinApp:
                 return dict(self.frames)
         return self._grab()
 
+    def _heal_cameras(self, now: float | None = None) -> None:
+        """Kamera, ktora sie nie otworzyla albo ktorej strumien padl, otwiera sie sama: `sync` co
+        `HEAL_S`, poki ktoras wlaczona prawdziwa kamera zglasza blad. Dotad trzeba bylo ja wylaczyc
+        i wlaczyc w panelu - 2026-09-26: Brio i uEye przegrywaly wyscig z resetem USB przy starcie
+        panelu (zamkniecie uchwytu w starym procesie resetuje kamere), uEye po restarcie tez."""
+        now = time.monotonic() if now is None else now
+        if now - self._heal_t < HEAL_S:
+            return
+        hub = self.twin.cameras
+        if any(hub.error(c.name) for c in self.ws.cameras if c.enabled and not c.simulated):
+            self._heal_t = now
+            hub.sync()
+
     def _tick_slow(self, frames: dict[str, np.ndarray] | None = None) -> dict[str, np.ndarray]:
-        self.status_md.content = self._status_text()
+        status = self._status_text()
+        self.status_md.content = status
+        set_if(self.status_md, "visible", bool(status))
+        with self._render_lock:
+            self._render_chip(*self._arm_mode())        # odswieza tez Hz na plakietce
         opts = tuple(c.name for c in self.ws.cameras) or ("-",)
-        for dd in (self.intr_cam, self.reloc_cam, self.sr_cam):
+        for dd in (self.sr_cam,):
             if dd.options != opts:
                 cur = dd.value
                 dd.options = opts
                 dd.value = cur if cur in opts else opts[0]
+        self._heal_cameras()
         if frames is None:
             frames = self._grab()
+        self._render_cameras()
         rec = self._cam()
         if rec is not None:
             # Wybrana kamera bez kadru (nie otworzyla sie, wylaczona, strumien stanal) - napis,
@@ -2372,8 +3802,11 @@ class TwinApp:
         self._tick_calibration()
         self._tick_training()
         self._tick_policies()
+        self._guard("pmd", self._tick_pmd, frames)
+        self._guard("mrowka", self.antp.tick, frames)
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
+        self._guard("spectacles", self.specs.tick)
         return frames
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
@@ -2391,7 +3824,7 @@ class TwinApp:
                 if not was:
                     self._notify(None, "Kamera przestawiona",
                                  f"{c.name}: kadr przesunal sie o {_px(self.watch.shift[c.name])} od kalibracji. "
-                                 f"Zrob szybka relokalizacje (zakladka Kalibracja).", error=True)
+                                 f"Kalibracja > pomaranczowy przycisk tej kamery.", error=True)
         if changed:
             self._refresh_cameras()
 
@@ -2433,6 +3866,9 @@ class TwinApp:
         port = self.server.get_port()
         remote = "  (zdalnie: http://<adres-maszyny>:{port})" if self.host not in ("127.0.0.1", "localhost") else ""
         print(f"Panel blizniaka: http://localhost:{port}{remote.format(port=port)}", flush=True)
+        if self.stream is not None:
+            print(f"Podglad kamer:  {self.stream.url}  (z sieci: http://<adres-maszyny>:{self.stream.port}/)",
+                  flush=True)
         t_slow = t_map = t_watch = t_list = 0.0
         frames: dict[str, np.ndarray] = {}
         try:
@@ -2484,6 +3920,12 @@ class TwinApp:
         try:
             if self.runner is not None:
                 self.runner.stop("zamkniecie panelu")
+            antp = getattr(self, "antp", None)             # mrowka: petla i pulpit WSAD
+            if antp is not None:
+                self._guard("mrowka", antp.close)
+            specs = getattr(self, "specs", None)           # release the arm before disconnecting
+            if specs is not None:
+                self._guard("spectacles", specs.stop)
             for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
                 job.stop()
         finally:
@@ -2494,6 +3936,8 @@ class TwinApp:
                     # Trening w osobnym procesie bez konsoli - bez tego zostawal po zamknieciu panelu.
                     self._guard("trening", self.train.shutdown)
                 finally:
+                    if self.stream is not None:
+                        self._guard("podglad kamer", self.stream.stop)
                     self.server.stop()
 
 
@@ -2504,10 +3948,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--workspace", default=None)
+    ap.add_argument("--stream-port", type=int, default=None)
+    ap.add_argument("--stream-host", default="0.0.0.0")
+    ap.add_argument("--arm", action="store_true", help="polacz ramie przy starcie (backend i port stanowiska)")
+    ap.add_argument("--specs", choices=("dry", "sim", "real"), default=None,
+                    help="tryb okularow i polaczenie z przekaznikiem przy starcie")
+    ap.add_argument("--i-know", action="store_true", help="zgoda na ruch prawdziwym ramieniem (--specs real)")
+    ap.add_argument("--relay", default=None, help="adres przekaznika (domyslnie SPECS_RELAY)")
+    ap.add_argument("--follow-speed", type=float, default=None, help="sledzenie dloni [m/s]")
+    ap.add_argument("--hold-off", type=float, default=None, help="odczekanie przed ruchem [s]")
     a = ap.parse_args(argv)
+    if a.specs == "real" and not a.i_know:
+        ap.error("--specs real rusza prawdziwym ramieniem - dodaj --i-know")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Sondy HTTP (HEAD, niedokonczone polaczenia) nie sa bledami panelu - websockets
     # drukuje po kilkadziesiat linii stosu na kazda, zasypujac to, co wazne.
     logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-    TwinApp(a.workspace, a.host, a.port).run()
+    startup = dict(arm=a.arm, specs=a.specs, i_know=a.i_know, relay=a.relay, follow_speed=a.follow_speed,
+                   hold_off=a.hold_off)
+    TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host,
+            startup=startup).run()
     return 0

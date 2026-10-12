@@ -44,7 +44,7 @@ class CollisionChecker:
 
     def _contacts(self, joints: Mapping[str, float]) -> set[tuple[int, int]]:
         d = self.data
-        d.qpos[self.kin.qadr] = self.kin.to_q(joints)
+        self.kin.write_qpos(d.qpos, self.kin.to_q(joints))
         mujoco.mj_fwdPosition(self.model, d)
         out = set()
         for c in d.contact[: d.ncon]:
@@ -52,6 +52,13 @@ class CollisionChecker:
             if self.robot_geom[g1] or self.robot_geom[g2]:
                 out.add((min(g1, g2), max(g1, g2)))
         return out
+
+    def set_world(self, data: mujoco.MjData) -> None:
+        """Stan swiata (obiekty, mrowka: qpos i mocap) z `data` tego samego modelu; ramie i tak ustawia kazde
+        sprawdzenie. Dozwolone kontakty zostaja z budowy."""
+        self.data.qpos[:] = data.qpos
+        self.data.mocap_pos[:] = data.mocap_pos
+        self.data.mocap_quat[:] = data.mocap_quat
 
     def _describe(self, pair: tuple[int, int]) -> str:
         m = self.model

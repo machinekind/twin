@@ -26,11 +26,14 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
     nie mowilo nic o zmierzonym ramieniu. W wyniku `randomized` mowi, czy dynamika byla
     losowana naprawde, a `centre` - wokol czego.
     """
+    spec = (workspace or Workspace()).spec()
+    if policy.meta.robot != spec.name:
+        raise RuntimeError(f"polityka uczona na {policy.meta.robot}, stanowisko ma {spec.name}")
     task = policy.task
     rand = randomization if randomization is not None else \
         Randomization.nominal(Dynamics.from_dict(workspace.dynamics) if workspace is not None else None)
     env = TwinEnv(task, workspace=workspace, randomization=rand, render_mode="rgb_array" if on_frame else None)
-    succ, final, ever = [], [], []
+    succ, final, ever, place = [], [], [], []
     try:
         for ep in range(episodes):
             obs, _ = env.reset(seed=seed + ep)
@@ -45,10 +48,14 @@ def evaluate(policy: Policy, episodes: int = 50, *, randomization: Randomization
             succ.append(float(info["success"]))
             ever.append(float(hit))
             final.append(info["distance"] if task.name == "reach" else info["height"])
+            if "dist_target" in info:
+                place.append(info["dist_target"])
     finally:
         env.close()
     out = {"episodes": episodes, "success": float(np.mean(succ)), "ever_success": float(np.mean(ever)),
            "randomized": rand.randomized, "centre": rand.centre.source}
     key = "final_distance_mm" if task.name == "reach" else "final_height_mm"
     out[key] = float(np.median(final) * 1000)
+    if place:                                          # pickplace: kostka od celu (xy) na koniec epizodu
+        out["final_place_mm"] = float(np.median(place) * 1000)
     return out

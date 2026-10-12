@@ -2,10 +2,10 @@
 
     env = BatchEnv("reach", num_envs=4096)
     obs = env.reset()                                  # (N, obs_dim) na cuda
-    obs, rew, done, info = env.step(actions)           # actions (N, 6) w [-1, 1]
+    obs, rew, done, info = env.step(actions)           # actions (N, act_dim) w [-1, 1]
 
 Ta sama scena, te same wzory (`task`) co `env.TwinEnv` na CPU - roznica to
-tylko, gdzie liczy sie fizyka. Na RTX A4500 w Shadow scena z kostka robi ok.
+tylko, gdzie liczy sie fizyka. Na RTX A4500 scena z kostka robi ok.
 1,1 mln krokow fizyki na sekunde przy 8192 swiatach, a trajektoria jednego
 swiata zgadza sie z MuJoCo na CPU do 0,001 st. po 2 s.
 
@@ -19,6 +19,17 @@ Stan MuJoCo Warp jest wystawiony jako widoki torch (`wp.to_torch`) - bez kopii.
 Fizyka to jeden przechwycony graf CUDA z `substeps` krokami; torch i Warp
 synchronizujemy jawnie przed i po nim (dwa synchronizacje na krok polityki,
 nieistotne przy kilkudziesieciu milisekundach fizyki).
+
+pickplace: cel odlozenia to podkladka mocap (`d.mocap_pos` - osobna w kazdym swiecie),
+bez kolizji, wiec budzet kontaktow jest ten sam co w lift. Zatrzask "kostka niesiona"
+(`self.carried`) i losowanie celow (`_sample_targets`) to linia w linie blizniaki
+`env.TwinEnv` i `task.sample_targets` - pilnuje tego test zgodnosci GPU/CPU.
+
+Budzet kontaktow na swiat (`CONTACTS`: nconmax, njmax) dla zadan z kostka. Zmierzone
+w MuJoCo na CPU (najwiecej w jednym kroku fizyki, epizody losowe i ekspert pickplace):
+SO-101 24 kontakty / 142 wiersze wiezow (ekspert, chwyt), A1X 12 / 49. MuJoCo Warp
+generuje kontakty siatek (otoczki wypukle ogniw A1X) inaczej niz CPU - A1X dostaje
+zapas 64 / 384, do potwierdzenia na GPU (`int(env.d.ncon.numpy().max())` po 200 krokach).
 """
 
 from __future__ import annotations
@@ -30,8 +41,12 @@ import torch
 from .. import scene as sc
 from ..workspace import Workspace
 from . import task as tk
-from .env import scene_config
+from .env import TARGET_SIZE, scene_config
 from .randomize import Randomization
+
+
+#: (nconmax, njmax) na swiat w zadaniach z kostka; bez kostki (reach) 16 / 64. Patrz docstring modulu.
+CONTACTS = {"so101": (32, 192), "a1x": (64, 384)}
 
 
 def _warp():
@@ -50,7 +65,8 @@ class BatchEnv:
                  device: str = "cuda:0", seed: int = 0):
         wp, mjw = _warp()
         self.wp, self.mjw = wp, mjw
-        self.task = task if isinstance(task, tk.TaskConfig) else tk.make_task(task)
+        spec = (workspace or Workspace()).spec()
+        self.task = task if isinstance(task, tk.TaskConfig) else tk.make_task(task, spec=spec)
         self.num_envs = N = int(num_envs)
         self.device = torch.device(device)
         self.rand = randomization if randomization is not None else Randomization()
@@ -74,14 +90,16 @@ class BatchEnv:
             # nie blad - na CPU nikt o tym nie krzyczy. Tu drukowaloby sie co krok.
             self.m.opt.warn_overflow = 0
         cube = self.task.cube is not None
-        self.d = mjw.put_data(mjm, scene.data, nworld=N, nconmax=32 if cube else 16,
-                              njmax=192 if cube else 64)
+        nconmax, njmax = CONTACTS.get(spec.name, CONTACTS["so101"]) if cube else (16, 64)
+        self.d = mjw.put_data(mjm, scene.data, nworld=N, nconmax=nconmax, njmax=njmax)
 
         t = lambda a: wp.to_torch(a)                                            # noqa: E731
         self.qpos, self.qvel, self.ctrl = t(self.d.qpos), t(self.d.qvel), t(self.d.ctrl)
         self.qacc_ws = t(self.d.qacc_warmstart)
         self.site_xpos, self.xpos, self.xmat = t(self.d.site_xpos), t(self.d.xpos), t(self.d.xmat)
         self.sensordata = t(self.d.sensordata) if cube else None
+        #: pickplace: polozenia cial mocap (N, nmocap, 3) - podkladka celu.
+        self.mocap_pos = t(self.d.mocap_pos) if self.task.target else None
         self.f = {k: t(getattr(self.m, k)) for k in batch}
         self.nominal = {k: v[0].clone() for k, v in self.f.items()}
 
@@ -108,19 +126,24 @@ class BatchEnv:
             qb = np.zeros(4)
             mujoco.mju_mat2Quat(qb, T[:3, :3].ravel())
             self.q_base = torch.as_tensor(qb, **f32)
+            if self.task.target:
+                self.target_mocap = int(mjm.body_mocapid[mjm.body(self.task.target).id])
         else:
             pool = tk.sample_goals(self.kin, self.task, self.np_rng, 20000)
             self.goal_pool = torch.as_tensor(pool, **f32)
 
         self.goal = torch.zeros(N, 3, **f32)
+        #: pickplace: cel odlozenia na blacie (z = 0) i zatrzask "kostka niesiona" (`task.carry_latch`).
+        self.target = torch.zeros(N, 3, **f32)
+        self.carried = torch.zeros(N, dtype=torch.bool, device=dev)
         self.q_cmd = self.home.repeat(N, 1)
-        self.prev_action = torch.zeros(N, 6, **f32)
+        self.prev_action = torch.zeros(N, self.task.act_dim, **f32)
         # Opoznienie akcji: ostatnie akcje w buforze pierscieniowym, dla kazdego swiata
         # wlasne {min_delay .. max_delay} taktow - jak kolejka w TwinEnv. Wczesniej byl tu
         # jeden slot i opoznienie sciete do 0/1 taktu: po identyfikacji (1,4 taktu,
         # max_delay 3) trening nie widzial nigdy 2-3 taktow, a ewaluacja na CPU - tak.
         self.Hd = int(self.rand.max_delay) + 1
-        self.act_hist = torch.zeros(self.Hd, N, 6, **f32)
+        self.act_hist = torch.zeros(self.Hd, N, self.task.act_dim, **f32)
         self.delay_n = torch.zeros(N, dtype=torch.long, device=dev)
         self.ar = torch.arange(N, device=dev)
         self.t = torch.zeros(N, dtype=torch.long, device=dev)
@@ -158,6 +181,10 @@ class BatchEnv:
             out["cube_pos"] = (self.xpos[:, self.cube_body] - t) @ R
             out["cube_rot"] = R.T @ self.xmat[:, self.cube_body]
             out["jaws"] = self.sensordata[:, self.jaw_adr]
+            if self.task.target:
+                a = self.cube_dadr
+                out["cube_vel"] = self.qvel[:, a:a + 3] @ R          # R^T v jako wiersze (jak w TwinEnv)
+                out["target"] = self.target
         return out
 
     def _obs(self, s: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -167,7 +194,7 @@ class BatchEnv:
         cube = self.task.cube is not None
         return tk.observe(torch, self.task, self.limits, q, self.q_cmd, s["tcp"], self.prev_action,
                           goal=self.goal, cube_pos=self.seen_pos if cube else None,
-                          cube_rot=self.seen_rot if cube else None)
+                          cube_rot=self.seen_rot if cube else None, target=self.target)
 
     def _perceive(self, s: dict[str, torch.Tensor]) -> None:
         """Nowy wpis historii kostki i odswiezenie tego, co widzi polityka (co `cube_p` taktow)."""
@@ -212,6 +239,41 @@ class BatchEnv:
         # (body_invweight0) - na CPU konczylo sie to wystrzeleniem kostki.
         self.mjw.set_const(self.m, self.d)
 
+    def _sample_targets(self, cube_p: torch.Tensor) -> torch.Tensor:
+        """Cele pickplace (n, 3) dla kostek `cube_p` (n, 3) - blizniak `task.sample_targets`.
+
+        Ta sama regula: losowanie biegunowe, za bliskie wiersze od nowa (tylko one),
+        najwyzej `TARGET_TRIES` razy, potem cel na zewnetrznym promieniu po drugiej stronie.
+        """
+        tsk = self.task
+        n = len(cube_p)
+        out = torch.zeros(n, 3, dtype=cube_p.dtype, device=self.device)
+        bad = torch.ones(n, dtype=torch.bool, device=self.device)
+        for _ in range(tk.TARGET_TRIES):
+            k = int(bad.sum())
+            if k == 0:
+                break
+            r = self._u(k, lo=tsk.target_radius[0], hi=tsk.target_radius[1])
+            b = self._u(k, lo=tsk.target_bearing[0], hi=tsk.target_bearing[1])
+            out[bad, 0], out[bad, 1] = r * torch.cos(b), r * torch.sin(b)
+            bad = ((out[:, :2] - cube_p[:, :2]) ** 2).sum(1).sqrt() <= tsk.target_min_sep
+        if bad.any():
+            cb = torch.atan2(cube_p[bad, 1], cube_p[bad, 0])
+            lo, hi = tsk.target_bearing
+            far = torch.where(cb > 0.5 * (lo + hi), torch.full_like(cb, lo), torch.full_like(cb, hi))
+            r = tsk.target_radius[1]
+            out[bad, 0], out[bad, 1] = r * torch.cos(far), r * torch.sin(far)
+        return out
+
+    def set_targets(self, ids: torch.Tensor, target: torch.Tensor) -> None:
+        """Cele pickplace swiatow `ids` (n, 3) w ukladzie podstawy; z = 0, podkladka mocap idzie za nimi."""
+        p = target.to(self.device, torch.float32).clone()
+        p[:, 2] = 0.0
+        self.target[ids] = p
+        pad = p.clone()
+        pad[:, 2] = TARGET_SIZE[2]
+        self.mocap_pos[ids, self.target_mocap] = pad @ self.R_b.T + self.t_b
+
     def _reset(self, ids: torch.Tensor) -> None:
         n = len(ids)
         if n == 0:
@@ -220,13 +282,16 @@ class BatchEnv:
         tsk = self.task
         q0 = self.home.repeat(n, 1)
         noise = np.radians(tsk.start_noise_deg)
-        q0[:, :5] += self._u(n, 5, lo=-noise, hi=noise)
+        na, g = self.limits.n_arm, self.limits.grip
+        q0[:, :na] += self._u(n, na, lo=-noise, hi=noise)
         if tsk.cube:
-            q0[:, 5] = self.lo[5] + self._u(n, lo=0.6, hi=1.0) * (self.hi[5] - self.lo[5])
+            q0[:, g] = self.lo[g] + self._u(n, lo=0.6, hi=1.0) * (self.hi[g] - self.lo[g])
         q0 = torch.clamp(q0, self.lo, self.hi)
 
         qpos = self.qpos0.repeat(n, 1)
         qpos[:, self.qadr] = q0
+        for k, adr, g in self.kin.mirror:               # stawy sprzezone (druga szczeka A1X)
+            qpos[:, adr] = g * q0[:, k]
         if tsk.cube:
             r = self._u(n, lo=tsk.cube_radius[0], hi=tsk.cube_radius[1])
             b = self._u(n, lo=tsk.cube_bearing[0], hi=tsk.cube_bearing[1])
@@ -249,6 +314,8 @@ class BatchEnv:
             self.hist_rot[:, ids] = R
             self.seen_pos[ids] = p
             self.seen_rot[ids] = tk.fold_yaw(torch, R) if self.rand.fold_yaw else R
+            if tsk.target:
+                self.set_targets(ids, self._sample_targets(p))
         else:
             k = torch.randint(0, len(self.goal_pool), (n,), generator=self.gen, device=self.device)
             self.goal[ids] = self.goal_pool[k]
@@ -260,6 +327,7 @@ class BatchEnv:
         self.prev_action[ids] = 0.0
         self.t[ids] = 0
         self.streak[ids] = 0
+        self.carried[ids] = False
 
     # ------------------------------------------------------------------ api
     def reset(self) -> torch.Tensor:
@@ -284,9 +352,14 @@ class BatchEnv:
         self.t += 1
 
         s = self._state()
+        kw = {}
+        if self.task.target:
+            self.carried = tk.carry_latch(torch, self.task, self.carried, s["jaws"], s["cube_pos"])
+            kw = dict(target=self.target, cube_vel=s["cube_vel"], carried=self.carried,
+                      grip_open=tk.grip_is_open(torch, self.limits, self.q_cmd))
         rew, success, failure = tk.reward(torch, self.task, s["tcp"], action, self.prev_action, goal=self.goal,
                                           cube_pos=s.get("cube_pos"), jaw_contacts=s.get("jaws"),
-                                          q_cmd=self.q_cmd, limits=self.limits)
+                                          q_cmd=self.q_cmd, limits=self.limits, **kw)
         self.streak, finished = tk.success_streak(torch, self.task, self.streak, success)
         if self.task.cube:
             self._perceive(s)
@@ -306,6 +379,9 @@ class BatchEnv:
             info["distance"] = ((self.goal - s["tcp"]) ** 2).sum(1).sqrt()
         else:
             info["height"] = s["cube_pos"][:, 2] - self.task.cube_half
+        if self.task.target:
+            info["dist_target"] = ((s["cube_pos"][:, :2] - self.target[:, :2]) ** 2).sum(1).sqrt()
+            info["carried"] = self.carried.clone()
 
         ids = done.nonzero().flatten()
         if len(ids):

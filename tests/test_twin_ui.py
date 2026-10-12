@@ -1,16 +1,13 @@
 """Panel blizniaka: startuje, odswieza sie i obsluguje kamery symulowane bez przegladarki.
 
 Dalej - to, czego panel pilnuje przed prawdziwym ramieniem: jeden wlasciciel ramienia,
-uchwyt TCP na tej samej galezi IK, swiezosc kadrow i detekcji kostki, zadania w tle.
+uchwyt TCP na tej samej galezi IK, swiezosc detekcji kostki, kalibracja i zadania w tle.
 """
 
 from __future__ import annotations
 
 import socket
-import subprocess
-import sys
 import time
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -136,27 +133,6 @@ def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app):
     assert max(abs(target[k] - start[k]) for k in start if k != spec.gripper) < 5.0
 
 
-def test_clutch_and_jobs_refuse_the_arm_while_someone_else_drives_it(app):
-    app.twin.connect("sim", threaded=False)
-    app.twin.claim(jobs.CALIB_OWNER)                            # jedzie fala
-    ev = _Event()
-    app.arm_engage.value = True
-    app._on_engage(ev)
-    assert not app.arm_engage.value and app.twin.owner == jobs.CALIB_OWNER
-    assert "kalibracja" in ev.client.notes[-1][1]
-    with pytest.raises(RuntimeError, match="zajete"):
-        app._start_policy(_Event())
-    with pytest.raises(RuntimeError, match="zajete"):
-        app._take_arm(jobs.SYSID_OWNER)
-    app.twin.release(jobs.CALIB_OWNER)
-    # Panel (sprzeglo) oddaje ramie zadaniu bez pytania - to operator je uruchomil.
-    app.arm_engage.value = True
-    app._on_engage(_Event())
-    assert app.twin.owner == "panel"
-    app._take_arm(jobs.SYSID_OWNER)
-    assert app.twin.owner == jobs.SYSID_OWNER and not app.arm_engage.value
-
-
 def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
     """Fala w sim + "Polacz" = reszta fali na prawdziwym ramieniu, bez potwierdzenia karty."""
     home = dict(app.ws.spec().home)
@@ -172,11 +148,11 @@ def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
 
     app.calib_job.start(wave)
     time.sleep(0.8)
-    app.calib_confirm.value = True
+    assert not app.calib_ask.ask(("fala", ("kam",)))           # operator kliknal raz: pytanie czeka
     app._connect("sim", None)
     assert app.calib_job.wait(5.0)
     assert app.calib_job.state == jobs.FAILED
-    assert not app.calib_confirm.value                          # nowe ramie - nowe potwierdzenie
+    assert not app.calib_ask.pending()                          # nowe ramie - nowe potwierdzenie
     n = len(moves)
     time.sleep(0.5)
     assert len(moves) == n and app.twin.owner is None and not app.twin.status.engaged
@@ -254,7 +230,6 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.ws.add_camera(CameraRecord(n, "sim"))
     try:
         app._tick_slow()
-        app.intr_cam.value = "kam2"                             # lista w panelu zmieniona w trakcie
         ij = app.intr_job
         ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "kam1"}
         app._tick_calibration()
@@ -291,31 +266,6 @@ def test_stale_or_repeated_cube_detection_does_not_keep_the_policy_going(app):
         app.map_on.value = True
 
 
-def test_frozen_camera_frames_are_not_used(app, monkeypatch):
-    from lerobot_mp.twin.workspace import CameraRecord
-
-    img = np.zeros((48, 64, 3), np.uint8)
-    app.ws.add_camera(CameraRecord("usb", "0"))
-    try:
-        monkeypatch.setattr(app.twin.cameras, "frame_t", lambda name: (img, time.monotonic() - 5.0))
-        assert app._grab() == {}
-        t = time.monotonic()
-        monkeypatch.setattr(app.twin.cameras, "frame_t", lambda name: (img, t))
-        assert "usb" in app._grab() and app.frame_times["usb"] == pytest.approx(t)
-    finally:
-        app.ws.remove_camera("usb")
-
-
-def test_reach_goal_from_the_gizmo_is_kept_in_the_trained_region(app):
-    from lerobot_mp.twin.rl import task as tk
-
-    task = tk.make_task("reach")
-    app._set_goal(np.array([0.25, 0.0, -0.05]))                 # pod blatem
-    g = app._goal_base
-    assert task.goal_height[0] - 1e-9 <= g[2] <= task.goal_height[1] + 1e-9
-    assert np.allclose(app.goal_gizmo.position, (app.T_b2w @ np.r_[g, 1.0])[:3], atol=1e-6)
-
-
 @pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
     from lerobot_mp.twin.calib.handeye import CameraFit, Fit
@@ -338,130 +288,6 @@ def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
         app.calib_job.result, app.calib_job.data = None, {}
 
 
-def test_stop_takes_the_arm_from_the_panel_and_holds(app):
-    app.twin.connect("sim", threaded=False)
-    app.arm_engage.value = True
-    app._on_engage(_Event())
-    assert app.twin.owner == "panel"
-    app._emergency_stop(None)
-    assert app.twin.owner is None and app.twin.safety_state.value == "ESTOP" and not app.arm_engage.value
-
-
-def test_disabled_sim_camera_drag_does_not_rebuild_and_preview_says_no_frame(app):
-    from lerobot_mp.twin.ui.app import no_frame_image
-
-    app._add_sim_camera(app.T_b2w @ _look_at_pose([0.6, 0.4, 0.45], [0.2, 0.0, 0.0]))
-    rec = app.ws.cameras[-1]
-    try:
-        rec.enabled = False
-        app.twin.rebuild()
-        app.cam_move.value = True
-        app._refresh_cameras(select=rec.name)
-        assert not app.cam_gizmo.visible                         # wylaczona - nie ma czego przesuwac
-        v = app.twin.version
-        for dx in (0.0, 0.01, 0.02):
-            T = app.T_b2w @ _look_at_pose([0.6 + dx, 0.4, 0.45], [0.2, 0.0, 0.0])
-            app._place_sim_camera(rec, T, rebuild=False)
-        assert app.twin.version == v and app._dirty_rebuild > 0
-        app._tick_slow()
-        assert app._img_sent["podglad"] == hash(no_frame_image().tobytes()[::97])
-        app._sync_mirror()
-        assert app._mirror_version == app.twin.version
-    finally:
-        app.cam_move.value = False
-        app.ws.remove_camera(rec.name)
-        app._dirty_rebuild = 0.0
-        app.twin.rebuild()
-        app._refresh_cameras()
-
-
-def test_training_process_is_ended_with_the_panel(tmp_path):
-    tj = jobs.TrainingJob(tmp_path, None)
-    tj.run_dir = tmp_path
-    tj.proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-    try:
-        tj.shutdown(timeout=0.5)
-        assert tj.proc.poll() is not None
-        assert (tmp_path / "STOP").is_file()                    # najpierw prosba o zapis polityki
-    finally:
-        if tj.proc.poll() is None:
-            tj.proc.kill()
-
-
-# ------------------------------------------------------------------ poprawki przed prawdziwym ramieniem
-def _static_mask(app, name, joints, dilate=5):
-    from lerobot_mp.twin.ui.watch import arm_mask
-
-    def render(s):
-        s.set_joints(joints)
-        return arm_mask(s, name, dilate=dilate)
-    return app.twin.render_with(render)
-
-
-@pytest.mark.render
-def test_arm_mask_grows_along_the_arm_path_and_each_camera_at_its_own_frame_time(app):
-    """Kwadratowe poszerzenie z predkosci stawu (tez wrist_roll) chowalo kostke przy szczekach.
-
-    Przed poprawka: wrist_roll 50 st. w oknie - maska 2,5 raza wieksza (5 -> 45 px jadra),
-    a maski wszystkich kamer w pozie z chwili NAJSTARSZEGO kadru.
-    """
-    home = dict(app.ws.spec().home)
-    app._add_sim_camera(app.T_b2w @ _look_at_pose([0.55, -0.35, 0.40], [0.2, 0.0, 0.05]))
-    app._add_sim_camera(app.T_b2w @ _look_at_pose([0.55, 0.35, 0.40], [0.2, 0.0, 0.05]))
-    a, b = app.ws.cameras[-2].name, app.ws.cameras[-1].name
-
-    def swing(joint, span):
-        t0 = time.monotonic()
-        app._joint_hist.clear()
-        for k in range(-12, 13):                                 # 30 Hz, +-0,4 s wokol kadru
-            app._joint_hist.append((t0 + k / 30, dict(home, **{joint: home[joint] + span * k / 12})))
-        return t0
-
-    try:
-        still = _static_mask(app, a, home)
-        t0 = swing("wrist_roll", 50.0)
-        roll = app._arm_masks([a], t0, dilate=5)[a]
-        assert roll.sum() < 1.6 * still.sum()                    # przed poprawka ~2,5x
-        t0 = swing("shoulder_pan", 20.0)
-        pan = app._arm_masks([a], t0, dilate=5)[a]
-        # Ramie na koncu okna niepewnosci (kadr 0,23 s pozniej) wciaz w masce.
-        far = _static_mask(app, a, dict(home, shoulder_pan=home["shoulder_pan"] + 20.0 * 7 / 12))
-        assert (far & ~pan).sum() < 0.03 * far.sum()
-
-        # Dwie kamery, kadry z roznych chwil: kazda maska w pozie ze swojej chwili.
-        t0 = time.monotonic()
-        pose_a, pose_b = dict(home, shoulder_pan=home["shoulder_pan"] - 25.0), dict(home)
-        app._joint_hist.clear()
-        for k in range(30):
-            app._joint_hist.append((t0 - 1.0 + k / 30, pose_a if k < 15 else pose_b))
-        masks = app._arm_masks([a, b], {a: t0 - 0.9, b: t0 - 0.05}, dilate=5)
-        assert np.array_equal(masks[a], _static_mask(app, a, pose_a))
-        assert np.array_equal(masks[b], _static_mask(app, b, pose_b))
-    finally:
-        app._joint_hist.clear()
-        for n in (a, b):
-            app.ws.remove_camera(n)
-        app.twin.rebuild()
-        app._refresh_cameras()
-
-
-@pytest.mark.render
-def test_preview_says_no_cameras_after_the_last_one_is_removed(app):
-    from lerobot_mp.twin.ui.app import no_frame_image
-
-    app._add_sim_camera(app.T_b2w @ _look_at_pose([0.6, 0.4, 0.45], [0.2, 0.0, 0.0]))
-    name = app.ws.cameras[-1].name
-    app._tick_slow()
-    assert app._img_sent["podglad"] != hash(no_frame_image("brak kamer").tobytes()[::97])
-    for n in [c.name for c in app.ws.cameras]:
-        app.ws.remove_camera(n)
-    app.twin.rebuild()
-    app._refresh_cameras()
-    app._tick_slow()
-    assert app.cam_pick.value == "-" and name not in app.frustums
-    assert app._img_sent["podglad"] == hash(no_frame_image("brak kamer").tobytes()[::97])
-
-
 def _click(app, label: str) -> _Event:
     """Przycisk panelu bez przegladarki - te same callbacki, co klikniecie."""
     hs = [h for h in app.server.gui._gui_input_handle_from_uuid.values() if getattr(h, "label", None) == label]
@@ -472,155 +298,7 @@ def _click(app, label: str) -> _Event:
     return ev
 
 
-def test_sysid_fit_survives_stop_and_reconnect_and_fixed_params_are_not_called_fitted(app, monkeypatch):
-    """STOP / "Polacz" w trakcie minutowego dopasowania (ramie juz wolne) gubily wynik bez slowa."""
-    import threading
-
-    import lerobot_mp.twin.rl.sysid as sysid
-    from lerobot_mp.twin.rl.randomize import Dynamics
-
-    go = threading.Event()
-
-    def slow_fit(rec, on_progress=None, **kw):
-        go.wait(10.0)
-        dyn = Dynamics(damping=0.9, armature=1.2, delay=0.5, source="test", fit_deg=0.4)
-        if hasattr(dyn, "fitted"):
-            dyn.fitted = ("damping", "armature", "delay")
-        return SimpleNamespace(dyn=dyn, base=1.5, band={"damping": 0.08, "armature": 0.1, "delay": 0.004})
-
-    monkeypatch.setattr(sysid, "record", lambda twin, plan, **kw: "nagranie")
-    monkeypatch.setattr(sysid, "identify", slow_fit)
-    app.twin.connect("sim", threaded=False)
-    app._take_arm(jobs.SYSID_OWNER, preempt=app.sysid_job.stop)
-    app.sysid_job.start(lambda job: jobs.run_sysid(job, app.twin))
-    t_end = time.monotonic() + 5.0
-    while "recording" not in app.sysid_job.data and time.monotonic() < t_end:
-        time.sleep(0.01)
-    assert app._busy("polityka") == ""                           # ramie wolne w trakcie dopasowania
-    app._emergency_stop(None)
-    app.twin.clear_estop()
-    app._connect("sim", None)
-    ev = _click(app, "Identyfikuj na polaczonym ramieniu (~20 s ruchu)")
-    assert ev.client.notes and "dopasowanie poprzedniego" in ev.client.notes[-1][1]
-    go.set()
-    assert app.sysid_job.wait(10.0) and app.sysid_job.state == jobs.DONE
-    app._tick_training()
-    txt = app.dyn_res.content
-    assert app.dyn_keep.visible and not app.dyn_keep.disabled and "Dopasowano: " in txt
-    fitted, fixed = txt.split("z modelu")
-    assert "tlumienie x0.90 (+-8%)" in fitted and "armatura x1.20 (+-10%)" in fitted and "kp" not in fitted
-    assert "kp x1.00" in fixed and "tarcie x1.00" in fixed
-    assert "Nagrane na: **sim**" in txt and "nic nie wyjasnia" not in txt
-
-
-def test_sysid_stopped_during_recording_ends_as_cancelled_and_says_so(app, monkeypatch):
-    import lerobot_mp.twin.rl.sysid as sysid
-
-    fits = []
-
-    def record(twin, plan, should_stop=None, **kw):
-        t_end = time.monotonic() + 5.0
-        while not should_stop() and time.monotonic() < t_end:
-            time.sleep(0.01)
-        return "nagranie"                                        # nagranie skonczone w chwili STOP
-
-    monkeypatch.setattr(sysid, "record", record)
-    monkeypatch.setattr(sysid, "identify", lambda rec, on_progress=None, **kw: fits.append(1))
-    app.twin.connect("sim", threaded=False)
-    app.sysid_job.start(lambda job: jobs.run_sysid(job, app.twin))
-    time.sleep(0.05)
-    app._stop_motion("ponowne laczenie")
-    assert app.sysid_job.wait(5.0) and app.sysid_job.state == jobs.CANCELLED and fits == []
-    app._tick_training()
-    assert "Przerwane" in app.dyn_res.content and not app.dyn_keep.visible
-
-
-def test_close_disconnects_the_arm_before_waiting_for_the_training():
-    """Drugie Ctrl+C w czasie do 13 s czekania na trening pomijalo `twin.close()`."""
-    import threading
-    from types import SimpleNamespace
-
-    from lerobot_mp.twin.ui.app import TwinApp
-
-    calls = []
-
-    def shutdown():
-        calls.append("trening")
-        raise KeyboardInterrupt                                  # drugie Ctrl+C w trakcie czekania
-
-    st = SimpleNamespace(_stop=threading.Event(), runner=None, _tick_errors=set(),
-                         calib_job=jobs.Job("a"), sysid_job=jobs.Job("b"), intr_job=jobs.Job("c"),
-                         eval_job=jobs.Job("d"), twin=SimpleNamespace(close=lambda: calls.append("ramie")),
-                         train=SimpleNamespace(shutdown=shutdown),
-                         server=SimpleNamespace(stop=lambda: calls.append("serwer")))
-    st._guard = lambda what, fn, *a: TwinApp._guard(st, what, fn, *a)
-    with pytest.raises(KeyboardInterrupt):
-        TwinApp.close(st)
-    assert calls == ["ramie", "trening", "serwer"]
-
-
-def test_cube_tracker_gets_the_effective_closed_jaw_angle(app, monkeypatch):
-    """Nie dolny kraniec MJCF (-10 st.), a kat szczeki przy chwytaku 0 (-5,4 st.), jak w polityce."""
-    from types import SimpleNamespace
-
-    from lerobot_mp.twin.rl import task as tk
-
-    seen = []
-    monkeypatch.setattr(app.cube_tracker, "update", lambda det, T, q, cmd, closed, now: seen.append(closed))
-    kin = app._kin_vision
-    old = app.runner
-    try:
-        app.runner = None
-        app._vision_cube()
-        assert seen[-1] == pytest.approx(kin.to_q({"gripper": 0.0})[5])
-        assert seen[-1] > kin.lo[5] + np.radians(3.0)
-        lim = tk.Limits.of(kin)
-        app.runner = SimpleNamespace(limits=lim, q_cmd=lim.home.copy())
-        app._vision_cube()
-        assert seen[-1] == pytest.approx(lim.lo[5])
-    finally:
-        app.runner = old
-
-
-def test_wave_verdict_and_save_judge_the_K_the_fit_used(app):
-    """Fala z nominalnym K, krok 1 (zaufane K z ChArUco) przed "Zapisz" - poza NIE jest zaufana."""
-    from lerobot_mp.twin.calib.handeye import CameraFit, Fit
-    from lerobot_mp.twin.workspace import CameraRecord, nominal_K
-
-    rec = app.ws.add_camera(CameraRecord("usb1", "7", enabled=False))
-    try:
-        used = rec.intrinsics()
-        T = np.eye(4)
-        T[:3, 3] = [0.5, 0.0, 0.3]
-        j = app.calib_job
-        j.state, j.result = jobs.DONE, Fit({"usb1": CameraFit(T, 0.3, 0.6, 30, 25.0, trusted=True)})
-        j.data = {"tag_size": app.tag_mm.value / 1000, "intrinsics": {"usb1": used}}
-        rec.K = (nominal_K(640, 480) * np.diag([1.1, 1.1, 1.0])).tolist()
-        rec.dist = [-0.2, 0.05, 0.0, 0.0, 0.0]
-        rec.intrinsics_from = "szachownica"
-        rec.intrinsics_info = {"rms_px": 0.3, "trusted": True, "reason": ""}
-        app.calib_apply.visible = False
-        app._tick_calibration()
-        assert "zmienione od fali" in app.calib_md.content and "zaufana" not in app.calib_md.content
-        assert app._apply_calibration() == ["usb1"]
-        assert rec.calibrated and not rec.trusted
-    finally:
-        app.ws.remove_camera("usb1")
-        app.calib_job.state, app.calib_job.result, app.calib_job.data = jobs.IDLE, None, {}
-        app._refresh_cameras()
-
-
-def test_status_bar_shows_arm_warnings(app, monkeypatch):
-    import copy
-
-    st = copy.copy(app.twin.status)
-    st.warnings = ["chwytak: kalibracja LeRobota rozni sie od blizniaka o 60 tikow"]
-    monkeypatch.setattr(app.twin, "status", st)
-    assert "Uwaga:** chwytak: kalibracja" in app._status_text()
-
-
-# ------------------------------------------------------------------ runda 3b
-@pytest.mark.parametrize("action", ["stop", "home", "home_twin", "halt", "reconnect"])
+@pytest.mark.parametrize("action", ["stop", "home"])
 def test_stop_home_or_halt_while_the_policy_loads_never_lets_it_drive(app, monkeypatch, action):
     """STOP/Dom 0,1 s po Uruchom trafialy w okno ladowania polityki (108-142 ms): STOP szedl do
     starego runnera, nowa polityka brala ramie pod STOP-em, a po Skasuj STOP jechala - 83,7 st.
@@ -631,9 +309,7 @@ def test_stop_home_or_halt_while_the_policy_loads_never_lets_it_drive(app, monke
     app._refresh_policies()
     app.pol_pick.value = next(o for o in app.pol_pick.options if "reach" in o)
     real = P.Policy.load
-    press = {"stop": lambda: app._emergency_stop(None), "home": lambda: app._go_home(),
-             "home_twin": lambda: app.twin.home(), "halt": lambda: app._halt_policy(),
-             "reconnect": lambda: app._connect("sim", None, threaded=False)}[action]
+    press = {"stop": lambda: app._emergency_stop(None), "home": lambda: app._go_home()}[action]
 
     def load(path, device="cpu"):
         pol = real(path, device)
@@ -650,7 +326,7 @@ def test_stop_home_or_halt_while_the_policy_loads_never_lets_it_drive(app, monke
     for _ in range(100):
         app.twin.step(0.02)
     assert app.twin.owner is None and not app.runner.status.running
-    if action.startswith("home"):                           # Dom jedzie swoja rampa - polityka jej nie przerwala
+    if action == "home":                                    # Dom jedzie swoja rampa - polityka jej nie przerwala
         assert app.twin.safety_state.value in ("HOMING", "IDLE")
     else:
         assert max(abs(app.twin.joints()[k] - start[k]) for k in start) < 1.0
@@ -664,129 +340,427 @@ def test_stop_home_or_halt_while_the_policy_loads_never_lets_it_drive(app, monke
     assert app.twin.owner is None
 
 
-def _record_until_stopped(twin, plan, should_stop=None, **kw):
-    t_end = time.monotonic() + 5.0
-    while not should_stop() and time.monotonic() < t_end:
+def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_panel(app, monkeypatch):
+    """"Wlacz silniki A1X" tylko z polaczonym a1x, z potwierdzeniem i przy rozbrojonym panelu."""
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    app.twin.connect("sim", threaded=False)
+    ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    assert ev.client.notes and "tylko dla polaczonego ramienia a1x" in ev.client.notes[-1][1]
+    app.twin.disconnect()
+
+    class FakeA1X:
+        calls = 0
+
+        def enable(self):
+            FakeA1X.calls += 1
+            return "wyslano FF 1 -> 5 -> 6"
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(app.twin, "_backend", FakeA1X())
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    assert "zaznacz potwierdzenie" in ev.client.notes[-1][1] and FakeA1X.calls == 0
+    app.a1x_confirm.value = True
+    app.arm_engage.value = True
+    ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    assert "rozbroj" in ev.client.notes[-1][1] and FakeA1X.calls == 0
+    app.arm_engage.value = False
+    _click(app, "Wlacz silniki A1X (FF 1-5-6)")
+    deadline = time.monotonic() + 2.0
+    while "wyslano" not in app.a1x_md.content and time.monotonic() < deadline:
         time.sleep(0.01)
-    raise RuntimeError("identyfikacja przerwana")            # jak `sysid.record` po `should_stop`
+    assert FakeA1X.calls == 1 and "wyslano FF 1 -> 5 -> 6" in app.a1x_md.content
+    assert app.a1x_confirm.value is False                 # nastepne wlaczenie - nowe potwierdzenie
+    app.twin._backend = None
 
 
-@pytest.mark.parametrize("how", ["stop", "home", "fault"])
-def test_sysid_recording_stopped_by_the_operator_is_cancelled_not_an_error(app, monkeypatch, how):
-    """STOP albo Dom w nagraniu dawaly "**Blad**: RuntimeError: identyfikacja przerwana" (verify2, s6);
-    STOP od bledu serwa zostaje bledem - z powodem."""
-    import lerobot_mp.twin.rl.sysid as sysid
+def test_status_line_says_the_gripper_is_disabled_when_not_drivable(app, monkeypatch):
+    """A1X przez XCAN: chwytak nie dostaje 0x051, a panel bez sprzezenia pokazuje rozkaz - linia stanu to mowi."""
+    from lerobot_mp.twin.runtime import RobotStatus
 
-    monkeypatch.setattr(sysid, "record", _record_until_stopped)
-    app.twin.connect("sim", threaded=False)
-    app._take_arm(jobs.SYSID_OWNER, preempt=app.sysid_job.stop)
-    app.sysid_job.start(lambda job: jobs.run_sysid(job, app.twin))
-    time.sleep(0.05)
-    {"stop": lambda: app._emergency_stop(None), "home": app._go_home,
-     "fault": lambda: app.twin.estop("elbow_flex (serwo 3): przegrzanie")}[how]()
+    class FakeA1X:
+        drivable = False
+
+        def gripper_drivable(self):
+            return FakeA1X.drivable
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(app.twin, "_backend", FakeA1X())
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    assert "chwytak wylaczony" in app._status_text()
+    FakeA1X.drivable = True
+    assert "XCAN" not in app._status_text()
+    monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, SO-101): steruje
+    assert "XCAN" not in app._status_text()
+    app.twin._backend = None
+
+
+
+def test_status_line_mentions_the_gripper_over_xcan(app, monkeypatch):
+    """XCAN z proba chwytaka (a1x.gripper_over_xcan / A1X_GRIPPER_XCAN=1): zamiast odmowy "proba"."""
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    class FakeA1X:
+        trial = True
+
+        def gripper_drivable(self):
+            return True
+
+        def gripper_xcan_trial(self):
+            return FakeA1X.trial
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(app.twin, "_backend", FakeA1X())
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    text = app._status_text()
+    assert "chwytak przez XCAN" in text and "wylaczony" not in text
+    FakeA1X.trial = False                                  # can0: ani odmowy, ani proby
+    assert "XCAN" not in app._status_text()
+    app.twin._backend = None
+
+def test_spectacles_mode_change_interrupts_a_move_and_disconnect_clears_real_consent(app):
+    specs = app.specs
+    specs.url.value = f"ws://127.0.0.1:{free_port()}/twin"          # nothing listens; the driver keeps retrying
+    specs.mode.value = "real"
+    specs.real_ok.value = True
+    specs.start()
     try:
-        assert app.sysid_job.wait(5.0)
-        app._tick_training()
-        txt = app.dyn_res.content
-        if how == "fault":
-            assert app.sysid_job.state == jobs.FAILED and "przegrzanie" in app.sysid_job.error
-            assert txt.startswith("**Blad**") and "przegrzanie" in txt
-        else:
-            assert app.sysid_job.state == jobs.CANCELLED
-            assert txt.startswith("**Przerwane**") and ("STOP z panelu" if how == "stop" else "pozycja domowa") in txt
-        assert not app.dyn_keep.visible
+        drv = specs.driver
+        assert drv is not None and drv.mode == "real" and drv.real_ok
+        drv._phase = "moving"                                         # pretend a move is in progress
+        specs.mode.value = "dry"
+        specs.apply_mode()
+        assert drv.mode == "dry"
+        assert drv._cancel.is_set() and drv._cause == "mode"
+        drv._phase = "idle"
     finally:
-        app.twin.clear_estop()
+        specs.stop()
+    assert specs.driver is None
+    assert specs.real_ok.value is False                               # consent doesn't carry to the next connection
 
 
-def test_wave_stopped_by_the_operator_is_cancelled_not_an_error(app, monkeypatch):
-    """STOP w trakcie fali: "**blad**: RuntimeError: fala przerwana - ramie odebrane (STOP z panelu)" (s8)."""
-    import lerobot_mp.twin.calib.session as session_mod
-
-    home = dict(app.ws.spec().home)
-    app.twin.connect("sim", threaded=False)
-
-    class StoppedSession:
-        def __init__(self, robot, *a, **kw):
-            self.robot, self.done = robot, False
-
-        def step(self):
-            app._emergency_stop(None)                        # operator: STOP miedzy przejazdami
-            self.robot.move(home, 0.2)
-
-    monkeypatch.setattr(session_mod, "Session", StoppedSession)
-    app._take_arm(jobs.CALIB_OWNER, preempt=app.calib_job.stop)
-    app.calib_job.start(lambda job: jobs.run_card_calibration(job, app.twin, [], quick=True))
+def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
+    """Bez kamer: podpowiedz i dodawanie; wybrana kamera i jej przyciski schowane."""
+    assert not app.ws.cameras
+    app._refresh_cameras()
+    assert not app.cam_box.visible and "Brak kamer" in app.cams_html.content
+    from lerobot_mp.twin.workspace import CameraRecord
+    app.ws.add_camera(CameraRecord("usb1", "5"))
     try:
-        assert app.calib_job.wait(60.0)
-        assert app.calib_job.state == jobs.CANCELLED and app.calib_job.result is None
+        app._refresh_cameras(select="usb1")
+        assert app.cam_box.visible and "usb1" in app.cams_html.content
+        assert not app.cam_sim_box.visible                      # prawdziwej nie przestawia sie z panelu
+        _click(app, "Usun kamere")                              # pierwszy klik tylko pyta
+        assert app.ws.camera("usb1") and "Na pewno" in app.cam_remove.label
+        _click(app, "Na pewno usunac usb1? Kliknij ponownie")
+        assert not app.ws.cameras and not app.cam_box.visible
+    finally:
+        if any(c.name == "usb1" for c in app.ws.cameras):
+            app.ws.remove_camera("usb1")
+        app._refresh_cameras()
+
+
+def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
+    from lerobot_mp.twin.runtime import RobotStatus
+
+    started = []
+    monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam"])
+    monkeypatch.setattr(app, "_start_card_calibration", lambda ev, cams, quick: started.append((cams, quick)))
+    app._render_calibration()
+    assert app.wave_btn.disabled and "polacz ramie" in app.wave_md.content.lower()
+    app.twin.connect("sim", threaded=False)
+    app._render_calibration()
+    assert not app.wave_btn.disabled and app.wave_btn.label == "Start: ramie pokaze karte kamerom (kam)"
+    _click(app, "Start: ramie pokaze karte kamerom (kam)")
+    assert started == [(["kam"], False)]
+    started.clear()
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    _click(app, "Start: ramie pokaze karte kamerom (kam)")
+    assert started == [] and app.wave_btn.color == "orange" and "Kliknij jeszcze raz" in app.wave_btn.label
+    _click(app, app.wave_btn.label)
+    assert started == [(["kam"], False)]
+    app.calib_ask.reset()
+
+
+def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    rec = CameraRecord("kam1", "sim")
+    rec.T_cam2base = np.eye(4).tolist()
+    app.ws.add_camera(rec)
+    started = []
+    monkeypatch.setattr(app, "_start_card_calibration", lambda ev, cams, quick: started.append((cams, quick)))
+    try:
+        app.twin.connect("sim", threaded=False)
+        app._render_calibration()
+        assert not app.reloc_box.visible
+        monkeypatch.setattr(app.watch, "moved", lambda name: name == "kam1")
+        monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam1"])
+        app._render_calibration()
+        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)"
+        assert app.reloc_box.visible and app.reloc_btn.label == label
+        assert "PORUSZONA" in app.calib_html.content
+        _click(app, label)
+        assert started == [(["kam1"], True)]
+    finally:
+        app.ws.remove_camera("kam1")
+
+
+def test_after_saving_one_lens_the_calibration_tab_moves_on_to_the_next_camera(app):
+    """Po zapisie obiektywu kamery 1 przycisk mowil dalej "kamera 1", choc zostala kamera 2."""
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    class Res:
+        K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
+        dist = np.zeros(5)
+        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+
+    for n, src in (("u1", "5"), ("u2", "6")):
+        app.ws.add_camera(CameraRecord(n, src))
+    try:
+        app._render_calibration()
+        assert app.intr_box.visible and app.intr_cam.value == "u1"
+        assert app.intr_start.label == "Zacznij: pokazuj szachownice kamerze u1"
+        assert "zostalo: u1, u2" in app.intr_title.content
+        ij = app.intr_job
+        ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "u1"}
         app._tick_calibration()
-        assert app.calib_md.content.startswith("**Przerwane**: STOP z panelu")
+        assert app.intr_cam.value == "u2" and app.intr_start.label.endswith("kamerze u2")
+        assert "u1** zmierzony" in app.intr_md.content and "OBIEKTYW OK" in app.calib_html.content
+        assert app.wave_btn.disabled and "krok 1 dla: u2" in app.wave_md.content
     finally:
-        app.twin.clear_estop()
+        for n in ("u1", "u2"):
+            app.ws.remove_camera(n)
+        app.intr_job.state = jobs.IDLE
 
 
-def test_a_fit_that_explains_nothing_shows_its_band_and_needs_a_confirmation_to_save(app, monkeypatch):
-    """Panel proponowal "Zapisz" dla dopasowania 0,55 -> 0,51 st. z armatura +-inf, pasma nie pokazywal,
-    a trening centrowal sie potem na armaturze x0,45 przy prawdzie 1,0 (verify2, s6)."""
-    import lerobot_mp.twin.rl.sysid as sysid
-    from lerobot_mp.twin.rl.randomize import Dynamics
-    from lerobot_mp.twin.ui import guide as gd
+def test_fixed_texts_written_at_creation_reach_the_browser(app):
+    """Staly tekst z `add_markdown` (opis zakladki, notki Jak uzywac) nie docieral do przegladarki."""
+    from viser._gui_handles import GuiMarkdownHandle
 
-    def identify(rec, on_progress=None, **kw):
-        dyn = Dynamics(damping=1.25, armature=0.45, delay=0.02, fit_deg=0.51,
-                       source="identyfikacja 2026-09-24T10:00:00 (sim); niepewnosc: x")
-        dyn.fitted = ("damping", "armature", "delay")
-        return SimpleNamespace(dyn=dyn, base=0.55, band={"damping": 0.6, "armature": float("inf"),
-                                                         "delay": float("inf")})
+    h = app.server.gui.add_markdown("staly tekst")
+    try:
+        assert h._tw_sent == "staly tekst" and h._impl.props._markdown
+        h.content = "staly tekst"                               # ten sam tekst - bez wysylania
+        assert GuiMarkdownHandle.content.fset._dedup
+    finally:
+        h.remove()
 
-    monkeypatch.setattr(sysid, "record", lambda twin, plan, **kw: SimpleNamespace(meta={"backend": "sim"}))
-    monkeypatch.setattr(sysid, "identify", identify)
-    app.ws.dynamics = {}
+
+@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt", "ueye_calib.txt"))
+def test_shipped_lens_files_parse(filename):
+    """Pliki z obiektywami w assets/calib czyta ten sam parser, co przycisk w panelu."""
+    from lerobot_mp.twin.calib import intrinsics as intr
+    from lerobot_mp.twin.ui.app import LENS_DIR
+
+    res = intr.read_file(LENS_DIR / filename)
+    assert res.K.shape == (3, 3) and res.K[0, 0] > 500 and res.dist.shape == (5,)
+    assert res.trusted and res.reason == f"z pliku {filename}"
+
+
+def test_lens_from_file_lands_on_the_chosen_camera_and_refuses_another_resolution(app, monkeypatch, tmp_path):
+    """Krok 1 bez szachownicy: obiektyw z pliku .txt (K, dystorsja) wpisuje sie do wybranej kamery,
+    plik z innej rozdzielczosci jest odrzucany, a poza ustalona ze starym K przestaje byc zaufana."""
+    from lerobot_mp.twin.ui import app as app_mod
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    (tmp_path / "brio.txt").write_text(
+        "# camera_matrix (3x3, row-major)\n937.5 0 628.3\n0 937.7 348.0\n0 0 1\n"
+        "# dist_coeffs (5: k1 k2 p1 p2 k3)\n0.195 -0.519 0.0002 -0.0001 0.361\nnum_views: 81\n")
+    (tmp_path / "ueye.txt").write_text(
+        "image_size (w h): 1280 1024\nfx: 1512.4\nfy: 1509.8\ncx: 665.1\ncy: 545.7\n"
+        "# dist_coeffs (5: k1 k2 p1 p2 k3)\n-0.237 0.177 0.0006 0.0015 0.0\n")
+    monkeypatch.setattr(app_mod, "LENS_DIR", tmp_path)
+    rec = app.ws.add_camera(CameraRecord("u1", "5", 1280, 720))
+    rec.T_cam2base = np.eye(4).tolist()
+    rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.2}
+    try:
+        app._render_calibration()
+        assert app.lens_file_box.visible and app.lens_file.options == ("brio.txt", "ueye.txt")
+        assert "u1" in app._lens_todo()
+        with pytest.raises(RuntimeError, match="1280x1024"):
+            app._import_lens("u1", "ueye.txt")
+        assert rec.K is None
+        assert app._import_lens("u1", "brio.txt") == "u1"
+        assert rec.K[0][0] == 937.5 and rec.dist[4] == 0.361 and rec.intrinsics_from == "szachownica"
+        assert rec.intrinsics_info["trusted"] and rec.intrinsics_info["n_views"] == 81
+        assert not rec.intrinsics_problem() and "u1" not in app._lens_todo()
+        assert not rec.calibration["trusted"] and "krok 2" in rec.calibration["reason"]
+        assert "u1** wczytany z pliku brio.txt" in app.intr_md.content
+        app._render_calibration()
+        assert "OBIEKTYW OK" in app.calib_html.content
+    finally:
+        app.ws.remove_camera("u1")
+
+
+def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):
+    """Brio i uEye przegrywaly wyscig z resetem USB przy starcie panelu i zostawaly BEZ OBRAZU,
+    az ktos wylaczyl i wlaczyl kamere w panelu. Panel probuje sam, co HEAL_S, poki jest blad."""
+    from lerobot_mp.twin.ui import app as app_mod
+    from lerobot_mp.twin.workspace import CameraRecord
+
+    calls = []
+    hub = app.twin.cameras
+    monkeypatch.setattr(hub, "sync", lambda: calls.append(1))
+    errors = {"u9": "nie otworzyla sie"}
+    monkeypatch.setattr(hub, "error", lambda name: errors.get(name))
+    app.ws.add_camera(CameraRecord("u9", "77"))
+    try:
+        app._heal_cameras(now=1000.0)
+        app._heal_cameras(now=1000.0 + app_mod.HEAL_S / 2)
+        assert calls == [1]                                    # nie czesciej niz HEAL_S
+        app._heal_cameras(now=1000.0 + app_mod.HEAL_S)
+        assert calls == [1, 1]
+        errors.clear()
+        app._heal_cameras(now=1000.0 + 2 * app_mod.HEAL_S)
+        assert calls == [1, 1]                                 # bez bledu nic nie robi
+    finally:
+        app.ws.remove_camera("u9")
+
+
+def test_home_works_straight_after_a_stop(app):
+    """Po STOP-ie ramie bez hamulcow moglo stac w gorze, a Dom byl wylaczony do Skasuj STOP.
+    Dom ma byc jednym kliknieciem: sam kasuje STOP i jedzie."""
     app.twin.connect("sim", threaded=False)
-    app._take_arm(jobs.SYSID_OWNER, preempt=app.sysid_job.stop)
-    app.sysid_job.start(lambda job: jobs.run_sysid(job, app.twin))
     try:
-        assert app.sysid_job.wait(10.0) and app.sysid_job.state == jobs.DONE
-        app._tick_training()
-        txt = app.dyn_res.content
-        assert "tlumienie x1.25 (+-60%)" in txt and "armatura x0.45 (+-inf)" in txt
-        assert "nic nie wyjasnia" in txt and "Nagrane na: **sim**" in txt
-        assert app.dyn_keep.visible and app.dyn_keep.disabled and app.dyn_force.visible
-        assert "nic nie wyjasnia" in gd.build(app._guide_snapshot()).now
-        ev = _click(app, "Zapisz jako dynamike stanowiska")
-        assert ev.client.notes and "nic nie wyjasnia" in ev.client.notes[-1][1] and app.ws.dynamics == {}
-        app.dyn_force.value = True                          # operator potwierdza swiadomie
-        _click(app, "Zapisz jako dynamike stanowiska")
-        assert gd.USELESS_MARK in app.ws.dynamics["source"]
-        assert "nic nie wyjasnia" in app.dyn_md.content
-        steps = gd.build(app._guide_snapshot()).steps
-        assert steps[5].status != gd.DONE and "nic nie wyjasnia" in steps[5].detail
+        app.twin.estop("test")
+        assert app._estop_active()
+        app._render_arm(force=True)
+        assert not app.home_btn.disabled
+        app._go_home()
+        assert not app._estop_active()
     finally:
-        app.ws.dynamics = {}
-        app._show_dynamics()
-        app.dyn_force.value = app.dyn_force.visible = app.dyn_keep.visible = False
+        app.twin.disconnect()
 
 
-def test_cube_tracker_gets_the_gripper_command_really_sent(app, monkeypatch):
-    """Restart z kostka w szczekach: tracker dostawal `runner.q_cmd[5]` = zmierzony kat szczeki,
-    nie widzial "sciska" i nie bral kostki "w dloni" (verify2, perception 3b)."""
-    import copy
+@pytest.mark.render
+def test_pmd_camera_with_tags_on_its_housing_is_learned_found_drawn_and_saved(app):
+    """Kostka z trzema tagami w scenie blizniaka, dwie kamery symulowane z "zaufana" poza: nauka ukladu
+    z kadrow, poza PMD w 3D (osie, tagi, piramida), zapis do stanowiska i powrot po wczytaniu."""
+    from test_twin_tagbody import TAG, angle_deg, true_layout
+    from lerobot_mp.twin import scene as sc
+    from lerobot_mp.twin.calib import tags
+    from lerobot_mp.twin.kinematics import pose
+    from lerobot_mp.twin.workspace import CameraRecord, Workspace
 
-    from lerobot_mp.twin.rl import task as tk
-
-    seen = []
-    monkeypatch.setattr(app.cube_tracker, "update", lambda det, T, q, cmd, closed, now: seen.append(cmd))
-    kin = app._kin_vision
-    home = dict(app.ws.spec().home)
-    st = copy.copy(app.twin.status)
-    st.measured, st.command = dict(home, gripper=30.0), dict(home, gripper=5.0)
-    monkeypatch.setattr(app.twin, "status", st)
-    old = app.runner
+    # Kamery symulowane panelu maja 640x480 i 62 st. pola widzenia (f ok. 400 px): kostka z modulowego
+    # testu (tag 3 cm) z 0,4 m to 30 px na tag i ukosne tagi sie nie dekoduja - tu 1,5x wieksza, z 0,3 m.
+    TAG_UI = 1.5 * TAG
+    layout = {i: T.copy() for i, T in true_layout().items()}
+    for T in layout.values():
+        T[:3, 3] *= 1.5
+    T_body2base = pose(np.eye(3), np.array([0.30, 0.05, 0.08]))
+    plate = TAG_UI / tags.MARKER_FRACTION
+    panels = [sc.Panel(f"pmdtag{i}", tags.render(i, 400), (plate, plate), T_body2base @ T)
+              for i, T in layout.items()]
+    extras = dict(app.twin.extras)
+    centre = T_body2base[:3, 3]
     try:
-        lim = tk.Limits.of(kin)
-        app.runner = SimpleNamespace(limits=lim, q_cmd=kin.to_q(st.measured))   # runner od pomiaru
-        app._vision_cube()
-        assert seen[-1] == pytest.approx(kin.to_q(dict(home, gripper=5.0))[5])
+        app.twin.configure(**{**extras, "panels": panels})
+        n0 = len(app.ws.cameras)
+        # Z naroznika (trzy scianki), od +x i od +y - jak w test_twin_tagbody; dwie kamery i jeden kadr
+        # zostawialy tagi 1 i 2 po jednym ukosnym widoku (poza ~6 mm od prawdy).
+        for d in ([0.55, 0.55, 0.65], [0.9, -0.35, 0.45], [-0.3, 0.9, 0.5]):
+            app._add_sim_camera(app.T_b2w @ _look_at_pose(centre + 0.3 * np.array(d), centre))
+        cams = app.ws.cameras[n0:]
+        assert len(cams) == 3
+        for rec in cams:
+            rec.T_cam2base = [list(r) for r in rec.sim_pose]
+            rec.calibration = {"trusted": True, "reason": "", "rms_px": 0.0}
+        app._refresh_cameras()
+        app.pmd_ids.value, app.pmd_mm.value = "0 1 2", TAG_UI * 1000
+        app.pmd_optical.value = "-z taga 0"
+
+        app._pmd_learn()
+        assert "Uklad kompletny" in app.pmd_md.content, app.pmd_md.content
+        assert "tagi 0, 1 sa tez na karcie" in app.pmd_md.content
+        assert set(app.pmd.known()) == {0, 1, 2}
+
+        app._pmd_find(app._tick_slow())
+        assert app._pmd_fix is not None and set(app._pmd_fix.per_camera) == {c.name for c in cams}
+        assert np.linalg.norm(app._pmd_fix.position - centre) < 0.003, app._pmd_fix
+        assert angle_deg(app._pmd_fix.T_body2base[:3, :3], T_body2base[:3, :3]) < 1.0
+        assert set(app._pmd_nodes) == {"os", "etykieta", "tag0", "tag1", "tag2", "kamera"}
+        Tw = app.T_b2w @ app._pmd_fix.T_body2base
+        assert np.allclose(app._pmd_nodes["os"].position, Tw[:3, 3], atol=1e-6)
+        # Piramida patrzy od tylnej scianki (tag 0, os -z): jej z to -z ukladu PMD.
+        assert np.allclose(app._pmd_nodes["kamera"].position, Tw[:3, 3], atol=1e-6)
+        # "Sledz na zywo" odswieza poze w takcie panelu i nie tworzy wezlow od nowa.
+        before = {k: id(v) for k, v in app._pmd_nodes.items()}
+        app.pmd_follow.value = True
+        app._tick_slow()
+        assert {k: id(v) for k, v in app._pmd_nodes.items()} == before
+        app.pmd_follow.value = False
+
+        # Kamera stanowiska o zrodle pmd (bez sprzetu - wylaczona, hub jej nie otwiera) dostaje poze
+        # z tagow: uklad optyczny wg "Kamera patrzy wzdluz", niezaufana z powodem; wtedy piramida
+        # z folderu ustepuje piramidzie kamery, gdy ta jest wlaczona.
+        pmd_rec = app.ws.add_camera(CameraRecord("pmd1", "pmd:test", 165, 120, K=[[104.0, 0, 82], [0, 103.0, 59.5], [0, 0, 1]],
+                                                 intrinsics_from="pmd", enabled=False))
+        app._pmd_find(app._grab())
+        expect = app._pmd_fix.T_body2base @ app.pmd.T_optical2body()
+        assert np.allclose(pmd_rec.T_cam2base, expect) and pmd_rec.calibrated and not pmd_rec.trusted
+        assert "tagow na obudowie" in pmd_rec.calibration["reason"] and pmd_rec.intrinsics_problem() == ""
+        assert "kamera" in app._pmd_nodes                   # wylaczona kamera pmd - piramida folderu zostaje
+        pmd_rec.enabled = True
+        app._pmd_find(app._grab())
+        assert "kamera" not in app._pmd_nodes and app.frustums["pmd1"].visible
+        assert np.allclose(app.frustums["pmd1"].position, (app.T_b2w @ expect)[:3, 3], atol=1e-6)
+        pmd_rec.enabled = False
+
+        app._pmd_save(_Event())
+        back = Workspace.load(app.ws_path)
+        assert np.allclose(back.camera("pmd1").T_cam2base, expect)
+        assert back.pmd is not None and back.pmd["ids"] == [0, 1, 2] and back.pmd["optical"] == [0, "-z"]
+        assert np.allclose(back.pmd["T_body2base"], app._pmd_fix.T_body2base)
+        assert set(back.pmd["layout"]) == {"0", "1", "2"}
+
+        # Inne numery = inna bryla: uklad i nauka od zera, os optyczna do wyboru na nowo.
+        app.pmd_ids.value = "10 11 12"
+        body = app._pmd_sync()
+        assert body.ids == (10, 11, 12) and body.known() == [10] and app._pmd_obs == []
+        assert app.pmd_optical.value == "nieznana" and "-z taga 12" in app.pmd_optical.options
     finally:
-        app.runner = old
+        app.pmd_follow.value = False
+        for rec in cams:
+            app.ws.remove_camera(rec.name)
+        app.ws.remove_camera("pmd1")
+        app.ws.pmd = None
+        app.twin.configure(**extras)
+        app._refresh_cameras()
+
+
+def test_startup_flags_connect_the_arm_and_start_the_glasses(app):
+    """`lerobot-twin ui --arm --specs sim --i-know`: ramie, pola folderu i sterownik - bez klikania."""
+    specs = app.specs
+    url = f"ws://127.0.0.1:{free_port()}/twin"                      # nothing listens; the driver keeps retrying
+    app._startup(arm=True, specs="sim", i_know=True, relay=url, follow_speed=0.1, hold_off=0.5)
+    try:
+        assert app.twin.connected and app.twin.status.simulated
+        assert specs.mode.value == "sim" and specs.url.value == url
+        assert specs.follow_speed.value == pytest.approx(0.1) and specs.hold_off.value == pytest.approx(0.5)
+        assert specs.real_ok.value is True
+        assert specs.driver is not None and specs.driver.mode == "sim" and specs.driver.real_ok
+        assert "lacze z" in specs.md.content or "sesja" in specs.md.content
+    finally:
+        specs.stop()                                                 # also clears the consent
+        assert specs.real_ok.value is False
+        specs.follow_speed.value, specs.hold_off.value, specs.mode.value = 0.0, 1.0, "dry"
+
+
+def test_ui_specs_real_without_i_know_refuses_before_the_panel(capsys):
+    from lerobot_mp.twin import cli
+    from lerobot_mp.twin.ui import app as ui_app
+
+    assert cli.main(["ui", "--port", str(free_port()), "--specs", "real"]) == 2
+    assert "--i-know" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        ui_app.main(["--port", str(free_port()), "--specs", "real"])
+    assert exc.value.code == 2

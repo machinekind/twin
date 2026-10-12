@@ -43,7 +43,7 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
   rzadko odświeżaną, zaszumioną), a nie tak, jak zna ją fizyka.
 - **Jedna ścieżka kodu dla symulacji i ramienia** — te same wzory obserwacji,
   ten sam nadzór bezpieczeństwa, ta sama percepcja; przejście sim → ramię to
-  zmiana backendu (`sim` → `feetech`).
+  zmiana backendu (`sim` → `feetech`, dla Galaxea A1X `sim` → `a1x`).
 
 ## Co umożliwia
 
@@ -60,13 +60,25 @@ Bliźniak jest **zmierzony ze stanowiska**, a nie modelowany na oko:
 - **Bezpieczną pracę z ramieniem** — jeden właściciel ruchu; STOP i Dom
   odbierają ramię każdemu; reakcja na błędy serw, utratę łącza i kolizje;
   ściskający chwytak nie puszcza przy STOP.
+- **Drugie ramię: Galaxea A1X** — ten sam bliźniak, panel i nadzór; w
+  symulacji model, kalibracja kamer i środowiska RL, na sprzęcie backend `a1x`
+  po CAN-FD (Linux, macOS, Windows) — [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
+- **Mrówkę RealAnt obok ramienia** — mrówka jeździ na własnej polityce, a bliźniak ma jej kopię w fizyce:
+  nogi z odczytów serw, poza dociągana AprilTagami z kamer, montaż tagów kalibruje się sam; w demo mrówkę
+  udaje druga, sterowana **WSAD** (ta sama polityka chodu w czterech kierunkach), i jedzie naraz z ramieniem
+  ze Spectacles (`lerobot-twin demo --ant`, zakładka *Mrówka*) — [docs/TWIN.md](docs/TWIN.md#mrówka-realant-kopia-w-bliźniaku-z-serw-i-tagów).
 - **Pracę zdalną** — ramię przez most sieciowy (`socket://`), panel
   w przeglądarce z przewodnikiem krok po kroku i podpowiedzią przy każdej
   kontrolce.
+- **Cele z okularów Spectacles** — pudełko zasięgu w okularach, pinch wysyła
+  cel, ramię jedzie i cofa się po uderzeniu (`lerobot-twin specs`, folder
+  *Spectacles* w panelu; pierwszy ruch prawdziwym A1X 2026-09-26) —
+  [docs/TWIN.md](docs/TWIN.md#spectacles-pudełko-zasięgu-i-pinch).
+  Kierowca okularów po angielsku: [docs/SPECS.md](docs/SPECS.md); okulary i ramię krok po kroku: [docs/RIG.md](docs/RIG.md).
 
 ## Co przyspiesza
 
-Zmierzone na RTX A4500:
+Zmierzone na karcie RTX A4500:
 
 | | czas |
 |---|---|
@@ -85,10 +97,13 @@ zostaje sprawdzenie.
 
 W symulacji: polityki `reach-v3` i `lift-v3` mają 100 % sukcesu na CPU
 (inny silnik niż w treningu), `lift` z kostką **wyłącznie z kamer** podnosi
-8/8. Kod przeszedł trzy rundy przeglądu z niezależną weryfikacją poprawek;
-567 testów. **Na prawdziwym ramieniu całość nie była jeszcze testowana** —
-to następny krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
-Decyzje, historia i pułapki: [HANDOFF.md](HANDOFF.md).
+8/8. Testy są wyłącznie integracyjne: łańcuchy przez kilka modułów
+i zachowania groźne dla sprzętu. Galaxea A1X działa w symulacji (kalibracja kamer 6/6
+zaufanych, IK, fala, stabilna fizyka RL); jego backend CAN jest przetestowany
+na symulowanej magistrali, polityk dla A1X jeszcze nie ma. **Na prawdziwym
+ramieniu (SO-101 ani A1X) całość nie była jeszcze testowana** — to następny
+krok, procedura krok po kroku w [docs/TWIN.md](docs/TWIN.md).
+Decyzje i pułapki: [HANDOFF.md](HANDOFF.md).
 
 ---
 
@@ -101,10 +116,14 @@ i dane:
 |---|---|---|
 | `models/` | modele MediaPipe: dłoń i poza `lite` ([models/README.md](models/README.md)) | tak; brakujący model pobiera się sam |
 | `assets/robots/so101/` | model ramienia z MuJoCo Menagerie z siatkami STL | tak |
+| `assets/robots/a1x/` | Galaxea A1X: URDF i siatki producenta (licencja producenta, nie Apache-2.0 — `NOTICE`) i `a1x.xml` ze skryptu | tak |
 | `assets/so101_preview.npz` | model podglądu 3D aplikacji `lerobot-mp` | tak |
 | `assets/policies/` | polityki bazowe `reach-v3` i `lift-v3` (start do douczania) | tak |
 | `examples/twin.sim.json` | przykładowe stanowisko w symulacji: dwie kamery z zaufaną kalibracją | tak |
+| `assets/calib/*.txt` | przykładowe obiektywy (Logitech Brio 4K 1280x720, IDS uEye 1280x1024): K i dystorsja do wczytania w Kalibracji, krok 1 | tak |
+| `examples/twin.a1x.sim.json` | to samo dla Galaxea A1X (`lerobot-twin demo --robot a1x`) | tak |
 | `workspace/twin.json` | **Twoje** stanowisko: kamery i ich kalibracja, port, stół, zmierzona dynamika | nie — per biurko, powstaje przy pierwszym zapisie w panelu albo przez `lerobot-twin demo` |
+| `workspace/calib/*.json` | każdy zapis położenia kamer (Kalibracja, krok 2) jako osobny plik; panel wgrywa najnowszy, starsze do wyboru z listy | tak — przykładowe zestawy z fal A1X |
 | `workspace/policies/` | polityki, które sam wytrenujesz | nie |
 | `configs/local.yaml` | Twoja konfiguracja (kopia `configs/default.yaml`), np. tiki chwytaka | nie (`.gitignore`) |
 
@@ -221,18 +240,22 @@ stanowiska (`istnieje` albo `nowe, puste`) i katalog polityk — tak widać, że
 użyty jest `workspace/twin.json` z klonu, także gdy panel odpalono z innego
 katalogu. To samo pokazuje `lerobot-twin workspace`.
 
+Okulary Spectacles jednym poleceniem (ramię ze stanowiska, bez domu, i sterownik okularów):
+`lerobot-twin ui --port 8765 --arm --specs real --i-know --follow-speed 0.10`
+(szczegóły: [docs/SPECS.md](docs/SPECS.md), sekcja „The panel”).
+
 W panelu: zakładka **Ramię** → `sim` → **Połącz**; zakładka **Polityki** →
 `lift-v3`, `lift: skad polozenie kostki` = **kamery**, kostkę kładzie przycisk
 `lift (sim): poloz kostke losowo`. Bez `demo` bliźniak startuje z pustym
 stanowiskiem (ramię `sim`, bez kamer) — kamery dodaje się w zakładce Kamery
 (`Dodaj symulowana przed ramieniem`, potem kalibracja albo
-`Symulowana: uznaj prawdziwa poze za kalibracje`).
+w zakładce Kalibracja `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
 Karta z panelem musi być widoczna: viser w karcie w tle nic nie rysuje.
 
 ### 4. Testy
 
 ```bash
-pytest -q                     # ok. 3-4 min na RTX A4500 (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
+pytest -q                     # ok. 3-4 min z GPU (+ ok. 100 s kompilacji kerneli Warp za 1. razem)
 pytest -q -m "not render"     # komputer bez OpenGL
 ```
 
@@ -240,9 +263,10 @@ Testy GPU pomijają się same bez CUDA albo bez `mujoco_warp`; testy bliźniaka 
 bez `mujoco`/`torch`. Jeden stary test (`test_mapping.py::test_direct_and_ik_move_the_tip_the_same_way`)
 jest oznaczony jako znany problem (`xfail`).
 
-Czysty wynik bez NVIDIA i bez LeRobota: same `passed` poza **7 skipped**
-(4 testy GPU, 3 testy LeRobota) i **1 xfailed**; ok. 2–3 min na CPU. Z kartą
-NVIDIA zostają tylko 3 pominięcia LeRobota (albo żadne, gdy jest zainstalowany).
+Czysty wynik bez NVIDIA i bez LeRobota: same `passed` poza **12 skipped**
+(4 testy GPU, 8 testów LeRobota) i **1 xfailed**; ok. 2–3 min na CPU. Z kartą
+NVIDIA zostają tylko pominięcia LeRobota (albo żadne, gdy jest zainstalowany).
+Bez pakietu `galaxeo` (extra `a1x`) pomijają się dodatkowo testy backendu `a1x`.
 
 ### 5. Trening (tylko NVIDIA)
 
@@ -261,7 +285,7 @@ Do bliźniaka służy backend `feetech` (sam `pyserial`, bez LeRobota i bez jego
 kalibracji). Port pokaże `lerobot-twin check` albo „Wykryj porty” w panelu
 (Windows `COMx`, Linux `/dev/ttyACM0`). Tiki chwytaka w konfiguracji
 (`robot.gripper_closed_ticks` 1986 / `gripper_open_ticks` 2670) to wartości
-ramienia autora — sprawdź swoje i wpisz je w kopię konfiguracji:
+przykładowego ramienia — sprawdź swoje i wpisz je w kopię konfiguracji:
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -269,6 +293,43 @@ lerobot-twin --config configs/local.yaml ui
 ```
 
 Dalej: [docs/TWIN.md](docs/TWIN.md), „Pierwszy test na prawdziwym stanowisku”, od kroku 0.
+
+### 7. Galaxea A1X (CAN)
+
+Backend `a1x` rozmawia z ramieniem po CAN-FD przez pakiet `galaxeo`
+(protokół i łącze, repozytorium galaxeo-manipulators):
+
+```bash
+pip install -e ".[twin,a1x,dev]" -c constraints.txt   # wymaga scalonej gałęzi `pkg` w galaxeo-manipulators
+# do czasu scalenia: ".[twin,dev]" i pip install -e ../galaxeo-manipulators   (klon na gałęzi pkg)
+# macOS (dongiel XCAN): dodatkowo pip install pyusb i brew install libusb
+# Windows (PCAN): dodatkowo pip install python-can
+lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji (istniejącego nie nadpisze bez --force)
+```
+
+W panelu: Ramię = `a1x`, Port = interfejs CAN (`can0` na Linuksie po
+`./can_up.sh`, `xcan` albo `xcan:<adres usb>` na macOS, `PCAN_USBBUS1` na
+Windows). Parametry (zero stawów, sprzężenie chwytaka, progi) są w sekcji
+`a1x` konfiguracji. Po „Połącz” nic nie idzie na magistralę do pierwszego
+ruchu; sekwencja włączenia FF 1-5-6 jest tylko ręczna („Włącz silniki A1X”).
+**A1X nie ma hamulców** — przed pierwszą sesją przeczytaj
+[docs/TWIN.md](docs/TWIN.md#galaxea-a1x), „Galaxea A1X”.
+
+### Kamera IDS uEye
+
+Kamery IDS (np. UI-1240) nie dają urządzenia V4L2, więc OpenCV ich nie
+otworzy — bliźniak rozmawia z nimi przez `pyueye` i IDS Software Suite
+(demon `ueyeusbd`/`ueyeethd`, `libueye_api`):
+
+```bash
+pip install -e ".[ueye]" -c constraints.txt
+```
+
+W panelu **Szukaj kamer USB** znajduje też kamery uEye (źródło `ueye` =
+pierwsza wolna kamera, `ueye:<id>` = numer z IDS Camera Manager). Kamera
+startuje z automatyczną migawką ograniczoną do 20 ms i automatycznym
+wzmocnieniem — bez tego obraz IDS jest czarny. Gdy sterownik nie widzi
+kamery (kabel, `ueyeusbd`), panel pokazuje to przy kamerze zamiast kadru.
 
 ### Naprawa OpenCV po LeRobocie
 
@@ -373,7 +434,6 @@ Pusta lista oznacza jedną z trzech rzeczy, w tej kolejności prawdopodobieństw
 
 | Środowisko | Gdzie to włączyć |
 |---|---|
-| Shadow / Blade | w kliencie Shadow: menu urządzeń USB → zaznacz przejściówkę ramienia |
 | VirtualBox | Urządzenia → USB → wybierz urządzenie (plus Extension Pack) |
 | VMware | VM → Removable Devices → urządzenie → Connect |
 | Hyper-V | brak przekierowania USB — użyj trybu rozszerzonej sesji albo `usbipd-win` |
@@ -403,7 +463,7 @@ jedna ramka to jeden przebieg zamiast kilku. Na maszynie z ramieniem:
 
 ```bash
 pip install -e ".[bridge]"
-lerobot-mp-bridge --port COM11 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
+lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-maszyny-zdalnej>
 ```
 
 Na maszynie zdalnej wystarczy dowolny sterownik wirtualnego portu szeregowego
@@ -731,10 +791,10 @@ ten sam format, więc działa na obu wersjach.
 pip install -e ".[dev]" -c constraints.txt && pytest -q
 ```
 
-567 testów pokrywa matematykę sterowania (filtry, kinematyka, mapowanie,
+Ok. 680 testów pokrywa matematykę sterowania (filtry, kinematyka, mapowanie,
 nadzór), kąty ramienia w układzie tułowia, wątek podglądu 3D i zgodność modelu
 ze źródłem, cały łańcuch od cech dłoni do symulowanego ramienia oraz bliźniaka
-(kalibracja, percepcja, RL, panel). Bez extra `[twin]` testy bliźniaka się
+(kalibracja, percepcja, RL, panel) i backendu `a1x` na symulowanej magistrali CAN. Bez extra `[twin]` testy bliźniaka się
 pomijają; bez OpenGL: `pytest -q -m "not render"`.
 
 Kilka z nich sprawdza **skutek fizyczny, a nie wartość stawu** — i to nie jest

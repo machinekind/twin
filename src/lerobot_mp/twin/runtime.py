@@ -31,19 +31,19 @@ from __future__ import annotations
 import copy
 import logging
 import threading
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 import mujoco
 import numpy as np
 
-from ..config import JOINT_NAMES, load_config
 from ..control.safety import SafetyState, SafetySupervisor
 from ..robot import create_backend
 from ..robot.base import RobotBackend, RobotInfo
 from . import scene as sc
 from .cameras import CameraHub
+from .clock import Clock, VirtualClock, WallClock
+from .robots import robot_config
 from .workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class SceneBackend(RobotBackend):
 class TickSample:
     """Jeden takt petli ramienia dla sluchaczy (`Twin.add_tick_listener`).
 
-    `t` - czas petli tego taktu (monotoniczny; w `threaded=False` - zegar `step`),
+    `t` - czas petli tego taktu na zegarze blizniaka (`Twin.clock`: monotoniczny albo wirtualny),
     `sent` - rozkaz, ktory NAPRAWDE poszedl do serw w tym takcie ({} = nic nie poszlo),
     `measured` / `measured_t` - ostatni pomiar i jego chwila, `fresh` - ten takt mial swiezy odczyt.
     """
@@ -125,7 +125,7 @@ class RobotStatus:
     at_limit: list[str] = field(default_factory=list)
     loop_hz: float = 0.0
     error: str = ""
-    #: Kiedy (czas petli, monotoniczny) przyszedl ostatni odczyt `measured` - po tym
+    #: Kiedy (czas petli, `Twin.clock`) przyszedl ostatni odczyt `measured` - po tym
     #: identyfikacja odroznia nowy pomiar od powtorzonego.
     measured_t: float = 0.0
     #: Kto teraz steruje ramieniem (`Twin.owner`), "" = nikt.
@@ -293,19 +293,35 @@ class Twin:
     move_still_speed = 10.0
     move_arrive_s = 1.5
 
-    def __init__(self, workspace: Workspace, loop_hz: float = 50.0):
+    def __init__(self, workspace: Workspace, loop_hz: float = 50.0, clock: Clock | None = None):
         self.workspace = workspace
+        #: Zegar petli i wszystkiego, co na nia czeka (kierowca okularow): `WallClock` w aplikacji.
+        #: Bez `clock` blizniak wybiera sam przy `connect`: z watkiem - zegar sciany, bez watku
+        #: (`threaded=False`) - nowy `VirtualClock` od 0 s, ktory przesuwa `step(dt)`. Testy, w ktorych
+        #: kierowca i petla maja dzielic czas, podaja wlasny `VirtualClock`.
+        self._own_clock = clock is None
+        self.clock: Clock = clock if clock is not None else WallClock()
+        #: Opis ramienia stanowiska. Ramie stanowiska nie zmienia sie po zbudowaniu
+        #: blizniaka (scena powstaje z niego tutaj) - nowe ramie = nowy `Twin`.
+        self.spec = workspace.spec()
+        #: Stawy aplikacji w kolejnosci opisu i staw chwytaka (0 = zamkniety, 100 = otwarty).
+        self._names: tuple[str, ...] = self.spec.joints
+        self._grip: str | None = self.spec.gripper
         self.lock = threading.RLock()
         self.loop_hz = loop_hz
         #: Dodatki sceny ponad stanowisko: karta w szczekach (`with_card`, `card_pose`),
         #: obiekty zadania (`objects`, `grasp_sensors`). Przezywaja przebudowe sceny.
         self.extras: dict = {}
+        #: Ostatni komunikat domu etapami (`home_stages`): pusty = w porzadku, inaczej dlaczego stanal.
+        self.home_note: str = ""
+        #: Granica predkosci z `set_speed` [st./s] (przywracana przy Polacz).
+        self._speed_cap: float | None = None
         #: Zwiekszany przy kazdej przebudowie - widoki (panel) wiedza, ze trzeba odswiezyc siatki.
         self.version = 0
         self.renderer = RenderWorker()
-        self.scene: sc.Scene = sc.build(workspace.scene_config())
+        self.scene: sc.Scene = sc.build(workspace.scene_config(with_ant=True))
         with self.lock:
-            self.scene.set_joints(workspace.spec().home)
+            self.scene.set_joints(self.spec.home)
         #: (scena zrodlowa, kopia do renderu) - kopia ma wlasne MjData, render idzie poza blokada.
         self._view: tuple[sc.Scene, sc.Scene] | None = None
         self.cameras = CameraHub(workspace, sim_render=self.render)
@@ -317,6 +333,9 @@ class Twin:
         #: z innych watkow ida pod ta blokada (inaczej krok nadpisywal swiezy `hold`).
         self._sup_lock = threading.RLock()
         self._target: dict[str, float] | None = None
+        #: Kto ostatni ustawil `_target` przez `set_target` - czesciowy cel tego samego wlasciciela
+        #: nakladamy na jego oczekujacy cel (`set_target`).
+        self._target_by: str | None = None
         self._engaged = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -324,7 +343,6 @@ class Twin:
         self._ls: _LoopState | None = None
         self._manual = False              # connect(threaded=False): takty z `step()`, bez watku
         self._alive = False
-        self._clock = 0.0
         self._latest: dict[str, float] = {}
 
         # Wlasnosc ramienia (K3). `_gen` rosnie przy kazdym odebraniu ramienia
@@ -358,18 +376,35 @@ class Twin:
         # Cala przebudowa w watku renderujacym: kontekst GL zamyka watek, ktory go
         # stworzyl. Blokada brana DOPIERO tam - czekanie na watek renderujacy
         # z blokada w reku zakleszczyloby sie z renderem, ktory czeka na blokade.
-        cfg = self.workspace.scene_config(**self.extras)
+        cfg = self.workspace.scene_config(with_ant=True, **self.extras)
 
         def job():
             new = sc.build(cfg)
             with self.lock:
                 old = self.scene
                 _copy_state(old, new)
+                # Mrowka nowa w scenie staje tam, gdzie mowi stanowisko; ta, ktora juz chodzila w fizyce,
+                # idzie dalej - jej wolny staw przeniosl `_copy_state`.
+                for prefix, ant in new.ants().items():
+                    if not (ant.free and prefix in old.ants()):
+                        new.place_ant(prefix=prefix)
                 old.close()
                 self.scene = new
                 self._view = None
                 self.version += 1
         self.renderer.call(job)
+
+    def place_ant(self, T_ant2base: np.ndarray | None = None, joints: dict[str, float] | None = None,
+                  prefix: str = sc.ANT_PREFIX) -> bool:
+        """Mrowka w scenie w nowej pozie / z nowymi nogami, bez przebudowy.
+
+        False, gdy scena jest bez tej mrowki (stanowisko jej nie mialo przy budowie) - wtedy `rebuild`.
+        """
+        with self.lock:
+            if prefix not in self.scene.ants():
+                return False
+            self.scene.place_ant(T_ant2base, joints, prefix=prefix)
+            return True
 
     def configure(self, **extras) -> None:
         """Nowe dodatki sceny (np. `with_card=True` albo kostka) i przebudowa."""
@@ -418,6 +453,11 @@ class Twin:
     @property
     def owner(self) -> str | None:
         return self._owner
+
+    @property
+    def backend(self) -> RobotBackend | None:
+        """Polaczony backend ramienia (None bez polaczenia) - tylko do odczytu."""
+        return self._backend
 
     @property
     def preempt_reason(self) -> str:
@@ -493,6 +533,7 @@ class Twin:
     def _new_owner(self) -> None:
         """Ramie bierze nowy wlasciciel (pod `_own_lock`): stare powody i odciazenie chwytaka nieaktualne."""
         self._preempt_note = ""
+        self._target_by = None
         self._grip_floor = None
         self._warnings.pop("grip_eased", None)
 
@@ -549,7 +590,7 @@ class Twin:
             return
         if measured is None:
             measured = self._measured_now()
-        measured = {k: float(v) for k, v in measured.items() if k in JOINT_NAMES}
+        measured = {k: float(v) for k, v in measured.items() if k in self._names}
         if not measured:
             return
         with self._sup_lock:
@@ -563,11 +604,11 @@ class Twin:
         """Poza do trzymania: stawy ramienia jak podane, sciskajacy chwytak przy swoim rozkazie."""
         pose = dict(measured)
         sup = self._supervisor
-        if GRIPPER in pose and sup is not None and not self._grip_release:
-            if self._grip_squeezing(pose[GRIPPER]):
-                pose[GRIPPER] = sup.command[GRIPPER]
+        if self._grip in pose and sup is not None and not self._grip_release:
+            if self._grip_squeezing(pose[self._grip]):
+                pose[self._grip] = sup.command[self._grip]
             if self._grip_floor is not None:
-                pose[GRIPPER] = max(pose[GRIPPER], self._grip_floor)
+                pose[self._grip] = max(pose[self._grip], self._grip_floor)
         return pose
 
     def _grip_squeezing(self, measured: float) -> bool:
@@ -579,15 +620,15 @@ class Twin:
         chwytak w przypadkowym rozwarciu. Ustalony, nieruchomy chwyt zostaje jak dotad.
         """
         sup, ls = self._supervisor, self._ls
-        cmd = None if sup is None else sup.command.get(GRIPPER)
+        cmd = None if sup is None else sup.command.get(self._grip)
         if cmd is None or measured - cmd <= self.grip_squeeze_margin:
             return False
         if ls is None:
             return True
-        now = self._clock if self._manual else time.monotonic()
+        now = self.clock.now()
         if ls.grip_tight_since is None or now - ls.grip_tight_since < self.grip_block_s:
             return False
-        a, b = ls.measured.get(GRIPPER), ls.prev_measured.get(GRIPPER)
+        a, b = ls.measured.get(self._grip), ls.prev_measured.get(self._grip)
         return a is None or b is None or abs(float(a) - float(b)) <= self.grip_still
 
     def _measured_now(self) -> dict[str, float]:
@@ -617,14 +658,14 @@ class Twin:
         span = ls.measured_t - ls.prev_measured_t
         if span <= 1e-6:
             return m
-        now = self._clock if self._manual else time.monotonic()
+        now = self.clock.now()
         horizon = min(max(now - ls.measured_t, 0.0) + 1.0 / self.loop_hz, 2 * self._read_period)
         cmd = sup.command if sup is not None else {}
         for k, v in m.items():
             if k not in ls.prev_measured or k not in ls.last_sent:
                 continue
             vel = (v - ls.prev_measured[k]) / span * self.vel_margin
-            if k == GRIPPER and vel < 0:
+            if k == self._grip and vel < 0:
                 continue
             est = v + vel * horizon + vel * abs(vel) / (2.0 * self.servo_accel)
             c = ls.last_sent[k]
@@ -641,11 +682,11 @@ class Twin:
             return {}
         b = self._backend
         measured = self.joints() if b is not None and b.info.simulated else dict(self._latest)
-        cmd = sup.command.get(GRIPPER)
-        if cmd is None or GRIPPER not in measured:
+        cmd = sup.command.get(self._grip)
+        if cmd is None or self._grip not in measured:
             return {}
-        if self._grip_squeezing(float(measured[GRIPPER])):
-            return {GRIPPER: cmd}
+        if self._grip_squeezing(float(measured[self._grip])):
+            return {self._grip: cmd}
         return {}
 
     # ----------------------------------------------------------- ramie
@@ -654,8 +695,11 @@ class Twin:
         """Laczy z ramieniem. `sim` - blizniak sam jest ramieniem; inaczej prawdziwy sprzet.
 
         `threaded=False` (testy): bez watku petli - takty robi `step(dt)` w czasie
-        symulowanym, wiec wynik nie zalezy od obciazenia procesora.
+        symulowanym, wiec wynik nie zalezy od obciazenia procesora. Zegar wirtualny
+        (`VirtualClock`) dziala tylko bez watku: petla w watku spalaby na nim bez konca.
         """
+        if threaded and isinstance(self.clock, VirtualClock) and not self._own_clock:
+            raise ValueError("VirtualClock tylko z connect(..., threaded=False) - takty robi step(dt)")
         self.preempt("ponowne laczenie")
         self.disconnect()
         ws = self.workspace
@@ -666,8 +710,14 @@ class Twin:
         # zadzialac, a serwo dociskalo do przeszkody bez konca (zmierzone na prawdziwym stosie
         # LeRobota nad emulatorem; bez limitu STOP po 0,78 s). Nadzor blizniaka i tak ogranicza
         # predkosc. Aplikacja dloni ma wlasna konfiguracje - bez zmian.
-        cfg = load_config(overrides={"robot": {"backend": "sim" if backend == "sim" else backend,
-                                               "port": port, "max_relative_target": None}})
+        overrides = {"robot": {"backend": "sim" if backend == "sim" else backend,
+                               "port": port, "max_relative_target": None}}
+        if ws.home:                                    # "Ustaw dom = tu" tego stanowiska
+            overrides["safety"] = {"home": {k: float(v) for k, v in ws.home.items()}}
+        cfg = robot_config(self.spec, overrides=overrides)
+        if ws.home:                                    # dom moze lezec na ograniczniku - poza limitami
+            self._base_limits = {}
+            self._widen_limits_for_home(cfg, ws.home)
         b: RobotBackend | None = None
         try:
             b = SceneBackend(self) if backend == "sim" else create_backend(cfg)
@@ -686,17 +736,20 @@ class Twin:
         # Nadzor dostaje WLASNA kopie konfiguracji: limity backendu (`cfg`, ta sama,
         # ktora przycina `send_joints`) poszerzamy chwilowo dla stawu spoza zakresu
         # (`_sync_backend_limits`), a nadzor musi dalej znac prawdziwe limity.
-        self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in JOINT_NAMES}
+        self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
         self._supervisor = SafetySupervisor(copy.deepcopy(cfg))
         # Staw poza limitami nie jest przycinany na starcie - patrz `SafetySupervisor.start`.
-        self._supervisor.start(measured, go_home=go_home, keep_outside=True)
+        # Ramie z domem etapami (`home_stages`) nie jedzie rampa nadzoru: start bez ruchu,
+        # a dom etapami rusza po polaczeniu (na koncu tej metody) - patrz `_home_staged`.
+        staged_home = bool(go_home and self.spec.home_stages)
+        self._supervisor.start(measured, go_home=go_home and not staged_home, keep_outside=True)
         keep = self._squeeze_at_connect(b, measured)
         if keep:
             # Chwytak, ktory sciskal przed "Polacz", sciska dalej: rozkaz od celu serwa, nie od
             # zmierzonego kata szczeki. Zmierzone (verify2, s1): po Polacz w trakcie lift pierwsze
             # sprzeglo wysylalo zmierzony kat jako cel i kostka zsuwala sie 3,8 -> 2,3 cm.
             self._supervisor.reseed(keep)
-            if go_home:                                    # rampa startowa nie otwiera szczek po drodze
+            if go_home and not staged_home:                # rampa startowa nie otwiera szczek po drodze
                 self._supervisor.begin_homing(keep=keep)
                 self._supervisor.state = SafetyState.STARTING
         self._target, self._engaged = None, False
@@ -725,14 +778,20 @@ class Twin:
         self._stop.clear()
         self._manual = not threaded
         self._alive = True
-        self._clock = 0.0
-        now = self._clock if self._manual else time.monotonic()
+        if self._own_clock:
+            # Jak dawny licznik `step`: kazde polaczenie bez watku liczy czas od 0 s.
+            self.clock = WallClock() if threaded else VirtualClock(t0=0.0)
+        now = self.clock.now()
         self._ls = _LoopState(prev=now, measured=dict(measured), measured_t=now, t_hz=now,
                               last_sent=self._supervisor.command)
         if threaded:
             self._thread = threading.Thread(target=self._loop, name="blizniak-petla", daemon=True)
             self._thread.start()
         logger.info("Polaczono z ramieniem: %s", b.info.name)
+        if self._speed_cap is not None:
+            self._supervisor.set_speed_cap(self._speed_cap)
+        if staged_home:
+            self.home()
 
     def _squeeze_at_connect(self, b: RobotBackend, measured: Mapping[str, float]) -> dict[str, float]:
         """{chwytak: cel serwa}, gdy przy polaczeniu serwo chwytaka sciska (cel ciasniejszy od pomiaru).
@@ -749,13 +808,13 @@ class Twin:
         except Exception:                                  # diagnostyka nie moze psuc polaczenia
             logger.exception("goal_positions() backendu rzucilo wyjatek")
             return {}
-        if not goal or GRIPPER not in goal or GRIPPER not in measured:
+        if not goal or self._grip not in goal or self._grip not in measured:
             return {}
-        g, m = float(goal[GRIPPER]), float(measured[GRIPPER])
+        g, m = float(goal[self._grip]), float(measured[self._grip])
         if not np.isfinite(g) or m - g <= self.grip_squeeze_margin:
             return {}
         logger.info("Chwytak sciska przy polaczeniu (cel %.1f, pomiar %.1f) - rozkaz od celu serwa.", g, m)
-        return {GRIPPER: g}
+        return {self._grip: g}
 
     def disconnect(self) -> None:
         if self._backend is not None:
@@ -787,8 +846,8 @@ class Twin:
     def joint_limits(self) -> dict[str, tuple[float, float]]:
         """Limity stawow, ktore naprawde obowiazuja [jednostki aplikacji]: konfiguracja
         przecieta z limitami backendu (EEPROM serw) przy polaczeniu."""
-        cfg = self._supervisor.cfg if self._supervisor is not None else load_config()
-        return {n: (cfg.joint(n).min, cfg.joint(n).max) for n in JOINT_NAMES}
+        cfg = self._supervisor.cfg if self._supervisor is not None else robot_config(self.spec)
+        return {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
 
     def set_engaged(self, engaged: bool, owner: str | None = None) -> bool:
         """Sprzeglo: bez niego cele z UI sa ignorowane, a ramie trzyma pozycje.
@@ -814,23 +873,236 @@ class Twin:
 
     def set_target(self, joints: Mapping[str, float], owner: str | None = None) -> None:
         """Nowy cel. Z `owner` - tylko, jesli ten wlasciciel wciaz ma ramie (inaczej RuntimeError):
-        watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego."""
-        cmd = self.status.command or self.joints()
-        target = {**cmd, **{k: float(v) for k, v in joints.items()}}
+        watek sterownika, ktoremu odebrano ramie, nie moze po chwili nadpisac celu nowego.
+
+        Czesciowy cel (np. sam chwytak albo same stawy ramienia) od TEGO SAMEGO wlasciciela
+        (podany `owner`) nakladamy na jego oczekujacy cel, a w pozostalych przypadkach (bez
+        `owner`, inny wlasciciel, brak celu) na start rampy (ostatni wyslany rozkaz). Inaczej
+        sledzenie z okularow, ktore co takt podaje same stawy ramienia, po jednym takcie
+        zatrzymywalo rampe chwytaka w miejscu (rozkaz 94 zamiast 0).
+        """
+        cmd = self._ramp_start(joints)
+        given = {k: float(v) for k, v in joints.items()}
         with self._own_lock:
             if owner is not None and self._owner != owner:
                 raise RuntimeError(f"ramie odebrane ({self._refusal(owner)})")
-            self._target = target
+            pending = self._target
+            mine = owner is not None and self._target_by == owner
+            base = pending if pending is not None and mine else cmd
+            self._target = {**cmd, **base, **given}
+            self._target_by = owner
+
+    def hold_command(self, owner: str | None = None) -> dict[str, float] | None:
+        """Cel stawow ramienia := biezacy rozkaz nadzoru: ramie staje tam, dokad juz doszedl rozkaz.
+        Chwytak jedzie dalej do swojego celu. Zwraca nowy cel (None - nie bylo celu).
+
+        Pod blokada nadzoru: takt w toku, ktory liczyl krok w strone starego celu, konczy go przed
+        nami, a jego rozkaz staje sie celem. `set_target(status.command)` z innego watku dawal jeszcze
+        jeden krok w strone starego celu, a w nastepnym takcie powrot - cel z okularow sprawdzony
+        zaraz po koncu sledzenia widzial ruch o 1 st. i konczyl sie "moved". Z `owner` jak `set_target`.
+        """
+        with self._sup_lock, self._own_lock:
+            if owner is not None and self._owner != owner:
+                raise RuntimeError(f"ramie odebrane ({self._refusal(owner)})")
+            sup = self._supervisor
+            if sup is None or self._target is None:
+                return None
+            arm = {k: float(v) for k, v in sup.command.items() if k != self._grip}
+            self._target = {**self._target, **arm}
+            return dict(self._target)
 
     def home(self) -> None:
-        """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa."""
+        """Pozycja domowa: odbiera ramie wlascicielowi (polityka, fala, identyfikacja) i jedzie rampa.
+
+        Ramie z `spec.home_stages` jedzie etapami (watek `dom`, `_home_staged`), kazdy
+        etap sprawdzony na kolizje w blizniaku; reszta - jedna synchroniczna rampa nadzoru.
+        """
         if self._supervisor is None:
             return
         self.preempt("pozycja domowa")
+        if self.spec.home_stages:
+            self.home_note = ""
+            threading.Thread(target=self._home_staged, name="dom", daemon=True).start()
+            return
         with self._sup_lock:
             # Chwytak sciskajacy kostke jedzie do domu zamkniety: otwarcie w rampie
             # upuszczalo ja z wysokosci, na ktora ja podniesiono.
             self._supervisor.begin_homing(keep=self._squeeze_keep())
+
+    HOME_STAGE_DEG_S = 20.0
+
+    @property
+    def home_pose(self) -> dict[str, float]:
+        """Poza domowa [jednostki aplikacji]: stanowiska (`workspace.home`), inaczej z opisu ramienia."""
+        sup = self._supervisor
+        if sup is not None:
+            return dict(sup.home)
+        ws_home = self.workspace.home
+        return {k: float(ws_home.get(k, v)) for k, v in self.spec.home.items()} if ws_home else dict(self.spec.home)
+
+    def set_home_here(self) -> dict[str, float]:
+        """Zmierzona poza staje sie domem stanowiska (zapis do twin.json) i nadzoru - od razu.
+
+        Jak "Set home = here" w jog_a1x: dom dokladnie tam, gdzie ramie naprawde spoczywa
+        (zlozony A1X: J2 ~2,5 st., J3 0,0 st., czyli na ograniczniku), nie w pozie z modelu
+        ani przycietej do limitow - przyciecie o 3 st. trzymalo ramie kilka cm nad podstawa.
+        Limity stawow poszerzaja sie tak, zeby dom w nich lezal (`_widen_limits_for_home`);
+        rozkaz do pozy, w ktorej ramie samo stoi, nie dociska go do stopu.
+
+        Chwytak: umowa stanowiska - dom = szczeki ZAMKNIETE (0), niezaleznie od tego, co zglasza
+        backend. Operator zamyka je przed klikiem (podpowiedz przycisku). Bez pomiaru chwytaka (A1X
+        bez `gripper_fb_*`) zglaszane rozwarcie bylo zgadywanka (`gripper_start`) i trafialo do domu
+        jako "otwarty" - Dom otwieral szczeki na koncu. Tu backend dostaje zalozenie "zamkniety"
+        (`_assume_gripper_closed`), wiec panel, szczeki 3D i nastepne "otworz" (rampa 0 -> 100) zgadzaja sie
+        z ramieniem. Sim: chwytak sceny zamyka sie od razu.
+        """
+        if not self.connected or self._supervisor is None:
+            raise RuntimeError("ramie nie jest polaczone")
+        measured = dict(self._latest) if not self.status.simulated else self.joints()
+        if self._ls is not None and self._ls.frozen:
+            raise RuntimeError("brak swiezego pomiaru - lacze milczy")
+        home = {}
+        for name in self._names:
+            v = float(measured.get(name, self.spec.home.get(name, 0.0)))
+            home[name] = 0.0 if name == self._grip else v
+        self.workspace.home = home
+        self.workspace.save()
+        with self._sup_lock:
+            self._widen_limits_for_home(self._supervisor.cfg, home)
+            self._supervisor.home = dict(home)
+            if self._grip is not None:
+                self._assume_gripper_closed()
+        logger.info("Dom stanowiska = tu: %s", ", ".join(f"{k}={v:.1f}" for k, v in home.items()))
+        return home
+
+    def _assume_gripper_closed(self) -> bool:
+        """Chwytak ramienia = zamkniety (0) wedlug "Ustaw dom = tu"; True, gdy blizniak przyjal to za stan.
+
+        Wolane pod `_sup_lock`. Backend bez pomiaru chwytaka: najpierw `assume_gripper(0)` - odmawia, gdy
+        strumien chwytaka juz ruszyl (prawda jest ostatni rozkaz). Dopiero po zgodzie nadzor, ostatni pomiar,
+        ostatni rozkaz i czekajacy cel dostaja chwytak 0, w tej kolejnosci: nadzor przestawiony przed
+        backendem wysylal 0 przy zglaszanym "otwarty" i strumien zamykal szczeki; bez przestawienia nastepne
+        "zamknij" szlo rampa od starego 100 i szczeki najpierw drgaly w strone otwarcia. Po odmowie nic nie
+        rusza szczekami: przycisk tylko zapisuje dom. Sim: chwytak sceny (poza i serwo) zamyka sie od razu.
+        Backend z pomiarem (Feetech, A1X z `gripper_fb_*`): pomiar jest prawda, dom zapisany, stan bez zmian (False).
+        """
+        b, g = self._backend, self._grip
+        if b is None or g is None:
+            return False
+        if b.info.simulated:
+            with self.lock:
+                s = self.scene
+                s.kin.write_qpos(s.data.qpos, s.kin.to_q({**s.joints(), g: 0.0}))
+                s.command({**s.kin.from_q(s.data.ctrl[s.act_ids]), g: 0.0})
+                mujoco.mj_forward(s.model, s.data)
+        elif _gripper_measured(b):
+            return False
+        else:
+            assume = getattr(b, "assume_gripper", None)
+            if assume is None or not assume(0.0):
+                logger.warning("chwytak juz sterowany: zamknij go suwakiem, potem Dom = tu (dom zapisany z "
+                               "chwytakiem 0, stan chwytaka w blizniaku bez zmian)")
+                return False
+        self._supervisor.reseed({g: 0.0})
+        self._latest[g] = 0.0
+        ls = self._ls
+        if ls is not None:
+            ls.measured = {**ls.measured, g: 0.0}
+            if g in ls.last_sent:
+                ls.last_sent = {**ls.last_sent, g: 0.0}
+        with self._own_lock:
+            if self._target is not None and g in self._target:
+                self._target = {**self._target, g: 0.0}         # czekajacy cel nie otwiera ich z powrotem
+        return True
+
+    def _widen_limits_for_home(self, cfg, home: Mapping[str, float]) -> None:
+        """Limity konfiguracji (i bazowe, z ktorych korzysta backend) obejmuja poze domowa."""
+        for name, v in home.items():
+            try:
+                jc = cfg.joint(name)
+            except KeyError:
+                continue
+            jc.min, jc.max = min(jc.min, float(v)), max(jc.max, float(v))
+            if name in self._base_limits:
+                lo, hi = self._base_limits[name]
+                self._base_limits[name] = (min(lo, float(v)), max(hi, float(v)))
+
+    def set_speed(self, deg_s: float | None) -> None:
+        """Gorna granica predkosci stawow ramienia [st./s] dla suwakow i uchwytu (jak 'speed' w jog_a1x).
+
+        None = bez granicy. Chwytak bez zmian. Zapamietana - Polacz buduje nowy nadzor z ta sama granica.
+        """
+        self._speed_cap = None if deg_s is None else float(deg_s)
+        with self._sup_lock:
+            if self._supervisor is not None:
+                self._supervisor.set_speed_cap(self._speed_cap)
+
+    def _home_staged(self) -> None:
+        """Dom etapami: grupy stawow z `spec.home_stages` po kolei, kazda po sprawdzeniu drogi w blizniaku.
+
+        Etap, ktorego droga w przestrzeni stawow przechodzi przez kolizje (stol, podstawa,
+        wlasne ogniwa), zatrzymuje dom - ramie zostaje tam, gdzie stoi, a powod trafia do
+        `home_note` i logu. Ruch jak w fali kalibracyjnej: `move` z wlascicielem "dom",
+        rampa smoothstep najwyzej `HOME_STAGE_DEG_S`, STOP / Dom / Polacz przerywaja.
+        Chwytak sciskajacy kostke zostaje zamkniety (`_squeeze_keep`).
+        """
+        # Uczestnik zegara wirtualnego (testy): planowanie etapow nie zjada czasu symulowanego.
+        with self.clock.member():
+            self._home_stages()
+
+    def _home_stages(self) -> None:
+        from .collision import CollisionChecker
+        owner = "dom"
+        try:
+            checker = CollisionChecker(self.scene)
+            keep = self._squeeze_keep()
+            home = self.home_pose
+            start = self._ramp_start(home)
+
+            def plan(stages):
+                """[(etap, cel)] po kolei, albo opis pierwszej kolizji."""
+                cur, out = dict(start), []
+                for stage in stages:
+                    target = dict(cur)
+                    for name in stage:
+                        target[name] = float(keep.get(name, home.get(name, cur[name])))
+                    why = checker.path_clear(cur, target)
+                    if why:
+                        return f"etap {'+'.join(stage)}: {why}"
+                    out.append((stage, target))
+                    cur = target
+                return out
+
+            # Kolejnosc etapow jest dla rozkladania (ze spoczynku do gory); do skladania
+            # (z gory do spoczynku) pasuje odwrotna. Pierwsza w calosci czysta droga wygrywa.
+            stages = tuple(self.spec.home_stages)
+            steps, why = None, ""
+            for order in (stages, stages[::-1]):
+                got = plan(order)
+                if isinstance(got, list):
+                    steps = got
+                    break
+                why = why or got
+            if steps is None:
+                self.home_note = f"Dom zatrzymany - droga przez kolizje ({why}); przejedz suwakami"
+                logger.error(self.home_note)
+                return
+            cur = dict(start)
+            for stage, target in steps:
+                travel = max((abs(target[k] - cur[k]) for k in stage), default=0.0)
+                cur = target
+                if travel < 1e-3:
+                    continue
+                self.move(target, max(1.5, travel / self.HOME_STAGE_DEG_S), owner=owner)
+            logger.info("Dom etapami: ramie w pozycji domowej")
+        except Exception as exc:
+            self.home_note = f"Dom przerwany: {exc}"
+            logger.warning(self.home_note)
+        finally:
+            try:
+                self.release(owner)
+            except Exception:
+                pass
 
     def estop(self, reason: str = "STOP awaryjny") -> None:
         sup = self._supervisor
@@ -880,6 +1152,9 @@ class Twin:
         Zegar rampy stoi, gdy stoi petla (lacze niepotwierdzone): nadzor wtedy nie jedzie,
         a zegar liczony dalej konczyl rampe w czasie przestoju i po nim rozkaz gonil cel
         z pelna predkoscia.
+
+        Czas z `self.clock` (jak petla): w aplikacji zegar sciany; na `VirtualClock` (testy) `move`
+        wolany z innego watku jedzie w czasie symulowanym, ktory przesuwa `step(dt)`.
         """
         if not self.connected:
             raise RuntimeError("ramie nie jest polaczone")
@@ -901,13 +1176,14 @@ class Twin:
             # Sprzeglo razem z wlasnoscia: odebranie ramienia (STOP) tuz po tym
             # bloku nie zostawi wlaczonego sprzegla bez wlasciciela.
             self._engaged = True
-        start = dict(self.status.command or self.joints())
+        start = self._ramp_start(joints)
         goal = {k: float(joints.get(k, v)) for k, v in start.items()}
-        t0 = t_prev = time.monotonic()
+        clock = self.clock
+        t0 = t_prev = clock.now()
         paused = 0.0
         while True:
             self._check_move(gen)
-            now = time.monotonic()
+            now = clock.now()
             if self._frozen():
                 paused += now - t_prev
             t_prev = now
@@ -919,21 +1195,56 @@ class Twin:
                 self._target = target
             if s >= 1.0:
                 break
-            time.sleep(1.0 / self.loop_hz)
-        t_end = time.monotonic() + settle
-        while time.monotonic() < t_end:
+            clock.sleep(1.0 / self.loop_hz)
+        t_end = clock.now() + settle
+        while clock.now() < t_end:
             self._check_move(gen)
-            time.sleep(min(0.05, settle))
-        deadline = t_end + self.move_arrive_s
+            clock.sleep(min(0.05, settle))
+        deadline = t_end + self.move_arrive_s + self._command_lag(goal)
         prev_cmd: dict[str, float] | None = None
         while True:
             self._check_move(gen)
             why, prev_cmd = self._arrival(prev_cmd)
             if not why:
                 return
-            if time.monotonic() > deadline:
+            if clock.now() > deadline:
                 raise RuntimeError(f"ruch nie dojechal do celu w {settle + self.move_arrive_s:.1f} s: {why}")
-            time.sleep(0.05)
+            clock.sleep(0.05)
+
+    def _command_lag(self, goal: Mapping[str, float]) -> float:
+        """Ile sekund ROZKAZ nadzoru jeszcze pojedzie do celu po koncu rampy (z zapasem).
+
+        Nadzor ogranicza predkosc kazdego stawu (suwak Predkosc, np. 20 st./s), wiec przy
+        obrocie nadgarstka o 180 st. zostaje kilka sekund za rampa fali. Staly termin
+        `move_arrive_s` konczyl wtedy przejazd bledem "nie dojechal", choc ramie jechalo
+        prawidlowo - fala z 21 i 11 obserwacjami przepadla (2026-09-26)."""
+        sup, cmd = self._supervisor, self.status.command
+        if sup is None or not cmd:
+            return 0.0
+        lag = 0.0
+        for k, v in goal.items():
+            if k == self._grip or k not in cmd:
+                continue
+            lag = max(lag, abs(float(v) - float(cmd[k])) / sup._max_vel(k))
+        return 0.0 if lag < 1e-3 else 1.5 * lag + 0.5
+
+    def _ramp_start(self, goal: Mapping[str, float]) -> dict[str, float]:
+        """Skad rusza rampa: ostatni rozkaz, a bez niego pomiar. Chwytak o NIEZNANEJ pozycji
+        (backend bez pomiaru, zaden rozkaz jeszcze nie poszedl) startuje od celu: rampa od
+        zgadnietego "otwarty" do "zamkniety" otwierala szczeki trzymajace karte."""
+        start = {k: float(v) for k, v in (self.status.command or self.joints()).items()}
+        g = self._grip
+        if g is not None and g in goal and not self._gripper_known():
+            start[g] = float(goal[g])
+        return start
+
+    def _gripper_known(self) -> bool:
+        """Czy backend zna pozycje chwytaka (pomiar albo rozkaz, ktory naprawde poszedl)."""
+        b = self._backend
+        if self._grip is None or b is None:
+            return True
+        fn = getattr(b, "gripper_known", None)
+        return bool(fn()) if fn is not None else _gripper_measured(b)
 
     def _frozen(self) -> bool:
         """Petla stoi: lacze z serwami niepotwierdzone albo utracone."""
@@ -953,7 +1264,7 @@ class Twin:
             return "lacze z serwami niepotwierdzone", cmd
         if prev_cmd is None:
             return "sprawdzanie", cmd
-        arm = [k for k in cmd if k != GRIPPER]
+        arm = [k for k in cmd if k != self._grip]
         going = [k for k in arm if abs(cmd[k] - prev_cmd.get(k, cmd[k])) > 0.2]
         if going:
             return f"rozkaz jeszcze jedzie ({', '.join(going)})", cmd
@@ -961,7 +1272,7 @@ class Twin:
         if far:
             return ", ".join(f"{k} {abs(e):.0f} st. od rozkazu" for k, e in far), cmd
         speed = self._joint_speed()
-        fast = [(k, v) for k, v in speed.items() if k != GRIPPER and abs(v) > self.move_still_speed]
+        fast = [(k, v) for k, v in speed.items() if k != self._grip and abs(v) > self.move_still_speed]
         if fast:
             return ", ".join(f"{k} jeszcze jedzie ({abs(v):.0f} st./s)" for k, v in fast), cmd
         return "", cmd
@@ -987,13 +1298,14 @@ class Twin:
 
     def _wait_for_homing(self, timeout: float = 6.0) -> None:
         """Ruch zaczety w trakcie rampy do domu startowalby z pozy, ktora zaraz sie zmieni."""
-        t_end = time.monotonic() + timeout
+        clock = self.clock
+        t_end = clock.now() + timeout
         while self._supervisor is not None and not self._supervisor.is_homing_done:
             if self._manual:
                 raise RuntimeError("ramie jedzie do domu - poczekaj na koniec rampy")
-            if time.monotonic() > t_end:
+            if clock.now() > t_end:
                 raise RuntimeError("ramie wciaz jedzie do domu")
-            time.sleep(0.02)
+            clock.sleep(0.02)
 
     # ---------------------------------------------------------- sluchacze taktow
     def add_tick_listener(self, fn: Callable[[TickSample], None]) -> int:
@@ -1026,22 +1338,30 @@ class Twin:
 
     # ---------------------------------------------------------- petla
     def step(self, dt: float) -> None:
-        """Jeden takt petli w czasie symulowanym - tylko po `connect(threaded=False)`."""
+        """Jeden takt petli w czasie symulowanym - tylko po `connect(threaded=False)`.
+
+        Najpierw zegar (`VirtualClock.advance(dt)`: watki czekajace na ten czas, np. rampa kierowcy,
+        licza swoj rozkaz), potem takt petli z nowym czasem - jak petla 50 Hz za watkiem 50 Hz.
+        """
         if not self._manual:
             raise RuntimeError("step() tylko po connect(..., threaded=False)")
         if not self.connected:
             raise RuntimeError("ramie nie jest polaczone")
-        self._clock += dt
-        if not self._tick(self._clock):
+        advance = getattr(self.clock, "advance", None)
+        if advance is None:
+            raise RuntimeError("step() wymaga zegara wirtualnego (VirtualClock)")
+        advance(dt)
+        if not self._tick(self.clock.now()):
             self._alive = False
 
     def _loop(self) -> None:
         period = 1.0 / self.loop_hz
+        clock = self.clock
         while not self._stop.is_set():
-            now = time.monotonic()
+            now = clock.now()
             if not self._tick(now):
                 break
-            time.sleep(max(0.0, period - (time.monotonic() - now)))
+            clock.sleep(period - (clock.now() - now))
 
     def _tick(self, now: float) -> bool:
         """Jeden takt: odczyt, bledy serw, nadzor, rozkaz, scena. False = petla padla."""
@@ -1075,7 +1395,7 @@ class Twin:
                         self._confirm_after_silence(sup, ls, now)
                 else:
                     ls.silent, ls.confirm = True, None
-            g, c = ls.measured.get(GRIPPER), sup.command.get(GRIPPER)
+            g, c = ls.measured.get(self._grip), sup.command.get(self._grip)
             if g is not None and c is not None and float(g) - c > self.grip_squeeze_margin:
                 if ls.grip_tight_since is None:
                     ls.grip_tight_since = now
@@ -1083,8 +1403,8 @@ class Twin:
                 ls.grip_tight_since = None
 
             faults = _backend_faults(b)
-            grip_faults = [f for f in faults if _fault_joint(f) == GRIPPER]
-            arm_faults = [f for f in faults if _fault_joint(f) != GRIPPER]
+            grip_faults = [f for f in faults if _fault_joint(f, self._names) == self._grip]
+            arm_faults = [f for f in faults if _fault_joint(f, self._names) != self._grip]
             if grip_faults:
                 ls.grip_ok_since = None
                 grip_faults_long = self._ease_gripper(sup, ls, now, grip_faults)
@@ -1095,10 +1415,10 @@ class Twin:
                 # STOP od bledu chwytaka: szczeka staje na zmierzonym rozwarciu. Docisk (nawet
                 # odciazony) podtrzymywal przeciazenie, ktore do tego STOP-u doprowadzilo.
                 self._grip_release = True
-                g = ls.measured.get(GRIPPER)
+                g = ls.measured.get(self._grip)
                 if sup.estopped and g is not None:     # STOP juz byl - tylko chwytak bez docisku
                     with self._sup_lock:
-                        sup.reseed({GRIPPER: float(g)})
+                        sup.reseed({self._grip: float(g)})
             if arm_faults or grip_faults_long:
                 # Blad serwa ramienia (albo chwytaka, ktory mimo odciazenia trwa) = STOP.
                 msg = "; ".join(faults)
@@ -1142,11 +1462,18 @@ class Twin:
                     self._target = None                    # cel sprzed rampy nie moze wrocic po jej koncu
                 engaged = self._engaged
                 desired = self._target if engaged else None
+                if desired is not None and self._grip in desired and not self._gripper_known():
+                    # Chwytak o nieznanej pozycji: kazdy cel wprost, bez ogranicznika predkosci, az backend
+                    # potwierdzi, ze jakis rozkaz poszedl. Ogranicznik startowal od zgadnietego "otwarty"
+                    # (A1X: 100) i jechal do "zamkniety" - szczeki trzymajace karte OTWIERALY sie na
+                    # sekunde i karta wypadala (fala, 2026-09-26, dwa razy: za drugim razem lokalna flaga
+                    # "znany" przelaczyl cel rowny zgadywance, ktory do magistrali nigdy nie doszedl).
+                    sup.reseed({self._grip: float(desired[self._grip])})
                 # Obecnosc operatora w blizniaku to sprzeglo z UI, nie dlon w kadrze.
                 command, report = sup.step(desired, 0.0 if frozen else dt, hand_present=True, engaged=engaged)
                 floor = self._grip_floor
-                if floor is not None and command.get(GRIPPER, floor) < floor:
-                    sup.reseed({GRIPPER: floor})           # chwytak odciazony: nie ciasniej niz prog
+                if floor is not None and command.get(self._grip, floor) < floor:
+                    sup.reseed({self._grip: floor})           # chwytak odciazony: nie ciasniej niz prog
                     command = sup.command
                 outside = sup.outside
             if engaged or report.state in _MOVING:
@@ -1266,7 +1593,7 @@ class Twin:
         pose = {k: float(v) for k, v in ls.measured.items()}
         for k, v in pose.items():
             c = ls.last_sent.get(k)
-            if k == GRIPPER or c is None or k not in sup.cfg.joints:
+            if k == self._grip or c is None or k not in sup.cfg.joints:
                 continue
             step = sup.cfg.joint(k).max_vel * sup.cfg.safety.velocity_scale * 1.5 / self.loop_hz
             toward = 0.0 if first is None or k not in first else (v - float(first[k])) * (1.0 if c >= v else -1.0)
@@ -1292,7 +1619,7 @@ class Twin:
             return
         if ls.grip_ok_since is None:
             ls.grip_ok_since = now
-        g, cmd = ls.measured.get(GRIPPER), sup.command.get(GRIPPER)
+        g, cmd = ls.measured.get(self._grip), sup.command.get(self._grip)
         if g is None or cmd is None or now - ls.grip_ok_since < self.grip_clear_s:
             return
         if float(g) - cmd <= self.grip_squeeze_margin:
@@ -1312,14 +1639,14 @@ class Twin:
         if ls.grip_fault_since is None:
             ls.grip_fault_since = now
             logger.warning("Blad serwa chwytaka - docisk zmniejszony: %s", "; ".join(faults))
-        measured = ls.measured.get(GRIPPER)
+        measured = ls.measured.get(self._grip)
         if measured is not None:
             floor = float(measured) - self.grip_ease
             if self._grip_floor is None or floor > self._grip_floor:
                 self._grip_floor = floor
             with self._sup_lock:
-                if sup.command.get(GRIPPER, floor) < self._grip_floor:
-                    sup.reseed({GRIPPER: self._grip_floor})
+                if sup.command.get(self._grip, floor) < self._grip_floor:
+                    sup.reseed({self._grip: self._grip_floor})
             self._warnings["grip_eased"] = (f"{'; '.join(faults)} - docisk chwytaka zmniejszony (rozkaz nie ciasniej "
                                             f"niz {self._grip_floor:.0f}); STOP, jesli blad potrwa "
                                             f"{self.grip_fault_s:.0f} s")
@@ -1347,8 +1674,8 @@ class Twin:
                 break
             past = (t_h, pose)
         late = []
-        for name in JOINT_NAMES:
-            if name == GRIPPER or name in stale or name not in ls.measured or name not in ls.last_sent:
+        for name in self._names:
+            if name == self._grip or name in stale or name not in ls.measured or name not in ls.last_sent:
                 continue
             err = ls.last_sent[name] - ls.measured[name]
             if abs(err) <= self.track_err_deg:
@@ -1411,14 +1738,10 @@ class Twin:
 #: Stany nadzoru, w ktorych cos rusza ramieniem (STOP i bezczynnosc - nie).
 _MOVING = (SafetyState.ACTIVE, SafetyState.STARTING, SafetyState.HOMING)
 
-#: Staw chwytaka w jednostkach aplikacji (0 = zamkniety, 100 = otwarty).
-GRIPPER = "gripper"
-
-
-def _fault_joint(fault: str) -> str | None:
-    """Staw, ktorego dotyczy zdanie z `faults()` ("gripper (serwo 6): ..." albo "gripper: ...")."""
+def _fault_joint(fault: str, names: tuple[str, ...]) -> str | None:
+    """Staw z `names`, ktorego dotyczy zdanie z `faults()` ("gripper (serwo 6): ..." albo "gripper: ...")."""
     head = fault.split(":", 1)[0].split(" (", 1)[0].strip()
-    return head if head in JOINT_NAMES else None
+    return head if head in names else None
 
 
 def _read_silent(b: RobotBackend) -> bool:
@@ -1484,6 +1807,12 @@ def _gripper_mismatch(b: RobotBackend, tol: float) -> str:
     fmt = "zamkniety {:.0f}, otwarty {:.0f}, zero {:.0f}"
     return (f"chwytak: backend ma tiki ({fmt.format(*got)}), a blizniak i polityki ({fmt.format(*want)}) - "
             "kat szczek w blizniaku nie zgadza sie z serwem; popraw gripper_*_ticks w konfiguracji")
+
+
+def _gripper_measured(b: RobotBackend) -> bool:
+    """Czy backend mierzy chwytak; bez metody `gripper_measured` zakladamy, ze tak (Feetech, sim)."""
+    fn = getattr(b, "gripper_measured", None)
+    return True if fn is None else bool(fn())
 
 
 def _backend_faults(b: RobotBackend) -> list[str]:
@@ -1564,5 +1893,17 @@ def _copy_state(old: sc.Scene, new: sc.Scene) -> None:
             nd.ctrl[a] = od.ctrl[om.actuator(name).id]
         except KeyError:
             continue
+    # Ciala mocap (np. podkladka celu pickplace) - po nazwie; bez tego wracaly na poze z `Box`.
+    for b in range(nm.nbody):
+        k = int(nm.body_mocapid[b])
+        if k < 0:
+            continue
+        try:
+            ok = int(om.body_mocapid[om.body(nm.body(b).name).id])
+        except KeyError:
+            continue
+        if ok >= 0:
+            nd.mocap_pos[k] = od.mocap_pos[ok]
+            nd.mocap_quat[k] = od.mocap_quat[ok]
     nd.time = od.time
     mujoco.mj_forward(nm, nd)

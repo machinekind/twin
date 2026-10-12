@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..config import AppConfig, JOINT_NAMES
+from ..config import GRIPPER, AppConfig
 from .filters import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,9 @@ class SafetySupervisor:
         self._no_hand_for = 0.0
         self._estop = False
         self._was_active = False
+        #: Stawy nadzorowane - te z konfiguracji, w jej kolejnosci (SO-101 w aplikacji
+        #: dloni, stawy ramienia z opisu w blizniaku, `robots.robot_config`).
+        self.names: tuple[str, ...] = tuple(cfg.joints)
         self.home = self._clamped_home()
         #: Tryb blizniaka (`start(..., keep_outside=True)`): staw, ktory stoi poza
         #: limitami konfiguracji, dostaje wlasne, poszerzone limity az do miejsca,
@@ -79,14 +82,29 @@ class SafetySupervisor:
     # ------------------------------------------------------------- pomocnicze
     def _clamped_home(self) -> dict[str, float]:
         home = {}
-        for name in JOINT_NAMES:
+        for name in self.names:
             jc = self.cfg.joint(name)
             value = self.cfg.safety.home.get(name, 0.0)
             home[name] = min(max(value, jc.min), jc.max)
         return home
 
+    def set_speed_cap(self, deg_s: float | None) -> None:
+        """Gorna granica predkosci kazdego stawu ramienia [jednostki/s] - jak 'speed' w jog_a1x.
+
+        None = bez granicy (tylko `max_vel` x `velocity_scale`). Chwytak bez zmian.
+        Ograniczniki dostaja nowe tempo od razu, bez skoku (krok liczy sie od ostatniego
+        rozkazu). Staw spoza limitow dalej wraca co najwyzej `outside_vel` (`step`).
+        """
+        self.speed_cap = None if deg_s is None else max(float(deg_s), 1e-3)
+        for name, limiter in self._limiters.items():
+            limiter.max_rate = self._max_vel(name)
+
     def _max_vel(self, name: str) -> float:
-        return max(self.cfg.joint(name).max_vel * self.cfg.safety.velocity_scale, 1e-3)
+        v = max(self.cfg.joint(name).max_vel * self.cfg.safety.velocity_scale, 1e-3)
+        cap = getattr(self, "speed_cap", None)
+        if cap is not None and name != GRIPPER:
+            v = min(v, cap)
+        return v
 
     # ------------------------------------------------------------------ start
     def start(self, measured: dict[str, float], go_home: bool = True, *, keep_outside: bool = False) -> None:
@@ -107,7 +125,7 @@ class SafetySupervisor:
         self._limiters = {}
         self._soft = {}
         self._keep_outside = keep_outside
-        for name in JOINT_NAMES:
+        for name in self.names:
             jc = self.cfg.joint(name)
             value = float(measured.get(name, self.home[name]))
             if keep_outside and not jc.min <= value <= jc.max:
@@ -150,7 +168,7 @@ class SafetySupervisor:
 
         report = SafetyReport(state=self.state, seconds_without_hand=self._no_hand_for)
         command: dict[str, float] = {}
-        for name in JOINT_NAMES:
+        for name in self.names:
             jc = self.cfg.joint(name)
             raw = float(target.get(name, self._command[name]))
             outside = name in self._soft
@@ -208,7 +226,7 @@ class SafetySupervisor:
         if self.state in (SafetyState.STARTING, SafetyState.HOMING):
             self._ramp_t += dt
             target = {}
-            for name in JOINT_NAMES:
+            for name in self.names:
                 alpha = _smoothstep((self._ramp_t - self._ramp_start.get(name, 0.0)) / self._ramp_duration)
                 target[name] = self._ramp_from[name] + alpha * (self._ramp_to[name] - self._ramp_from[name])
             # Staw spoza limitow (tylko blizniak, `keep_outside`) konczy rampe dopiero po

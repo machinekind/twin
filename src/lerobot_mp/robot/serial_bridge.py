@@ -23,7 +23,7 @@ zaczyna zglaszac bledy odczytu. `--stats` pokazuje, ile faktycznie schodzi.
 
 Uruchomienie
 ------------
-    python -m lerobot_mp.robot.serial_bridge --port COM11 --listen 0.0.0.0:5555 --allow 1.2.3.4
+    python -m lerobot_mp.robot.serial_bridge --port COM5 --listen 0.0.0.0:5555 --allow 1.2.3.4
 """
 
 from __future__ import annotations
@@ -245,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Udostepnia port szeregowy ramienia po TCP (dla wirtualnego portu COM "
         "na maszynie zdalnej).",
     )
-    parser.add_argument("--port", required=True, help="port szeregowy ramienia, np. COM11")
+    parser.add_argument("--port", required=True, help="port szeregowy ramienia, np. COM5")
     parser.add_argument(
         "--baud", type=int, default=1_000_000, help="predkosc portu (domyslnie 1 Mbaud)"
     )

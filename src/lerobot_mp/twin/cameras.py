@@ -3,7 +3,10 @@
 `CameraHub.grab()` pasuje do `calib.session.Cameras`, wiec ta sama sesja
 kalibracji jedzie na prawdziwych kamerach i na symulowanych.
 
-Kamery prawdziwe uzywaja watku `vision.camera.CameraStream` (zawsze najnowsza
+Kamery IDS uEye (zrodlo `ueye[:id]`) ida przez `twin.ueye` (pyueye), bo sterownik
+IDS nie daje urzadzenia V4L2; kamera glebi pmd CamBoard nano (`pmd[:serial]`) przez
+`twin.pmd` (PMDSDK, kadr = obraz amplitudy). Pozostale kamery prawdziwe uzywaja watku
+`vision.camera.CameraStream` (zawsze najnowsza
 klatka, bez kolejki), z JEDNA roznica: bez lustrzanego odbicia. Aplikacja
 sterowania dlonia odbija obraz, zeby ruch reki zgadzal sie z ekranem - dla
 kalibracji lustrzany kadr to inna geometria i poza kamery wyszlaby z blednym
@@ -17,6 +20,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -46,10 +50,51 @@ def probe_devices(max_index: int = 6) -> list[dict]:
                 continue
             ok, img = cap.read()
             if ok and img is not None:
-                found.append(dict(index=index, width=int(img.shape[1]), height=int(img.shape[0])))
+                w, h = int(img.shape[1]), int(img.shape[0])
+                # Zrodlo: stala sciezka by-id, gdy jest - indeks V4L2 przesuwa sie po kazdym
+                # wpieciu czegos do USB (Brio: 2 -> 3 po wpieciu innej kamery, 2026-09-26).
+                found.append(dict(index=index, source=stable_path(index) or str(index),
+                                  label=f"{index}: {w}x{h}", width=w, height=h))
         finally:
             cap.release()
     return found
+
+
+def stable_path(index: int) -> str | None:
+    """Sciezka /dev/v4l/by-id/... (index0 = strumien obrazu) wskazujaca na /dev/video<index>; None bez niej."""
+    by_id = Path("/dev/v4l/by-id")
+    if not by_id.is_dir():
+        return None
+    for link in sorted(by_id.iterdir()):
+        try:
+            if link.resolve().name == f"video{index}":
+                return str(link)
+        except OSError:
+            continue
+    return None
+
+
+def probe_all() -> list[dict]:
+    """Kamery USB (OpenCV), IDS uEye (pyueye) i pmd CamBoard nano (PMDSDK) do dodania: kazda z
+    `source`, `label`, `width`, `height`; pmd takze z `K` (z kalibracji fabrycznej kamery)."""
+    from . import pmd, ueye
+    return probe_devices() + ueye.probe_devices() + pmd.probe_devices()
+
+
+def open_live(record: CameraRecord):
+    """Strumien dla rekordu: `ueye[:id]` przez pyueye, `pmd[:serial]` przez PMDSDK, reszta przez OpenCV.
+
+    Kamera pmd bez K w rekordzie (wpisana recznie do twin.json) dostaje K z xyz przy otwarciu.
+    """
+    from . import pmd, ueye
+    if ueye.is_ueye(record.source):
+        return ueye.UEyeLive(record)
+    if pmd.is_pmd(record.source):
+        live = pmd.PMDLive(record)
+        if record.K is None and live.K is not None:
+            record.K, record.intrinsics_from = live.K.tolist(), "pmd"
+        return live
+    return _Live(record)
 
 
 class _Live:
@@ -62,8 +107,8 @@ class _Live:
     def rgb_t(self) -> tuple[np.ndarray | None, float, str | None]:
         """(kadr RGB, chwila jego wykonania, blad strumienia).
 
-        Watek `CameraStream` konczy sie po cichu, gdy `cap.read()` zawiedzie (na
-        Shadow: zerwane przekazanie USB), a `read()` dalej oddaje ostatnia klatke -
+        Watek `CameraStream` konczy sie po cichu, gdy `cap.read()` zawiedzie (np.
+        zerwane przekazanie USB), a `read()` dalej oddaje ostatnia klatke -
         bez sprawdzenia bledu i wieku panel mial "kadr" zamrozony na zawsze.
         """
         err = self.stream.error
@@ -78,6 +123,14 @@ class _Live:
 
     def rgb(self) -> np.ndarray | None:
         return self.rgb_t()[0]
+
+    @property
+    def error(self) -> str | None:
+        return self.stream.error
+
+    @property
+    def is_running(self) -> bool:
+        return self.stream.is_running
 
     def close(self) -> None:
         self.stream.close()
@@ -116,13 +169,13 @@ class CameraHub:
             for name, rec in wanted.items():
                 live = self._live.get(name)
                 if live is not None:
-                    if live.stream.error is None and live.stream.is_running:
+                    if live.error is None and live.is_running:
                         continue
                     live.close()                          # strumien padl - sync otwiera go od nowa
                     self._live.pop(name)
                     self._stream_errors.pop(name, None)
                 try:
-                    self._live[name] = _Live(rec)
+                    self._live[name] = open_live(rec)
                     self._errors.pop(name, None)
                 except Exception as exc:                  # brak urzadzenia, zajete, zly indeks
                     self._errors[name] = str(exc)

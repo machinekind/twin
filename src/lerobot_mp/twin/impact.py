@@ -1,0 +1,199 @@
+"""Collision detection for the arm: spot a blocked joint from loop samples and pick a pose to back off to.
+
+    guard = ImpactGuard(["arm_joint1", ..., "arm_joint6"], effort_abs=20.0)
+    hit = guard.feed(s.t, s.sent, s.measured, s.fresh, efforts=arm.efforts(), velocities=arm.velocities())
+    if hit:                                            # hit.kind is "lag" or "effort"; hit.backoff_pose
+        ...
+
+Pure number logic (no twin, no clock), fed with `Twin.add_tick_listener` samples and backend readings.
+Two triggers:
+
+* **Lag** (the main one on hardware): the command keeps moving but the joint does not - |command - measured|
+  > `lag_deg` for `lag_s` while the joint is nearly still (|velocity| < `vel_still`). A normal ramp has the
+  command just ahead of the measurement with the joint moving, so it does not trigger. Must fire well before
+  the A1X backend's own "deaf" error (3 deg for 1 s). Optional `moving_deg`: a joint starts being timed only
+  while its command has moved more than `moving_deg` within the last `moving_s`, so a loaded servo's
+  steady-state error under a still command is not a stall; once timed, it stays timed until it catches up
+  or moves (a joint stuck at a wall trips even after the command stops for it).
+* **Effort**: |effort| above an absolute threshold (`effort_abs`, per joint or one for all) for `effort_n`
+  consecutive samples. A1X: raw scale of CAN frame 0x052 (threshold 20 is a guess); sim: 0.8 * actuator
+  forcerange.
+
+Back-off pose: the newest "good" (unsuspicious) sample at least `backoff_s` older than the impact whose
+farthest joint is at least `min_backoff_deg` from the measurement; else the oldest good sample; else the
+measurement. Samples with `sent == {}` (nothing reached the servos) and stale ones (`fresh=False`) are
+ignored - they say nothing new about the arm.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+
+@dataclass
+class Impact:
+    t: float
+    joint: str
+    kind: str  # "lag" or "effort"
+    value: float  # lag in deg, or effort in backend units
+    # Guarded joints only; None when none of them were measured.
+    backoff_pose: dict[str, float] | None
+
+
+class ImpactGuard:
+    def __init__(
+        self,
+        joints: Sequence[str],
+        *,
+        lag_deg: float = 6.0,
+        lag_s: float = 0.15,
+        vel_still: float = 15.0,
+        effort_abs: Mapping[str, float] | float | None = None,
+        effort_n: int = 3,
+        backoff_s: float = 0.4,
+        keep_s: float = 3.0,
+        min_backoff_deg: float = 3.0,
+        moving_deg: float | None = None,
+        moving_s: float = 0.3,
+    ):
+        self.joints = list(joints)
+        self.lag_deg = float(lag_deg)
+        self.lag_s = float(lag_s)
+        self.vel_still = float(vel_still)
+        if effort_abs is None:
+            self.effort_abs: dict[str, float] = {}
+        elif isinstance(effort_abs, Mapping):
+            self.effort_abs = {j: float(v) for j, v in effort_abs.items() if j in self.joints}
+        else:
+            self.effort_abs = {j: float(effort_abs) for j in self.joints}
+        self.effort_n = max(1, int(effort_n))
+        self.backoff_s = float(backoff_s)
+        self.keep_s = float(keep_s)
+        self.min_backoff_deg = float(min_backoff_deg)
+        self.moving_deg = None if moving_deg is None else float(moving_deg)
+        self.moving_s = float(moving_s)
+        self.reset()
+
+    def reset(self) -> None:
+        self._good: deque[tuple[float, dict[str, float]]] = deque()
+        self._lag_since: dict[str, float] = {}
+        self._effort_count: dict[str, int] = {}
+        self._prev: tuple[float, dict[str, float]] | None = None
+        self._sent: deque[tuple[float, dict[str, float]]] = deque()
+
+    def _velocity(self, t: float, measured: dict[str, float],
+                  velocities: Mapping[str, float] | None) -> dict[str, float]:
+        """Velocities in deg/s: from the backend, missing ones derived from the previous sample; absent = unknown."""
+        vel: dict[str, float] = {}
+        if velocities:
+            vel.update({j: float(velocities[j]) for j in self.joints if j in velocities})
+        prev = self._prev
+        if prev is not None and t > prev[0]:
+            dt = t - prev[0]
+            for j in self.joints:
+                if j not in vel and j in measured and j in prev[1]:
+                    vel[j] = (measured[j] - prev[1][j]) / dt
+        return vel
+
+    def feed(
+        self,
+        t: float,
+        sent: Mapping[str, float],
+        measured: Mapping[str, float],
+        fresh: bool,
+        efforts: Mapping[str, float] | None = None,
+        velocities: Mapping[str, float] | None = None,
+    ) -> Impact | None:
+        """Feed one loop sample; returns an `Impact` on the tick it triggers, else None.
+
+        After a trigger the counters restart (the next one needs a fresh `lag_s` / `effort_n`); the good-sample
+        buffer is kept until `reset`.
+        """
+        if not sent or not fresh:
+            return None
+        m = {j: float(measured[j]) for j in self.joints if j in measured}
+        if not m:
+            return None
+        vel = self._velocity(t, m, velocities)
+        self._prev = (t, m)
+        moving = self._command_moving(t, sent)
+
+        hit: tuple[str, str, float] | None = None
+        suspicious = False
+        for j in self.joints:
+            if j not in sent or j not in m:
+                self._lag_since.pop(j, None)
+                continue
+            err = abs(float(sent[j]) - m[j])
+            v = vel.get(j)
+            if (err > self.lag_deg and v is not None and abs(v) < self.vel_still
+                    and (j in self._lag_since or moving is None or j in moving)):
+                suspicious = True
+                t0 = self._lag_since.setdefault(j, t)
+                if t - t0 >= self.lag_s and hit is None:
+                    hit = (j, "lag", err)
+            else:
+                self._lag_since.pop(j, None)
+        if efforts is not None:
+            for j, limit in self.effort_abs.items():
+                if j not in efforts:
+                    continue
+                e = float(efforts[j])
+                if abs(e) > limit:
+                    suspicious = True
+                    n = self._effort_count[j] = self._effort_count.get(j, 0) + 1
+                    if n >= self.effort_n and hit is None:
+                        hit = (j, "effort", e)
+                else:
+                    self._effort_count.pop(j, None)
+
+        if hit is not None:
+            joint, kind, value = hit
+            impact = Impact(t=t, joint=joint, kind=kind, value=value, backoff_pose=self._backoff(t, m))
+            self._lag_since.clear()
+            self._effort_count.clear()
+            return impact
+        if not suspicious:
+            self._good.append((t, m))
+        while self._good and self._good[0][0] < t - self.keep_s:
+            self._good.popleft()
+        return None
+
+    def _command_moving(self, t: float, sent: Mapping[str, float]) -> set[str] | None:
+        """Joints whose command moved more than `moving_deg` within the last `moving_s` (this sample
+        included); None when the rule is off."""
+        if self.moving_deg is None:
+            return None
+        now = {j: float(sent[j]) for j in self.joints if j in sent}
+        self._sent.append((t, now))
+        while self._sent and self._sent[0][0] < t - self.moving_s:
+            self._sent.popleft()
+        return {j for j, v in now.items()
+                if any(j in old and abs(v - old[j]) > self.moving_deg for _, old in self._sent)}
+
+    def _backoff(self, t: float, measured: dict[str, float]) -> dict[str, float] | None:
+        for ts, pose in reversed(self._good):
+            if ts > t - self.backoff_s:
+                continue
+            far = max((abs(pose[j] - measured[j]) for j in pose if j in measured), default=0.0)
+            if far >= self.min_backoff_deg:
+                return dict(pose)
+        if self._good:
+            return dict(self._good[0][1])
+        return dict(measured) if measured else None
+
+    def backoff_pose(self, t: float, measured: Mapping[str, float]) -> dict[str, float] | None:
+        """The back-off pose for an impact found elsewhere (e.g. the gripper's load), by the same rule."""
+        return self._backoff(t, {j: float(measured[j]) for j in self.joints if j in measured})
+
+    @property
+    def lagging(self) -> list[str]:
+        """Joints the lag rule is timing after the last fed sample: more than `lag_deg` behind the command
+        while nearly still (with `moving_deg`: caught so while the command moved). They trigger `lag` once
+        that lasts `lag_s`."""
+        return list(self._lag_since)
+
+    def good_samples(self) -> list[tuple[float, dict[str, float]]]:
+        return [(ts, dict(p)) for ts, p in self._good]

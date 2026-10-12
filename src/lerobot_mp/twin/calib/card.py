@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from ..robots import SO101, RobotSpec
 from .tags import MARKER_FRACTION, render
 
 
@@ -59,16 +60,25 @@ class Card:
         back[2, 3] = -self.thickness / 2
         return {self.ids[0]: front, self.ids[1]: back}
 
-    def nominal(self, pinch_in_tcp: np.ndarray) -> np.ndarray:
+    def nominal(self, pinch_in_tcp: np.ndarray, spec: RobotSpec = SO101) -> np.ndarray:
         """Nominalna poza karty w ukladzie TCP, gdy wlozono ja "mniej wiecej prosto".
 
         `pinch_in_tcp` to punkt miedzy zamknietymi czubkami szczek (patrz
-        `pinch_point`). Osie karty pokrywaja sie z osiami TCP, bo w `robots`
-        TCP ma x wzdluz podejscia i z wzdluz zamykania - tak jak karta.
+        `pinch_point`). Karta sterczy wzdluz podejscia (`spec.tcp_approach` -> x
+        karty), a jej normalna to os zamykania (`spec.tcp_closing`, uprostopadlona
+        do podejscia -> z karty). Dla SO-101 (x podejscie, z zamykanie) to dokladnie
+        jednostkowy obrot - same zera i jedynki w rachunku.
         To tylko punkt startowy: prawdziwa poze wyznacza solver.
         """
+        a = np.asarray(spec.tcp_approach, float)
+        x = a / np.linalg.norm(a)
+        c = np.asarray(spec.tcp_closing, float)
+        z = c - x * float(x @ c)
+        z = z / np.linalg.norm(z)
+        y = np.cross(z, x)
         T = np.eye(4)
-        T[:3, 3] = np.asarray(pinch_in_tcp, float) + np.array([self.out / 2, 0.0, 0.0])
+        T[:3, :3] = np.column_stack([x, y, z])
+        T[:3, 3] = np.asarray(pinch_in_tcp, float) + x * (self.out / 2)
         return T
 
     # ------------------------------------------------------------------ druk

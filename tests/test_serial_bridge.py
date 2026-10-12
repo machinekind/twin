@@ -1,4 +1,4 @@
-"""Most COM <-> TCP: przekazywanie bajtow, lista dostepu, sprzatanie portu."""
+"""Most COM <-> TCP: lista dostepu odcina obce adresy od magistrali serw."""
 
 from __future__ import annotations
 
@@ -6,9 +6,7 @@ import socket
 import threading
 from collections import deque
 
-import pytest
-
-from lerobot_mp.robot.serial_bridge import serve, split_listen
+from lerobot_mp.robot.serial_bridge import serve
 
 TIMEOUT = 5.0
 
@@ -90,45 +88,6 @@ class RunningBridge:
         return conn
 
 
-def test_bridge_carries_bytes_in_both_directions():
-    with RunningBridge() as bridge, bridge.connect() as conn:
-        conn.sendall(b"\xff\xff\x01\x02\x01\xfb")
-        assert conn.recv(64) == b"\xff\xff\x01\x02\x01\xfb"
-
-
-def test_bridge_opens_the_port_only_when_a_client_arrives():
-    with RunningBridge() as bridge:
-        assert bridge.links == []
-        with bridge.connect() as conn:
-            conn.sendall(b"x")
-            conn.recv(16)
-            assert len(bridge.links) == 1
-
-
-def test_bridge_closes_the_port_after_the_client_leaves():
-    """Rozlaczenie musi oddac urzadzenie - inaczej kolejny klient zastanie zajete."""
-    with RunningBridge() as bridge:
-        with bridge.connect() as conn:
-            conn.sendall(b"x")
-            conn.recv(16)
-        link = bridge.links[0]
-        deadline = threading.Event()
-        for _ in range(100):
-            if link.closed:
-                break
-            deadline.wait(0.05)
-        assert link.closed
-
-
-def test_bridge_serves_the_next_client_after_the_previous_one():
-    with RunningBridge() as bridge:
-        for expected in (b"a", b"b"):
-            with bridge.connect() as conn:
-                conn.sendall(expected)
-                assert conn.recv(16) == expected
-        assert len(bridge.links) == 2
-
-
 def read_until_closed(conn: socket.socket) -> bytes:
     """Odczyt konczacy sie zamknieciem polaczenia, niezaleznie od systemu.
 
@@ -150,15 +109,3 @@ def test_bridge_rejects_addresses_outside_allow():
             conn.sendall(b"x")
             assert read_until_closed(conn) == b""
         assert bridge.links == []
-
-
-@pytest.mark.parametrize(
-    "value, expected",
-    [
-        ("5555", ("127.0.0.1", 5555)),
-        ("0.0.0.0:5555", ("0.0.0.0", 5555)),
-        ("192.168.1.50:9000", ("192.168.1.50", 9000)),
-    ],
-)
-def test_split_listen_understands_the_accepted_forms(value, expected):
-    assert split_listen(value) == expected

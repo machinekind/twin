@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -202,6 +203,10 @@ class _CameraSubset:
     def grab(self) -> dict[str, np.ndarray]:
         return {n: img for n in self.names for img in [self.hub.frame(n)] if img is not None}
 
+    def grab_t(self) -> dict[str, tuple[np.ndarray | None, float]]:
+        """{kamera: (kadr albo None, chwila kadru wg time.monotonic)} - dla `session.fresh_frames`."""
+        return {n: self.hub.frame_t(n) for n in self.names}
+
 
 #: Wlasciciele ramienia (`Twin.claim`) zadan w tle.
 CALIB_OWNER, SYSID_OWNER = "kalibracja", "identyfikacja"
@@ -284,9 +289,10 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
     # Bok taga i K, z ktorymi liczone jest dopasowanie - zapis wyniku bierze je stad,
     # nie z pol panelu w chwili klikniecia "Zapisz".
     job.data["tag_size"] = float(card.tag_size)
-    nominal = card.nominal(pinch_point(RobotKinematics(ws.spec())))
+    nominal = card.nominal(pinch_point(RobotKinematics(ws.spec())), ws.spec())
     simulated = twin.status.simulated
     before = dict(twin.extras)                           # np. kostka polozona wczesniej - wroci po fali
+    session = None
     try:
         if simulated:
             truth = perturb(nominal, np.random.default_rng(int(time.time())))
@@ -296,7 +302,9 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
         checker = CollisionChecker(sc.build(ws.scene_config(with_card=True, card_pose=nominal, card_collider=0.012)))
         intr = {n: ws.camera(n).intrinsics() for n in cameras}
         job.data["intrinsics"] = intr
-        cfg = WaveConfig(min_obs=10, min_poses=6, max_poses=36) if quick else WaveConfig()
+        cfg = WaveConfig.for_spec(ws.spec())
+        if quick:
+            cfg = replace(cfg, min_obs=10, min_poses=6, max_poses=36)
         session = Session(_OwnedArm(twin, job), _CameraSubset(twin.cameras, cameras), intr, twin.scene.kin, card,
                           nominal, checker, cfg, seed=int(time.time()) % 10_000)
         while not session.done:
@@ -310,11 +318,21 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
             job.message = f"poza {rep.index}: " + ", ".join(
                 f"{c} widzi {len(t)} tag." for c, t in rep.seen.items()) + (f" - {rep.note}" if rep.note else "")
         job.message = "dopasowanie"
-        return session.solve()
+        fit = session.solve()
+        _dump_wave(twin, session, fit)
+        return fit
     except RuntimeError as exc:
         # STOP, Dom, Polacz albo Przerwij w trakcie przejazdu - przerwane, nie blad.
         why = interrupted_by_operator(job, twin, CALIB_OWNER)
         if not why:
+            if getattr(session, "obs", None):
+                # Blad w trakcie, ale obserwacje juz sa: dopasowanie z nich i werdykt per kamera
+                # (za malo = "zle" z powodem), zamiast wyrzucac dorobek fali.
+                logger.warning("Fala przerwana bledem - dopasowanie z %d obserwacji: %s", len(session.obs), exc)
+                job.message = f"przerwane ({exc}) - dopasowanie z {len(session.obs)} obserwacji"
+                fit = session.solve()
+                _dump_wave(twin, session, fit, error=str(exc))
+                return fit
             raise _explain(exc, twin) from exc
         job.message = why
         return None
@@ -331,6 +349,41 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
                 twin.release(CALIB_OWNER)
         if simulated:
             twin.configure(**before)
+
+
+def _dump_wave(twin, session, fit, error: str = "") -> None:
+    """Diagnostyka ostatniej fali do `workspace/ostatnia_fala.json`: pozy, kto co widzial,
+    residuum kazdej obserwacji per kamera, odrzucone. Jedna liczba "6,93 px" nie mowi, czy to
+    trzy kadry w ruchu, czy systematyczny blad (K, bok taga, karta na uchwycie)."""
+    import json
+    try:
+        ws = twin.workspace
+        out = {"czas": time.strftime("%Y-%m-%dT%H:%M:%S"), "blad": error,
+               "bok_taga_mm": round(float(session.card.tag_size) * 1000, 2), "pozy": session.log,
+               "kamery": {}}
+        for name, cam in fit.cameras.items():
+            out["kamery"][name] = {
+                "obserwacji": cam.n_obs, "rms_px": round(cam.rms_px, 3), "max_px": round(cam.max_px, 3),
+                "rozrzut_st": round(cam.spread_deg, 2), "zaufana": cam.trusted, "powod": cam.reason,
+                "odrzucone": cam.dropped,
+                "residua": [{"poza": p, "tag": t, "px": round(e, 2)}
+                            for (p, t), e in zip(cam.obs_ids, cam.per_obs_px)],
+                "T_cam2base": np.asarray(cam.T_cam2base, float).round(5).tolist()}
+        out["obserwacje"] = [{"poza": int(o.pose), "kamera": o.camera, "tag": int(o.tag_id), "montaz": o.mount,
+                              "T_frame2base": np.asarray(o.T_frame2base, float).round(6).tolist(),
+                              "rogi": np.asarray(o.corners, float).round(3).tolist()}
+                             for o in session.obs]
+        out["montaze"] = {n: np.asarray(T, float).round(6).tolist() for n, T in fit.mounts.items()}
+        out["intrynsyki"] = {n: {"K": np.asarray(K, float).tolist(), "dist": None if d is None else np.asarray(d, float).tolist()}
+                             for n, (K, d) in session.intrinsics.items()}
+        # Obok stanowiska, NIE w workspace/calib: tam panel szuka zestawow polozen kamer (presetow)
+        # i probowal wczytac diagnostyke jako zestaw.
+        path = ws.presets_dir().parent / "ostatnia_fala.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+        logger.info("Diagnostyka fali: %s", path)
+    except Exception:                                    # pragma: no cover - diagnostyka nie moze psuc wyniku
+        logger.exception("Nie udalo sie zapisac diagnostyki fali")
 
 
 def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], period: float = 0.25,
@@ -381,11 +434,12 @@ def run_sysid(job: Job, twin) -> Any:
 
     job.message = "ruch pobudzajacy (ramie sie rusza)"
     job.data["backend"] = str(getattr(twin.status, "backend", "") or "")
-    home = dict(twin.workspace.spec().home)
+    spec = twin.workspace.spec()
+    home = dict(spec.home)
     try:
         # take=False: ramie wzial panel przed startem zadania; odebrane w tym czasie
         # (Dom, STOP, Polacz) nie jest brane z powrotem.
-        rec = record(twin, excitation(home), on_tick=lambda p: setattr(job, "progress", 0.4 * p),
+        rec = record(twin, excitation(home, joints=spec.arm_joints), on_tick=lambda p: setattr(job, "progress", 0.4 * p),
                      should_stop=job.cancel.is_set, take=False)
     except RuntimeError as exc:
         why = interrupted_by_operator(job, twin, SYSID_OWNER)
@@ -409,7 +463,7 @@ def run_sysid(job: Job, twin) -> Any:
     def prog(n, c):
         job.progress = min(0.99, 0.4 + 0.6 * n / 610)          # identify: ok. 609 symulacji
         job.message = f"dopasowanie: {n} symulacji, blad {c:.3f} st."
-    res = identify(rec, on_progress=prog)
+    res = identify(rec, spec=spec, on_progress=prog)
     useful, why = fit_verdict(res)
     job.data.update(base=float(res.base), band=dict(getattr(res, "band", None) or {}), useful=useful,
                     useless_why=why)

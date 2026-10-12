@@ -27,7 +27,13 @@ Straznicy, ktorych srodowisko treningowe nie ma, a prawdziwe ramie potrzebuje:
   z pozy swiezej (kamery albo "w dloni"), nigdy z "ostatnie widziane", i tylko
   gdy szczeka trzyma (stoi, ciasniej rozkazana, nie domyka sie w trakcie serii);
 * **cel reach w obszarze treningu** - cel spoza niego (pod blatem, za
-  podstawa) jest rzutowany na obszar, z ktorego losowano cele w treningu.
+  podstawa) jest rzutowany na obszar, z ktorego losowano cele w treningu;
+* **pickplace** - cel odlozenia to cel z panelu rzutowany na blat (z = 0) i na
+  pierscien celow z treningu (`project_target`). Sukces liczy sie tylko z kostki
+  WIDZIANEJ lezacej (kamery, nie "w dloni", nie "ostatnie widziane"), na celu,
+  puszczonej (szczeka nie trzyma, rozkaz chwytaka otwarty), nieruchomej w trakcie
+  serii i tylko, gdy wczesniej byla niesiona (zatrzask jak w treningu) - kostka
+  dopchnieta po blacie sie nie liczy.
 """
 
 from __future__ import annotations
@@ -51,6 +57,11 @@ OWNER = "polityka"
 #: Zrodla pozy kostki (`CubeTracker.source`), z ktorych wolno liczyc sukces lift: swieza
 #: detekcja z kamer, kostka niesiona w szczekach albo prawda symulacji.
 FRESH_CUBE_SOURCES = ("kamery", "w dloni", "symulacja")
+#: Zrodla, z ktorych wolno liczyc sukces pickplace: kostka WIDZIANA lezaca (nie "w dloni" -
+#: tam poza idzie za szczekami) albo prawda symulacji.
+RESTING_CUBE_SOURCES = ("kamery", "symulacja")
+#: pickplace: w trakcie serii sukcesu kostka nie przesuwa sie o wiecej niz tyle [m].
+PLACE_STILL = 0.005
 
 
 class NoCube(RuntimeError):
@@ -69,7 +80,10 @@ class RunnerStatus:
     #: Ile taktow z rzedu zadanie jest wykonane.
     success_streak: int = 0
     #: reach: cel przyciety do obszaru treningu (panel pokazuje, ze kula stoi gdzie indziej).
+    #: pickplace: cel odlozenia przesuniety na pierscien celow z treningu.
     goal_clamped: bool = False
+    #: pickplace: kostka byla niesiona w tym epizodzie (zatrzask).
+    carried: bool = False
 
 
 def project_goal(task: tk.TaskConfig, goal: np.ndarray) -> np.ndarray:
@@ -90,19 +104,42 @@ def project_goal(task: tk.TaskConfig, goal: np.ndarray) -> np.ndarray:
     return g
 
 
+def project_target(task: tk.TaskConfig, goal: np.ndarray) -> np.ndarray:
+    """Cel odlozenia pickplace z punktu `goal` (uklad podstawy): na blat (z = 0) i na pierscien celow.
+
+    Promien od osi podstawy w `target_radius`, kierunek w `target_bearing` - tam
+    `sample_targets` losowal cele w treningu; poza nim polityka nigdy nie odkladala.
+    """
+    g = np.asarray(goal, float)
+    r = float(np.hypot(g[0], g[1]))
+    r_new = float(np.clip(r, *task.target_radius))
+    bearing = float(np.arctan2(g[1], g[0])) if r > 1e-9 else 0.0
+    bearing = float(np.clip(bearing, *task.target_bearing))
+    return np.array([r_new * np.cos(bearing), r_new * np.sin(bearing), 0.0])
+
+
 class PolicyRunner:
     def __init__(self, twin, policy: Policy, *, max_tracking_deg: float = 25.0,
                  cube_provider: Callable[[], tuple | None] | None = None,
                  episode_limit: bool = True, cube_source: Callable[[], str] | None = None):
         from ..kinematics import RobotKinematics
 
+        spec = twin.workspace.spec()
+        robot = getattr(policy.meta, "robot", "so101")
+        if robot != spec.name:
+            raise RuntimeError(f"polityka uczona na {robot}, stanowisko ma {spec.name}")
+        if policy.meta.act_dim != len(spec.joints):
+            raise RuntimeError(f"polityka ma {policy.meta.act_dim} wyjsc, a ramie {spec.name} "
+                               f"{len(spec.joints)} stawow")
         self.twin = twin
         self.policy = policy
         self.task = policy.task
         # Wlasna kinematyka (wlasne MjData): ta ze sceny liczy tez panel (IK uchwytu)
         # z innego watku, a `tcp()` pisze do swojego MjData.
-        self.kin = RobotKinematics(twin.workspace.spec())
+        self.kin = RobotKinematics(spec)
         self.limits = tk.Limits.of(self.kin)
+        #: Indeks chwytaka i liczba stawow ramienia (chwytak ostatni, `Limits.of`).
+        self.g, self.na = self.limits.grip, self.limits.n_arm
         self.status = RunnerStatus()
         self._goal = np.array([0.22, 0.0, 0.12])
         #: lift: (polozenie (3,), obrot (3, 3)) kostki w ukladzie podstawy - z wizji albo z symulacji.
@@ -119,22 +156,27 @@ class PolicyRunner:
         end = getattr(self.task, "end_on_success", None)
         #: Po ilu taktach sukcesu z rzedu epizod sie konczy (0 = nigdy). Z zadania (K8);
         #: polityki zapisane przed tym polem - lift 10, reach 0 (cel przeciagany na zywo).
-        self.end_on_success = int(end) if end is not None else (10 if self.task.name == "lift" else 0)
+        self.end_on_success = int(end) if end is not None else (10 if self.task.cube else 0)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.q_cmd = self.limits.home.copy()
-        self.prev_action = np.zeros(6)
+        self.prev_action = np.zeros(self.task.act_dim)
         self._hw_lo, self._hw_hi = self.limits.lo, self.limits.hi
         self._t_start: float | None = None
         self._t_hz, self._ticks = 0.0, 0
         self._cube: np.ndarray | None = None
-        #: Szczeka "trzyma" (sukces lift): jak w `CubeTracker` - stoi (< `grip_still` rad miedzy
+        #: Szczeka "trzyma" (sukces lift): jak w `CubeTracker` - stoi (< `grip_still` miedzy
         #: taktami), szerzej niz rozkaz o `grip_block_margin` i niz zamknieta o `grip_open_margin`.
-        self.grip_still, self.grip_block_margin, self.grip_open_margin = 0.02, 0.05, 0.05
-        #: W trakcie serii sukcesu szczeka nie domyka sie o wiecej niz tyle [rad] (~3 jednostki).
-        self.grip_creep = 0.03
+        #: Jednostki MJCF chwytaka (`spec.jaw`; SO-101: rad).
+        jaw = spec.jaw
+        self.grip_still, self.grip_block_margin, self.grip_open_margin = jaw.still, jaw.margin, jaw.margin
+        #: W trakcie serii sukcesu szczeka nie domyka sie o wiecej niz tyle (SO-101: 0,03 rad ~ 3 jednostki).
+        self.grip_creep = jaw.creep
         self._grip_prev: float | None = None
         self._streak_grip = 0.0
+        #: pickplace: kostka byla niesiona (jak `task.carry_latch` w treningu) i gdzie byla na poczatku serii.
+        self._carried = False
+        self._streak_cube: np.ndarray | None = None
 
     # ------------------------------------------------------------------ cel
     @property
@@ -148,17 +190,28 @@ class PolicyRunner:
             p = project_goal(self.task, g)
             self.status.goal_clamped = bool(np.linalg.norm(p - g) > 1e-4)
             g = p
+        elif self.task.target:
+            # Cel odlozenia lezy na blacie - z = 0 to nie przyciecie, tylko definicja.
+            p = project_target(self.task, g)
+            self.status.goal_clamped = bool(np.linalg.norm(p[:2] - g[:2]) > 1e-4)
+            g = p
         self._goal = g
+
+    @property
+    def target(self) -> np.ndarray:
+        """pickplace: cel odlozenia (uklad podstawy, z = 0) - `goal` rzutowany przez `project_target`."""
+        return project_target(self.task, self._goal)
 
     # ------------------------------------------------------------ obserwacja
     def observation(self, measured: dict[str, float]) -> np.ndarray:
         q = self.kin.to_q(measured)
         tcp = self.kin.tcp(measured)[:3, 3]
         cube_pos, cube_rot = np.zeros(3), np.eye(3)
-        if self.task.name == "lift":
+        target = None
+        if self.task.cube:
             got = self.cube_provider() if self.cube_provider else None
             if got is None:
-                raise NoCube("zadanie lift potrzebuje polozenia kostki - kamery jej nie widza")
+                raise NoCube(f"zadanie {self.task.name} potrzebuje polozenia kostki - kamery jej nie widza")
             cube_pos, cube_rot = got[0], got[1]
             self._cube_src = str(got[2]) if len(got) > 2 else (self.cube_source() if self.cube_source else None)
             self._cube = np.asarray(cube_pos, float).copy()
@@ -166,8 +219,10 @@ class PolicyRunner:
                 # W treningu polityka widziala obrot zlozony do +-45 st. (jak z detektora);
                 # poza "w dloni" i prawda z symulacji tego nie maja - skladamy tak samo.
                 cube_rot = tk.fold_yaw(np, np.asarray(cube_rot, float))
+        if self.task.target:
+            target = self.target[None]
         obs = tk.observe(np, self.task, self.limits, q[None], self.q_cmd[None], tcp[None], self.prev_action[None],
-                         goal=self.goal[None], cube_pos=cube_pos[None], cube_rot=cube_rot[None])
+                         goal=self.goal[None], cube_pos=cube_pos[None], cube_rot=cube_rot[None], target=target)
         return obs[0].astype(np.float32)
 
     # ------------------------------------------------------------------ petla
@@ -191,11 +246,12 @@ class PolicyRunner:
         self.q_cmd = np.clip(self.kin.to_q(measured), self._hw_lo, self._hw_hi)
         grip = self._squeezing_grip_cmd(measured)
         if grip is not None:
-            self.q_cmd[5] = grip
-        self.prev_action = np.zeros(6)
+            self.q_cmd[self.g] = grip
+        self.prev_action = np.zeros(self.task.act_dim)
         self.status = RunnerStatus(running=True, goal_clamped=self.status.goal_clamped)
         self._cube, self._cube_src = None, None
         self._grip_prev = None
+        self._carried, self._streak_cube = False, None
         self._stop.clear()
         self._t_start, self._ticks = None, 0            # zegar startuje z pierwszym taktem
         # Sprzeglo tylko, jesli ramie wciaz nasze - sprawdzenie i wlaczenie razem w `Twin`.
@@ -225,10 +281,11 @@ class PolicyRunner:
         cmd = (getattr(self.twin.status, "command", None) or {}).get(name)
         if cmd is None or name not in measured:
             return None
-        q_cmd = float(self.kin.to_q({**measured, name: float(cmd)})[5])
-        if float(self.kin.to_q(measured)[5]) - q_cmd <= self.grip_block_margin:
+        g = self.g
+        q_cmd = float(self.kin.to_q({**measured, name: float(cmd)})[g])
+        if float(self.kin.to_q(measured)[g]) - q_cmd <= self.grip_block_margin:
             return None
-        return float(np.clip(q_cmd, self._hw_lo[5], self._hw_hi[5]))
+        return float(np.clip(q_cmd, self._hw_lo[g], self._hw_hi[g]))
 
     def _hardware_limits(self) -> tuple[np.ndarray, np.ndarray]:
         """Limity treningu przeciete z limitami, ktore naprawde obowiazuja na ramieniu (`Twin.joint_limits`).
@@ -291,12 +348,12 @@ class PolicyRunner:
                 return False
             measured = dict(self.twin.status.measured) or self.twin.joints()
             q = self.kin.to_q(measured)
-            lag = np.abs(q[:5] - self.q_cmd[:5]).max()
+            lag = np.abs(q[:self.na] - self.q_cmd[:self.na]).max()
             if lag > self.max_tracking:
                 self._halt(f"ramie nie nadaza za celem ({np.degrees(lag):.0f} st.) - kolizja albo blokada",
                            hold_measured=True)
                 return False
-            holding = self._jaw_holding(q[5])
+            holding = self._jaw_holding(q[self.g])
             obs = self.observation(measured)
             action = self.policy.act(obs)
             q_cmd = tk.apply_action(np, self.task, self.limits, self.q_cmd[None], action[None])[0]
@@ -310,6 +367,9 @@ class PolicyRunner:
             if self.task.name == "reach":
                 st.distance = float(np.linalg.norm(self.goal - self.kin.tcp(measured)[:3, 3]))
                 st.success = st.distance < self.task.success_dist
+            elif self.task.target:
+                st.success = self._placed(holding)
+                st.carried = self._carried
             else:
                 # Na ramieniu nie ma czujnikow kontaktu szczek - sukcesem jest kostka
                 # (z kamer albo "w dloni") wyzej nad blatem niz `lift_height`, i to tylko,
@@ -320,12 +380,12 @@ class PolicyRunner:
                 # Szczeka "stoi" z taktu na takt nawet przy powolnym domykaniu (9 jednostek/s
                 # to 0,005 rad na takt) - dlatego tez: w trakcie serii nie domyka sie o wiecej
                 # niz `grip_creep` od jej poczatku.
-                if holding and st.success_streak > 0 and q[5] < self._streak_grip - self.grip_creep:
+                if holding and st.success_streak > 0 and q[self.g] < self._streak_grip - self.grip_creep:
                     holding = False
                 st.success = (self._cube is not None and self._cube_fresh() and holding
                               and self._cube[2] - self.task.cube_half > self.task.lift_height)
                 if st.success and st.success_streak == 0:
-                    self._streak_grip = float(q[5])
+                    self._streak_grip = float(q[self.g])
             st.success_streak = st.success_streak + 1 if st.success else 0
             self._ticks += 1
             if now - self._t_hz >= 1.0:
@@ -352,6 +412,37 @@ class PolicyRunner:
             return False
         return True
 
+    def _placed(self, holding: bool) -> bool:
+        """pickplace: sukces tego taktu (i aktualizacja zatrzasku "niesiona", `status.distance`).
+
+        Kostka widziana lezaca (`RESTING_CUBE_SOURCES`) na celu (xy blizej niz `place_radius`,
+        spod nizej niz `place_height`), szczeka jej nie trzyma, rozkaz chwytaka otwarty,
+        wczesniej byla niesiona, a od poczatku serii nie przesunela sie o `PLACE_STILL`.
+        Zatrzask: prawda symulacji albo "w dloni" z kamer wyzej nad blatem niz `lift_height`.
+        """
+        cube, src, task = self._cube, self._cube_src, self.task
+        if cube is None:
+            return False
+        sim = bool(getattr(self.twin.status, "simulated", False))
+        if src is None and sim:
+            src = "symulacja"                               # dostawca bez zrodla w sim = prawda sceny
+        height = float(cube[2]) - task.cube_half
+        tgt = self.target
+        d_t = float(np.hypot(*(cube[:2] - tgt[:2])))
+        self.status.distance = d_t
+        carried_before = self._carried
+        if src in ("symulacja", "w dloni") and height > task.lift_height:
+            self._carried = True
+        grip_open = bool(tk.grip_is_open(np, self.limits, self.q_cmd[None])[0])
+        ok = (src in RESTING_CUBE_SOURCES and carried_before and d_t < task.place_radius
+              and height < task.place_height and not holding and grip_open)
+        if ok and self.status.success_streak > 0 and self._streak_cube is not None \
+                and np.linalg.norm(cube - self._streak_cube) >= PLACE_STILL:
+            ok = False                                      # kostka jeszcze sie toczy / przesuwa
+        if ok and (self.status.success_streak == 0 or self._streak_cube is None):
+            self._streak_cube = np.asarray(cube, float).copy()
+        return ok
+
     def _jaw_holding(self, grip_q: float) -> bool:
         """Czy szczeka trzyma: stoi od poprzedniego taktu, jest szerzej niz rozkaz i niz pusta, zamknieta.
 
@@ -360,8 +451,8 @@ class PolicyRunner:
         """
         prev, self._grip_prev = self._grip_prev, float(grip_q)
         still = prev is not None and abs(grip_q - prev) < self.grip_still
-        squeezing = (grip_q - self.q_cmd[5] > self.grip_block_margin
-                     and grip_q > self.limits.lo[5] + self.grip_open_margin)
+        squeezing = (grip_q - self.q_cmd[self.g] > self.grip_block_margin
+                     and grip_q > self.limits.lo[self.g] + self.grip_open_margin)
         return bool(still and squeezing)
 
     def _cube_fresh(self) -> bool:
