@@ -184,6 +184,7 @@ stanu.
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
 | **Trening** | PPO na GPU w osobnym procesie, z wykresem sukcesu; **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako środka randomizacji |
 | **Polityki** | lista z wynikami (GPU, CPU z randomizacją i bez), ewaluacja na CPU, **uruchomienie na bliźniaku** — sim albo prawdziwe ramię; `reach`: cel przeciągany w 3D; `lift`: kostka z symulacji albo **z kamer** |
+| **Strategie** | strategie z zainstalowanych pakietów (entry points `lerobot_mp.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
 | **Sim-Real** | kadr prawdziwej kamery z nałożonymi krawędziami renderu bliźniaka z tej samej pozy i K, mediana rozjazdu w pikselach |
 
 ---
@@ -951,7 +952,7 @@ zachowanie **dostarczanych** plików polityk, nie tylko środowiska.
 ```
 src/lerobot_mp/twin/
 ├── robots.py        opisy ramion z folderów (`robot.yaml`), tylko z wtyczek `lerobot_mp.robots`
-├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów surowe (`TwinConfig`)
+├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów i strategii surowe (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
 ├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu
 ├── collision.py     kolizje pozy i drogi do niej
@@ -962,6 +963,7 @@ src/lerobot_mp/twin/
 ├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
 ├── strategy.py      kontrakt strategii sterowania: `Observation`, `Strategy`, `Action`, `StrategyRunner`
 ├── waypoints.py     strategia testowa: przejazd przez zadane pozy
+├── strategies.py    strategie z wtyczek `lerobot_mp.strategies` i ich ustawienia (dataclass, budowana ściśle)
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
 ├── cli.py           lerobot-twin
 ├── calib/
@@ -987,6 +989,7 @@ src/lerobot_mp/twin/
     ├── bridge.py      scena MuJoCo w przeglądarce (węzeł na ciało)
     ├── guide.py       przewodnik: kroki procedury i następna akcja ze stanu panelu
     ├── jobs.py        zadania w tle: trening (proces), kalibracje, identyfikacja
+    ├── strategy_tab.py zakładka Strategie: lista, formularz ustawień, Uruchom i Zatrzymaj
     └── watch.py       wykrywanie przestawionej kamery
 
 src/lerobot_mp/robot/

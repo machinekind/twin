@@ -1,7 +1,7 @@
 # Konfiguracja ramienia dla cyfrowego blizniaka (lerobot-twin).
 #
 # Sekcje `safety` i `robot` czyta blizniak (`lerobot_mp/twin/config.py`), kazda inna -
-# backend o tej nazwie. Wartosci nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna
+# backend albo strategia o tej nazwie. Wartosci nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna
 # nadpisac pojedynczy parametr bez przepisywania calosci. Nieznany klucz
 # w sekcji konczy sie bledem, a nie cichym zignorowaniem.
 #
@@ -24,7 +24,9 @@ robot:
   backend: sim         # sim albo wtyczka backendu: feetech | lerobot | a1x (lerobot-twin check)
   port: null           # np. /dev/ttyACM0, /dev/tty.usbmodem58FA0958121, COM5; dla a1x: can0, xcan
 
-# Kazda inna sekcja nalezy do backendu o tej nazwie - sprawdza ja sam backend.
+# Kazda inna sekcja nalezy do backendu albo strategii o tej nazwie. Backend sprawdza swoja sam;
+# sekcja strategii (np. `swing:`) wypelnia formularz jej ustawien w panelu (zakladka Strategie),
+# a nieznany klucz albo zly typ blokuje Uruchom.
 
 feetech:               # SO-101 wprost przez port szeregowy
   baudrate: 1000000          # predkosc portu; STS3215 w SO-101 fabrycznie 1 Mbaud

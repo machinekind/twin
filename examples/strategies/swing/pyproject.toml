@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-mp-swing"
+version = "0.1.0"
+description = "The digital twin's test strategy from outside the twin: swings one joint, settings in a dataclass"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."lerobot_mp.strategies"]
+swing = "swing:Swing"
+
+[tool.setuptools.packages.find]
+include = ["swing*"]

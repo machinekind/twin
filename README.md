@@ -407,6 +407,23 @@ at the time limit. A strategy from another package needs nothing from the twin: 
 a plain mapping of joint targets. The test strategy `waypoints.Waypoints` drives through given
 poses.
 
+Strategies come from installed packages, the way robots do. A package registers its strategy
+class through an entry point and declares what the operator sets for one run (a VLA's
+instruction, a policy file) as a dataclass in the class's `settings` attribute:
+
+```toml
+[project.entry-points."lerobot_mp.strategies"]
+pi05 = "vla_strategies.pi05:Pi05"
+```
+
+The panel's Strategies tab lists them and draws a form from the settings dataclass: a text
+field, a number or a switch per field, prefilled from the config file's section of the same
+name (`pi05:`). Start builds the dataclass strictly, so an unknown key, a missing one or a
+wrong type is refused before the arm moves, and creates the strategy as `Pi05(settings)`.
+The package never imports the twin at runtime; the generic `Strategy[S]` protocol is there for
+its type checker only. [examples/strategies/swing](examples/strategies/swing) is a complete
+example, and the tests load it.
+
 ## Configuration
 
 The twin reads a configuration file only when one is given:
@@ -414,7 +431,8 @@ The twin reads a configuration file only when one is given:
 is `configs/default.yaml`, described by comments; a copy `configs/local.yaml` is
 in `.gitignore`. The twin reads the `safety` and `robot` (backend, port)
 sections; every other section belongs to the backend of that name (`feetech`,
-`lerobot`, `a1x`), which checks it itself. The file can be shortened: missing
+`lerobot`, `a1x`), which checks it itself, or to the strategy of that name, whose
+settings form it prefills. The file can be shortened: missing
 keys take their default values, and an unknown key inside a section ends with a
 clear error. The arm's backend and port are chosen by the panel, not by the
 file. The keys are described in [docs/TWIN.md](docs/TWIN.md): the paragraph
@@ -461,6 +479,7 @@ src/lerobot_mp/
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
 │   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
 │   ├── strategy.py  the control-strategy contract and its runner; waypoints.py is the test strategy
+│   ├── strategies.py  strategies from installed packages and their settings
 │   └── ui/        browser panel (viser)
 ├── robot/         the backend contract and plugin registry
 │   ├── so101/     SO-101 package, leaving for its repo: robot folder, backends feetech and lerobot, COM<->TCP bridge
