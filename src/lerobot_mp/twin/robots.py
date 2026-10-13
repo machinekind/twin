@@ -172,8 +172,6 @@ class RobotSpec:
     #: Ranges [app units] the wave samples the other joints from: tighter than the mechanical ones,
     #: so the card circles above the table and not behind the arm.
     wave_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
-    #: Cameras mounted on the arm (camera names in the MJCF).
-    onboard_cameras: tuple[str, ...] = ()
     #: Cameras the scene adds on bodies of the arm, by name: what a strategy sees from the arm.
     cameras: dict[str, RobotCamera] = field(default_factory=dict)
     #: Bodies of both jaws (fixed, moving): grip contact sensors of the RL tasks.
