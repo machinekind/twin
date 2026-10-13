@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 #: Default owner name of the arm while a strategy runs (`Twin.claim`).
 OWNER = "strategia"
 
+#: Where frames come from: camera name -> (RGB image or None, capture time on `time.monotonic`).
+#: `CameraHub.frame_t` is one: it serves real cameras' streams and renders simulated ones.
+FrameSource = Callable[[str], tuple[np.ndarray | None, float]]
+
 
 # --------------------------------------------------------------------------- the contract
 
@@ -61,6 +65,17 @@ class ObjectPose:
     source: str = ""
     #: Seconds since the pose was measured; 0 = this tick.
     age_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class Frame:
+    """One camera frame."""
+
+    #: RGB image, shape (height, width, 3).
+    image: np.ndarray
+    #: Seconds since the frame was captured, at the moment it was read. A simulated camera renders
+    #: on read, so its age is the render time; a real camera's is the age of its stream's latest frame.
+    age_s: float
 
 
 @dataclass(frozen=True)
@@ -97,7 +112,8 @@ class Observation:
     #: Objects the perception knows about, by name (e.g. "cube").
     objects: Mapping[str, ObjectPose] = field(default_factory=dict)
     #: Camera frames by camera name, fetched only when read: a strategy without vision pays nothing.
-    frames: Mapping[str, np.ndarray] = field(default_factory=dict)
+    #: A camera without a frame (not open yet, stream broken) is missing.
+    frames: Mapping[str, Frame] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -172,7 +188,7 @@ class StrategyRunner:
         goal: Callable[[], Any] | None = None,
         objects: Callable[[], Mapping[str, ObjectPose]] | None = None,
         cameras: Sequence[str] = (),
-        frame: Callable[[str], np.ndarray] | None = None,
+        frame: FrameSource | None = None,
         time_limit_s: float | None = None,
     ):
         _check_strategy(strategy)
@@ -189,8 +205,7 @@ class StrategyRunner:
         self._goal = goal
         self._objects = objects
         self._cameras = tuple(cameras)
-        self._frame = frame
-        self._fetch: Callable[[str], np.ndarray] = twin.render
+        self._frame = frame if frame is not None else twin.cameras.frame_t
         self._joints: tuple[str, ...] = ()
 
         self._run: _Run | None = None
@@ -212,7 +227,6 @@ class StrategyRunner:
             raise RuntimeError("ramie blizniaka nie jest polaczone")
 
         self.stop()
-        self._fetch = self._frame_source()
 
         run = _Run()
         self._claim(gen, guard)
@@ -222,16 +236,6 @@ class StrategyRunner:
         if threaded:
             self._thread = threading.Thread(target=self._loop, args=(run,), name=self.owner, daemon=True)
             self._thread.start()
-
-    def _frame_source(self) -> Callable[[str], np.ndarray]:
-        if self._frame is not None:
-            return self._frame
-
-        if self._cameras and not self.twin.status.simulated:
-            raise ValueError("kamery strategii na prawdziwym ramieniu: podaj `frame` "
-                             "- render sceny to nie obraz z kamer")
-
-        return self.twin.render
 
     def _claim(self, gen: int | None, guard: Callable[[], bool] | None) -> None:
         conditions = {}
@@ -391,7 +395,7 @@ class StrategyRunner:
             command=dict(status.command or {}),
             goal=None if goal is None else np.asarray(goal, float),
             objects=dict(objects or {}),
-            frames=_LazyFrames(self._cameras, self._fetch),
+            frames=_LazyFrames(self._cameras, self._frame),
         )
 
     def _checked(self, target: Mapping[str, float]) -> dict[str, float]:
@@ -481,26 +485,38 @@ class _BadTarget(ValueError):
     pass
 
 
-class _LazyFrames(Mapping[str, np.ndarray]):
-    """Camera frames fetched on first read, once per tick."""
+class _LazyFrames(Mapping[str, Frame]):
+    """Camera frames fetched on first read, once per tick. A camera without a frame is missing."""
 
-    def __init__(self, names: Sequence[str], fetch: Callable[[str], np.ndarray]):
+    def __init__(self, names: Sequence[str], fetch: FrameSource):
         self._names = tuple(names)
         self._fetch = fetch
-        self._fetched: dict[str, np.ndarray] = {}
+        self._fetched: dict[str, Frame | None] = {}
 
-    def __getitem__(self, name: str) -> np.ndarray:
+    def __getitem__(self, name: str) -> Frame:
         if name not in self._names:
             raise KeyError(name)
+
         if name not in self._fetched:
-            self._fetched[name] = self._fetch(name)
-        return self._fetched[name]
+            self._fetched[name] = self._read(name)
+
+        frame = self._fetched[name]
+        if frame is None:
+            raise KeyError(f"{name}: brak klatki z kamery")
+        return frame
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._names)
 
     def __len__(self) -> int:
         return len(self._names)
+
+    def _read(self, name: str) -> Frame | None:
+        image, captured = self._fetch(name)
+        if image is None:
+            return None
+
+        return Frame(image=image, age_s=max(0.0, time.monotonic() - captured))
 
 
 def _check_strategy(strategy: Any) -> None:

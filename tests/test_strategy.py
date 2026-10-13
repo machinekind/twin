@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import logging
 import math
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,7 +28,8 @@ from lerobot_mp.twin.workspace import Workspace  # noqa: E402
 
 from test_twin_runtime import FakeArm, connect_fake  # noqa: E402
 
-TWIN_SOURCES = Path(__file__).resolve().parents[1] / "src" / "lerobot_mp" / "twin"
+REPO = Path(__file__).resolve().parents[1]
+TWIN_SOURCES = REPO / "src" / "lerobot_mp" / "twin"
 
 #: The simulated clock's step, and the twin loop's period [s].
 CLOCK_STEP = 0.01
@@ -189,13 +191,13 @@ def test_a_plugin_strategy_returns_plain_values_and_sees_the_whole_observation(t
     assert plugin.stopped == "strategia skonczyla"
 
 
-def test_camera_frames_are_rendered_only_when_the_strategy_reads_them(twin):
+def test_camera_frames_are_fetched_only_when_the_strategy_reads_them(twin):
     twin.connect("sim", threaded=False)
     rendered = []
 
     def render(camera):
         rendered.append(camera)
-        return np.zeros((4, 4, 3), np.uint8)
+        return np.zeros((4, 4, 3), np.uint8), time.monotonic()
 
     blind = StrategyRunner(twin, Plugin(answer({})), cameras=("a", "b"), frame=render)
     blind.start(threaded=False)
@@ -215,6 +217,52 @@ def test_camera_frames_are_rendered_only_when_the_strategy_reads_them(twin):
     drive(twin, seeing, 0.5)
 
     assert rendered == ["a"] * seeing.status.step
+
+
+def test_a_frame_carries_its_age_and_a_camera_without_a_frame_is_missing(twin):
+    twin.connect("sim", threaded=False)
+    image = np.zeros((4, 4, 3), np.uint8)
+
+    def stream(camera):
+        if camera == "broken":
+            return None, 0.0
+        return image, time.monotonic() - 0.25
+
+    plugin = Plugin(answer({}))
+    runner = StrategyRunner(twin, plugin, cameras=("front", "broken"), frame=stream)
+    runner.start(threaded=False)
+    drive(twin, runner, 0.1)
+
+    frames = plugin.seen[-1].frames
+    assert frames["front"].image is image
+    assert 0.25 <= frames["front"].age_s < 0.5
+    assert "broken" not in frames
+    assert frames.get("broken") is None
+
+
+def test_the_default_frame_source_is_the_twins_camera_hub(tmp_path):
+    workspace_file = tmp_path / "twin.json"
+    shutil.copy(REPO / "examples" / "twin.sim.json", workspace_file)
+    twin = Twin(Workspace.load(workspace_file), clock=VirtualClock(t0=0.0))
+
+    try:
+        twin.connect("sim", threaded=False)
+        camera = twin.workspace.cameras[0].name
+        seen = []
+
+        def look(obs):
+            seen.append(obs.frames[camera])
+            return {}
+
+        runner = StrategyRunner(twin, Plugin(look), cameras=(camera,))
+        runner.start(threaded=False)
+        drive(twin, runner, 0.1)
+
+        # A simulated camera renders on read: its age is the render time (the first one sets up OpenGL).
+        assert seen[-1].image.shape == (480, 640, 3)
+        assert 0.0 <= seen[-1].age_s < 1.0
+    finally:
+        twin.close()
 
 
 def imported_modules(path: Path) -> list[str]:
@@ -446,13 +494,3 @@ def test_the_arm_taken_while_the_strategy_starts_still_gets_it_a_stop(twin):
     assert plugin.stopped.startswith("przerwana")
     assert twin.owner is None
     assert not runner.status.running
-
-
-def test_cameras_on_hardware_need_a_frame_source(twin, monkeypatch):
-    connect_fake(twin, monkeypatch, FakeArm())
-    runner = StrategyRunner(twin, Plugin(answer({})), cameras=("a",))
-
-    with pytest.raises(ValueError, match="frame"):
-        runner.start(threaded=False)
-
-    assert twin.owner is None

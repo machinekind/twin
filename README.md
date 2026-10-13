@@ -397,7 +397,7 @@ The network carries the serial port here, not the image.
 Every way of driving the arm goes through one contract (`lerobot_mp.twin.strategy`). A strategy
 has a rate `hz` and `act(observation)`. The observation holds the time, the measured joints,
 the supervisor's command, the panel's goal, the objects the perception knows (pose, source,
-age) and the camera frames, rendered only when read. `act` returns joint targets and, when the
+age) and the camera frames with their age, fetched only when read. `act` returns joint targets and, when the
 run is over, `done` with the task's `success` and `error`.
 
 `StrategyRunner` claims the arm and sends every target through the safety supervisor, the
