@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import ast
+import json
 import shutil
-from importlib.metadata import entry_points
 from pathlib import Path
 
 import lerobot_mp_api.backend as api_backend
@@ -17,11 +17,12 @@ pytest.importorskip("mujoco")
 from conftest import BOT, TESTBOT  # noqa: E402
 
 import lerobot_mp.robot.base as twin_backend  # noqa: E402
-from lerobot_mp.robot import backend_context, backends, create_backend  # noqa: E402
+from lerobot_mp.robot import backend_context, create_backend  # noqa: E402
 from lerobot_mp.robot.factory import PluginBackend  # noqa: E402
+from lerobot_mp.twin.cli import main, parser  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.robots import (  # noqa: E402
-    ROBOT_FILE, get_spec, load_robot, robot_config, robot_folders,
+    DEMO_FILE, ROBOT_FILE, get_spec, load_robot, robot_config, robot_folders,
 )
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -36,19 +37,6 @@ def run(twin: Twin, seconds: float) -> None:
 
 
 # ------------------------------------------------------------ robot folders
-@pytest.mark.parametrize("name", ["a1x"])
-def test_a1x_registers_like_any_robot_package(name):
-    """It still lives here, as a package that leaves whole: folder and backend in `lerobot_mp.robot.<x>`."""
-    eps = {ep.name: ep.value for ep in entry_points(group="lerobot_mp.robots")}
-    assert eps[name] == f"lerobot_mp.robot.{name}:ROBOT_DIR"
-    folder = robot_folders()[name]
-    assert folder == (REPO / "src" / "lerobot_mp" / "robot" / name / "robot").resolve()
-    spec = get_spec(name)
-    assert spec.name == name and spec.root == folder.resolve()
-    assert spec.mjcf_path.parent == spec.root and spec.mjcf_path.is_file()
-    assert spec.connections and set(spec.joint_labels) == set(spec.joints)
-
-
 def test_a_robot_folder_from_an_installed_package_is_found_through_its_entry_point(testbot):
     assert robot_folders()[testbot] == TESTBOT / "testbot" / "robot"
     spec = get_spec(testbot)
@@ -60,14 +48,14 @@ def test_a_robot_folder_from_an_installed_package_is_found_through_its_entry_poi
 def test_the_twin_itself_holds_no_robot_folder():
     package = REPO / "src" / "lerobot_mp"
     found = {p.parent.relative_to(package).parts[:2] for p in package.rglob("robot.yaml")}
-    assert found <= {("robot", "a1x")}                          # the package that still has to leave
+    assert not found
     assert not (REPO / "assets" / "robots").exists()
 
 
 def test_a_robot_plugin_that_does_not_load_leaves_the_others(install_dist, caplog):
     install_dist("broken-robot", {"lerobot_mp.robots": {"broken": "no_such_module:DIR"}})
     folders = robot_folders()
-    assert "broken" not in folders and {BOT, "a1x"} <= set(folders)
+    assert "broken" not in folders and BOT in folders
     assert "broken" in caplog.text
 
 
@@ -127,7 +115,6 @@ def test_the_description_names_the_robot_it_is_registered_as(install_dist, tmp_p
 
 
 def test_the_demo_station_takes_an_installed_robot_and_names_what_to_install_otherwise(tmp_path, capsys):
-    from lerobot_mp.twin.cli import main
     from lerobot_mp.twin.robots import default_robot
 
     station = tmp_path / "twin.json"
@@ -149,31 +136,52 @@ def test_a_new_workspace_names_the_first_installed_robot():
     assert Workspace().robot == default_robot() == next(iter(robot_folders()))
 
 
+def test_demo_copies_the_example_workspace_its_robot_folder_ships(install_dist, tmp_path):
+    example = {"robot": "demobot", "backend": "sim"}
+    folder = a_folder_package(install_dist, tmp_path, "demo-robot", "demobot")
+    rewrite(folder, name="demobot")
+    (folder / DEMO_FILE).write_text(json.dumps(example), encoding="utf-8")
+    out = tmp_path / "twin.json"
+
+    code = main(["demo", "--robot", "demobot", "--path", str(out)])
+
+    assert code == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == example
+
+
+def test_calib_sim_takes_any_installed_robot(testbot):
+    args = parser().parse_args(["calib-sim", "--robot", testbot])
+
+    assert args.robot == testbot
+
+
 # ------------------------------------------------------------ config for one robot
 def test_joint_tables_of_another_robot_are_skipped_and_this_robots_apply(tmp_path):
+    so101_tables = tmp_path / "so101.yaml"
+    so101_tables.write_text("joints: {shoulder_pan: {min: -50.0, max: 50.0}}\n"
+                            "safety: {home: {shoulder_pan: 10.0, gripper: 20.0}, velocity_scale: 0.5}\n")
+    bot = get_spec(BOT)
+    cfg = robot_config(bot, so101_tables)
+    assert cfg.joint("gripper").max == 100.0 and cfg.safety.home == bot.home
+    assert cfg.safety.velocity_scale == 0.5                             # the rest of the file applies
+
     bot_tables = tmp_path / "testbot.yaml"
     bot_tables.write_text("joints: {j1: {min: -50.0, max: 50.0}}\n"
                           "safety: {home: {j1: 10.0, gripper: 20.0}, velocity_scale: 0.5}\n")
-    a1x = get_spec("a1x")
-    cfg = robot_config(a1x, bot_tables)
-    assert cfg.joint("gripper").max == 100.0 and cfg.safety.home == a1x.home
-    assert cfg.safety.velocity_scale == 0.5                             # the rest of the file applies
-
-    bot = get_spec(BOT)
     cfg = robot_config(bot, bot_tables)
     assert cfg.joint("j1").max == 50.0
     assert cfg.safety.home == {**bot.home, "j1": 10.0, "gripper": 20.0}
 
 
-def test_a_partial_home_in_the_file_keeps_the_rest_of_the_descriptions_home(tmp_path):
-    """A table naming only the shared `gripper` applies to the A1X too; its other joints must not go to 0,
-    the folded pose at the end stops."""
+def test_a_partial_home_in_the_file_keeps_the_rest_of_the_descriptions_home(testbot, tmp_path):
+    """A table naming only the shared `gripper` applies to any robot with one; its other joints must not
+    go to 0, which on an arm like the A1X is the folded pose at the end stops."""
     grip_only = tmp_path / "grip.yaml"
     grip_only.write_text("safety: {home: {gripper: 35.0}}\n")
-    a1x = get_spec("a1x")
-    assert robot_config(a1x, grip_only).safety.home == {**a1x.home, "gripper": 35.0}
-    station = {n: 1.0 for n in a1x.joints}                              # "Set home = here" names every joint
-    assert robot_config(a1x, grip_only, overrides={"safety": {"home": station}}).safety.home == station
+    spec = get_spec(testbot)
+    assert robot_config(spec, grip_only).safety.home == {**spec.home, "gripper": 35.0}
+    station = {n: 1.0 for n in spec.joints}                             # "Set home = here" names every joint
+    assert robot_config(spec, grip_only, overrides={"safety": {"home": station}}).safety.home == station
 
 
 def test_the_config_check_at_startup_accepts_joint_tables(tmp_path, monkeypatch):
@@ -203,10 +211,6 @@ def test_a_backend_section_reaches_its_plugin_raw(testbot):
     cfg = robot_config(spec, overrides={"robot": {"backend": "testbot"}, "testbot": {"strat": {}}})
     with pytest.raises(ValueError, match="strat"):
         create_backend(cfg, spec)
-
-
-def test_backends_of_this_repository_are_registered_like_any_plugin():
-    assert backends()["a1x"].value == "lerobot_mp.robot.a1x.backend:create"
 
 
 # ------------------------------------------------------------ a plugin backend in the twin

@@ -179,7 +179,7 @@ class FakeArm(RobotBackend):
         return self.grip_measured or self._grip_cmd is not None
 
     def assume_gripper(self, v):
-        """Jak `A1XArm.assume_gripper`: tylko bez pomiaru i zanim strumien chwytaka ruszyl."""
+        """Like galaxeo's A1X backend: only without gripper feedback and before the gripper stream started."""
         if self.grip_measured or self._grip_sent:
             return False
         self._grip_cmd = v

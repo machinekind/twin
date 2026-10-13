@@ -29,4 +29,5 @@ robot:
 
 # Sekcje backendow przychodza z pakietem ramienia (SO-101: `feetech:` i `lerobot:` w pakiecie soarm).
 
-# a1x:                 # Galaxea A1X po CAN-FD - klucze w docs/TWIN.md, rozdzial "Galaxea A1X"
+# a1x:                 # Galaxea A1X po CAN-FD z pakietu galaxeo - klucze w jego docs/TWIN.md:
+#                      # https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md

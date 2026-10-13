@@ -2,11 +2,11 @@
 
     lerobot-twin check                       # czy srodowisko jest gotowe (bez renderu)
     lerobot-twin demo                        # przykladowe stanowisko w symulacji (2 kamery), pierwsze zainstalowane ramie
-    lerobot-twin demo --robot a1x            # ... z ramieniem Galaxea A1X
+    lerobot-twin demo --robot NAZWA          # ... z innym zainstalowanym ramieniem (jego demo.json, jesli je ma)
     lerobot-twin card --tag-mm 50            # arkusz karty kalibracyjnej do druku
     lerobot-twin board --square-mm 28        # tablica ChArUco do intrynsyk kamery
     lerobot-twin calib-sim --n 5 --cameras 2 # kalibracja w symulacji, oceniana wzgledem prawdy
-    lerobot-twin calib-sim --robot a1x       # ... na ramieniu A1X
+    lerobot-twin calib-sim --robot NAZWA     # ... na innym zainstalowanym ramieniu
     lerobot-twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
     lerobot-twin export <folder>             # stanowisko jako dane (MJCF + station.json) dla treningu
     lerobot-twin ui                          # panel w przegladarce: http://localhost:8080
@@ -16,8 +16,9 @@
 
 `--config` ustawia zmienna LEROBOT_MP_CONFIG (patrz `_use_config`).
 
-Ramiona i ich backendy daja zainstalowane pakiety (SO-101: pakiet soarm z repozytorium so-arm101);
-`lerobot-twin check` wypisuje, ktore sa.
+Ramiona i ich backendy daja zainstalowane pakiety (SO-101: pakiet soarm z repozytorium so-arm101,
+Galaxea A1X: pakiet galaxeo z repozytorium galaxeo-manipulators); `lerobot-twin check` wypisuje,
+ktore sa.
 
 Trening i polityki sa w pakiecie soarm-lab (repozytorium so-arm101), ktorego blizniak nie
 importuje: dostaje on stanowisko z `export`, a wytrenowana polityka jedzie w panelu jako
@@ -188,11 +189,9 @@ def _export(a: argparse.Namespace) -> int:
 
 #: Przykladowe stanowisko w symulacji - dwie kamery, ktorych skalibrowana poza jest ich
 #: prawdziwa poza w scenie (zaufane), wiec "kostka z kamer" dziala od razu. `demo` wpisuje
-#: w nie wybrane ramie; ramie z wlasnym przykladem (stol i kamery na jego zasieg) bierze swoj.
+#: w nie wybrane ramie; ramie z wlasnym przykladem (stol i kamery na jego zasieg) bierze swoj:
+#: `robots.DEMO_FILE` z folderu ramienia, ktory daje jego pakiet.
 DEMO_WORKSPACE = Path("examples") / "twin.sim.json"
-DEMO_WORKSPACES = {
-    "a1x": Path("examples") / "twin.a1x.sim.json",
-}
 
 
 def _installed_robot(name: str | None) -> str | None:
@@ -213,16 +212,18 @@ def _demo(a: argparse.Namespace) -> int:
     import json
 
     from ..paths import data_path
-    from .robots import resolve_asset, robot_folders
+    from .robots import DEMO_FILE, resolve_asset, robot_folders
 
     robot = _installed_robot(a.robot)
     if robot is None:
         return 1
-    example = DEMO_WORKSPACES.get(robot, DEMO_WORKSPACE)
-    src = resolve_asset(example)
-    if not src.is_file():
-        print(f"Brak {example} - to polecenie dziala z klonu repozytorium.", file=sys.stderr)
-        return 1
+    src = robot_folders()[robot] / DEMO_FILE
+    own = src.is_file()
+    if not own:
+        src = resolve_asset(DEMO_WORKSPACE)
+        if not src.is_file():
+            print(f"Brak {DEMO_WORKSPACE} - to polecenie dziala z klonu repozytorium.", file=sys.stderr)
+            return 1
     # To samo co workspace.default_path(), ale bez importu `workspace` (ciagnie mujoco).
     dst = Path(a.path) if a.path else data_path(Path("workspace") / "twin.json")
     if dst.exists() and not a.force:
@@ -235,7 +236,10 @@ def _demo(a: argparse.Namespace) -> int:
     data["robot"] = robot
     dst.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Skopiowano {src} -> {dst}")
-    print("Stanowisko w symulacji: ramie sim, dwie kamery symulowane (sym-lewa, sym-prawa) z zaufana kalibracja.")
+    if own:
+        print(f"Stanowisko w symulacji z pakietu ramienia {robot}.")
+    else:
+        print("Stanowisko w symulacji: ramie sim, dwie kamery symulowane (sym-lewa, sym-prawa) z zaufana kalibracja.")
     others = [n for n in robot_folders() if n != robot]
     if others and not a.robot:
         print(f"Zainstalowane tez: {', '.join(others)} - inne ramie: lerobot-twin demo --robot <nazwa>")
@@ -310,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="lerobot-twin", description="Cyfrowy blizniak stanowiska z ramieniem robota.")
     config_help = ("plik YAML konfiguracji (np. configs/local.yaml: robot.port, sekcje backendow "
-                   "nazwane jak backend, np. a1x); ustawia LEROBOT_MP_CONFIG")
+                   "nazwane jak backend, np. testbot:); ustawia LEROBOT_MP_CONFIG")
     ap.add_argument("--config", default=None, help=config_help)
     # To samo po nazwie polecenia (`lerobot-twin ui --config ...`); SUPPRESS nie nadpisuje wartosci sprzed niej.
     common = argparse.ArgumentParser(add_help=False)

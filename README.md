@@ -44,7 +44,7 @@ The twin is **measured from the workstation**, not modelled by eye:
 - **One code path for simulation and arm**: the same strategy runner, the
   same safety supervisor, the same perception; going from sim to the arm is a
   backend change (`sim` -> the arm's backend: `feetech` for the SO-101 from
-  `soarm`, `a1x` for the Galaxea A1X).
+  `soarm`, `a1x` for the Galaxea A1X from `galaxeo`).
 
 ## What it enables
 
@@ -63,10 +63,11 @@ The twin is **measured from the workstation**, not modelled by eye:
 - **Safe work with the arm**: one owner of motion at a time; STOP and Home take
   the arm from any owner; reaction to servo errors, link loss and collisions; a
   gripper that is squeezing an object does not let go on STOP.
-- **A second arm, the Galaxea A1X**: the same twin, panel and supervisor; in
-  simulation the model and camera calibration, on hardware the
-  `a1x` backend over CAN-FD (Linux, macOS, Windows) —
-  [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
+- **A second arm, the Galaxea A1X**, from its own package (galaxeo, installed
+  next to the twin): the same twin, panel and supervisor; in simulation the
+  model and camera calibration, on hardware the `a1x` backend over CAN-FD
+  (Linux, macOS, Windows) — galaxeo's
+  [docs/TWIN.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md).
 - **Remote work**: a browser panel with a step-by-step guide and a hint on
   every control.
 
@@ -86,9 +87,9 @@ chain) happen in the twin; on the hardware only the check is left.
 ## Status
 
 The tests are integration tests only: chains through several modules and
-behaviours dangerous to the hardware. The Galaxea A1X works in simulation
-(camera calibration 6/6 trusted, IK, wave); its CAN backend is tested on a
-simulated bus. **The whole thing has not yet been tested on a real
+behaviours dangerous to the hardware. The Galaxea A1X (from galaxeo) works in
+simulation (camera calibration 6/6 trusted, IK, wave); its CAN backend is
+tested on a simulated bus. **The whole thing has not yet been tested on a real
 arm (neither the SO-101 nor the A1X)**: that is the next step, with a
 step-by-step procedure in [docs/TWIN.md](docs/TWIN.md).
 Decisions and pitfalls: [HANDOFF.md](HANDOFF.md).
@@ -101,11 +102,9 @@ The repository holds everything needed to run it, including models and data:
 
 | Directory | What is in it | In the repository? |
 |---|---|---|
-| `src/lerobot_mp/robot/a1x/robot/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
 | `examples/robots/testbot/` | the example robot: a robot folder and a backend that keeps the arm in memory | yes |
 | `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration; `lerobot-twin demo` writes the chosen robot into its copy | yes |
 | `assets/calib/*.txt` | example lens (Logitech Brio 4K 1280x720): K and distortion to load in Calibration, step 1 | yes |
-| `examples/twin.a1x.sim.json` | the same for the Galaxea A1X (`lerobot-twin demo --robot a1x`) | yes |
 | `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created on the first save in the panel or by `lerobot-twin demo` |
 | `workspace/calib/*.json` | every save of the camera poses (Calibration, step 2) as a separate file; the panel loads the newest, older ones can be picked from a list | yes: example sets from the A1X waves |
 | `configs/local.yaml` | your configuration (a copy of `configs/default.yaml`), e.g. a backend section | no (`.gitignore`) |
@@ -216,9 +215,10 @@ pytest -q -m "not render"     # a computer without OpenGL
 pyright                       # the contracts, the strategies and the example packages
 ```
 
-The twin's tests skip themselves without `mujoco` or `viser`, and the
-`a1x` backend tests without the `galaxeo` package (the `a1x` extra). With the
-full installation (`.[twin,a1x,dev]`) the result is all `passed`.
+The twin's tests skip themselves without `mujoco` or `viser`, and the tests
+of the A1X in the twin (`tests/test_a1x_in_twin.py`) without the `galaxeo`
+package. With `.[twin,dev]` and galaxeo installed next to the twin (section 6)
+the result is all `passed`.
 
 ### 5. A real SO-101
 
@@ -238,25 +238,21 @@ Next: [docs/TWIN.md](docs/TWIN.md), "Pierwszy test na prawdziwym stanowisku"
 
 ### 6. Galaxea A1X (CAN)
 
-The `a1x` backend talks to the arm over CAN-FD through the `galaxeo` package
-(protocol and link, the galaxeo-manipulators repository):
+The Galaxea A1X is a robot package of its own, in galaxeo (the
+galaxeo-manipulators repository): the robot folder, an example workstation and
+the `a1x` backend over CAN-FD. Install it next to the twin, which finds it
+through its entry points:
 
 ```bash
-pip install -e packages/lerobot_mp_api -e ".[twin,a1x,dev]" -c constraints.txt   # needs the merged `pkg` branch in galaxeo-manipulators
-# until it is merged: ".[twin,dev]" and pip install -e ../galaxeo-manipulators   (a clone on the `pkg` branch)
-# macOS (XCAN dongle): additionally pip install pyusb and brew install libusb
-# Windows (PCAN): additionally pip install python-can
+pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
+# macOS (XCAN dongle): "galaxeo[xcan] @ git+..." and brew install libusb; Windows (PCAN): "galaxeo[pcan] @ git+..."
 lerobot-twin demo --robot a1x      # an A1X workstation in simulation (does not overwrite an existing one without --force)
 ```
 
-In the panel: Ramię = `a1x`, Port = the CAN interface (`can0` on Linux after
-`./can_up.sh`, `xcan` or `xcan:<usb address>` on macOS, `PCAN_USBBUS1` on
-Windows). The parameters (joint zeros, gripper coupling, thresholds) are in the
-`a1x` section of the configuration; its keys are described in
-[docs/TWIN.md](docs/TWIN.md#galaxea-a1x). After "Połącz" nothing goes onto the
-bus until the first move; the FF 1-5-6 enable sequence is manual only ("Włącz
-silniki A1X"). **The A1X has no brakes**: before the first session read
-[docs/TWIN.md](docs/TWIN.md#galaxea-a1x), "Galaxea A1X".
+The hardware, the `a1x` section of the configuration and the first session are
+in galaxeo's
+[docs/TWIN.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md).
+**The A1X has no brakes**: read it before the first session.
 
 ---
 
@@ -322,14 +318,14 @@ The twin reads a configuration file only when one is given:
 `lerobot-twin --config configs/local.yaml ui`. The model
 is `configs/default.yaml`, described by comments; a copy `configs/local.yaml` is
 in `.gitignore`. The twin reads the `safety` and `robot` (backend, port)
-sections; every other section belongs to the backend of that name (`a1x`, or
-`feetech` from `soarm`), which checks it itself, or to the strategy of that name, whose
+sections; every other section belongs to the backend of that name (`feetech`
+from `soarm`, `a1x` from galaxeo), which checks it itself, or to the strategy of that name, whose
 settings form it prefills. The file can be shortened: missing
 keys take their default values, and an unknown key inside a section ends with a
 clear error. The arm's backend and port are chosen by the panel, not by the
-file. The keys are described in [docs/TWIN.md](docs/TWIN.md): the paragraph
-"Konfiguracja ramienia" and the chapter [Galaxea A1X](docs/TWIN.md#galaxea-a1x),
-which has the `a1x` section.
+file. The keys are described in [docs/TWIN.md](docs/TWIN.md), the paragraph
+"Konfiguracja ramienia"; a robot package documents its own backend's section (the
+`a1x` section: galaxeo's [docs/TWIN.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md)).
 
 ## Adding a robot
 
@@ -337,15 +333,17 @@ A robot is a folder: `robot.yaml` and the MJCF model it names. `robot.yaml` hold
 what the model does not: the joints in app order, the gripper and its range in
 model units, the tool point, joint limits and speeds, the home pose, the desk the
 arm works on, and how the panel labels the joints and connects the arm. The
-loader (`lerobot_mp.twin.robots`) checks every field and every joint name.
+loader (`lerobot_mp.twin.robots`) checks every field and every joint name. The
+folder may also ship `demo.json`, an example workstation in simulation that
+`lerobot-twin demo --robot NAME` copies.
 
 The twin holds no robot: it finds them only in installed packages. A robot's
 package registers its folder and its hardware backend through entry points and
 never imports the twin: the contract types live in `lerobot-mp-api`
 ([packages/lerobot_mp_api](packages/lerobot_mp_api)), and a plugin depends on that,
 never on `lerobot-mp`. The SO-101 is such a package: `soarm`, from the
-so-arm101 repository. The A1X still lives here as one, `src/lerobot_mp/robot/a1x/`,
-registered in this repository's `pyproject.toml` until it moves to galaxeo:
+so-arm101 repository; the Galaxea A1X is another: `galaxeo`, from the
+galaxeo-manipulators repository. A package registers both in its `pyproject.toml`:
 
 ```toml
 [project.entry-points."lerobot_mp.robots"]
@@ -376,7 +374,6 @@ src/lerobot_mp/
 │   ├── strategies.py  strategies from installed packages and their settings
 │   └── ui/        browser panel (viser)
 ├── robot/         the backend contract (re-exported) and plugin registry
-│   └── a1x/       A1X package, leaving for galaxeo: robot folder, backend a1x (CAN-FD)
 └── paths.py       default data paths counted from the clone's root
 ```
 
@@ -387,5 +384,5 @@ perception.
 
 ## Licence
 
-Apache-2.0. Third-party files (the Galaxea A1X URDF and meshes under the
-manufacturer's licence) and their licences: [NOTICE](NOTICE).
+Apache-2.0 ([NOTICE](NOTICE)). The repository holds no third-party files: robot
+models and meshes ship with the robot packages.

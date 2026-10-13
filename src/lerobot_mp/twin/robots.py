@@ -1,6 +1,7 @@
 """Robot descriptions: one folder per robot, shared by the simulation, the panel and calibration.
 
-A robot is a folder holding `robot.yaml` and the MJCF model it names (meshes next to the model).
+A robot is a folder holding `robot.yaml` and the MJCF model it names (meshes next to the model),
+and optionally `demo.json`, an example workspace in simulation (`lerobot-twin demo --robot NAME`).
 The description says only what the MJCF cannot: which joints form the arm in app order, which
 one is the gripper, where the tool point (TCP) is, which body carries the calibration card, the
 app's joint limits and speeds (tighter than the mechanical ones), jaw thresholds, the desk the
@@ -14,7 +15,8 @@ reports its own mapping (`gripper_range_q()`), so the twin can warn when the two
 Robots come only from installed packages (`robot_folders`): a robot's package registers its
 folder under the `lerobot_mp.robots` entry point group, named like the robot, loading to the path
 of the folder. The twin itself holds no robot: the SO-101 is the `soarm` package (so-arm101
-repository), and `examples/robots/testbot` is the twin's example robot.
+repository), the Galaxea A1X the `galaxeo` package (galaxeo-manipulators repository), and
+`examples/robots/testbot` is the twin's example robot.
 
 `robot_config(spec)` builds the twin configuration for one robot from its description.
 """
@@ -38,6 +40,7 @@ from .config import JointConfig, TwinConfig, config_from_data, from_mapping, rea
 logger = logging.getLogger(__name__)
 
 ROBOT_FILE = "robot.yaml"
+DEMO_FILE = "demo.json"
 ENTRY_POINT_GROUP = ROBOTS
 
 #: The robot a workspace names when no package registers one: the twin's example robot.

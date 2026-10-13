@@ -9,8 +9,7 @@ package registers a factory under the `lerobot_mp.backends` entry point group; t
 with a `BackendContext`, plain data with everything the backend may use.
 
 Backends come from installed packages. This module re-exports the same classes, so
-`lerobot_mp.robot.base.RobotBackend is lerobot_mp_api.RobotBackend` and the A1X backend in
-`a1x/` imports them from here.
+`lerobot_mp.robot.base.RobotBackend is lerobot_mp_api.RobotBackend`.
 """
 
 from lerobot_mp_api.backend import BackendContext, BackendPlugin, RobotBackend, RobotInfo

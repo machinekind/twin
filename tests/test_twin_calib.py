@@ -52,13 +52,13 @@ def _session(spec_name: str, seed: int, cameras=("c0", "c1")):
     return s, world
 
 
-@pytest.mark.parametrize("spec_name", ("a1x", BOT))
-def test_wave_search_sweeps_both_sides_of_the_table_in_every_run(spec_name):
+def test_wave_search_sweeps_both_sides_of_the_table_in_every_run():
     """Na stanowisku A1X fala zwiedzila tylko prawa strone stolu: szukanie bylo losowym
     spacerem w stawach z limitem przejazdu, a nie zamiataniem. Teraz kazde 16 poz bez
     detekcji odwiedza wszystkie sektory stawu podstawy, po obu stronach."""
     import numpy as np
 
+    spec_name = BOT
     for seed in range(6):
         s, world = _session(spec_name, seed)
         try:
@@ -80,7 +80,7 @@ def test_wave_aims_at_a_camera_only_after_two_detections_and_never_goes_home_for
     poze z zamiatania, nie dom."""
     import numpy as np
 
-    s, world = _session("a1x", 3)
+    s, world = _session(BOT, 3)
     try:
         p = s.progress["c0"]
         T = np.eye(4)
@@ -135,7 +135,7 @@ def test_step2_results_are_kept_as_presets_and_newest_loads_by_default(tmp_path)
 def test_a_move_that_does_not_arrive_costs_one_pose_not_the_session():
     """Fala z 21 i 11 obserwacjami padla na jednym "ruch nie dojechal do celu" (nadgarstek pod
     ograniczeniem predkosci). Taki przejazd to pominieta poza; dopiero trzy z rzedu koncza sesje."""
-    s, world = _session("a1x", 5)
+    s, world = _session(BOT, 5)
     try:
         robot = s.robot
         fails = {"left": 0}
@@ -144,7 +144,7 @@ def test_a_move_that_does_not_arrive_costs_one_pose_not_the_session():
         def move(joints, duration):
             if fails["left"] > 0:
                 fails["left"] -= 1
-                raise RuntimeError("ruch nie dojechal do celu w 1.9 s: rozkaz jeszcze jedzie (arm_joint6)")
+                raise RuntimeError("ruch nie dojechal do celu w 1.9 s: rozkaz jeszcze jedzie (j2)")
             real_move(joints, duration)
 
         robot.move = move

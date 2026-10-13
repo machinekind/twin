@@ -356,11 +356,11 @@ def test_a_strategy_that_refuses_to_start_leaves_the_arm_alone(twin):
 
     class TrainedOnAnotherRobot(Plugin):
         def start(self, run, obs):
-            raise RuntimeError(f"uczona na a1x, stanowisko ma {run.robot}")
+            raise RuntimeError(f"uczona na testbot, stanowisko ma {run.robot}")
 
     runner = StrategyRunner(twin, TrainedOnAnotherRobot(answer({"j1": 30.0})))
 
-    with pytest.raises(RuntimeError, match="uczona na a1x"):
+    with pytest.raises(RuntimeError, match="uczona na testbot"):
         runner.start(threaded=False)
 
     assert twin.owner is None
