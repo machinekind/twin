@@ -333,9 +333,12 @@ A robot is a folder: `robot.yaml` and the MJCF model it names. `robot.yaml` hold
 what the model does not: the joints in app order, the gripper and its range in
 model units, the tool point, joint limits and speeds, the home pose, the desk the
 arm works on, and how the panel labels the joints and connects the arm. The
-loader (`lerobot_mp.twin.robots`) checks every field and every joint name. The
-folder may also ship `demo.json`, an example workstation in simulation that
-`lerobot-twin demo --robot NAME` copies.
+loader (`lerobot_mp.twin.robots`) checks every field and every joint name. An
+optional `cameras:` mapping mounts cameras on bodies of the arm (body, 4x4 pose
+in OpenCV axes, `fovy_deg`, size): a strategy gets their frames in
+`Observation.frames`, rendered in simulation and, with a real arm, from the
+workspace camera of the same name. The folder may also ship `demo.json`, an
+example workstation in simulation that `lerobot-twin demo --robot NAME` copies.
 
 The twin holds no robot: it finds them only in installed packages. A robot's
 package registers its folder and its hardware backend through entry points and

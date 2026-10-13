@@ -92,6 +92,18 @@ def rewrite(folder: Path, **changes) -> None:
     (folder / ROBOT_FILE).write_text(yaml.safe_dump(data), encoding="utf-8")
 
 
+#: The test robot's wrist camera as its `robot.yaml` declares it.
+WRIST = {
+    "body": "hand",
+    "pose": [[0.0, 0.0, 1.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.03], [0.0, 0.0, 0.0, 1.0]],
+    "fovy_deg": 60.0,
+    "width": 160,
+    "height": 120,
+}
+WRIST_WITHOUT_FOVY = {key: value for key, value in WRIST.items() if key != "fovy_deg"}
+SHEARED = [[1.0, 0.5, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+
+
 @pytest.mark.parametrize("changes, error", [
     ({"tcp_site": None}, "Brak kluczy.*tcp_site"),
     ({"tcp_frame": "tcp"}, "Nieznane klucze.*tcp_frame"),
@@ -101,6 +113,12 @@ def rewrite(folder: Path, **changes) -> None:
     ({"home": {"j1": 0.0, "shoulder_pan": 0.0}}, "home.*shoulder_pan"),
     ({"mjcf": "missing.xml"}, "missing.xml"),
     ({"limits": {"j1": [-90.0], "j2": [-60.0, 60.0], "gripper": [0.0, 100.0]}}, "2 wartosci"),
+    ({"cameras": {"wrist": {**WRIST, "lens": "fisheye"}}}, "Nieznane klucze.*cameras.wrist.*lens"),
+    ({"cameras": {"wrist": WRIST_WITHOUT_FOVY}}, "Brak kluczy.*cameras.wrist.*fovy_deg"),
+    ({"cameras": {"wrist": {**WRIST, "body": "wrist_link"}}}, "cameras.wrist.*nie ma ciala 'wrist_link'"),
+    ({"cameras": {"wrist": {**WRIST, "pose": SHEARED}}}, "cameras.wrist.*przeksztalceniem sztywnym"),
+    ({"cameras": {"wrist": {**WRIST, "pose": WRIST["pose"][:3]}}}, "4 wartosci"),
+    ({"cameras": {"wrist": {**WRIST, "width": 0}}}, "cameras.wrist.*dodatnimi liczbami calkowitymi"),
 ])
 def test_a_broken_description_names_what_is_wrong(folder, changes, error):
     rewrite(folder, **changes)

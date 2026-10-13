@@ -291,7 +291,11 @@ class StrategyTab:
         return name in self._given and value != ""
 
     def _cameras(self) -> list[str]:
-        return [camera.name for camera in self.app.ws.cameras if camera.enabled]
+        """Enabled workspace cameras, then the cameras on the arm. A real camera named like one on the
+        arm is that camera (the hub serves it in its place), so it is listed once."""
+        fixed = [camera.name for camera in self.app.ws.cameras if camera.enabled]
+        on_arm = [name for name in self.app.twin.spec.cameras if name not in fixed]
+        return fixed + on_arm
 
     def halt(self) -> None:
         """Strategie > Zatrzymaj: also a strategy that is still starting never takes the arm."""

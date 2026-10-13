@@ -29,7 +29,7 @@ import numpy as np
 from .calib.card import Card
 from .calib.tags import render as render_tag
 from .kinematics import RobotKinematics, inverse, pose
-from .robots import RobotSpec
+from .robots import RobotCamera, RobotSpec
 
 PREFIX = "robot/"
 #: MuJoCo kamera patrzy wzdluz -z z y w gore; OpenCV wzdluz +z z y w dol.
@@ -95,6 +95,46 @@ class Panel:
     T_panel2base: np.ndarray
 
 
+@dataclass(frozen=True)
+class Light:
+    """One light of the scene. `pos` is relative to the table top's centre; `dir` may be any length."""
+
+    pos: tuple[float, float, float]
+    dir: tuple[float, float, float]
+    #: Grey: the same on all three channels.
+    diffuse: float = 0.7
+    #: True: a directional light (the sun), `pos` only places it; False: a spot light.
+    directional: bool = False
+    castshadow: bool = True
+
+    def __post_init__(self) -> None:
+        if not any(self.dir):
+            raise ValueError("swiatlo: `dir` nie moze byc wektorem zerowym")
+
+
+@dataclass(frozen=True)
+class Headlight:
+    """MuJoCo's light at the viewer, grey: each value on all three channels."""
+
+    ambient: float = 0.35
+    diffuse: float = 0.35
+    #: MuJoCo's own default.
+    specular: float = 0.5
+
+
+@dataclass(frozen=True)
+class Look:
+    """How the scene is lit. The defaults are the twin's own look: a key light with shadows and a
+    fill, both aimed at the table top's centre. Another look (a training scene's, so that a policy
+    sees the pixels it learned on) is a workspace setting."""
+
+    lights: tuple[Light, ...] = (
+        Light(pos=(0.4, -0.6, 1.6), dir=(-0.4, 0.6, -1.6), diffuse=0.55, castshadow=True),
+        Light(pos=(-0.5, 0.3, 1.4), dir=(0.5, -0.3, -1.4), diffuse=0.35, castshadow=False),
+    )
+    headlight: Headlight = Headlight()
+
+
 @dataclass
 class SceneConfig:
     robot: RobotSpec
@@ -111,10 +151,7 @@ class SceneConfig:
     #: `<obiekt>_jaw0` (stala) i `<obiekt>_jaw1` (ruchoma), 1 gdy sie stykaja.
     grasp_sensors: list[str] = field(default_factory=list)
     panels: list[Panel] = field(default_factory=list)
-    #: Oswietlenie: lista (pozycja swiatla nad blatem, jasnosc).
-    lights: list[tuple[tuple[float, float, float], float]] = field(
-        default_factory=lambda: [((0.4, -0.6, 1.6), 0.55), ((-0.5, 0.3, 1.4), 0.35)]
-    )
+    look: Look = field(default_factory=Look)
 
 
 class Scene:
@@ -160,15 +197,36 @@ class Scene:
 
     # ------------------------------------------------------------ kamery
     def render(self, camera: str) -> np.ndarray:
-        """Kadr RGB z kamery sceny w jej natywnej rozdzielczosci."""
+        """Kadr RGB z kamery sceny w jej natywnej rozdzielczosci.
+
+        A camera on the arm (`RobotSpec.cameras`) renders by its name too, at its own size.
+        """
+        if camera in self.cfg.robot.cameras:
+            return self._render_robot_camera(camera)
+
         view = self.camera(camera)
-        key = (view.width, view.height)
-        r = self._renderers.get(key)
-        if r is None:
-            r = mujoco.Renderer(self.model, height=view.height, width=view.width)
-            self._renderers[key] = r
+        r = self._renderer(view.width, view.height)
         r.update_scene(self.data, camera=camera)
         return r.render().copy()
+
+    def _render_robot_camera(self, name: str) -> np.ndarray:
+        camera = self.cfg.robot.cameras[name]
+
+        # `step` reruns only mj_kinematics after mj_step: the bodies follow the new joints, but
+        # camera poses stay one substep behind (millimetres on a fast move) until mj_camlight.
+        mujoco.mj_camlight(self.model, self.data)
+
+        r = self._renderer(camera.width, camera.height)
+        r.update_scene(self.data, camera=PREFIX + name)
+        return r.render().copy()
+
+    def _renderer(self, width: int, height: int) -> mujoco.Renderer:
+        key = (width, height)
+        r = self._renderers.get(key)
+        if r is None:
+            r = mujoco.Renderer(self.model, height=height, width=width)
+            self._renderers[key] = r
+        return r
 
     def camera(self, name: str) -> CameraView:
         for view in self.cfg.cameras:
@@ -314,6 +372,43 @@ def _add_panel(spec: mujoco.MjSpec, panel: Panel, T_base2world: np.ndarray) -> N
     g.group = 1
 
 
+def _add_robot_camera(robot: mujoco.MjSpec, name: str, camera: RobotCamera) -> None:
+    T = np.asarray(camera.pose, float)
+    cam = robot.body(camera.body).add_camera()
+    cam.name = name
+    cam.pos = T[:3, 3]
+    cam.quat = _quat(T[:3, :3] @ CV_TO_MJ)
+    # MuJoCo reads fovy in degrees whatever the compiler's angle setting.
+    cam.fovy = float(camera.fovy_deg)
+
+
+def _set_headlight(spec: mujoco.MjSpec, headlight: Headlight) -> None:
+    spec.visual.headlight.ambient = [headlight.ambient] * 3
+    spec.visual.headlight.diffuse = [headlight.diffuse] * 3
+    spec.visual.headlight.specular = [headlight.specular] * 3
+
+
+def _add_light(spec: mujoco.MjSpec, name: str, light: Light, top: float) -> None:
+    mj = spec.worldbody.add_light()
+    mj.name = name
+    mj.pos = [light.pos[0], light.pos[1], top + light.pos[2]]
+    mj.dir = np.asarray(light.dir, float) / np.linalg.norm(light.dir)
+    mj.diffuse = [light.diffuse] * 3
+    if light.directional:
+        mj.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
+    else:
+        mj.type = mujoco.mjtLightType.mjLIGHT_SPOT
+    mj.castshadow = light.castshadow
+
+
+def _check_camera_names(cfg: SceneConfig) -> None:
+    """The scene renders cameras by name, so a fixed one may not take the name of one on the arm."""
+    clash = sorted({view.name for view in cfg.cameras} & set(cfg.robot.cameras))
+    if clash:
+        raise ValueError(f"kamery stanowiska {clash} nazywaja sie jak kamery na ramieniu "
+                         f"({cfg.robot.name}) - zmien ich nazwy")
+
+
 def _rotmat(quat) -> np.ndarray:
     R = np.zeros(9)
     q = np.asarray(quat, float)
@@ -323,6 +418,7 @@ def _rotmat(quat) -> np.ndarray:
 
 def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     """Composes the scene from scratch as an `MjSpec`, without compiling it."""
+    _check_camera_names(cfg)
     t = cfg.table
     top = t.height
     # Ramie jako pierwsze: jego opcje fizyki (menagerie stroi je pod manipulacje -
@@ -334,11 +430,11 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     spec.compiler.degree = False
     for name in ("timestep", "integrator", "cone", "impratio", "iterations", "ls_iterations"):
         setattr(spec.option, name, getattr(robot.option, name))
-    spec.visual.headlight.ambient = [0.35, 0.35, 0.35]
-    spec.visual.headlight.diffuse = [0.35, 0.35, 0.35]
-    width = max([v.width for v in cfg.cameras] + [640])
-    height = max([v.height for v in cfg.cameras] + [480])
-    spec.visual.global_.offwidth, spec.visual.global_.offheight = width, height
+    _set_headlight(spec, cfg.look.headlight)
+
+    views = [*cfg.cameras, *cfg.robot.cameras.values()]
+    spec.visual.global_.offwidth = max([v.width for v in views] + [640])
+    spec.visual.global_.offheight = max([v.height for v in views] + [480])
 
     world = spec.worldbody
     floor = world.add_geom()
@@ -352,13 +448,8 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     tab.pos = [0.0, 0.0, top / 2]
     tab.rgba = list(t.rgba)
 
-    for k, (pos, strength) in enumerate(cfg.lights):
-        light = world.add_light()
-        light.name = f"light{k}"
-        light.pos = [pos[0], pos[1], top + pos[2]]
-        light.dir = -np.asarray([pos[0], pos[1], pos[2]], float) / np.linalg.norm(pos)
-        light.diffuse = [strength] * 3
-        light.castshadow = k == 0
+    for k, light in enumerate(cfg.look.lights):
+        _add_light(spec, f"light{k}", light, top)
 
     # Karta doklejana do dloni PRZED wstawieniem ramienia, potem attach pod prefiksem.
     if cfg.card is not None:
@@ -368,6 +459,8 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
         if T_card is None:
             T_card = cfg.card.nominal(pinch_point(RobotKinematics(cfg.robot)), cfg.robot)
         _add_card(spec, robot, cfg.robot, cfg.card, T_card, cfg.card_collider)
+    for name, camera in cfg.robot.cameras.items():
+        _add_robot_camera(robot, name, camera)
 
     c, s = np.cos(t.base_yaw), np.sin(t.base_yaw)
     R_base = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])

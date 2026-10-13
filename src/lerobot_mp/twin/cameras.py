@@ -15,7 +15,7 @@ import logging
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import cv2
@@ -125,6 +125,11 @@ class CameraHub:
     `sim_render(nazwa)` podaje kadr kamery symulowanej ze sceny blizniaka;
     bez niego kamery o zrodle "sim" po prostu nie maja obrazu.
 
+    Cameras on the arm (`robot_cameras`, from the robot's description) follow the arm: while
+    `arm_simulated()` holds, the scene's arm is the arm and the camera renders from it; with a real
+    arm the scene only mirrors it, so the workspace camera of the same name (the physical camera on
+    the wrist) serves the frames, and without one there are none.
+
     `frame_t` oddaje kadr razem z chwila jego wykonania (`time.monotonic`), a
     `frame` nie oddaje kadru starszego niz `stale_after` [s]: zamrozona kamera
     (strumien stanal, klatka ta sama) dawala fali kalibracyjnej i percepcji
@@ -132,10 +137,13 @@ class CameraHub:
     """
 
     def __init__(self, workspace: Workspace, sim_render: Callable[[str], np.ndarray] | None = None,
-                 stale_after: float = 1.0):
+                 stale_after: float = 1.0, *, robot_cameras: Collection[str] = (),
+                 arm_simulated: Callable[[], bool] = lambda: True):
         self.workspace = workspace
         self.sim_render = sim_render
         self.stale_after = stale_after
+        self.robot_cameras = tuple(robot_cameras)
+        self.arm_simulated = arm_simulated
         self._live: dict[str, _Live] = {}
         self._errors: dict[str, str] = {}
         self._stream_errors: dict[str, str] = {}
@@ -173,12 +181,34 @@ class CameraHub:
 
         Kamera symulowana renderuje stan sceny z tej chwili - jej kadr jest zawsze swiezy.
         """
-        rec = self.workspace.camera(name)
+        if name in self.robot_cameras:
+            return self._robot_frame_t(name)
+
+        return self._record_frame_t(self.workspace.camera(name))
+
+    def _robot_frame_t(self, name: str) -> tuple[np.ndarray | None, float]:
+        if self.arm_simulated():
+            return self._render_t(name)
+
+        try:
+            rec = self.workspace.camera(name)
+        except KeyError:
+            return None, 0.0
+        return self._record_frame_t(rec)
+
+    def _render_t(self, name: str) -> tuple[np.ndarray | None, float]:
+        if self.sim_render is None:
+            return None, 0.0
+        t = time.monotonic()
+        return self.sim_render(name), t
+
+    def _record_frame_t(self, rec: CameraRecord) -> tuple[np.ndarray | None, float]:
         if rec.source == "sim":
-            if not (self.sim_render and rec.true_pose() is not None):
+            if rec.true_pose() is None:
                 return None, 0.0
-            t = time.monotonic()
-            return self.sim_render(name), t
+            return self._render_t(rec.name)
+
+        name = rec.name
         with self._lock:
             live = self._live.get(name)
         if live is None:

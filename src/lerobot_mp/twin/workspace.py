@@ -33,8 +33,9 @@ import numpy as np
 
 from ..paths import data_path
 from .calib.card import Card
+from .config import from_mapping
 from .robots import RobotSpec, default_robot, get_spec
-from .scene import CameraView, SceneConfig, Table
+from .scene import CameraView, Look, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
 #: zeby panel odpalony z innego katalogu nie zaczynal od pustego stanowiska.
@@ -180,6 +181,8 @@ class Workspace:
     home: dict[str, float] | None = None
     port: str | None = None
     table: dict[str, Any] = field(default_factory=lambda: asdict(Table()))
+    #: Lights and headlight of the scene; the default is the twin's own look.
+    look: Look = field(default_factory=Look)
     card: dict[str, Any] = field(default_factory=lambda: asdict(Card()))
     cameras: list[CameraRecord] = field(default_factory=list)
     #: Dynamika serw zidentyfikowana na tym ramieniu (`dynamics.Dynamics`);
@@ -215,8 +218,18 @@ class Workspace:
     def add_camera(self, record: CameraRecord) -> CameraRecord:
         if any(c.name == record.name for c in self.cameras):
             raise ValueError(f"kamera {record.name!r} juz jest w stanowisku")
+        self._refuse_robot_camera_names([record])
         self.cameras.append(record)
         return record
+
+    def _refuse_robot_camera_names(self, records: list[CameraRecord]) -> None:
+        """A real camera may carry the name of a camera on the arm: with a real arm the hub serves it
+        in that camera's place. A simulated one may not: the scene renders both by name."""
+        on_arm = self.spec().cameras
+        clash = sorted(r.name for r in records if r.simulated and r.name in on_arm)
+        if clash:
+            raise ValueError(f"kamery symulowane {clash} nazywaja sie jak kamery na ramieniu {self.robot} - "
+                             "zmien ich nazwy")
 
     def remove_camera(self, name: str) -> None:
         self.cameras = [c for c in self.cameras if c.name != name]
@@ -230,9 +243,10 @@ class Workspace:
 
     def scene_config(self, *, with_card: bool = False, **extra: Any) -> SceneConfig:
         """Scena z tego stanowiska: stol, ramie i kazda WLACZONA, umiejscowiona kamera."""
+        self._refuse_robot_camera_names(self.cameras)
         views = [v for c in self.cameras if c.enabled for v in [c.view()] if v is not None]
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
-                          card=self.card_obj() if with_card else None)
+                          card=self.card_obj() if with_card else None, look=self.look)
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
@@ -243,8 +257,8 @@ class Workspace:
         `scene.xml` and `assets/` (`scene.export`): the floor, table, lights, the arm and every
         enabled camera that has a pose, with its full K (MJCF holds no distortion); a simulated
         camera stands at its true pose. `station.json`: this workspace as `save` writes it to
-        `twin.json` (the table with the base pose, every camera with its K, distortion and
-        calibration, the identified dynamics, home). Returns the folder.
+        `twin.json` (the table with the base pose, the scene's look, every camera with its K,
+        distortion and calibration, the identified dynamics, home). Returns the folder.
         """
         from .scene import export
 
@@ -358,9 +372,10 @@ class Workspace:
 
     # ------------------------------------------------------------------ dysk
     def to_dict(self) -> dict[str, Any]:
+        """The workspace as `save` writes it: JSON types only (the look's tuples come out as lists)."""
         data = asdict(self)
         data.pop("path", None)
-        return data
+        return json.loads(json.dumps(data))
 
     def save(self, path: str | Path | None = None) -> Path:
         target = Path(path) if path else (self.path or default_path())
@@ -390,6 +405,8 @@ class Workspace:
         unknown = set(data) - known
         if unknown:
             raise ValueError(f"nieznane pola w {target}: {sorted(unknown)}")
+        if "look" in data:
+            data["look"] = from_mapping(Look, data["look"], f"{target}: look")
         ws = cls(cameras=cams, **data)
         ws.path = target
         if ws.calib_preset is None:

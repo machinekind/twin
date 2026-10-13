@@ -325,7 +325,8 @@ class Twin:
             self.scene.set_joints(self.spec.home)
         #: (scena zrodlowa, kopia do renderu) - kopia ma wlasne MjData, render idzie poza blokada.
         self._view: tuple[sc.Scene, sc.Scene] | None = None
-        self.cameras = CameraHub(workspace, sim_render=self.render)
+        self.cameras = CameraHub(workspace, sim_render=self.render, robot_cameras=self.spec.cameras,
+                                 arm_simulated=self.arm_simulated)
         self.status = RobotStatus()
 
         self._backend: RobotBackend | None = None
@@ -434,6 +435,12 @@ class Twin:
     def joints(self) -> dict[str, float]:
         with self.lock:
             return self.scene.joints()
+
+    def arm_simulated(self) -> bool:
+        """Whether the scene's arm is the arm: nothing connected, or the simulation. A real arm,
+        even one whose loop died, only moves its mirror in the scene."""
+        backend = self._backend
+        return backend is None or backend.info.simulated
 
     # ------------------------------------------------------ wlasnosc ramienia
     @property

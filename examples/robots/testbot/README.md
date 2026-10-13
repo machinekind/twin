@@ -1,8 +1,9 @@
 # testbot
 
 The digital twin's test robot, packaged the way a robot's own repository packages its arm: a robot
-folder (`testbot/robot/`: `robot.yaml` and the MJCF model) and a backend plugin
-(`testbot/backend.py`, an arm in memory). `pyproject.toml` registers both through entry points:
+folder (`testbot/robot/`: `robot.yaml`, with a wrist camera on the hand, and the MJCF model) and a
+backend plugin (`testbot/backend.py`, an arm in memory). `pyproject.toml` registers both through
+entry points:
 
 ```toml
 [project.entry-points."lerobot_mp.robots"]
