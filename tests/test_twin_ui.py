@@ -7,6 +7,7 @@ uchwyt TCP na tej samej galezi IK, swiezosc detekcji kostki, kalibracja i zadani
 from __future__ import annotations
 
 import socket
+import threading
 import time
 
 import numpy as np
@@ -756,4 +757,90 @@ def test_stop_ends_a_running_strategy(app, swing):
     assert "STOP" in tab.runner.status.stopped_because
     assert app.twin.owner is None
     app.twin.clear_estop()
+
+
+COUNTER = '''
+from dataclasses import dataclass
+
+@dataclass
+class Settings:
+    count: int
+    speed: float = 1
+
+class Strategy:
+    hz = 10.0
+    settings = Settings
+
+    def __init__(self, settings):
+        self.config = settings
+
+    def act(self, obs):
+        return {}
+'''
+
+
+def install_counter(install_dist) -> str:
+    install_dist("counter-strategy", {"lerobot_mp.strategies": {"counter": "counter_strategy:Strategy"}},
+                 {"counter_strategy": COUNTER})
+    return "counter"
+
+
+def test_a_required_number_nobody_set_is_refused_before_start(app, install_dist):
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, install_counter(install_dist))
+
+    with pytest.raises(ValueError, match=r"Brak kluczy w sekcji counter: \['count'\]"):
+        tab.start()
+    assert app.twin.owner is None
+
+    tab._inputs["count"].value = 3
+    tab.start()
+
+    assert tab.runner.strategy.config.count == 3
+    assert app.twin.owner == "strategia"
+
+
+def test_a_float_setting_with_an_int_default_keeps_its_decimals(app, install_dist):
+    tab = choose_strategy(app, install_counter(install_dist), count=1, speed=1.5)
+
+    assert tab._inputs["speed"].value == 1.5
+
+
+def test_a_second_start_while_the_first_is_starting_is_refused(app, swing, monkeypatch):
+    """viser runs each click on its own thread: two runners would drive the arm under one owner."""
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, swing, joint="shoulder_pan")
+
+    inside = threading.Event()
+    let_go = threading.Event()
+    create = tab._create
+
+    def slow_create():
+        inside.set()
+        let_go.wait(5.0)
+        return create()
+
+    monkeypatch.setattr(tab, "_create", slow_create)
+    first = threading.Thread(target=tab.start)
+    first.start()
+    assert inside.wait(5.0)
+
+    with pytest.raises(RuntimeError, match="start strategii juz trwa"):
+        tab.start()
+
+    let_go.set()
+    first.join(5.0)
+    assert tab.running
+
+
+def test_no_strategy_package_is_imported_until_one_is_chosen(app, swing):
+    tab = app.strategies
+    tab.pick.value = "-"
+    tab.refresh()
+
+    assert tab.pick.options[0] == "-"
+    assert swing in tab.pick.options
+    assert tab.plugin is None
+    assert tab._inputs == {}
+    assert "Wybierz strategie" in tab.about_md.content
 

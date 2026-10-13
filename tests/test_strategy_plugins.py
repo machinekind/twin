@@ -168,6 +168,56 @@ class Strategy:
 '''
 
 
+INT_DEFAULTS = '''
+from dataclasses import dataclass
+
+@dataclass
+class Settings:
+    speed: float = 1
+
+class Strategy:
+    hz = 10.0
+    settings = Settings
+
+    def __init__(self, settings):
+        self.config = settings
+
+    def act(self, obs):
+        return {}
+'''
+
+BAD_DEFAULT = '''
+from dataclasses import dataclass
+
+@dataclass
+class Settings:
+    cycles: int = "two"
+
+class Strategy:
+    hz = 10.0
+    settings = Settings
+
+    def act(self, obs):
+        return {}
+'''
+
+
+def test_an_int_default_of_a_float_setting_is_a_float(install_dist):
+    """The panel's number field keeps the type of its first value: an int would cut 1.5 to 1."""
+    name = install_strategy(install_dist, "int-defaults", INT_DEFAULTS)
+    speed = load_strategy(name).fields[0]
+
+    assert speed.default == 1.0
+    assert isinstance(speed.default, float)
+
+
+def test_a_default_of_another_type_is_refused_when_loaded(install_dist):
+    name = install_strategy(install_dist, "bad-default", BAD_DEFAULT)
+
+    with pytest.raises(ValueError, match="cycles: potrzeba int, jest 'two'"):
+        load_strategy(name)
+
+
 def test_a_strategy_without_settings_is_created_without_arguments(install_dist):
     name = install_strategy(install_dist, "still-strategy", STILL)
     plugin = load_strategy(name)

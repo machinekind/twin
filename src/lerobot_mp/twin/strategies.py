@@ -8,8 +8,8 @@ like the strategy:
 
 The class follows `strategy.Strategy`. What the operator sets for one run (a VLA's instruction, a
 policy file, task options) stays out of the `Observation`, which holds only what the twin measures.
-The strategy declares it as a dataclass in its `settings` attribute and takes an instance in its
-constructor:
+The strategy declares it as a dataclass in its `settings` class attribute and takes an instance in
+its constructor:
 
     @dataclass
     class VlaSettings:
@@ -60,29 +60,15 @@ class SettingField:
     #: str, int, float or bool.
     kind: type
     #: `dataclasses.MISSING` = no default: the field must be given.
-    default: Any = dataclasses.MISSING
+    default: Any
 
     @property
     def required(self) -> bool:
         return self.default is dataclasses.MISSING
 
     def convert(self, value: Any, where: str) -> Any:
-        """`value` as this field's type, or ValueError.
-
-        A whole float counts as an int: the panel's number field gives floats.
-        """
-        number = isinstance(value, (int, float)) and not isinstance(value, bool)
-
-        if self.kind is bool and isinstance(value, bool):
-            return value
-        if self.kind is str and isinstance(value, str):
-            return value
-        if self.kind is int and number and float(value).is_integer():
-            return int(value)
-        if self.kind is float and number and math.isfinite(value):
-            return float(value)
-
-        raise ValueError(f"{where}.{self.name}: potrzeba {self.kind.__name__}, jest {value!r}")
+        """`value` as this field's type, or ValueError."""
+        return _as_kind(self.kind, value, f"{where}.{self.name}")
 
 
 @dataclass(frozen=True)
@@ -216,19 +202,41 @@ def _fields(settings: Any, where: str) -> tuple[SettingField, ...]:
             raise TypeError(f"{where}: ustawienie {field.name} ma typ {kind} - panel umie tylko str, int, "
                             "float i bool")
 
-        found.append(SettingField(field.name, kind, _default(field)))
+        found.append(SettingField(field.name, kind, _default(field, kind, where)))
 
     return tuple(found)
 
 
-def _default(field: dataclasses.Field) -> Any:
+def _default(field: dataclasses.Field, kind: type, where: str) -> Any:
+    """The field's default as the field's type, or `dataclasses.MISSING`.
+
+    `speed: float = 1` must give 1.0: the panel's number field keeps the type of its first value,
+    and an int one would cut what the operator types to whole numbers.
+    """
     if field.default is not dataclasses.MISSING:
-        return field.default
+        value = field.default
+    elif field.default_factory is not dataclasses.MISSING:
+        value = field.default_factory()
+    else:
+        return dataclasses.MISSING
 
-    if field.default_factory is not dataclasses.MISSING:
-        return field.default_factory()
+    return _as_kind(kind, value, f"{where}.{field.name}")
 
-    return dataclasses.MISSING
+
+def _as_kind(kind: type, value: Any, where: str) -> Any:
+    """`value` as `kind`, or ValueError. A whole float counts as an int: the panel's number field gives floats."""
+    number = isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    if kind is bool and isinstance(value, bool):
+        return value
+    if kind is str and isinstance(value, str):
+        return value
+    if kind is int and number and float(value).is_integer():
+        return int(value)
+    if kind is float and number and math.isfinite(value):
+        return float(value)
+
+    raise ValueError(f"{where}: potrzeba {kind.__name__}, jest {value!r}")
 
 
 def _source(ep: EntryPoint) -> str:

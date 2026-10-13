@@ -146,10 +146,11 @@ class ActionLike(Protocol):
 class Strategy(Protocol[S]):
     """A control strategy.
 
-    Required: `hz` and `act`. Optional: `settings`, the dataclass of what the operator sets for
-    one run (`strategies` builds it and creates the strategy as `cls(settings)`); `start(run, obs)`,
-    which may raise to refuse the run (e.g. a policy trained on another robot); `stop(reason)`,
-    called exactly once after a successful `start`; and `time_limit_s`.
+    Required: `hz` and `act`. Optional: `settings`, a class attribute holding the dataclass of what
+    the operator sets for one run (`strategies` builds it and creates the strategy as
+    `cls(settings)`); `start(run, obs)`, which may raise to refuse the run (e.g. a policy trained on
+    another robot); `stop(reason)`, called exactly once after a successful `start`; and
+    `time_limit_s`.
 
     The generic `S` is the settings type, and it exists only for the author's type checker. A
     strategy need not inherit from this protocol: the same attributes are enough. A package that
@@ -160,6 +161,7 @@ class Strategy(Protocol[S]):
 
     hz: float
 
+    # A read-only property here, so that a class attribute `settings = MySettings` matches it.
     @property
     def settings(self) -> type[S] | None: ...
 

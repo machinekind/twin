@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The dropdown's only option when no strategy is installed.
+#: The dropdown's first option, no strategy chosen. The panel starts on it, so no strategy package is
+#: imported (a VLA's may take seconds) until the operator chooses one.
 NONE = "-"
 
 #: The panel keeps as many decimals of a number as its step has, so floats get a fine step.
@@ -39,6 +40,8 @@ BLANK = {str: "", int: 0, float: 0.0, bool: False}
 NOTHING_INSTALLED = (
     "Brak strategii. Pakiet rejestruje strategie w grupie entry points `lerobot_mp.strategies`; "
     "przyklad: `pip install -e examples/strategies/swing`, potem **Odswiez liste**.")
+
+CHOOSE = "Wybierz strategie z listy - jej pakiet laduje sie dopiero wtedy."
 
 
 class StrategyTab:
@@ -52,8 +55,12 @@ class StrategyTab:
         self.section_problem = ""
 
         self._inputs: dict[str, Any] = {}
+        #: Required fields the config section or the operator gave. A blank one nobody touched is missing.
+        self._given: set[str] = set()
         # viser runs callbacks on several threads, and a form is filled inside its folder's context.
         self._form_lock = threading.Lock()
+        # Two Start clicks run on two viser threads: the second would start another runner under the same owner.
+        self._starting = threading.Lock()
 
         self._build()
         self.refresh()
@@ -110,7 +117,7 @@ class StrategyTab:
     def refresh(self) -> None:
         """Lists the installed strategies again and redraws the chosen one's form."""
         try:
-            names = tuple(sorted(strategies())) or (NONE,)
+            names = (NONE, *sorted(strategies()))
             self.list_problem = ""
         except ValueError as exc:
             names = (NONE,)
@@ -131,8 +138,7 @@ class StrategyTab:
 
             name = self.pick.value
             if name == NONE:
-                self.about_md.content = (f"**Blad listy strategii:** {self.list_problem}" if self.list_problem
-                                         else NOTHING_INSTALLED)
+                self.about_md.content = self._nothing_chosen()
                 return
 
             try:
@@ -147,10 +153,18 @@ class StrategyTab:
             self._fill_form(plugin, section)
             self.about_md.content = self._about(plugin)
 
+    def _nothing_chosen(self) -> str:
+        if self.list_problem:
+            return f"**Blad listy strategii:** {self.list_problem}"
+        if len(self.pick.options) == 1:
+            return NOTHING_INSTALLED
+        return CHOOSE
+
     def _clear_form(self) -> None:
         for handle in self._inputs.values():
             handle.remove()
         self._inputs = {}
+        self._given = set()
         self.form.visible = False
 
     def _fill_form(self, plugin: StrategyPlugin, section: dict[str, Any]) -> None:
@@ -160,23 +174,34 @@ class StrategyTab:
             self.section_problem = str(exc)
             prefill = {}
 
+        self._given = set(prefill)
+
         with self.form:
             for field in plugin.fields:
-                self._inputs[field.name] = self._add_input(field, prefill.get(field.name, _start_value(field)))
+                handle = self._add_input(field, prefill.get(field.name, _start_value(field)))
+                handle.on_update(self._given_by_operator(field.name))
+                self._inputs[field.name] = handle
 
         self.form.visible = bool(plugin.fields)
 
     def _add_input(self, field: SettingField, value: Any) -> Any:
         gui = self.app.server.gui
-        hint = field.kind.__name__ if field.required else f"{field.kind.__name__}, domyslnie {field.default!r}"
+        kind = field.kind.__name__
+        hint = f"{kind}, wymagane" if field.required else f"{kind}, domyslnie {field.default!r}"
 
         if field.kind is bool:
             return gui.add_checkbox(field.name, value, hint=hint)
         if field.kind is str:
-            return gui.add_text(field.name, value, hint=f"{hint} (wymagane)" if field.required else hint)
+            return gui.add_text(field.name, value, hint=hint)
         if field.kind is int:
             return gui.add_number(field.name, value, step=1, hint=hint)
         return gui.add_number(field.name, value, step=FLOAT_STEP, hint=hint)
+
+    def _given_by_operator(self, name: str):
+        def given(event) -> None:
+            self._given.add(name)
+
+        return given
 
     def _about(self, plugin: StrategyPlugin) -> str:
         lines = [f"**{plugin.name}**" + (f" - {plugin.summary}" if plugin.summary else "")]
@@ -197,6 +222,15 @@ class StrategyTab:
 
     def start(self) -> None:
         """Builds the strategy from its settings and runs it on the arm, or raises with the reason."""
+        if not self._starting.acquire(blocking=False):
+            raise RuntimeError("start strategii juz trwa")
+
+        try:
+            self._start()
+        finally:
+            self._starting.release()
+
+    def _start(self) -> None:
         app = self.app
         # Before every check: STOP, Home, Connect or Stop from here on and the strategy never takes the arm.
         mark = app._motion_mark()
@@ -246,12 +280,15 @@ class StrategyTab:
 
         for field in plugin.fields:
             value = self._inputs[field.name].value
-            # An empty text for a field without a default counts as not given.
-            if field.required and value == "":
+            if field.required and not self._is_given(field.name, value):
                 continue
             values[field.name] = value
 
         return values
+
+    def _is_given(self, name: str, value: Any) -> bool:
+        # The form always holds a value; a blank required field (untouched, or an emptied text) is not given.
+        return name in self._given and value != ""
 
     def _cameras(self) -> list[str]:
         return [camera.name for camera in self.app.ws.cameras if camera.enabled]
