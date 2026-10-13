@@ -16,6 +16,9 @@ osobny plik `workspace/calib/<data-godzina>.json` ze wszystkimi kamerami, ktore
 maja poze (`save_preset`), nigdy nie nadpisywany. `twin.json` trzyma kopie
 robocza wgranego zestawu (`calib_preset`); bez wskazania wgrywany jest
 najnowszy (`load`). Starszy zestaw wraca przez `load_preset`.
+
+Pakiet, ktory ma jechac na tym stanowisku bez importowania blizniaka (trening),
+dostaje je jako dane: `export` (`lerobot-twin export <folder>`).
 """
 
 from __future__ import annotations
@@ -232,6 +235,21 @@ class Workspace:
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
+
+    def export(self, folder: str | Path) -> Path:
+        """Stanowisko jako dane dla pakietow, ktore nie importuja blizniaka (trening).
+
+        `scene.xml` + `assets/` (stol, ramie, kamery z pelnym K - `scene.export`) i
+        `station.json`: kopia tego stanowiska (poza podstawy, kamery, dynamika
+        z identyfikacji, dom). Zwraca folder.
+        """
+        from .scene import export
+
+        folder = Path(folder)
+        export(self.scene_config(), folder)
+        (folder / "station.json").write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
+                                             encoding="utf-8")
+        return folder
 
     def apply_fit(self, fit, tag_size: float | None = None,
                   intrinsics: dict[str, tuple[Any, Any]] | None = None) -> list[str]:

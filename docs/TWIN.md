@@ -748,6 +748,7 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 | `lerobot-twin eval <policy.pt> --rand` | ewaluacja polityki w zwykłym MuJoCo |
 | `lerobot-twin policies` | zapisane polityki i ich wyniki |
 | `lerobot-twin workspace` | co wiadomo o stanowisku |
+| `lerobot-twin export <folder>` | stanowisko jako dane: `scene.xml` + `assets/` + `station.json` — dla pakietów, które jadą na zmierzonym stanowisku bez importu bliźniaka (trening) |
 
 ```bash
 pytest -q                                          # całość, z renderem i GPU
@@ -960,7 +961,7 @@ src/lerobot_mp/twin/
 ├── robots.py        opisy ramion z folderów (`robot.yaml`), tylko z wtyczek `lerobot_mp.robots`
 ├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów i strategii surowe (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
-├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu
+├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu; eksport do MJCF
 ├── collision.py     kolizje pozy i drogi do niej
 ├── workspace.py     stanowisko w JSON: ramię, port, stół, karta, kamery (+ prawda symulowanych), dynamika
 ├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane

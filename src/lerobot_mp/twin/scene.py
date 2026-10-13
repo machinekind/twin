@@ -19,7 +19,9 @@ Konwencje, ktorych trzeba pilnowac:
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -319,8 +321,8 @@ def _rotmat(quat) -> np.ndarray:
     return R.reshape(3, 3)
 
 
-def build(cfg: SceneConfig) -> Scene:
-    """Kompiluje scene od zera."""
+def compose(cfg: SceneConfig) -> mujoco.MjSpec:
+    """Sklada scene od zera jako `MjSpec` (bez kompilacji)."""
     t = cfg.table
     top = t.height
     # Ramie jako pierwsze: jego opcje fizyki (menagerie stroi je pod manipulacje -
@@ -438,4 +440,36 @@ def build(cfg: SceneConfig) -> Scene:
         # Pilnuje tego `test_twin_scene.py` na maskach kulek w znanych punktach.
         cam.principal_pixel = [(view.width - 1) / 2 - K[0, 2], (view.height - 1) / 2 - K[1, 2]]
 
-    return Scene(cfg, spec.compile())
+    return spec
+
+
+def build(cfg: SceneConfig) -> Scene:
+    """Kompiluje scene od zera."""
+    return Scene(cfg, compose(cfg).compile())
+
+
+def export(cfg: SceneConfig, folder: str | Path) -> Path:
+    """Zapisuje scene jako MJCF do `folder`: `scene.xml` i `assets/` z siatkami ramienia.
+
+    Dla pakietow, ktore maja jechac na zmierzonym stanowisku bez importowania
+    blizniaka (trening): `mujoco.MjModel.from_xml_path(folder / "scene.xml")`
+    daje te sama scene, a `MjSpec.from_file` pozwala dolozyc obiekty zadania.
+    Karta i panele niosa tekstury z pamieci - nie wchodza do eksportu.
+    """
+    if cfg.card is not None or cfg.panels:
+        raise ValueError("eksport sceny: karta i panele nie wchodza do MJCF - zbuduj scene bez nich")
+    folder = Path(folder)
+    assets = folder / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    robot = mujoco.MjSpec.from_file(str(cfg.robot.mjcf_path))
+    meshes = Path(robot.modelfiledir) / robot.meshdir
+    spec = compose(cfg)
+    for mesh in spec.meshes:
+        shutil.copyfile(meshes / mesh.file, assets / Path(mesh.file).name)
+        mesh.file = Path(mesh.file).name
+    # `to_xml` kompiluje po drodze, wiec siatki musza byc juz tam, gdzie wskaze XML.
+    spec.modelfiledir = str(folder)
+    spec.meshdir = "assets"
+    path = folder / "scene.xml"
+    path.write_text(spec.to_xml(), encoding="utf-8")
+    return path

@@ -228,6 +228,16 @@ def _workspace(a: argparse.Namespace) -> int:
     return 0
 
 
+def _export(a: argparse.Namespace) -> int:
+    from .workspace import Workspace
+
+    ws = Workspace.load(a.path)
+    folder = ws.export(a.folder)
+    print(f"Stanowisko -> {folder.resolve()}: scene.xml, assets/, station.json "
+          f"(ramie {ws.robot}, kamer {sum(c.enabled for c in ws.cameras)})")
+    return 0
+
+
 #: Przykladowe stanowiska w symulacji, po jednym na ramie - dwie kamery, ktorych
 #: skalibrowana poza jest ich prawdziwa poza w scenie (zaufane), wiec "kostka z kamer"
 #: dziala od razu.
@@ -503,6 +513,11 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("workspace", help="co wiadomo o stanowisku")
     p.add_argument("--path", default=None)
     p.set_defaults(fn=_workspace)
+
+    p = sub.add_parser("export", help="stanowisko jako dane (MJCF + station.json) dla pakietow bez importu blizniaka")
+    p.add_argument("folder")
+    p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
+    p.set_defaults(fn=_export)
 
     p = sub.add_parser("train", help="naucz polityke PPO na GPU (MuJoCo Warp)")
     p.add_argument("--task", choices=("reach", "lift", "pickplace"), default="reach")
