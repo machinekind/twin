@@ -1,6 +1,6 @@
 """Robot descriptions: one folder per robot, shared by the simulation, the panel and calibration.
 
-A robot is a folder holding `robot.yaml` and the MJCF model it names (meshes next to the model),
+A robot is a folder holding `robot.yaml` and the MJCF model it names (meshes where the model's `meshdir` points),
 and optionally `demo.json`, an example workspace in simulation (`lerobot-twin demo --robot NAME`).
 The description says only what the MJCF cannot: which joints form the arm in app order, which
 one is the gripper, where the tool point (TCP) is, which body carries the calibration card, the

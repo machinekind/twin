@@ -267,8 +267,11 @@ backendu z pakietu `soarm`.
 Galaxea A1X (opis ramienia, model MuJoCo, przykładowe stanowisko w symulacji
 i backend `a1x` po CAN-FD) jest w pakiecie `galaxeo` z repozytorium
 [galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators).
-Bliźniak nie zna go z nazwy: znajduje ramię i backend przez entry points
-pakietu, który instaluje się obok bliźniaka:
+Bliźniak znajduje ramię i backend przez entry points pakietu, który instaluje
+się obok bliźniaka. Z nazwy znają go jeszcze panel (folder „Silniki A1X” z przyciskiem
+włączenia FF 1-5-6 i stan chwytaka po XCAN; do uogólnienia jako akcje
+backendu) i budżet kontaktów treningu w `twin/rl/batch.py` (odchodzi
+z treningiem do so101).
 
 ```bash
 pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
