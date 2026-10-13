@@ -392,6 +392,21 @@ The network carries the serial port here, not the image.
 
 ---
 
+## Control strategies
+
+Every way of driving the arm goes through one contract (`lerobot_mp.twin.strategy`). A strategy
+has a rate `hz` and `act(observation)`. The observation holds the time, the measured joints,
+the supervisor's command, the panel's goal, the objects the perception knows (pose, source,
+age) and the camera frames with their age, fetched only when read. `act` returns joint targets and, when the
+run is over, `done` with the task's `success` and `error`.
+
+`StrategyRunner` claims the arm and sends every target through the safety supervisor, the
+same way in simulation and on hardware. It stops the run on a target that names another
+robot's joint or is not a finite number, on Home, STOP, reconnect or a disconnected arm, and
+at the time limit. A strategy from another package needs nothing from the twin: it may return
+a plain mapping of joint targets. The test strategy `waypoints.Waypoints` drives through given
+poses.
+
 ## Configuration
 
 The twin reads a configuration file only when one is given:
@@ -445,6 +460,7 @@ src/lerobot_mp/
 ├── twin/          the twin: MuJoCo scene, the arm loop with the supervisor, cameras, perception, lerobot-twin
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
 │   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
+│   ├── strategy.py  the control-strategy contract and its runner; waypoints.py is the test strategy
 │   └── ui/        browser panel (viser)
 ├── robot/         the backend contract and plugin registry
 │   ├── so101/     SO-101 package, leaving for its repo: robot folder, backends feetech and lerobot, COM<->TCP bridge
