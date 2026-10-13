@@ -487,24 +487,34 @@ The scene mounts each such camera on its body. Its name in the model is
 `robot/<name>`. The scene renders it at its own size, after `mj_camlight`.
 After a physics step the twin runs only `mj_kinematics`. Without
 `mj_camlight` the camera would see the hand from before the last substep.
-`CameraHub.frame_t(name)` serves the camera's frame. The source depends on the
-arm:
+A strategy gets the camera's frame from `CameraHub.arm_frame_t(name)`, the
+default frame source of `StrategyRunner`. The source depends on the arm:
 
 - **Simulated arm** (nothing connected, or `sim`). The hub renders the frame
   from the scene at the moment of the read, like a simulated workspace camera.
-- **Real arm** (also one whose loop died). The scene only mirrors the arm. The
-  frame comes from the workspace camera **of the same name**. That camera is
-  the physical wrist camera, added like any other. The panel names a new camera
-  `kameraN`. You rename it in `twin.json`. Without such a camera there is no
-  frame.
+- **Real arm** (also one still connecting, or one whose loop died). The scene
+  only mirrors the arm. The frame comes from the workspace camera **of the same
+  name**. That camera is the physical wrist camera, added like any other. The
+  panel names a new camera `kameraN`. You rename it in `twin.json`. Without
+  such a camera there is no frame.
+
+The panel and calibration read workspace cameras through `CameraHub.frame_t`.
+In both, the physical wrist camera always shows its own stream. The scene
+leaves it out. The camera rides on the arm and is not fixed to the base. Its
+`T_cam2base` therefore means nothing, and the scene ignores it. That holds
+whether the pose came from a wave or from a saved preset of that name.
+Calibrating its pose is pointless. Calibrating its intrinsics in step 1 still
+makes sense.
 
 A simulated workspace camera may not take the name of a camera on the arm,
 because the scene renders both by name. Adding such a camera fails. Building
 the scene from a workspace that holds one fails too. A real camera with that
 name is fine. The Strategies tab gives a strategy the enabled workspace cameras
-and the cameras on the arm, in `Observation.frames[name]`. It lists each name
-once. The Kamery tab and the 3D view do not show cameras on the arm and do not
-calibrate them. Their pose comes from the description.
+in `Observation.frames[name]`. With a simulated arm it adds the cameras on the
+arm. It lists each name once. With a real arm, a camera on the arm has frames
+only as the enabled workspace camera of its name. The Kamery tab and the 3D
+view do not show cameras on the arm and do not calibrate them. Their pose comes
+from the description.
 
 ## Scene look
 

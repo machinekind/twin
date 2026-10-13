@@ -242,9 +242,15 @@ class Workspace:
         return f"{stem}{k}"
 
     def scene_config(self, *, with_card: bool = False, **extra: Any) -> SceneConfig:
-        """Scena z tego stanowiska: stol, ramie i kazda WLACZONA, umiejscowiona kamera."""
+        """The scene of this workspace: table, arm and every ENABLED camera with a known pose.
+
+        A real camera named like a camera on the arm rides on the arm, never fixed to the base, so
+        it gets no view whatever `T_cam2base` it has (from a wave or a preset matched by name).
+        """
         self._refuse_robot_camera_names(self.cameras)
-        views = [v for c in self.cameras if c.enabled for v in [c.view()] if v is not None]
+        on_arm = self.spec().cameras
+        fixed = [c for c in self.cameras if c.enabled and c.name not in on_arm]
+        views = [v for c in fixed for v in [c.view()] if v is not None]
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
                           card=self.card_obj() if with_card else None, look=self.look)
         for key, value in extra.items():

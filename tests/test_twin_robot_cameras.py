@@ -1,7 +1,8 @@
 """Cameras on the arm: declared in `robot.yaml`, rendered by the scene, served by the camera hub.
 
-The test robot carries a wrist camera on its hand (160 x 120). In simulation the hub renders it
-from the scene; with a real arm it serves the workspace camera of the same name, the physical one.
+The test robot carries a wrist camera on its hand (160 x 120). For a strategy (`arm_frame_t`) the
+hub renders it from the scene in simulation and serves the workspace camera of the same name, the
+physical one, with a real arm. The panel and calibration (`frame_t`) always see that physical one.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pytest
 
 mujoco = pytest.importorskip("mujoco")
 
-from lerobot_mp.twin import cameras  # noqa: E402
+from lerobot_mp.twin import cameras, runtime  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.robots import get_spec  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
@@ -26,6 +27,8 @@ from lerobot_mp.twin.workspace import CameraRecord, Workspace  # noqa: E402
 from test_strategy import Plugin, drive  # noqa: E402
 
 WRIST = "wrist"
+#: Where a calibration wave would have put the physical wrist camera: meaningless for a camera on the arm.
+WAVED_POSE = [[1.0, 0.0, 0.0, 0.5], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.6], [0.0, 0.0, 0.0, 1.0]]
 AHEAD = {"j1": 0.0, "j2": 20.0, "gripper": 0.0}
 TURNED = {"j1": 45.0, "j2": 20.0, "gripper": 0.0}
 
@@ -137,15 +140,46 @@ def test_a_real_workspace_camera_may_carry_that_name(testbot):
     assert workspace.camera(WRIST).source == "5"
 
 
+def test_a_real_camera_of_that_name_with_a_pose_stays_out_of_the_scene(testbot):
+    workspace = Workspace(robot=testbot, cameras=[CameraRecord(WRIST, source="5", T_cam2base=WAVED_POSE)])
+
+    cfg = workspace.scene_config()
+
+    assert cfg.cameras == []
+
+
+def test_the_scene_of_such_a_workspace_still_renders_the_camera_on_the_arm(testbot):
+    workspace = Workspace(robot=testbot, cameras=[CameraRecord(WRIST, source="5", T_cam2base=WAVED_POSE)])
+
+    with build(workspace.scene_config()) as scene:
+        image = scene.render(WRIST)
+
+    assert image.shape == (120, 160, 3)
+
+
 # ------------------------------------------------------------------ the camera hub
 def test_with_nothing_connected_the_scenes_arm_is_the_arm(twin):
     assert twin.arm_simulated()
 
 
+def test_while_a_real_arm_connects_the_scenes_arm_is_not_the_arm(twin, monkeypatch):
+    seen = []
+    create_backend = runtime.create_backend
+
+    def create_and_look(cfg, spec):
+        seen.append(twin.arm_simulated())
+        return create_backend(cfg, spec)
+
+    monkeypatch.setattr(runtime, "create_backend", create_and_look)
+    twin.connect("testbot", threaded=False)
+
+    assert seen == [False]
+
+
 def test_the_hub_renders_the_camera_on_the_simulated_arm_fresh(twin):
     twin.connect("sim", threaded=False)
 
-    image, captured = twin.cameras.frame_t(WRIST)
+    image, captured = twin.cameras.arm_frame_t(WRIST)
 
     assert image.shape == (120, 160, 3)
     assert time.monotonic() - captured < 1.0
@@ -154,7 +188,7 @@ def test_the_hub_renders_the_camera_on_the_simulated_arm_fresh(twin):
 def test_a_real_arm_without_a_workspace_camera_of_that_name_has_no_frame(twin):
     twin.connect("testbot", threaded=False)
 
-    image, captured = twin.cameras.frame_t(WRIST)
+    image, captured = twin.cameras.arm_frame_t(WRIST)
 
     assert image is None
     assert captured == 0.0
@@ -164,7 +198,7 @@ def test_a_real_arm_gets_the_frames_of_the_workspace_camera_of_that_name(twin, m
     stream = a_real_wrist_camera(twin, monkeypatch)
     twin.connect("testbot", threaded=False)
 
-    image, _ = twin.cameras.frame_t(WRIST)
+    image, _ = twin.cameras.arm_frame_t(WRIST)
 
     assert image is stream.image
 
@@ -173,9 +207,18 @@ def test_a_simulated_arm_renders_even_with_a_real_camera_of_that_name(twin, monk
     a_real_wrist_camera(twin, monkeypatch)
     twin.connect("sim", threaded=False)
 
-    image, _ = twin.cameras.frame_t(WRIST)
+    image, _ = twin.cameras.arm_frame_t(WRIST)
 
     assert image.shape == (120, 160, 3)
+
+
+def test_the_panel_and_calibration_see_the_physical_camera_even_on_a_simulated_arm(twin, monkeypatch):
+    stream = a_real_wrist_camera(twin, monkeypatch)
+    twin.connect("sim", threaded=False)
+
+    image, _ = twin.cameras.frame_t(WRIST)
+
+    assert image is stream.image
 
 
 # ------------------------------------------------------------------ strategies
@@ -219,3 +262,9 @@ def test_the_strategies_tab_offers_it_once_beside_a_real_camera_of_that_name(pan
     panel.ws.add_camera(CameraRecord(WRIST, source="5"))
 
     assert panel.strategies._cameras().count(WRIST) == 1
+
+
+def test_with_a_real_arm_and_no_workspace_camera_of_that_name_the_tab_leaves_it_out(panel):
+    panel.twin.connect("testbot", threaded=False)
+
+    assert WRIST not in panel.strategies._cameras()

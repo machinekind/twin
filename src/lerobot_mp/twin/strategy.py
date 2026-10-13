@@ -54,7 +54,9 @@ logger = logging.getLogger(__name__)
 OWNER = "strategia"
 
 #: Where frames come from: camera name -> (RGB image or None, capture time on `time.monotonic`).
-#: `CameraHub.frame_t` is one: it serves real cameras' streams and renders simulated ones.
+#: `CameraHub.arm_frame_t` is the default: it serves real cameras' streams and renders simulated
+#: ones, and a camera on the arm by the arm: rendered on a simulated arm, the workspace camera of
+#: its name on a real one.
 FrameSource = Callable[[str], tuple[np.ndarray | None, float]]
 
 
@@ -117,7 +119,7 @@ class StrategyRunner:
         self._goal = goal
         self._objects = objects
         self._cameras = tuple(cameras)
-        self._frame = frame if frame is not None else twin.cameras.frame_t
+        self._frame = frame if frame is not None else twin.cameras.arm_frame_t
         self._joints: tuple[str, ...] = ()
 
         self._run: _Run | None = None

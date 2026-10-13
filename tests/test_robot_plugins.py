@@ -119,6 +119,7 @@ SHEARED = [[1.0, 0.5, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.
     ({"cameras": {"wrist": {**WRIST, "pose": SHEARED}}}, "cameras.wrist.*przeksztalceniem sztywnym"),
     ({"cameras": {"wrist": {**WRIST, "pose": WRIST["pose"][:3]}}}, "4 wartosci"),
     ({"cameras": {"wrist": {**WRIST, "width": 0}}}, "cameras.wrist.*dodatnimi liczbami calkowitymi"),
+    ({"cameras": {"wrist": {**WRIST, "height": True}}}, "cameras.wrist.*dodatnimi liczbami calkowitymi"),
 ])
 def test_a_broken_description_names_what_is_wrong(folder, changes, error):
     rewrite(folder, **changes)

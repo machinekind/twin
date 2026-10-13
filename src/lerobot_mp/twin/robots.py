@@ -290,7 +290,8 @@ def _is_rigid(T: np.ndarray) -> bool:
 
 
 def _is_size(value: object) -> bool:
-    return isinstance(value, int) and value > 0
+    # YAML `true` is a bool, and a bool is an int in Python.
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 @lru_cache(maxsize=1)

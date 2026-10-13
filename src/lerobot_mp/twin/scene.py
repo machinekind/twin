@@ -197,10 +197,8 @@ class Scene:
 
     # ------------------------------------------------------------ kamery
     def render(self, camera: str) -> np.ndarray:
-        """Kadr RGB z kamery sceny w jej natywnej rozdzielczosci.
-
-        A camera on the arm (`RobotSpec.cameras`) renders by its name too, at its own size.
-        """
+        """An RGB frame from a camera of the scene at its own size: a fixed one (`cfg.cameras`) or
+        one on the arm (`RobotSpec.cameras`)."""
         if camera in self.cfg.robot.cameras:
             return self._render_robot_camera(camera)
 

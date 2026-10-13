@@ -120,20 +120,21 @@ class _Live:
 
 
 class CameraHub:
-    """Otwarte kamery stanowiska.
+    """The workspace's open cameras.
 
-    `sim_render(nazwa)` podaje kadr kamery symulowanej ze sceny blizniaka;
-    bez niego kamery o zrodle "sim" po prostu nie maja obrazu.
+    `sim_render(name)` renders a simulated camera from the twin's scene; without it cameras with
+    source "sim" simply have no image.
 
-    Cameras on the arm (`robot_cameras`, from the robot's description) follow the arm: while
-    `arm_simulated()` holds, the scene's arm is the arm and the camera renders from it; with a real
-    arm the scene only mirrors it, so the workspace camera of the same name (the physical camera on
-    the wrist) serves the frames, and without one there are none.
+    `frame_t` returns a workspace camera's frame with the moment it was taken (`time.monotonic`),
+    and `frame` returns none older than `stale_after` [s]: a frozen camera (the stream stalled, the
+    same frame again) handed the calibration wave and the cube perception the same image as new.
 
-    `frame_t` oddaje kadr razem z chwila jego wykonania (`time.monotonic`), a
-    `frame` nie oddaje kadru starszego niz `stale_after` [s]: zamrozona kamera
-    (strumien stanal, klatka ta sama) dawala fali kalibracyjnej i percepcji
-    kostki ten sam obraz jako nowy.
+    `arm_frame_t` is what a strategy sees. A camera on the arm (`robot_cameras`, from the robot's
+    description) follows the arm: while `arm_simulated()` holds, the scene's arm is the arm and the
+    camera renders from it; with a real arm the scene only mirrors it, so the workspace camera of
+    the same name (the physical one on the wrist) serves the frames, and without one there are
+    none. Everything else (panel, calibration) reads workspace cameras through `frame_t`, so a
+    physical wrist camera always shows its own stream there.
     """
 
     def __init__(self, workspace: Workspace, sim_render: Callable[[str], np.ndarray] | None = None,
@@ -181,10 +182,15 @@ class CameraHub:
 
         Kamera symulowana renderuje stan sceny z tej chwili - jej kadr jest zawsze swiezy.
         """
+        return self._record_frame_t(self.workspace.camera(name))
+
+    def arm_frame_t(self, name: str) -> tuple[np.ndarray | None, float]:
+        """`frame_t` for a strategy: a camera on the arm by the arm's rule (see the class), any
+        other name as a workspace camera."""
         if name in self.robot_cameras:
             return self._robot_frame_t(name)
 
-        return self._record_frame_t(self.workspace.camera(name))
+        return self.frame_t(name)
 
     def _robot_frame_t(self, name: str) -> tuple[np.ndarray | None, float]:
         if self.arm_simulated():

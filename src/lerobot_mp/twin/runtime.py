@@ -330,6 +330,8 @@ class Twin:
         self.status = RobotStatus()
 
         self._backend: RobotBackend | None = None
+        #: A real arm is connecting: `_backend` is still empty, but the scene's arm is not the arm.
+        self._connecting_real = False
         self._supervisor: SafetySupervisor | None = None
         #: Nadzor nie jest bezpieczny watkowo: krok w petli i `hold`/`begin_homing`
         #: z innych watkow ida pod ta blokada (inaczej krok nadpisywal swiezy `hold`).
@@ -438,7 +440,10 @@ class Twin:
 
     def arm_simulated(self) -> bool:
         """Whether the scene's arm is the arm: nothing connected, or the simulation. A real arm,
-        even one whose loop died, only moves its mirror in the scene."""
+        even one still connecting or whose loop died, only moves its mirror in the scene."""
+        if self._connecting_real:
+            return False
+
         backend = self._backend
         return backend is None or backend.info.simulated
 
@@ -706,11 +711,13 @@ class Twin:
             self._base_limits = {}
             self._widen_limits_for_home(cfg, ws.home)
         b: RobotBackend | None = None
+        self._connecting_real = backend != "sim"
         try:
             b = SceneBackend(self) if backend == "sim" else create_backend(cfg, self.spec)
             b.connect()
             measured = _stable_read(b, self.start_read_tol)
             _intersect_limits(cfg, b)
+            self._backend = b
         except Exception as exc:
             self.status = RobotStatus(error=f"{type(exc).__name__}: {exc}")
             if b is not None:
@@ -719,7 +726,8 @@ class Twin:
                 except Exception:                          # pragma: no cover - sprzatanie po bledzie
                     logger.exception("Blad przy rozlaczaniu po nieudanym polaczeniu")
             raise
-        self._backend = b
+        finally:
+            self._connecting_real = False
         # Limity backendu poszerzamy chwilowo dla stawu spoza zakresu (`_sync_backend_limits`),
         # a nadzor (z wlasna kopia konfiguracji) musi dalej znac prawdziwe limity.
         self._base_limits = {n: (cfg.joint(n).min, cfg.joint(n).max) for n in self._names}
