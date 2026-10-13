@@ -1032,6 +1032,17 @@ class Twin:
             if self._supervisor is not None:
                 self._supervisor.set_speed_cap(self._speed_cap)
 
+    def speed_limits(self) -> dict[str, float]:
+        """Highest speed of each joint the supervisor allows now [app units / s], the panel's cap included.
+
+        Without a supervisor (not connected) the description's `max_vel`.
+        """
+        with self._sup_lock:
+            if self._supervisor is not None:
+                return self._supervisor.max_vel()
+
+        return dict(self.spec.max_vel)
+
     def _home_staged(self) -> None:
         """Dom etapami: grupy stawow z `spec.home_stages` po kolei, kazda po sprawdzeniu drogi w blizniaku.
 

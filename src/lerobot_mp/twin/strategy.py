@@ -187,7 +187,7 @@ class StrategyRunner:
             joints=self._joints,
             gripper=spec.gripper,
             limits=dict(self.twin.joint_limits()),
-            max_vel=dict(spec.max_vel),
+            max_vel=self.twin.speed_limits(),
             folder=spec.root,
             simulated=bool(self.twin.status.simulated),
         )

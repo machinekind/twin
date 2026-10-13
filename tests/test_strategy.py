@@ -195,6 +195,23 @@ def test_a_plugin_strategy_returns_plain_values_and_sees_the_whole_observation(t
     assert plugin.stopped == "strategia skonczyla"
 
 
+def test_the_run_learns_the_speed_the_supervisor_allows_with_the_panel_cap(twin):
+    """A policy trained at 90 deg/s must see a slower panel cap at start, or the supervisor throttles
+    every step without it knowing (grasp student review, 2026-10-13)."""
+    twin.connect("sim", threaded=False)
+    twin.set_speed(30.0)
+
+    plugin = Plugin(lambda obs: PluginAction(done=True))
+    runner = StrategyRunner(twin, plugin)
+    runner.start(threaded=False)
+    drive(twin, runner, 0.2)
+
+    spec = twin.workspace.spec()
+    run = plugin.started
+    assert run.max_vel["j1"] == 30.0
+    assert run.max_vel["gripper"] == spec.max_vel["gripper"]
+
+
 def test_camera_frames_are_fetched_only_when_the_strategy_reads_them(twin):
     twin.connect("sim", threaded=False)
     rendered = []
