@@ -13,6 +13,9 @@ from .strategy import Action, Observation, RunInfo
 
 
 class Waypoints:
+    #: No settings: the poses are given in code.
+    settings = None
+
     def __init__(
         self,
         poses: Sequence[Mapping[str, float]],

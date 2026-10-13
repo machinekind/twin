@@ -1,4 +1,4 @@
-"""Panel cyfrowego blizniaka w przegladarce (viser): ramie, kamery, kalibracja, mapa, trening, polityki.
+"""Panel cyfrowego blizniaka w przegladarce (viser): ramie, kamery, kalibracja, mapa, trening, polityki, strategie.
 
     lerobot-twin ui                      # http://localhost:8080 (tez zdalnie: --host 0.0.0.0)
 
@@ -42,6 +42,7 @@ from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
+from .strategy_tab import StrategyTab
 from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
 
@@ -108,7 +109,8 @@ CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 
                "zolta": ((20, 100, 90), (35, 255, 255), (20, 100, 90), (35, 255, 255))}
 
 
-#: "Jak uzywac" na gorze zakladek Mapa, Trening, Polityki i Sim-Real (Ramie, Kamery i Kalibracja prowadza same).
+#: "Jak uzywac" na gorze zakladek Mapa, Trening, Polityki, Strategie i Sim-Real (Ramie, Kamery i Kalibracja
+#: prowadza same).
 TAB_HELP = {
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
@@ -126,6 +128,13 @@ TAB_HELP = {
         "2. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
         "3. reach: przeciagaj zolta kulke celu w 3D; pickplace: kulka to cel odlozenia (rzutowany na blat). "
         "lift i pickplace na prawdziwym ramieniu: kostka z **kamer**.\n"
+        "4. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
+    "Strategie": (
+        "1. Strategie przychodza z zainstalowanych pakietow (entry points `lerobot_mp.strategies`), "
+        "np. `pip install -e examples/strategies/swing`; po instalacji **Odswiez liste**.\n"
+        "2. Wybierz strategie - formularz to jej ustawienia, wypelnione z sekcji pliku konfiguracji o tej samej "
+        "nazwie. Nieznany klucz albo zly typ: Uruchom odmawia, zanim ramie drgnie.\n"
+        "3. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
         "4. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
     "Sim-Real": (
         "1. **Kamera**: prawdziwa, z zaufana poza (Kalibracja).\n"
@@ -567,6 +576,8 @@ class TwinApp:
             self._build_training()
         with tabs.add_tab("Polityki", icon=viser.Icon.PLAYER_PLAY):
             self._build_policies()
+        with tabs.add_tab("Strategie", icon=viser.Icon.ROUTE):
+            self.strategies = StrategyTab(self)
         with tabs.add_tab("Sim-Real", icon=viser.Icon.ARROWS_DIFF):
             self._build_simreal()
 
@@ -695,6 +706,7 @@ class TwinApp:
         finally:
             if self.runner is not None:
                 self.runner.stop("STOP z panelu")
+            self.strategies.stop("STOP z panelu")
             self.calib_job.stop()
             self.sysid_job.stop()                       # tylko nagranie - dopasowanie jest chronione
             self.arm_engage.value = False
@@ -775,6 +787,7 @@ class TwinApp:
         self._motion_gen += 1                           # start w toku nie wezmie ramienia po (roz)laczeniu
         if self.runner is not None:
             self.runner.stop(reason)
+        self.strategies.stop(reason)
         self.calib_job.stop()
         # Identyfikacja: przerywa tylko nagranie. Po nim zadanie jest chronione
         # (`Job.protect`) - dopasowanie ramienia nie rusza i konczy sie z wynikiem.
@@ -788,7 +801,7 @@ class TwinApp:
     def _reset_confirmations(self) -> None:
         """Kazdy przejazd prawdziwego ramienia wymaga swiezego potwierdzenia (karta, wolne miejsce)."""
         self.calib_ask.reset()
-        for box in (self.dyn_confirm, self.pol_confirm):
+        for box in (self.dyn_confirm, self.pol_confirm, self.strategies.confirm):
             box.value = False
 
     def _status_text(self) -> str:
@@ -800,6 +813,8 @@ class TwinApp:
             parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
         if self.runner is not None and self.runner.status.running:
             parts.append(f"Polityka: jedzie ({self.runner.status.step} krokow)")
+        if self.strategies.running:
+            parts.append(f"Strategia: jedzie ({self.strategies.runner.status.step} krokow)")
         if self.train.running:
             p = self.train.progress() or {}
             parts.append(f"Trening: {p.get('iteration', 0)}/{p.get('iterations', '?')} it.")
@@ -3467,6 +3482,7 @@ class TwinApp:
         self._tick_calibration()
         self._tick_training()
         self._tick_policies()
+        self.strategies.tick()
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
         return frames
@@ -3582,6 +3598,7 @@ class TwinApp:
         try:
             if self.runner is not None:
                 self.runner.stop("zamkniecie panelu")
+            self.strategies.stop("zamkniecie panelu")
             for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
                 job.stop()
         finally:

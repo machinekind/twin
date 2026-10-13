@@ -7,7 +7,8 @@ passes the safety supervisor. Simulation and hardware run the same code path.
 
 A strategy from another package needs nothing from the twin. It follows the `Strategy` protocol,
 reads the observation's attributes, and returns an `Action`, any object with the same attributes,
-or a plain mapping of joint targets.
+or a plain mapping of joint targets. Such packages register their strategies through entry points,
+and the twin builds each one from its settings: see `strategies`.
 
     runner = StrategyRunner(twin, Waypoints([pose_a, pose_b]), goal=panel_goal, objects=cube_poses)
     runner.start()      # its own thread at `strategy.hz`; tests: `start(threaded=False)` + `step_once`
@@ -36,7 +37,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 
@@ -44,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 #: Default owner name of the arm while a strategy runs (`Twin.claim`).
 OWNER = "strategia"
+
+#: The type of a strategy's settings (`Strategy.settings`).
+S = TypeVar("S", covariant=True)
 
 #: Where frames come from: camera name -> (RGB image or None, capture time on `time.monotonic`).
 #: `CameraHub.frame_t` is one: it serves real cameras' streams and renders simulated ones.
@@ -132,18 +136,36 @@ class Action:
     note: str = ""
 
 
-@runtime_checkable
-class Strategy(Protocol):
+class ActionLike(Protocol):
+    """A strategy's own answer object with `Action`'s attributes. Only `target` is required."""
+
+    @property
+    def target(self) -> Mapping[str, float]: ...
+
+
+class Strategy(Protocol[S]):
     """A control strategy.
 
-    Required: `hz` and `act`. Optional: `start(run, obs)`, which may raise to refuse the run (e.g. a
-    policy trained on another robot); `stop(reason)`, called exactly once after a successful
-    `start`; and `time_limit_s`.
+    Required: `hz` and `act`. Optional: `settings`, a class attribute holding the dataclass of what
+    the operator sets for one run (`strategies` builds it and creates the strategy as
+    `cls(settings)`); `start(run, obs)`, which may raise to refuse the run (e.g. a policy trained on
+    another robot); `stop(reason)`, called exactly once after a successful `start`; and
+    `time_limit_s`.
+
+    The generic `S` is the settings type, and it exists only for the author's type checker. A
+    strategy need not inherit from this protocol: the same attributes are enough. A package that
+    wants the check imports the protocol under `TYPE_CHECKING` only and writes
+    `_: type[Strategy[MySettings]] = MyStrategy`. A type checker counts every protocol member as
+    required, so a strategy without settings says `settings = None` to pass it.
     """
 
     hz: float
 
-    def act(self, obs: Observation) -> Action | Mapping[str, float]: ...
+    # A read-only property here, so that a class attribute `settings = MySettings` matches it.
+    @property
+    def settings(self) -> type[S] | None: ...
+
+    def act(self, obs: Observation) -> Action | ActionLike | Mapping[str, float]: ...
 
 
 @dataclass
@@ -182,7 +204,7 @@ class StrategyRunner:
     def __init__(
         self,
         twin,
-        strategy: Strategy,
+        strategy: Strategy[Any],
         *,
         owner: str = OWNER,
         goal: Callable[[], Any] | None = None,
@@ -520,7 +542,8 @@ class _LazyFrames(Mapping[str, Frame]):
 
 
 def _check_strategy(strategy: Any) -> None:
-    if not isinstance(strategy, Strategy):
+    # By attributes, not `isinstance`: the protocol's `settings` is optional at runtime.
+    if not hasattr(strategy, "hz") or not callable(getattr(strategy, "act", None)):
         raise TypeError(f"{type(strategy).__name__} nie jest strategia: potrzeba `hz` i `act(obs)`")
 
     hz = strategy.hz

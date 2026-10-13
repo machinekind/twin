@@ -1,4 +1,4 @@
-"""Shared test helpers: no config file from the shell, and the test robot as if it were installed."""
+"""Shared test helpers: no config file from the shell, and the example packages as if they were installed."""
 
 from __future__ import annotations
 
@@ -9,8 +9,11 @@ import pytest
 
 from lerobot_mp.twin.robots import reload_robots
 
-#: The test robot's package (`examples/robots/testbot`): a robot folder and a backend plugin.
-TESTBOT = Path(__file__).resolve().parents[1] / "examples" / "robots" / "testbot"
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+#: The test robot's package: a robot folder and a backend plugin.
+TESTBOT = EXAMPLES / "robots" / "testbot"
+#: The test strategy's package: a strategy with its settings dataclass.
+SWING = EXAMPLES / "strategies" / "swing"
 
 
 @pytest.fixture(autouse=True)
@@ -47,14 +50,26 @@ def install_dist(tmp_path, monkeypatch):
     reload_robots()
 
 
-@pytest.fixture
-def testbot(install_dist, monkeypatch):
-    """`pip install examples/robots/testbot` without pip: its package and a dist-info on `sys.path`.
+def install_example(install_dist, monkeypatch, folder: Path) -> None:
+    """`pip install <folder>` without pip: its package and a dist-info on `sys.path`.
 
     The dist-info carries the entry points of the package's own `pyproject.toml`, so the twin
-    finds the robot and its backend the way it finds any installed plugin.
+    finds what it registers the way it finds any installed plugin.
     """
-    project = tomllib.loads((TESTBOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    monkeypatch.syspath_prepend(str(TESTBOT))
+    project = tomllib.loads((folder / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    monkeypatch.syspath_prepend(str(folder))
     install_dist(project["name"], project["entry-points"], version=project["version"])
+
+
+@pytest.fixture
+def testbot(install_dist, monkeypatch):
+    """The test robot (`examples/robots/testbot`), installed: its robot folder and backend."""
+    install_example(install_dist, monkeypatch, TESTBOT)
     return "testbot"
+
+
+@pytest.fixture
+def swing(install_dist, monkeypatch):
+    """The test strategy (`examples/strategies/swing`), installed."""
+    install_example(install_dist, monkeypatch, SWING)
+    return "swing"

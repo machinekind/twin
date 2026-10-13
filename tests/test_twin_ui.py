@@ -7,6 +7,7 @@ uchwyt TCP na tej samej galezi IK, swiezosc detekcji kostki, kalibracja i zadani
 from __future__ import annotations
 
 import socket
+import threading
 import time
 
 import numpy as np
@@ -91,6 +92,7 @@ def app(shared_app):
     yield a
     if a.runner is not None:
         a.runner.stop("koniec testu")
+    a.strategies.stop("koniec testu")
     for job in (a.calib_job, a.sysid_job, a.intr_job):
         job.stop()
         job.wait(10.0)
@@ -624,3 +626,221 @@ def test_startup_flag_connects_the_arm(app):
     """`lerobot-twin ui --arm`: ramie polaczone przy starcie - bez klikania."""
     app._startup(arm=True)
     assert app.twin.connected and app.twin.status.simulated
+
+
+# ------------------------------------------------------------------ strategies from installed packages
+def choose_strategy(app, name: str, **values):
+    """Strategie: Odswiez liste, choose `name`, type `values` into its form."""
+    tab = app.strategies
+    tab.refresh()
+    tab.pick.value = name
+    for key, value in values.items():
+        tab._inputs[key].value = value
+    return tab
+
+
+def a_config_file(tmp_path, monkeypatch, text: str) -> None:
+    """`lerobot-twin --config` with this file."""
+    path = tmp_path / "local.yaml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("LEROBOT_MP_CONFIG", str(path))
+
+
+def test_the_strategies_tab_draws_an_installed_strategys_settings(app, swing):
+    tab = choose_strategy(app, swing)
+
+    assert swing in tab.pick.options
+    assert tab.plugin.name == "swing"
+    assert "lerobot-mp-swing 0.1.0" in tab.about_md.content
+    assert list(tab._inputs) == ["joint", "amplitude", "period_s", "cycles", "wait_for_return"]
+    assert type(tab._inputs["joint"]).__name__ == "GuiTextHandle"
+    assert type(tab._inputs["amplitude"]).__name__ == "GuiNumberHandle"
+    assert type(tab._inputs["cycles"]).__name__ == "GuiNumberHandle"
+    assert type(tab._inputs["wait_for_return"]).__name__ == "GuiCheckboxHandle"
+    assert tab._inputs["joint"].value == ""
+    assert tab._inputs["amplitude"].value == 10.0
+    assert tab._inputs["wait_for_return"].value is True
+
+
+def test_the_strategys_config_section_prefills_its_form(app, swing, tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: elbow_flex\n  cycles: 3\n")
+
+    tab = choose_strategy(app, swing)
+
+    assert tab.section_problem == ""
+    assert tab._inputs["joint"].value == "elbow_flex"
+    assert tab._inputs["cycles"].value == 3
+
+
+def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runner(app, swing):
+    from lerobot_mp.twin.strategy import StrategyRunner
+
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, swing, joint="shoulder_pan", period_s=1.0)
+
+    tab.start()
+
+    assert type(tab.runner) is StrategyRunner
+    assert type(tab.runner.strategy).__module__ == "swing"
+    assert tab.runner.strategy.config.period_s == 1.0
+    assert app.twin.owner == "strategia"
+    assert app._busy("polityka") == "strategia"                  # the Policies tab finds the arm taken
+
+    deadline = time.monotonic() + 5.0
+    while tab.runner.status.step < 3 and time.monotonic() < deadline:
+        app.twin.step(0.02)
+        time.sleep(0.01)
+
+    assert tab.runner.status.step >= 3
+    assert "Strategia: jedzie" in app._status_text()
+
+    tab.halt()
+
+    assert not tab.running
+    assert tab.runner.status.stopped_because == "zatrzymana z panelu"
+    assert app.twin.owner is None
+    tab.tick()
+    assert "zatrzymana z panelu" in tab.run_md.content
+
+
+def test_a_wrong_key_in_the_strategys_config_section_is_refused_before_start(app, swing, tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: shoulder_pan\n  amplitud: 5\n")
+    app.twin.connect("sim", threaded=False)
+
+    tab = choose_strategy(app, swing, joint="shoulder_pan")
+
+    assert "amplitud" in tab.section_problem
+    assert "Uruchom odmowi" in tab.about_md.content
+
+    with pytest.raises(ValueError, match=r"Nieznane klucze w sekcji swing: \['amplitud'\]"):
+        tab.start()
+
+    assert app.twin.owner is None
+    assert not tab.running
+
+
+def test_a_required_setting_left_empty_is_refused_before_start(app, swing):
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, swing)
+
+    with pytest.raises(ValueError, match=r"Brak kluczy w sekcji swing: \['joint'\]"):
+        tab.start()
+
+    assert app.twin.owner is None
+
+
+def test_a_strategy_needs_a_fresh_confirmation_on_a_real_arm(app, swing, monkeypatch):
+    from test_twin_runtime import FakeArm, connect_fake
+
+    connect_fake(app.twin, monkeypatch, FakeArm())
+    tab = choose_strategy(app, swing, joint="shoulder_pan")
+
+    with pytest.raises(RuntimeError, match="zaznacz potwierdzenie"):
+        tab.start()
+    assert app.twin.owner is None
+
+    tab.confirm.value = True
+    tab.start()
+
+    assert app.twin.owner == "strategia"
+    assert tab.confirm.value is False
+
+
+def test_stop_ends_a_running_strategy(app, swing):
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab.start()
+
+    app._emergency_stop(None)
+
+    assert not tab.running
+    assert "STOP" in tab.runner.status.stopped_because
+    assert app.twin.owner is None
+    app.twin.clear_estop()
+
+
+COUNTER = '''
+from dataclasses import dataclass
+
+@dataclass
+class Settings:
+    count: int
+    speed: float = 1
+
+class Strategy:
+    hz = 10.0
+    settings = Settings
+
+    def __init__(self, settings):
+        self.config = settings
+
+    def act(self, obs):
+        return {}
+'''
+
+
+def install_counter(install_dist) -> str:
+    install_dist("counter-strategy", {"lerobot_mp.strategies": {"counter": "counter_strategy:Strategy"}},
+                 {"counter_strategy": COUNTER})
+    return "counter"
+
+
+def test_a_required_number_nobody_set_is_refused_before_start(app, install_dist):
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, install_counter(install_dist))
+
+    with pytest.raises(ValueError, match=r"Brak kluczy w sekcji counter: \['count'\]"):
+        tab.start()
+    assert app.twin.owner is None
+
+    tab._inputs["count"].value = 3
+    tab.start()
+
+    assert tab.runner.strategy.config.count == 3
+    assert app.twin.owner == "strategia"
+
+
+def test_a_float_setting_with_an_int_default_keeps_its_decimals(app, install_dist):
+    tab = choose_strategy(app, install_counter(install_dist), count=1, speed=1.5)
+
+    assert tab._inputs["speed"].value == 1.5
+
+
+def test_a_second_start_while_the_first_is_starting_is_refused(app, swing, monkeypatch):
+    """viser runs each click on its own thread: two runners would drive the arm under one owner."""
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, swing, joint="shoulder_pan")
+
+    inside = threading.Event()
+    let_go = threading.Event()
+    create = tab._create
+
+    def slow_create():
+        inside.set()
+        let_go.wait(5.0)
+        return create()
+
+    monkeypatch.setattr(tab, "_create", slow_create)
+    first = threading.Thread(target=tab.start)
+    first.start()
+    assert inside.wait(5.0)
+
+    with pytest.raises(RuntimeError, match="start strategii juz trwa"):
+        tab.start()
+
+    let_go.set()
+    first.join(5.0)
+    assert tab.running
+
+
+def test_no_strategy_package_is_imported_until_one_is_chosen(app, swing):
+    tab = app.strategies
+    tab.pick.value = "-"
+    tab.refresh()
+
+    assert tab.pick.options[0] == "-"
+    assert swing in tab.pick.options
+    assert tab.plugin is None
+    assert tab._inputs == {}
+    assert "Wybierz strategie" in tab.about_md.content
+
