@@ -5,9 +5,9 @@ targets. It never touches the backend: the twin's runner claims the arm, builds 
 every tick, calls the strategy, and sends its target through the twin's safety supervisor.
 Simulation and hardware run the same code path.
 
-A strategy from another package depends on this package, never on the twin. It follows the
-`Strategy` protocol, reads the observation's attributes, and returns an `Action`, any object with
-the same attributes, or a plain mapping of joint targets. Such packages register their strategies
+A strategy from another package depends on this package, never on the twin. It subclasses
+`Strategy`, reads the observation's attributes, and returns an `Action`, any object with the same
+attributes, or a plain mapping of joint targets. Such packages register their strategies
 under the `lerobot_mp.strategies` entry point group (`entry_points.STRATEGIES`), and the twin
 builds each one from its settings.
 
@@ -28,7 +28,7 @@ import numpy as np
 __all__ = ["Action", "ActionLike", "Frame", "ObjectPose", "Observation", "RunInfo", "S", "Strategy"]
 
 #: The type of a strategy's settings (`Strategy.settings`).
-S = TypeVar("S", covariant=True)
+S = TypeVar("S")
 
 
 @dataclass(frozen=True)
@@ -120,23 +120,32 @@ class ActionLike(Protocol):
 class Strategy(Protocol[S]):
     """A control strategy.
 
-    Required: `hz` and `act`. Optional: `settings`, a class attribute holding the dataclass of what
-    the operator sets for one run (the twin's `strategies` builds it and creates the strategy as
-    `cls(settings)`); `start(run, obs)`, which may raise to refuse the run (e.g. a policy trained
-    on another robot); `stop(reason)`, called exactly once after a successful `start`; and
-    `time_limit_s`.
+    Subclass it with the settings type as the parameter, `class Mine(Strategy[MineSettings])`, and
+    define `hz` and `act`. A type checker then checks every method against this contract. The
+    base supplies defaults for the rest: `settings` is None, `start` and `stop` do nothing,
+    `time_limit_s` is None.
 
-    The generic `S` is the settings type, and it exists only for the author's type checker. A
-    strategy need not inherit from this protocol: the same attributes are enough. A package that
-    wants the check writes `_: type[Strategy[MySettings]] = MyStrategy`. A type checker counts
-    every protocol member as required, so a strategy without settings says `settings = None` to
-    pass it.
+    `settings` is a class attribute holding the dataclass of what the operator sets for one run;
+    the twin's `strategies` builds it and creates the strategy as `cls(settings)`, or `cls()` when
+    `settings` is None. `start(run, obs)` may raise to refuse the run (e.g. a policy trained on
+    another robot). `stop(reason)` is called exactly once after a successful `start`.
+
+    This is a protocol, so at runtime the twin needs only the attributes, not the base class: a
+    class with `hz` and `act` runs. A type checker, though, matches such a class only when it
+    defines every member here, with its type; subclassing is simpler.
     """
 
+    #: Ticks per second: how often the twin calls `act`.
     hz: float
+    #: The settings dataclass; None = the strategy takes no settings.
+    settings: type[S] | None = None
+    #: End the run after this many seconds; None = no limit of the strategy's own.
+    time_limit_s: float | None = None
 
-    # A read-only property here, so that a class attribute `settings = MySettings` matches it.
-    @property
-    def settings(self) -> type[S] | None: ...
+    def start(self, run: RunInfo, obs: Observation) -> None:
+        """Before the first tick. Raise to refuse the run."""
+
+    def stop(self, reason: str) -> None:
+        """After the last tick, once, with why the run ended."""
 
     def act(self, obs: Observation) -> Action | ActionLike | Mapping[str, float]: ...

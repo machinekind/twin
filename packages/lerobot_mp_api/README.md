@@ -57,7 +57,7 @@ class HoldSettings:
     joint: str
 
 
-class Hold:
+class Hold(Strategy[HoldSettings]):
     """Holds one joint where it starts."""
 
     hz = 20.0
@@ -75,10 +75,11 @@ class Hold:
         if obs.t >= 5.0:
             return Action(target={self.joint: self.where}, done=True, success=True, note="held for 5 s")
         return Action(target={self.joint: self.where})
-
-
-_: type[Strategy[HoldSettings]] = Hold    # for a type checker: `settings` and `act` match
 ```
+
+`Strategy` is a protocol with defaults: `settings` None, `start` and `stop` doing nothing, `time_limit_s` None.
+Subclassing it gives a strategy those defaults and lets a type checker (pyright, mypy) check `act`,
+`start` and `stop` against the contract. The twin itself checks only that `hz` and `act` exist.
 
 ## A backend
 

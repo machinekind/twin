@@ -252,6 +252,7 @@ tab.
 ```bash
 pytest -q
 pytest -q -m "not render"     # a computer without OpenGL
+pyright                       # the contracts, the strategies and the example packages
 ```
 
 The twin's tests skip themselves without `mujoco`, `torch` or `viser`, and the
@@ -429,8 +430,9 @@ field, a number or a switch per field, prefilled from the config file's section 
 name (`pi05:`). Start builds the dataclass strictly, so an unknown key, a missing one or a
 wrong type is refused before the arm moves, and creates the strategy as `Pi05(settings)`.
 The contract types live in `lerobot-mp-api`; a strategy package depends on that, never on
-`lerobot-mp` (MuJoCo, viser, torch). The generic `Strategy[S]` protocol is there for its type
-checker. [examples/strategies/swing](examples/strategies/swing) is a complete example, and the
+`lerobot-mp` (MuJoCo, viser, torch). A strategy subclasses `Strategy[S]`, `S` its settings
+dataclass, which gives it the defaults (no settings, no time limit, empty `start` and `stop`)
+and lets a type checker check its methods against the contract. [examples/strategies/swing](examples/strategies/swing) is a complete example, and the
 tests load it.
 
 ## Configuration

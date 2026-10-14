@@ -12,7 +12,7 @@ from .backend import BackendContext, BackendPlugin, RobotBackend, RobotInfo
 from .entry_points import BACKENDS, ROBOTS, STRATEGIES
 from .strategy import Action, ActionLike, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "BACKENDS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext", "BackendPlugin", "Frame",

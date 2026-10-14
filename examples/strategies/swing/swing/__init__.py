@@ -27,7 +27,7 @@ class SwingSettings:
     wait_for_return: bool = True
 
 
-class Swing:
+class Swing(Strategy[SwingSettings]):
     """Swings one joint around where it starts, then waits for it to come back."""
 
     hz = 20.0
@@ -74,6 +74,3 @@ class Swing:
     def _at(self, offset: float) -> dict[str, float]:
         return {self.config.joint: self._centre + offset}
 
-
-# The protocol checks `settings` and `act` for a type checker; at runtime this only binds a name.
-_: type[Strategy[SwingSettings]] = Swing

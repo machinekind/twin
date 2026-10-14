@@ -129,7 +129,7 @@ class Move:
 
 
 class Swing:
-    """A strategy as a package writes it: no base class, only the attributes."""
+    """A strategy without the base class: the twin runs it on its attributes alone."""
 
     hz = 20.0
     settings = SwingSettings
@@ -141,8 +141,41 @@ class Swing:
         return Move(target={self.config.joint: self.config.amplitude})
 
 
-#: The check a strategy package writes for its type checker; at runtime it only binds a name.
-_: type[Strategy[SwingSettings]] = Swing
+class Hold(Strategy[SwingSettings]):
+    """A strategy as a package writes it: the base class gives the defaults."""
+
+    hz = 20.0
+    settings = SwingSettings
+
+    def __init__(self, settings: SwingSettings):
+        self.config = settings
+
+    def act(self, obs: Observation) -> Action:
+        return Action(target={self.config.joint: obs.joints[self.config.joint]})
+
+
+class Nothing(Strategy[None]):
+    """A strategy with no settings."""
+
+    hz = 10.0
+
+    def act(self, obs: Observation) -> Mapping[str, float]:
+        return {}
+
+
+def test_a_subclass_gets_the_defaults_of_the_protocol():
+    hold = Hold(SwingSettings(joint="j1"))
+    obs = Observation(t=0.0, step=0, joints={"j1": 3.0}, command={})
+    run = RunInfo(robot="r", joints=("j1",), gripper=None, limits={"j1": (-90.0, 90.0)}, max_vel={"j1": 90.0},
+                  folder=Path("."), simulated=True)
+
+    assert Hold.settings is SwingSettings
+    assert Nothing.settings is None
+    assert hold.time_limit_s is None
+    assert hold.start(run, obs) is None
+    assert hold.act(obs).target == {"j1": 3.0}
+    assert hold.stop("done") is None
+    assert Nothing().act(obs) == {}
 
 
 def test_a_strategy_follows_the_protocol_by_its_attributes():
@@ -158,7 +191,7 @@ def test_a_strategy_follows_the_protocol_by_its_attributes():
 def test_the_strategy_protocol_is_not_checked_with_isinstance():
     """`settings` is optional at runtime, so the twin checks `hz` and `act` by attribute."""
     with pytest.raises(TypeError):
-        isinstance(Swing(SwingSettings(joint="j1")), Strategy)
+        isinstance(Swing(SwingSettings(joint="j1")), Strategy)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- backend
@@ -256,4 +289,4 @@ def test_a_robot_backend_subclass_gets_the_optional_defaults():
 
 def test_the_robot_backend_abc_needs_the_required_methods():
     with pytest.raises(TypeError):
-        RobotBackend()
+        RobotBackend()  # type: ignore[abstract]

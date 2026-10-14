@@ -9,12 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from .strategy import Action, Observation, RunInfo
+from .strategy import Action, Observation, RunInfo, Strategy
 
 
-class Waypoints:
-    #: No settings: the poses are given in code.
-    settings = None
+class Waypoints(Strategy[None]):
+    """Drives the arm through poses given in code, so it has no settings."""
 
     def __init__(
         self,

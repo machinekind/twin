@@ -40,7 +40,7 @@ train = ["mujoco>=3.14,<3.15", "mujoco-warp>=3.14,<3.15", "torch>=2.7,<2.12"]
 a1x = ["galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"]
 # Skrypty z research/3d (otoczki wypukle, dobor chwytu).
 research = ["trimesh>=4,<6"]
-dev = ["pytest>=7.4"]
+dev = ["pytest>=7.4", "pyright>=1.1"]
 
 [project.scripts]
 lerobot-mp-bridge = "lerobot_mp.robot.so101.serial_bridge:main"
@@ -60,6 +60,17 @@ a1x = "lerobot_mp.robot.a1x.backend:create"
 # uv (`uv run`, `uv sync`) takes the contracts from the clone, editable, like the pip line above.
 [tool.uv.sources]
 lerobot-mp-api = { path = "packages/lerobot_mp_api", editable = true }
+
+# The type checker runs on the contracts and on what implements them; the rest of the twin is not typed yet.
+[tool.pyright]
+extraPaths = ["packages/lerobot_mp_api"]
+include = [
+    "packages/lerobot_mp_api",
+    "examples/strategies",
+    "src/lerobot_mp/twin/strategy.py",
+    "src/lerobot_mp/twin/strategies.py",
+    "src/lerobot_mp/twin/waypoints.py",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

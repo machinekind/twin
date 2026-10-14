@@ -6,7 +6,7 @@ A package registers a strategy class under the `lerobot_mp.strategies` entry poi
     [project.entry-points."lerobot_mp.strategies"]
     pi05 = "vla_strategies.pi05:Pi05"
 
-The class follows `strategy.Strategy`, which the package imports from `lerobot_mp_api`. What the
+The class subclasses `strategy.Strategy`, which the package imports from `lerobot_mp_api`. What the
 operator sets for one run (a VLA's instruction, a policy file, task options) stays out of the
 `Observation`, which holds only what the twin measures. The strategy declares it as a dataclass in
 its `settings` class attribute and takes an instance in its constructor:
@@ -16,7 +16,7 @@ its `settings` class attribute and takes an instance in its constructor:
         instruction: str
         server: str = "localhost:8000"
 
-    class Pi05:
+    class Pi05(Strategy[VlaSettings]):
         hz = 50
         settings = VlaSettings
 
