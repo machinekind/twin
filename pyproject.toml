@@ -9,13 +9,17 @@ description = "Cyfrowy blizniak stanowiska z ramieniem robota: symulacja MuJoCo,
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-# Wersje sprawdzone razem sa w constraints.txt:  pip install -e ".[...]" -c constraints.txt
+# Wersje sprawdzone razem sa w constraints.txt:
+#   pip install -e packages/lerobot_mp_api -e ".[...]" -c constraints.txt
 dependencies = [
     # contrib (a superset of opencv-python) keeps existing environments on one OpenCV package:
     # two OpenCV wheels write the same cv2/ directory and overwrite each other.
     "opencv-contrib-python>=4.8",
     "numpy>=1.24",
     "PyYAML>=6.0",
+    # The plugin contracts, packages/lerobot_mp_api in this repository; not on PyPI, so it is
+    # installed from the clone in the same command: pip install -e packages/lerobot_mp_api -e ".[...]"
+    "lerobot-mp-api>=0.1,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +57,10 @@ feetech = "lerobot_mp.robot.so101.feetech:create"
 lerobot = "lerobot_mp.robot.so101.lerobot_backend:create"
 a1x = "lerobot_mp.robot.a1x.backend:create"
 
+# uv (`uv run`, `uv sync`) takes the contracts from the clone, editable, like the pip line above.
+[tool.uv.sources]
+lerobot-mp-api = { path = "packages/lerobot_mp_api", editable = true }
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -62,7 +70,7 @@ lerobot_mp = ["py.typed"]
 "lerobot_mp.robot.a1x" = ["robot/**/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/lerobot_mp_api/tests"]
 pythonpath = ["src"]
 markers = [
     "render: test renderuje kadry przez MuJoCo/OpenGL (maszyna bez GPU: -m \"not render\")",

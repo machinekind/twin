@@ -46,6 +46,12 @@ Najważniejsze zasady:
   satisfied” i CPU-owy torch zostanie — wtedy `pip uninstall torch` i od nowa.
 - Wersje sprawdzone razem są w `constraints.txt` (`-c constraints.txt`);
   `mujoco` i `mujoco-warp` muszą mieć tę samą wersję (extra je wiążą).
+- Kontrakty wtyczek to osobny pakiet `lerobot-mp-api` w `packages/lerobot_mp_api`
+  (patrz [Jak to jest zbudowane](#jak-to-jest-zbudowane)). Nie ma go na PyPI, więc
+  instaluje się go z klonu w tym samym poleceniu co bliźniaka:
+  `pip install -e packages/lerobot_mp_api -e ".[…]"`; samo `pip install -e ".[…]"`
+  kończy się „No matching distribution found for lerobot-mp-api”. uv bierze tę
+  ścieżkę z `[tool.uv.sources]` w `pyproject.toml`.
 - Trening potrzebuje karty NVIDIA z CUDA. Bez niej instaluj bez `train`
   (torch z indeksu `cpu`): panel, kalibracja, percepcja, identyfikacja
   dynamiki i ewaluacja polityk na CPU działają.
@@ -57,7 +63,7 @@ Set-ExecutionPolicy -Scope Process Bypass   # świeży Windows blokuje Activate.
 .venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126   # bez NVIDIA: .../whl/cpu
-pip install -e ".[twin,train,feetech,dev]" -c constraints.txt                 # bez NVIDIA: ".[twin,feetech,dev]"
+pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt   # bez NVIDIA: ".[twin,feetech,dev]"
 lerobot-twin check
 lerobot-twin demo    # przykładowe stanowisko w symulacji -> workspace/twin.json
 ```
@@ -381,7 +387,7 @@ sprawdzenie, zanim panel się połączy.
 ### Instalacja
 
 ```bash
-pip install -e ".[twin,a1x,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,a1x,dev]" -c constraints.txt
 ```
 
 Extra `a1x` pobiera pakiet `galaxeo` z gita (`galaxeo-manipulators@main`).
@@ -961,7 +967,7 @@ src/lerobot_mp/twin/
 ├── camera_stream.py wątek kamery: zawsze najnowsza klatka, bez kolejki
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
 ├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
-├── strategy.py      kontrakt strategii sterowania: `Observation`, `Strategy`, `Action`, `StrategyRunner`
+├── strategy.py      `StrategyRunner`; kontrakt strategii (`Observation`, `Strategy`, `Action`) re-eksportowany z `lerobot_mp_api`
 ├── waypoints.py     strategia testowa: przejazd przez zadane pozy
 ├── strategies.py    strategie z wtyczek `lerobot_mp.strategies` i ich ustawienia (dataclass, budowana ściśle)
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
@@ -993,11 +999,23 @@ src/lerobot_mp/twin/
     └── watch.py       wykrywanie przestawionej kamery
 
 src/lerobot_mp/robot/
-├── base.py, factory.py   kontrakt backendu i rejestr wtyczek
+├── base.py, factory.py   kontrakt backendu (re-eksport z `lerobot_mp_api`) i rejestr wtyczek
 ├── so101/                pakiet SO-101 (wyjdzie do repozytorium so101)
 │   ├── robot/            robot.yaml i model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
 │   └── feetech.py, lerobot_backend.py, serial_bridge.py
 └── a1x/                  pakiet A1X (wyjdzie do galaxeo)
     ├── robot/            robot.yaml, URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
     └── backend.py        backend a1x (CAN-FD przez pakiet galaxeo)
+
+packages/lerobot_mp_api/      pakiet lerobot-mp-api: kontrakty wtyczek, tylko numpy
+├── strategy.py           `Observation`, `Action`, `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, protokół `Strategy`
+├── backend.py            `BackendContext`, protokół `BackendPlugin`, `RobotBackend`, `RobotInfo`
+└── entry_points.py       grupy entry points: `ROBOTS`, `BACKENDS`, `STRATEGIES`
 ```
+
+**Kontrakty wtyczek.** Typy kontraktu leżą w pakiecie `lerobot-mp-api`
+(`packages/lerobot_mp_api/`), a nie w bliźniaku. Wtyczka — pakiet ramienia (folder z `robot.yaml`
+i backend) albo pakiet strategii — zależy od niego, nigdy od `lerobot-mp`
+(MuJoCo, viser, torch). Bliźniak re-eksportuje te same klasy z `lerobot_mp.twin.strategy`
+i `lerobot_mp.robot.base`, więc dotychczasowe importy i sprawdzenia `isinstance` działają
+bez zmian. Gotowe wzory: `examples/robots/testbot` i `examples/strategies/swing`.

@@ -2,18 +2,16 @@
 
 The twin finds `Swing` through the entry point in this package's `pyproject.toml`, builds
 `SwingSettings` from the config file's `swing:` section and the panel's form, and creates the
-strategy as `Swing(settings)`. Nothing here imports the twin at runtime: the answers are this
-package's own `Move`, and the twin's protocol is imported only for a type checker.
+strategy as `Swing(settings)`. The package depends on the contracts (`lerobot-mp-api`), never
+on the twin: it reads an `Observation` and answers with an `Action`.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
-if TYPE_CHECKING:
-    from lerobot_mp.twin.strategy import Observation, RunInfo, Strategy
+from lerobot_mp_api import Action, Observation, RunInfo, Strategy
 
 
 @dataclass
@@ -27,17 +25,6 @@ class SwingSettings:
     cycles: int = 2
     #: End the run only once the joint measures back where it started, not when the swings are over.
     wait_for_return: bool = True
-
-
-@dataclass
-class Move:
-    """The twin's `Action` by its attributes."""
-
-    target: dict[str, float] = field(default_factory=dict)
-    done: bool = False
-    success: bool | None = None
-    error: float | None = None
-    note: str = ""
 
 
 class Swing:
@@ -68,26 +55,25 @@ class Swing:
 
         self._centre = obs.joints[joint]
 
-    def act(self, obs: Observation) -> Move:
+    def act(self, obs: Observation) -> Action:
         config = self.config
 
         if obs.t < config.cycles * config.period_s:
             phase = obs.t / config.period_s
             offset = config.amplitude * math.sin(2.0 * math.pi * phase)
-            return Move(target=self._at(offset), note=f"wahniecie {int(phase) + 1}/{config.cycles}")
+            return Action(target=self._at(offset), note=f"wahniecie {int(phase) + 1}/{config.cycles}")
 
         error = abs(obs.joints[config.joint] - self._centre)
         back = error <= self.tolerance
 
         if back or not config.wait_for_return:
-            return Move(target=self._at(0.0), done=True, success=back, error=error, note="koniec")
+            return Action(target=self._at(0.0), done=True, success=back, error=error, note="koniec")
 
-        return Move(target=self._at(0.0), error=error, note="powrot")
+        return Action(target=self._at(0.0), error=error, note="powrot")
 
     def _at(self, offset: float) -> dict[str, float]:
         return {self.config.joint: self._centre + offset}
 
 
-if TYPE_CHECKING:
-    # The twin's protocol checks `settings` and `act` for a type checker; nothing runs here.
-    _: type[Strategy[SwingSettings]] = Swing
+# The protocol checks `settings` and `act` for a type checker; at runtime this only binds a name.
+_: type[Strategy[SwingSettings]] = Swing

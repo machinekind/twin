@@ -3,7 +3,7 @@
 # potrzebuje ten projekt - reszta zaleznosci dobiera sie sama.
 #
 # Uzycie (torch NAJPIERW z indeksu PyTorcha, patrz README "Szybki start na nowym komputerze"):
-#   pip install -e ".[twin,train,feetech,dev]" -c constraints.txt
+#   pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt
 #
 # torch/torchvision bez lokalnego znacznika (+cu126 / +cpu): wg PEP 440 "==2.11.0"
 # pasuje tez do 2.11.0+cu126 i 2.11.0+cpu, wiec kolo zainstalowane wczesniej

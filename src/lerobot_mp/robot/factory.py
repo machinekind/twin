@@ -1,6 +1,7 @@
 """Backend plugins: found through entry points, built from the twin's configuration.
 
-A package registers a backend factory under the `lerobot_mp.backends` entry point group:
+A package registers a backend factory under the `lerobot_mp.backends` entry point group
+(`lerobot_mp_api.entry_points.BACKENDS`):
 
     [project.entry-points."lerobot_mp.backends"]
     feetech = "lerobot_mp.robot.so101.feetech:create"
@@ -21,6 +22,8 @@ from collections.abc import Mapping
 from importlib.metadata import EntryPoint, entry_points
 from typing import TYPE_CHECKING, Any
 
+from lerobot_mp_api.entry_points import BACKENDS
+
 from ..twin.config import TwinConfig
 from .base import BackendContext, RobotBackend, RobotInfo
 
@@ -29,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ENTRY_POINT_GROUP = "lerobot_mp.backends"
+ENTRY_POINT_GROUP = BACKENDS
 
 _REQUIRED = ("connect", "disconnect", "read_joints", "send_joints", "is_connected")
 

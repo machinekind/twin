@@ -1,14 +1,16 @@
-"""The control-strategy contract: one way for any strategy to drive the arm, in simulation and on hardware.
+"""The control-strategy runner: one way for any strategy to drive the arm, in simulation and on hardware.
 
 A strategy (an RL policy, a modular planner, a VLA model) turns what the twin sees into joint
 targets. It never touches the backend: `StrategyRunner` claims the arm, builds an `Observation`
 every tick, calls the strategy, and sends its target through `Twin.set_target`, so every command
 passes the safety supervisor. Simulation and hardware run the same code path.
 
-A strategy from another package needs nothing from the twin. It follows the `Strategy` protocol,
-reads the observation's attributes, and returns an `Action`, any object with the same attributes,
-or a plain mapping of joint targets. Such packages register their strategies through entry points,
-and the twin builds each one from its settings: see `strategies`.
+The contract a strategy follows (`Observation`, `Action`, `ActionLike`, `RunInfo`, `ObjectPose`,
+`Frame` and the `Strategy` protocol) lives in the `lerobot-mp-api` package, `lerobot_mp_api.strategy`.
+A strategy from another package depends on that package, never on the twin. This module re-exports
+the same classes, so `lerobot_mp.twin.strategy.Action is lerobot_mp_api.Action`. Such packages
+register their strategies through entry points, and the twin builds each one from its settings:
+see `strategies`.
 
     runner = StrategyRunner(twin, Waypoints([pose_a, pose_b]), goal=panel_goal, objects=cube_poses)
     runner.start()      # its own thread at `strategy.hz`; tests: `start(threaded=False)` + `step_once`
@@ -35,137 +37,25 @@ import math
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
+from lerobot_mp_api.strategy import Action, ActionLike, Frame, ObjectPose, Observation, RunInfo, S, Strategy
+
+__all__ = [
+    "OWNER", "Action", "ActionLike", "Frame", "FrameSource", "ObjectPose", "Observation", "RunInfo",
+    "RunnerStatus", "S", "Strategy", "StrategyRunner",
+]
 
 logger = logging.getLogger(__name__)
 
 #: Default owner name of the arm while a strategy runs (`Twin.claim`).
 OWNER = "strategia"
 
-#: The type of a strategy's settings (`Strategy.settings`).
-S = TypeVar("S", covariant=True)
-
 #: Where frames come from: camera name -> (RGB image or None, capture time on `time.monotonic`).
 #: `CameraHub.frame_t` is one: it serves real cameras' streams and renders simulated ones.
 FrameSource = Callable[[str], tuple[np.ndarray | None, float]]
-
-
-# --------------------------------------------------------------------------- the contract
-
-
-@dataclass(frozen=True)
-class ObjectPose:
-    """Where an object is, in the robot's base frame."""
-
-    #: Position [m], shape (3,).
-    position: np.ndarray
-    #: Rotation matrix, shape (3, 3).
-    rotation: np.ndarray
-    #: Where the pose comes from, e.g. "kamery", "w dloni", "ostatnie widziane", "symulacja".
-    source: str = ""
-    #: Seconds since the pose was measured; 0 = this tick.
-    age_s: float = 0.0
-
-
-@dataclass(frozen=True)
-class Frame:
-    """One camera frame."""
-
-    #: RGB image, shape (height, width, 3).
-    image: np.ndarray
-    #: Seconds since the frame was captured, at the moment it was read. A simulated camera renders
-    #: on read, so its age is the render time; a real camera's is the age of its stream's latest frame.
-    age_s: float
-
-
-@dataclass(frozen=True)
-class RunInfo:
-    """What a strategy learns once, when the run starts."""
-
-    robot: str
-    #: Joints in app order: degrees, the gripper 0..100.
-    joints: tuple[str, ...]
-    gripper: str | None
-    #: The limits that hold on this arm now [app units]: the description's, narrowed to the hardware's.
-    limits: Mapping[str, tuple[float, float]]
-    #: Highest commanded speed [app units / s]: the supervisor never goes faster.
-    max_vel: Mapping[str, float]
-    #: The robot's folder: `robot.yaml` and the model, for a strategy with its own kinematics.
-    folder: Path
-    simulated: bool
-
-
-@dataclass(frozen=True)
-class Observation:
-    """What the strategy sees in one tick. Units: degrees, gripper 0..100, metres, base frame."""
-
-    #: Seconds since the run started.
-    t: float
-    #: Tick number, 0 = the first.
-    step: int
-    #: Measured joint positions.
-    joints: Mapping[str, float]
-    #: The supervisor's latest command: where the servos are being told to go (it trails the target).
-    command: Mapping[str, float]
-    #: The goal set in the panel, shape (3,); None = no goal.
-    goal: np.ndarray | None = None
-    #: Objects the perception knows about, by name (e.g. "cube").
-    objects: Mapping[str, ObjectPose] = field(default_factory=dict)
-    #: Camera frames by camera name, fetched only when read: a strategy without vision pays nothing.
-    #: A camera without a frame (not open yet, stream broken) is missing.
-    frames: Mapping[str, Frame] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class Action:
-    """What the strategy wants after one tick."""
-
-    #: Joint targets [app units]. Joints left out, or an empty target, keep driving to the previous one.
-    target: Mapping[str, float] = field(default_factory=dict)
-    #: The run is over: the task is done, or the strategy gives up.
-    done: bool = False
-    #: Whether the task succeeded, when known.
-    success: bool | None = None
-    #: The task's error, when known (e.g. metres from the goal).
-    error: float | None = None
-    #: A short status line for the panel.
-    note: str = ""
-
-
-class ActionLike(Protocol):
-    """A strategy's own answer object with `Action`'s attributes. Only `target` is required."""
-
-    @property
-    def target(self) -> Mapping[str, float]: ...
-
-
-class Strategy(Protocol[S]):
-    """A control strategy.
-
-    Required: `hz` and `act`. Optional: `settings`, a class attribute holding the dataclass of what
-    the operator sets for one run (`strategies` builds it and creates the strategy as
-    `cls(settings)`); `start(run, obs)`, which may raise to refuse the run (e.g. a policy trained on
-    another robot); `stop(reason)`, called exactly once after a successful `start`; and
-    `time_limit_s`.
-
-    The generic `S` is the settings type, and it exists only for the author's type checker. A
-    strategy need not inherit from this protocol: the same attributes are enough. A package that
-    wants the check imports the protocol under `TYPE_CHECKING` only and writes
-    `_: type[Strategy[MySettings]] = MyStrategy`. A type checker counts every protocol member as
-    required, so a strategy without settings says `settings = None` to pass it.
-    """
-
-    hz: float
-
-    # A read-only property here, so that a class attribute `settings = MySettings` matches it.
-    @property
-    def settings(self) -> type[S] | None: ...
-
-    def act(self, obs: Observation) -> Action | ActionLike | Mapping[str, float]: ...
 
 
 @dataclass

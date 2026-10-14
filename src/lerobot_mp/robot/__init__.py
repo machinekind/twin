@@ -1,4 +1,4 @@
-"""Robot backends: the contract (`base`) and the plugin registry (`factory`).
+"""Robot backends: the contract (`base`, from `lerobot_mp_api.backend`) and the plugin registry (`factory`).
 
 `so101/` and `a1x/` are robot packages that still live here: each holds its robot folder and its
 backends, registered in this repository's `pyproject.toml` like any robot package until they move

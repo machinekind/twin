@@ -1,15 +1,15 @@
 """Strategies from installed packages, and the settings the operator gives them.
 
-A package registers a strategy class under the `lerobot_mp.strategies` entry point group, named
-like the strategy:
+A package registers a strategy class under the `lerobot_mp.strategies` entry point group
+(`lerobot_mp_api.entry_points.STRATEGIES`), named like the strategy:
 
     [project.entry-points."lerobot_mp.strategies"]
     pi05 = "vla_strategies.pi05:Pi05"
 
-The class follows `strategy.Strategy`. What the operator sets for one run (a VLA's instruction, a
-policy file, task options) stays out of the `Observation`, which holds only what the twin measures.
-The strategy declares it as a dataclass in its `settings` class attribute and takes an instance in
-its constructor:
+The class follows `strategy.Strategy`, which the package imports from `lerobot_mp_api`. What the
+operator sets for one run (a VLA's instruction, a policy file, task options) stays out of the
+`Observation`, which holds only what the twin measures. The strategy declares it as a dataclass in
+its `settings` class attribute and takes an instance in its constructor:
 
     @dataclass
     class VlaSettings:
@@ -43,10 +43,12 @@ from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, get_type_hints
 
+from lerobot_mp_api.entry_points import STRATEGIES
+
 from .config import read_config_data
 from .strategy import Strategy
 
-ENTRY_POINT_GROUP = "lerobot_mp.strategies"
+ENTRY_POINT_GROUP = STRATEGIES
 
 #: Settings field types the panel can draw: a text field, a number, a switch.
 FIELD_TYPES = (str, int, float, bool)

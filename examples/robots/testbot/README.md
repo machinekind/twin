@@ -12,12 +12,13 @@ testbot = "testbot:ROBOT_DIR"
 testbot = "testbot.backend:create"
 ```
 
-Nothing in the package imports the twin. The backend is any object with `connect`, `disconnect`,
-`read_joints`, `send_joints` and `is_connected` (`lerobot_mp.robot.base.BackendPlugin` lists the
-optional methods); `create` receives a `BackendContext`: joints, limits, port and the backend's
-own config section.
+The package depends on `lerobot-mp-api`, the contracts (`packages/lerobot_mp_api` in the twin's
+repository), never on the twin. The backend is any object with `connect`, `disconnect`,
+`read_joints`, `send_joints` and `is_connected` (`lerobot_mp_api.BackendPlugin` lists the
+optional methods); `create` receives a `lerobot_mp_api.BackendContext`: joints, limits, port and
+the backend's own config section.
 
-Try it in the twin's environment:
+Try it in the twin's environment, which already has `lerobot-mp-api`:
 
 ```bash
 pip install -e examples/robots/testbot
