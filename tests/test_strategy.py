@@ -15,11 +15,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import lerobot_mp_api.strategy as api_strategy
 import numpy as np
 import pytest
 
 pytest.importorskip("mujoco")
 
+import lerobot_mp.twin.strategy as twin_strategy  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.strategy import Action, ObjectPose, StrategyRunner  # noqa: E402
@@ -284,6 +286,12 @@ def test_the_runner_and_the_test_strategy_import_nothing_from_rl(source):
         assert module != "rl"
         assert not module.startswith("rl.")
         assert ".rl" not in module
+
+
+@pytest.mark.parametrize("name", api_strategy.__all__)
+def test_the_contract_is_lerobot_mp_apis_own_not_a_copy(name):
+    """A plugin builds its `Action` from `lerobot_mp_api`; the runner's `isinstance` must recognise it."""
+    assert getattr(twin_strategy, name) is getattr(api_strategy, name)
 
 
 # --------------------------------------------------------------------------- guards

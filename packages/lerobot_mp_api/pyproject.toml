@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-mp-api"
+version = "0.1.0"
+description = "The digital twin's plugin contracts: the types a robot, backend or strategy package implements"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# Only numpy: a plugin package depends on this one, never on the twin (MuJoCo, viser, torch, OpenCV).
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["lerobot_mp_api*"]
+
+[tool.setuptools.package-data]
+lerobot_mp_api = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

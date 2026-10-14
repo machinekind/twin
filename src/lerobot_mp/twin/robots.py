@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from lerobot_mp_api.entry_points import ROBOTS
 
 from ..paths import REPO_ROOT
 from .config import JointConfig, TwinConfig, config_from_data, from_mapping, read_config_data
@@ -36,7 +37,7 @@ from .config import JointConfig, TwinConfig, config_from_data, from_mapping, rea
 logger = logging.getLogger(__name__)
 
 ROBOT_FILE = "robot.yaml"
-ENTRY_POINT_GROUP = "lerobot_mp.robots"
+ENTRY_POINT_GROUP = ROBOTS
 
 
 def resolve_asset(path: str | Path) -> Path:

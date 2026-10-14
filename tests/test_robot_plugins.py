@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import ast
 import shutil
 from importlib.metadata import entry_points
 from pathlib import Path
 
+import lerobot_mp_api.backend as api_backend
 import pytest
 import yaml
+from lerobot_mp_api.entry_points import BACKENDS, ROBOTS
 
 pytest.importorskip("mujoco")
 
 from conftest import TESTBOT  # noqa: E402
 
+import lerobot_mp.robot.base as twin_backend  # noqa: E402
 from lerobot_mp.robot import backend_context, backends, create_backend  # noqa: E402
 from lerobot_mp.robot.factory import PluginBackend  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
@@ -188,10 +192,33 @@ def test_backends_of_this_repository_are_registered_like_any_plugin():
 
 
 # ------------------------------------------------------------ a plugin backend in the twin
+@pytest.mark.parametrize("name", api_backend.__all__)
+def test_the_backend_contract_is_lerobot_mp_apis_own_not_a_copy(name):
+    """A plugin subclasses `lerobot_mp_api.RobotBackend`; the factory's `isinstance` must recognise it."""
+    assert getattr(twin_backend, name) is getattr(api_backend, name)
+
+
+def test_the_twin_reads_the_entry_point_groups_lerobot_mp_api_names():
+    from lerobot_mp.robot import factory
+    from lerobot_mp.twin import robots
+
+    assert robots.ENTRY_POINT_GROUP == ROBOTS
+    assert factory.ENTRY_POINT_GROUP == BACKENDS
+
+
 def test_the_test_robot_package_never_imports_the_twin():
+    """Only the contracts (`lerobot_mp_api`), anywhere in the package, also inside a function."""
     for path in (TESTBOT / "testbot").rglob("*.py"):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            assert not line.lstrip().startswith(("import lerobot_mp", "from lerobot_mp")), f"{path}: {line}"
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                modules = [node.module or ""]
+            else:
+                continue
+
+            for module in modules:
+                assert module.split(".")[0] != "lerobot_mp", f"{path}: {module}"
 
 
 def test_the_twin_drives_the_test_robot_through_its_plugin(testbot):

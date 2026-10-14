@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import pytest
+from lerobot_mp_api.entry_points import STRATEGIES
 
 pytest.importorskip("mujoco")
 
@@ -19,7 +20,7 @@ from conftest import SWING  # noqa: E402
 
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
-from lerobot_mp.twin.strategies import config_section, load_strategy, strategies  # noqa: E402
+from lerobot_mp.twin.strategies import ENTRY_POINT_GROUP, config_section, load_strategy, strategies  # noqa: E402
 from lerobot_mp.twin.strategy import StrategyRunner  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
 
@@ -48,6 +49,10 @@ def install_strategy(install_dist, dist: str, source: str) -> str:
 
 
 # --------------------------------------------------------------------------- discovery
+
+
+def test_the_twin_reads_the_entry_point_group_lerobot_mp_api_names():
+    assert ENTRY_POINT_GROUP == STRATEGIES == GROUP
 
 
 def test_a_strategy_from_an_installed_package_is_found_through_its_entry_point(swing):

@@ -144,7 +144,7 @@ Set-ExecutionPolicy -Scope Process Bypass   # this window only; without it Activ
 python -m pip install --upgrade pip
 # CUDA torch FIRST - torch from PyPI on Windows has no CUDA
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
-pip install -e ".[twin,train,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt
 ```
 
 A fresh Windows blocks PowerShell scripts ("running scripts is disabled on this
@@ -171,7 +171,7 @@ git clone https://github.com/machinekind/digital_twin_training.git && cd digital
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
-pip install -e ".[twin,train,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt
 sudo usermod -aG dialout $USER    # access to the arm's port (log out and in after this)
 ```
 
@@ -191,7 +191,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
-pip install -e ".[twin,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
 ```
 
 ```bash
@@ -200,11 +200,17 @@ git clone https://github.com/machinekind/digital_twin_training.git && cd digital
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu   # macOS: pip install torch==2.11.0
-pip install -e ".[twin,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
 ```
 
 Linux without a display and without a GPU: additionally
 `sudo apt install libosmesa6` and `export MUJOCO_GL=osmesa`.
+
+`packages/lerobot_mp_api` is `lerobot-mp-api`, the contracts the twin shares with robot and
+strategy packages ([below](#control-strategies)). It is not on PyPI, so it is installed from the
+clone in the same command as the twin; `pip install -e ".[…]"` alone stops at "No matching
+distribution found for lerobot-mp-api". uv reads the same path from `[tool.uv.sources]` in
+`pyproject.toml` (`uv sync`, `uv run`).
 
 ### 2. Check
 
@@ -287,7 +293,7 @@ The `a1x` backend talks to the arm over CAN-FD through the `galaxeo` package
 (protocol and link, the galaxeo-manipulators repository):
 
 ```bash
-pip install -e ".[twin,a1x,dev]" -c constraints.txt   # needs the merged `pkg` branch in galaxeo-manipulators
+pip install -e packages/lerobot_mp_api -e ".[twin,a1x,dev]" -c constraints.txt   # needs the merged `pkg` branch in galaxeo-manipulators
 # until it is merged: ".[twin,dev]" and pip install -e ../galaxeo-manipulators   (a clone on the `pkg` branch)
 # macOS (XCAN dongle): additionally pip install pyusb and brew install libusb
 # Windows (PCAN): additionally pip install python-can
@@ -362,7 +368,7 @@ transactions, so one frame is one round trip instead of several. On the machine
 with the arm:
 
 ```bash
-pip install -e ".[bridge]"
+pip install -e packages/lerobot_mp_api -e ".[bridge]"
 lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-of-the-remote-machine>
 ```
 
@@ -394,18 +400,20 @@ The network carries the serial port here, not the image.
 
 ## Control strategies
 
-Every way of driving the arm goes through one contract (`lerobot_mp.twin.strategy`). A strategy
-has a rate `hz` and `act(observation)`. The observation holds the time, the measured joints,
-the supervisor's command, the panel's goal, the objects the perception knows (pose, source,
-age) and the camera frames with their age, fetched only when read. `act` returns joint targets and, when the
-run is over, `done` with the task's `success` and `error`.
+Every way of driving the arm goes through one contract, `lerobot_mp_api.strategy` in the
+`lerobot-mp-api` package ([packages/lerobot_mp_api](packages/lerobot_mp_api)); the twin re-exports
+it from `lerobot_mp.twin.strategy`. A strategy has a rate `hz` and `act(observation)`. The
+observation holds the time, the measured joints, the supervisor's command, the panel's goal, the
+objects the perception knows (pose, source, age) and the camera frames with their age, fetched
+only when read. `act` returns joint targets and, when the run is over, `done` with the task's
+`success` and `error`.
 
 `StrategyRunner` claims the arm and sends every target through the safety supervisor, the
 same way in simulation and on hardware. It stops the run on a target that names another
 robot's joint or is not a finite number, on Home, STOP, reconnect or a disconnected arm, and
-at the time limit. A strategy from another package needs nothing from the twin: it may return
-a plain mapping of joint targets. The test strategy `waypoints.Waypoints` drives through given
-poses.
+at the time limit. A strategy from another package needs nothing from the twin: it returns an
+`Action`, an object with its attributes, or a plain mapping of joint targets. The test strategy
+`waypoints.Waypoints` drives through given poses.
 
 Strategies come from installed packages, the way robots do. A package registers its strategy
 class through an entry point and declares what the operator sets for one run (a VLA's
@@ -420,9 +428,10 @@ The panel's Strategies tab lists them and draws a form from the settings datacla
 field, a number or a switch per field, prefilled from the config file's section of the same
 name (`pi05:`). Start builds the dataclass strictly, so an unknown key, a missing one or a
 wrong type is refused before the arm moves, and creates the strategy as `Pi05(settings)`.
-The package never imports the twin at runtime; the generic `Strategy[S]` protocol is there for
-its type checker only. [examples/strategies/swing](examples/strategies/swing) is a complete
-example, and the tests load it.
+The contract types live in `lerobot-mp-api`; a strategy package depends on that, never on
+`lerobot-mp` (MuJoCo, viser, torch). The generic `Strategy[S]` protocol is there for its type
+checker. [examples/strategies/swing](examples/strategies/swing) is a complete example, and the
+tests load it.
 
 ## Configuration
 
@@ -449,7 +458,9 @@ loader (`lerobot_mp.twin.robots`) checks every field and every joint name.
 
 The twin holds no robot: it finds them only in installed packages. A robot's
 package registers its folder and its hardware backend through entry points and
-never imports the twin. SO-101 and A1X still live here as such packages,
+never imports the twin: the contract types live in `lerobot-mp-api`
+([packages/lerobot_mp_api](packages/lerobot_mp_api)), and a plugin depends on that,
+never on `lerobot-mp`. SO-101 and A1X still live here as such packages,
 `src/lerobot_mp/robot/so101/` and `src/lerobot_mp/robot/a1x/`, registered in this
 repository's `pyproject.toml` until they move to the so101 repository and to
 galaxeo:
@@ -464,24 +475,25 @@ myarm = "myarm.backend:create"         # create(context) -> the backend
 
 The backend is any object with `connect`, `disconnect`, `read_joints`,
 `send_joints` and `is_connected`; the optional methods are listed on
-`lerobot_mp.robot.base.BackendPlugin`. `create` gets a `BackendContext`: the
+`lerobot_mp_api.BackendPlugin`. `create` gets a `lerobot_mp_api.BackendContext`: the
 robot's joints and limits, the port and the backend's own config section.
 [examples/robots/testbot](examples/robots/testbot) is a complete example, and the
 tests load it. Entry points live in the installed package's metadata: after
 pulling a version that changes them (this one registers the backends), run
-`pip install -e .` again, or the panel finds no backends.
+`pip install -e packages/lerobot_mp_api -e .` again, or the panel finds no backends.
 
 ## How it is built
 
 ```
+packages/lerobot_mp_api/   lerobot-mp-api: the plugin contracts (strategy, backend, entry point groups), numpy only
 src/lerobot_mp/
 ├── twin/          the twin: MuJoCo scene, the arm loop with the supervisor, cameras, perception, lerobot-twin
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
 │   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
-│   ├── strategy.py  the control-strategy contract and its runner; waypoints.py is the test strategy
+│   ├── strategy.py  the control-strategy runner (the contract re-exported); waypoints.py is the test strategy
 │   ├── strategies.py  strategies from installed packages and their settings
 │   └── ui/        browser panel (viser)
-├── robot/         the backend contract and plugin registry
+├── robot/         the backend contract (re-exported) and plugin registry
 │   ├── so101/     SO-101 package, leaving for its repo: robot folder, backends feetech and lerobot, COM<->TCP bridge
 │   └── a1x/       A1X package, leaving for galaxeo: robot folder, backend a1x (CAN-FD)
 └── paths.py       default data paths counted from the clone's root

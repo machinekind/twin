@@ -22,16 +22,18 @@ swing:
   amplitude: 15.0
 ```
 
-Nothing in the package imports the twin at runtime. `act` returns the package's own `Move`, an
-object with the attributes of the twin's `Action`. The twin's `Strategy` protocol is imported
-under `TYPE_CHECKING` only, so a type checker checks `settings` and `act`:
+The package depends on `lerobot-mp-api`, the contracts (`packages/lerobot_mp_api` in the twin's
+repository), never on the twin. `act` reads an `Observation` and returns an `Action`; an object
+with `Action`'s attributes or a plain mapping of joint targets would do as well. The `Strategy`
+protocol lets a type checker check `settings` and `act`:
 
 ```python
-if TYPE_CHECKING:
-    _: type[Strategy[SwingSettings]] = Swing
+from lerobot_mp_api import Action, Observation, RunInfo, Strategy
+
+_: type[Strategy[SwingSettings]] = Swing
 ```
 
-Try it in the twin's environment:
+Try it in the twin's environment, which already has `lerobot-mp-api`:
 
 ```bash
 pip install -e examples/strategies/swing
