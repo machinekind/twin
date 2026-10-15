@@ -1,8 +1,9 @@
-"""The twin's test strategy: drives the arm through given poses, one after another, without a network.
+"""The twin's test strategy: drives the arm through given poses, one after another, with no learned model.
 
 It exercises the strategy contract end to end (`strategy.StrategyRunner`) and works on any robot:
 the poses name its joints. A pose counts as reached when every joint it names stays within
-`tolerance` of it for `settle_ticks` ticks in a row. The run ends after the last pose.
+`tolerance` of it for `settle_ticks` ticks in a row. The run ends, as a success, once the last
+pose is reached.
 """
 
 from __future__ import annotations

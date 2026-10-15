@@ -25,10 +25,10 @@ its `settings` class attribute and takes an instance in its constructor:
 
 The package decides which settings exist, their types and their defaults, with nothing but
 `dataclasses` from the standard library. The twin never reads the values. It builds the dataclass
-strictly from raw values (the config file's section named like the strategy, `pi05:`, or the
-panel's form): an unknown key, a missing one or a value of another type is an error, as in
-`robot.yaml`. Then it creates the strategy as `cls(settings)`, or `cls()` when the class has no
-`settings`.
+strictly from raw values, the panel's form, which the config file's section named like the
+strategy (`pi05:`) prefills: an unknown key, a missing one or a value of another type is an error,
+as in `robot.yaml`. Then it creates the strategy as `cls(settings)`, or `cls()` when the class has
+no `settings`.
 
 Settings fields are `str`, `int`, `float` or `bool`: the panel draws a text field, a number or a
 switch for each. A field without a default must be given.

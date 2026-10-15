@@ -1,9 +1,9 @@
 """A strategy from outside the twin: swings one joint around where it starts.
 
 The twin finds `Swing` through the entry point in this package's `pyproject.toml`, builds
-`SwingSettings` from the config file's `swing:` section and the panel's form, and creates the
-strategy as `Swing(settings)`. The package depends on the contracts (`lerobot-mp-api`), never
-on the twin: it reads an `Observation` and answers with an `Action`.
+`SwingSettings` from the panel's form, which the config file's `swing:` section prefills, and
+creates the strategy as `Swing(settings)`. The package depends on the contracts
+(`lerobot-mp-api`), never on the twin: it reads an `Observation` and answers with an `Action`.
 """
 
 from __future__ import annotations

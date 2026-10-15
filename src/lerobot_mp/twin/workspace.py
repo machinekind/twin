@@ -16,6 +16,9 @@ osobny plik `workspace/calib/<data-godzina>.json` ze wszystkimi kamerami, ktore
 maja poze (`save_preset`), nigdy nie nadpisywany. `twin.json` trzyma kopie
 robocza wgranego zestawu (`calib_preset`); bez wskazania wgrywany jest
 najnowszy (`load`). Starszy zestaw wraca przez `load_preset`.
+
+A package that runs on this station without importing the twin (training) gets
+it as data: `export` (`lerobot-twin export <folder>`).
 """
 
 from __future__ import annotations
@@ -232,6 +235,23 @@ class Workspace:
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
+
+    def export(self, folder: str | Path) -> Path:
+        """Writes the station into `folder` as data for packages that do not import the twin (training).
+
+        `scene.xml` and `assets/` (`scene.export`): the floor, table, lights, the arm and every
+        enabled camera that has a pose, with its full K (MJCF holds no distortion); a simulated
+        camera stands at its true pose. `station.json`: this workspace as `save` writes it to
+        `twin.json` (the table with the base pose, every camera with its K, distortion and
+        calibration, the identified dynamics, home). Returns the folder.
+        """
+        from .scene import export
+
+        folder = Path(folder)
+        export(self.scene_config(), folder)
+        (folder / "station.json").write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
+                                             encoding="utf-8")
+        return folder
 
     def apply_fit(self, fit, tag_size: float | None = None,
                   intrinsics: dict[str, tuple[Any, Any]] | None = None) -> list[str]:

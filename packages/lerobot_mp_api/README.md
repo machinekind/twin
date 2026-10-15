@@ -35,11 +35,11 @@ swing = "swing:Swing"                            # a class following Strategy, b
   config section named like the backend, raw) and talks to the result through `RobotBackend`. A
   plugin that does not subclass `RobotBackend` is wrapped: the required calls go straight to it,
   the optional ones fall back to `RobotBackend`'s defaults.
-* **Strategy**: the twin builds the class's `settings` dataclass strictly from the config section
-  named like the strategy and the panel's form (`str`, `int`, `float` or `bool` fields), creates
-  the strategy as `cls(settings)`, or `cls()` without `settings`, and runs it: an `Observation`
-  in every tick at `hz`, an `Action` (or any object with its attributes, or a plain mapping of
-  joint targets) out, every target through the twin's safety supervisor.
+* **Strategy**: the twin builds the class's `settings` dataclass strictly from the panel's form,
+  which the config section named like the strategy prefills (`str`, `int`, `float` or `bool`
+  fields), creates the strategy as `cls(settings)`, or `cls()` without `settings`, and runs it:
+  an `Observation` in every tick at `hz`, an `Action` (or any object with its attributes, or a
+  plain mapping of joint targets) out, every target through the twin's safety supervisor.
 
 The twin re-exports the same classes (`lerobot_mp.twin.strategy`, `lerobot_mp.robot.base`), so
 `lerobot_mp.twin.strategy.Action is lerobot_mp_api.Action`.
@@ -77,9 +77,11 @@ class Hold(Strategy[HoldSettings]):
         return Action(target={self.joint: self.where})
 ```
 
-`Strategy` is a protocol with defaults: `settings` None, `start` and `stop` doing nothing, `time_limit_s` None.
-Subclassing it gives a strategy those defaults and lets a type checker (pyright, mypy) check `act`,
-`start` and `stop` against the contract. The twin itself checks only that `hz` and `act` exist.
+`Strategy` is a protocol with defaults, meant to be subclassed: `settings` None, `start` and
+`stop` doing nothing, `time_limit_s` None. `settings` is a plain class attribute, so a subclass
+sets it as `Hold` does. Subclassing also lets a type checker (pyright, mypy) check `act`, `start`
+and `stop` against the contract. At runtime the twin does not need the base class: it requires
+`hz` and `act`, and checks `settings` when the class has one.
 
 ## A backend
 

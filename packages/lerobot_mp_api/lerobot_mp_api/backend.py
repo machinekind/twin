@@ -64,7 +64,7 @@ class BackendPlugin(Protocol):
 
 @dataclass
 class RobotInfo:
-    """Opis podlaczonego robota (do HUD i logow)."""
+    """The connected robot, for the HUD and the logs."""
 
     name: str
     description: str = ""
@@ -72,30 +72,32 @@ class RobotInfo:
 
 
 class RobotBackend(ABC):
-    """Minimalny interfejs: polacz, czytaj pozycje, wysylaj pozycje, rozlacz."""
+    """How the twin talks to an arm: connect, read joint positions, send joint targets, disconnect.
+
+    A subclass implements the abstract members; every other method has a default.
+    """
 
     info: RobotInfo
 
     @abstractmethod
     def connect(self) -> None:
-        """Nawiazuje polaczenie (dla symulatora - inicjalizuje stan)."""
+        """Connects to the arm (a simulator initialises its state)."""
 
     @abstractmethod
     def disconnect(self) -> None:
-        """Zamyka polaczenie; powinno byc bezpieczne do wielokrotnego wywolania."""
+        """Closes the connection. Must be safe to call more than once."""
 
     @abstractmethod
     def read_joints(self) -> dict[str, float]:
-        """Zwraca aktualne pozycje stawow: {nazwa_stawu: wartosc}."""
+        """The current joint positions [app units]: {joint name: value}."""
 
     @abstractmethod
     def send_joints(self, targets: dict[str, float]) -> dict[str, float]:
-        """Wysyla zadane pozycje stawow. Zwraca to, co faktycznie poszlo do robota.
+        """Sends joint targets [app units]. Returns what actually went to the robot.
 
-        Moze zwrocic mniej stawow niz dostal - albo nic, gdy backend wstrzymal
-        wysylke (np. `feetech` przy zerwanym laczu, zeby rozkazy nie czekaly
-        w kolejce sieci i nie dojechaly potem do serw seria). Wolajacy zostaje
-        wtedy przy poprzednim rozkazie.
+        It may return fewer joints than it got, or none when the backend holds the send back (e.g.
+        `feetech` on a broken link, so that commands do not queue up in the network and later reach
+        the servos in a burst). The caller then stays with its previous command.
         """
 
     @property
@@ -105,30 +107,28 @@ class RobotBackend(ABC):
 
     @property
     def link_silent(self) -> bool:
-        """Ostatni `read_joints` nie dostal ZADNEJ swiezej odpowiedzi - oddal stare pozycje.
+        """The last `read_joints` got NO fresh reply and returned stale positions.
 
-        Blizniak nie liczy wtedy takiego odczytu jako pomiaru i wstrzymuje nadzor.
-        Backend bez lacza (symulator) - zawsze False. Domyslnie czyta `_link_silent`,
-        ktore ustawiaja `feetech` i `lerobot` (i atrapy w testach).
+        The twin then does not count that reading as a measurement and pauses supervision. A
+        backend without a link (the simulator): always False. By default it reads `_link_silent`,
+        which `feetech`, `lerobot` and `a1x` set (and the test doubles).
         """
         return bool(getattr(self, "_link_silent", False))
 
     def faults(self) -> list[str]:
-        """Usterki sprzetu widziane w ostatnich odpowiedziach - czytelne zdania po polsku.
+        """Hardware faults seen in the latest replies, as readable sentences in Polish, like the panel.
 
-        Pusta lista = wszystko w porzadku. Serwo w ochronie (przeciazenie,
-        przegrzanie, napiecie) zwalnia moment, ale dalej grzecznie odpowiada,
-        wiec bez tego wyglada na zdrowe, a reszta ramienia jedzie dalej.
-        Nigdy nie rzuca wyjatkiem - wola to petla sterowania co cykl.
+        An empty list = all is well. A servo in protection (overload, overheating, voltage) releases
+        its torque but keeps replying normally, so without this it looks healthy while the rest of
+        the arm drives on. Never raises: the control loop calls it every cycle.
         """
         return []
 
     def joint_limits(self) -> dict[str, tuple[float, float]]:
-        """Twarde limity samego sprzetu w jednostkach aplikacji: {staw: (min, max)}.
+        """The hardware's own hard limits [app units]: {joint: (min, max)}.
 
-        Tylko stawy, ktore sprzet naprawde ogranicza (np. limity kata w EEPROM
-        serw). Wyzsze warstwy zawezaja nimi swoje zakresy, zeby rozkaz nigdy
-        nie byl przycinany po cichu przez serwo.
+        Only the joints the hardware really limits (e.g. angle limits in the servos' EEPROM). The
+        layers above narrow their ranges to these, so that a servo never silently clips a command.
         """
         return {}
 
@@ -136,24 +136,25 @@ class RobotBackend(ABC):
         """The limits [app units] `send_joints` clamps to from now on; joints not given keep theirs.
 
         The twin narrows them to the hardware's own limits and widens them for a joint that stands
-        outside its range and is being led back. Without it a backend clamping to its connect-time
-        limits made the first command of such a joint jump to the limit at full servo speed.
+        outside its range and is being led back. Without this, a backend that clamps to its
+        connect-time limits makes the first command of such a joint jump to the limit at full servo
+        speed.
         """
 
     def gripper_range_q(self) -> tuple[float, float] | None:
         """(closed, open) of the gripper joint [rad of the jaw joint] that THIS backend maps 0..100 onto.
 
-        The twin compares it with the robot description's `gripper_range_q`. A backend mapping 0..100
-        differently (LeRobot, by its own calibration range) gave the policy and the cube tracking a
-        different jaw angle than the real one, and nothing showed it. None = no mapping to report.
+        The twin compares it with the robot description's `gripper_range_q`: a backend that maps
+        0..100 differently (LeRobot, by its own calibration range) silently gives the policy and the
+        cube tracking a jaw angle other than the real one. None = no mapping to report.
         """
         return None
 
     def calibration_warnings(self) -> list[str]:
-        """Niefatalne zastrzezenia do kalibracji ramienia (zdania dla panelu). Nigdy nie rzuca.
+        """Non-fatal concerns about the arm's calibration (sentences for the panel). Never raises.
 
-        Np. `lerobot` liczy stopnie od srodka zakresu z kalibracji, a blizniak od
-        tiku `center_ticks` - ramie jedzie, ale katy sa przesuniete wzgledem modelu.
+        E.g. `lerobot` counts degrees from the middle of its calibrated range and the twin from the
+        `center_ticks` tick: the arm moves, but its angles are offset from the model's.
         """
         return []
 
@@ -172,8 +173,8 @@ class RobotBackend(ABC):
         """
         return None
 
-    def step(self, dt: float) -> None:  # noqa: B027 - domyslnie nic nie robi
-        """Krok symulacji. Prawdziwy robot ignoruje (rzeczywistosc liczy sie sama)."""
+    def step(self, dt: float) -> None:  # noqa: B027 - does nothing by default
+        """One simulation step. A real robot ignores it: reality advances on its own."""
 
     def __enter__(self) -> "RobotBackend":
         self.connect()
