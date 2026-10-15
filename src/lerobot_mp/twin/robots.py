@@ -13,7 +13,8 @@ reports its own mapping (`gripper_range_q()`), so the twin can warn when the two
 
 Robots come only from installed packages (`robot_folders`): a robot's package registers its
 folder under the `lerobot_mp.robots` entry point group, named like the robot, loading to the path
-of the folder. The twin itself holds no robot.
+of the folder. The twin itself holds no robot: the SO-101 is the `soarm` package (so-arm101
+repository), and `examples/robots/testbot` is the twin's example robot.
 
 `robot_config(spec)` builds the twin configuration for one robot from its description.
 """
@@ -38,6 +39,12 @@ logger = logging.getLogger(__name__)
 
 ROBOT_FILE = "robot.yaml"
 ENTRY_POINT_GROUP = ROBOTS
+
+#: The robot a workspace names when no package registers one: the twin's example robot.
+FALLBACK_ROBOT = "testbot"
+#: What to install when the robot a workspace names is not registered.
+INSTALL_HINT = ("zainstaluj pakiet ramienia: SO-101 - pip install soarm (repozytorium so-arm101), "
+                "robot przykladowy - pip install -e examples/robots/testbot")
 
 
 def resolve_asset(path: str | Path) -> Path:
@@ -250,16 +257,19 @@ def get_spec(name: str) -> RobotSpec:
     try:
         folder = folders[name.lower()]
     except KeyError as exc:
-        # Entry points live in the installed package's metadata: a checkout updated without
-        # `pip install -e .` registers no robots at all.
-        known = (", ".join(sorted(folders))
-                 or "zadne - po aktualizacji repozytorium uruchom ponownie pip install -e .")
-        raise KeyError(f"Nieznane ramie {name!r}. Dostepne: {known}") from exc
+        known = ", ".join(sorted(folders)) or "zadne"
+        raise KeyError(f"Nieznane ramie {name!r}. Dostepne: {known}; {INSTALL_HINT}") from exc
     spec = load_robot(folder)
     if spec.name.lower() != name.lower():
         raise ValueError(f"{folder / ROBOT_FILE}: `name: {spec.name}`, "
                          f"a ramie jest zarejestrowane jako {name!r}")
     return spec
+
+
+def default_robot() -> str:
+    """The robot a new workspace starts with: the first one an installed package registers,
+    `FALLBACK_ROBOT` when none is (loading it then names what to install)."""
+    return next(iter(robot_folders()), FALLBACK_ROBOT)
 
 
 def robots() -> dict[str, RobotSpec]:

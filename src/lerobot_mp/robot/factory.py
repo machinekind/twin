@@ -4,11 +4,12 @@ A package registers a backend factory under the `lerobot_mp.backends` entry poin
 (`lerobot_mp_api.entry_points.BACKENDS`):
 
     [project.entry-points."lerobot_mp.backends"]
-    feetech = "lerobot_mp.robot.so101.feetech:create"
+    testbot = "testbot.backend:create"
 
 `create(context: BackendContext)` returns the backend, a `RobotBackend` or any object following
 `BackendPlugin`. The backend's settings are the config section named like the backend
-(`feetech:`, `a1x:`), handed over raw in `BackendContext.settings`.
+(`testbot:`, `a1x:`), handed over raw in `BackendContext.settings`. Every backend comes from
+an installed package; the twin registers none of its own besides the A1X's, which still lives here.
 
 The twin's simulated arm (`sim`) is not a plugin: `twin.runtime.SceneBackend` needs the twin's
 scene, so `Twin.connect` builds it and never calls `create_backend` for it.
@@ -128,7 +129,7 @@ class PluginBackend(RobotBackend):
 
     @property
     def link_silent(self) -> bool:
-        # The backends written in this repository set `_link_silent`; they keep it when they move out.
+        # `_link_silent` is what the A1X backend and the soarm backends set.
         return bool(getattr(self.plugin, "link_silent", getattr(self.plugin, "_link_silent", False)))
 
     def faults(self) -> list[str]:

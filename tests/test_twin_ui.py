@@ -6,6 +6,7 @@ uchwyt TCP na tej samej galezi IK, kalibracja i zadania w tle.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -16,6 +17,8 @@ import pytest
 pytest.importorskip("viser")
 pytest.importorskip("mujoco")
 
+from conftest import BOT  # noqa: E402
+
 from lerobot_mp.twin.ui import jobs  # noqa: E402
 
 
@@ -23,6 +26,14 @@ def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def a_panel(path):
+    """Panel na nowym stanowisku z robotem testowym (`path` - plik stanowiska)."""
+    from lerobot_mp.twin.ui.app import TwinApp
+
+    path.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+    return TwinApp(path, host="127.0.0.1", port=free_port())
 
 
 class _Client:
@@ -51,9 +62,7 @@ def _look_at_pose(eye, target):
 
 @pytest.mark.render
 def test_panel_starts_adds_a_simulated_camera_and_maps_the_table(tmp_path):
-    from lerobot_mp.twin.ui.app import TwinApp
-
-    app = TwinApp(tmp_path / "twin.json", host="127.0.0.1", port=free_port())
+    app = a_panel(tmp_path / "twin.json")
     try:
         app._tick_slow()
         app._add_sim_camera(app.T_b2w @ _look_at_pose([0.6, -0.4, 0.45], [0.2, 0.0, 0.0]))
@@ -79,9 +88,7 @@ def test_panel_starts_adds_a_simulated_camera_and_maps_the_table(tmp_path):
 # ------------------------------------------------------------------ jeden panel na reszte testow
 @pytest.fixture(scope="module")
 def shared_app(tmp_path_factory):
-    from lerobot_mp.twin.ui.app import TwinApp
-
-    app = TwinApp(tmp_path_factory.mktemp("panel") / "twin.json", host="127.0.0.1", port=free_port())
+    app = a_panel(tmp_path_factory.mktemp("panel") / "twin.json")
     yield app
     app.close()
 
@@ -103,15 +110,22 @@ def app(shared_app):
             a.twin.release(owner)
 
 
-def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app):
-    """Z shoulder_pan 109,5 st. przeciagniecie o 1 cm dawalo "poprawne" IK 180 st. dalej."""
+def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app, monkeypatch):
+    """Przy podstawie obroconej daleko przeciagniecie o 1 cm dawalo "poprawne" IK 180 st. dalej.
+
+    Robot testowy ma jedna galaz IK - druga galaz (podstawa 180 st. dalej) podstawia tu `ik`.
+    """
     spec = app.ws.spec()
-    start = dict(spec.home, shoulder_pan=109.5)
+    start = dict(spec.home, j1=30.0)
     kin = app._kin_gizmo
     p = kin.tcp(start)[:3, 3]
     tang = np.array([-p[1], p[0], 0.0]) / np.hypot(p[0], p[1])
-    old = kin.ik(p - 0.01 * tang, seed=start, restarts=2)      # tak liczyl uchwyt przed poprawka
-    assert old.ok and max(abs(old.joints[k] - start[k]) for k in start if k != spec.gripper) > 90
+    ik = kin.ik
+
+    def other_branch(*a, **kw):
+        sol = ik(*a, **kw)
+        sol.joints = dict(sol.joints, j1=sol.joints["j1"] - 180.0)
+        return sol
 
     with app.twin.lock:
         app.twin.scene.set_joints(start)
@@ -126,7 +140,10 @@ def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app):
         app._on_tcp_gizmo()
         return app.twin._target
 
+    monkeypatch.setattr(kin, "ik", other_branch)
     assert drag(p - 0.01 * tang) is None                        # odrzucone, cel bez zmian
+    assert "inna galaz" in app.tcp_md.content
+    monkeypatch.setattr(kin, "ik", ik)
     app._gizmo_seed = None
     target = drag(p + 0.01 * tang)                              # w druga strone - ta sama galaz
     assert target is not None
@@ -143,7 +160,7 @@ def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
     def wave(job):
         arm = jobs._OwnedArm(app.twin, job)
         for k in range(1000):
-            arm.move(dict(home, shoulder_pan=20.0 if k % 2 else -20.0), 0.3)
+            arm.move(dict(home, j1=20.0 if k % 2 else -20.0), 0.3)
             moves.append(k)
 
     app.calib_job.start(wave)
@@ -343,7 +360,7 @@ def test_status_line_says_the_gripper_is_disabled_when_not_drivable(app, monkeyp
     assert "chwytak wylaczony" in app._status_text()
     FakeA1X.drivable = True
     assert "XCAN" not in app._status_text()
-    monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, SO-101): steruje
+    monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, testbot): steruje
     assert "XCAN" not in app._status_text()
     app.twin._backend = None
 
@@ -609,12 +626,12 @@ def test_the_strategies_tab_draws_an_installed_strategys_settings(app, swing):
 
 
 def test_the_strategys_config_section_prefills_its_form(app, swing, tmp_path, monkeypatch):
-    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: elbow_flex\n  cycles: 3\n")
+    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: j2\n  cycles: 3\n")
 
     tab = choose_strategy(app, swing)
 
     assert tab.section_problem == ""
-    assert tab._inputs["joint"].value == "elbow_flex"
+    assert tab._inputs["joint"].value == "j2"
     assert tab._inputs["cycles"].value == 3
 
 
@@ -622,7 +639,7 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
     from lerobot_mp.twin.strategy import StrategyRunner
 
     app.twin.connect("sim", threaded=False)
-    tab = choose_strategy(app, swing, joint="shoulder_pan", period_s=1.0)
+    tab = choose_strategy(app, swing, joint="j1", period_s=1.0)
 
     tab.start()
 
@@ -650,10 +667,10 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
 
 
 def test_a_wrong_key_in_the_strategys_config_section_is_refused_before_start(app, swing, tmp_path, monkeypatch):
-    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: shoulder_pan\n  amplitud: 5\n")
+    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: j1\n  amplitud: 5\n")
     app.twin.connect("sim", threaded=False)
 
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
 
     assert "amplitud" in tab.section_problem
     assert "Uruchom odmowi" in tab.about_md.content
@@ -679,7 +696,7 @@ def test_a_strategy_needs_a_fresh_confirmation_on_a_real_arm(app, swing, monkeyp
     from test_twin_runtime import FakeArm, connect_fake
 
     connect_fake(app.twin, monkeypatch, FakeArm())
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
 
     with pytest.raises(RuntimeError, match="zaznacz potwierdzenie"):
         tab.start()
@@ -694,7 +711,7 @@ def test_a_strategy_needs_a_fresh_confirmation_on_a_real_arm(app, swing, monkeyp
 
 def test_stop_ends_a_running_strategy(app, swing):
     app.twin.connect("sim", threaded=False)
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
     tab.start()
 
     app._emergency_stop(None)
@@ -755,7 +772,7 @@ def test_a_float_setting_with_an_int_default_keeps_its_decimals(app, install_dis
 def test_a_second_start_while_the_first_is_starting_is_refused(app, swing, monkeypatch):
     """viser runs each click on its own thread: two runners would drive the arm under one owner."""
     app.twin.connect("sim", threaded=False)
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
 
     inside = threading.Event()
     let_go = threading.Event()

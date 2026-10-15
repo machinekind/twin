@@ -3,11 +3,7 @@
 # potrzebuje ten projekt - reszta zaleznosci dobiera sie sama.
 #
 # Uzycie (patrz README "Szybki start na nowym komputerze"):
-#   pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
-#
-# torch/torchvision (tylko dla LeRobota, [robot]) bez lokalnego znacznika (+cu126 / +cpu):
-# wg PEP 440 "==2.11.0" pasuje tez do 2.11.0+cu126 i 2.11.0+cpu, wiec kolo zainstalowane
-# wczesniej z indeksu PyTorcha zostaje, a pip nie podmienia go na wersje z PyPI.
+#   pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
 
 numpy==2.2.6
 PyYAML==6.0.3
@@ -17,13 +13,7 @@ opencv-contrib-python==5.0.0.93
 mujoco==3.14.0
 viser==1.1.1
 websockets==16.1.1
-
-# prawdziwe ramie: [feetech] / [bridge], opcjonalnie [robot] (LeRobot, tylko Python 3.12)
 pyserial==3.5
-lerobot==0.6.1
-feetech-servo-sdk==1.0.0
-torch==2.11.0
-torchvision==0.26.0
 
 # [research], [dev]
 trimesh==5.1.0

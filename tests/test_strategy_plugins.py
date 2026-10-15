@@ -16,7 +16,7 @@ from lerobot_mp_api.entry_points import STRATEGIES
 
 pytest.importorskip("mujoco")
 
-from conftest import SWING  # noqa: E402
+from conftest import BOT, SWING  # noqa: E402
 
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
@@ -31,7 +31,7 @@ GROUP = "lerobot_mp.strategies"
 
 @pytest.fixture
 def twin():
-    twin = Twin(Workspace(), clock=VirtualClock(t0=0.0))
+    twin = Twin(Workspace(robot=BOT), clock=VirtualClock(t0=0.0))
     try:
         yield twin
     finally:
@@ -117,7 +117,7 @@ def test_an_unknown_key_is_refused(swing):
     plugin = load_strategy(swing)
 
     with pytest.raises(ValueError, match=r"Nieznane klucze w sekcji swing: \['amplitud'\]"):
-        plugin.create({"joint": "shoulder_pan", "amplitud": 5.0})
+        plugin.create({"joint": "j1", "amplitud": 5.0})
 
 
 def test_a_missing_key_is_refused(swing):
@@ -137,7 +137,7 @@ def test_a_missing_key_is_refused(swing):
 ])
 def test_a_value_of_another_type_is_refused(swing, key, value):
     plugin = load_strategy(swing)
-    raw = {"joint": "shoulder_pan", key: value}
+    raw = {"joint": "j1", key: value}
 
     with pytest.raises(ValueError, match=f"swing.{key}: potrzeba"):
         plugin.create(raw)
@@ -145,9 +145,9 @@ def test_a_value_of_another_type_is_refused(swing, key, value):
 
 def test_values_take_their_fields_types(swing):
     """The panel's number field gives floats, YAML gives ints for whole numbers."""
-    settings = load_strategy(swing).build_settings({"joint": "elbow_flex", "amplitude": 15, "cycles": 3.0})
+    settings = load_strategy(swing).build_settings({"joint": "j2", "amplitude": 15, "cycles": 3.0})
 
-    assert settings.joint == "elbow_flex"
+    assert settings.joint == "j2"
     assert settings.amplitude == 15.0
     assert isinstance(settings.amplitude, float)
     assert settings.cycles == 3
@@ -156,9 +156,9 @@ def test_values_take_their_fields_types(swing):
 
 
 def test_the_strategy_is_created_with_its_settings(swing):
-    strategy = load_strategy(swing).create({"joint": "shoulder_pan", "period_s": 2.0, "cycles": 3})
+    strategy = load_strategy(swing).create({"joint": "j1", "period_s": 2.0, "cycles": 3})
 
-    assert strategy.config.joint == "shoulder_pan"
+    assert strategy.config.joint == "j1"
     assert strategy.time_limit_s == 2.0 * 3 + strategy.return_s
 
 
@@ -288,10 +288,10 @@ def test_a_strategy_the_panel_cannot_build_is_refused_when_loaded(install_dist, 
 
 def test_the_config_section_named_like_the_strategy(tmp_path, monkeypatch):
     config = tmp_path / "local.yaml"
-    config.write_text("swing:\n  joint: elbow_flex\n  cycles: 1\nempty:\nbroken: 3\n", encoding="utf-8")
+    config.write_text("swing:\n  joint: j2\n  cycles: 1\nempty:\nbroken: 3\n", encoding="utf-8")
     monkeypatch.setenv("LEROBOT_MP_CONFIG", str(config))
 
-    assert config_section("swing") == {"joint": "elbow_flex", "cycles": 1}
+    assert config_section("swing") == {"joint": "j2", "cycles": 1}
     assert config_section("empty") == {}
     assert config_section("pi05") == {}
 
@@ -304,18 +304,18 @@ def test_the_config_section_named_like_the_strategy(tmp_path, monkeypatch):
 
 def test_a_strategy_from_a_package_drives_the_twin_through_the_strategy_runner(swing, twin, monkeypatch):
     twin.connect("sim", threaded=False)
-    centre = twin.status.measured["shoulder_pan"]
+    centre = twin.status.measured["j1"]
 
     sent = []
     send = twin.set_target
 
     def recording_send(target, owner=None):
-        sent.append(target["shoulder_pan"])
+        sent.append(target["j1"])
         return send(target, owner)
 
     monkeypatch.setattr(twin, "set_target", recording_send)
 
-    strategy = load_strategy(swing).create({"joint": "shoulder_pan", "amplitude": 8.0, "period_s": 2.0,
+    strategy = load_strategy(swing).create({"joint": "j1", "amplitude": 8.0, "period_s": 2.0,
                                              "cycles": 1})
     runner = StrategyRunner(twin, strategy)
     runner.start(threaded=False)
@@ -329,7 +329,7 @@ def test_a_strategy_from_a_package_drives_the_twin_through_the_strategy_runner(s
     assert twin.owner is None
     assert max(sent) == pytest.approx(centre + 8.0, abs=0.5)
     assert min(sent) == pytest.approx(centre - 8.0, abs=0.5)
-    assert twin.status.measured["shoulder_pan"] == pytest.approx(centre, abs=strategy.tolerance)
+    assert twin.status.measured["j1"] == pytest.approx(centre, abs=strategy.tolerance)
 
 
 def test_a_joint_the_robot_does_not_have_refuses_the_run(swing, twin):

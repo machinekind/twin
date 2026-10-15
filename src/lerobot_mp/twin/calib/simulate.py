@@ -24,7 +24,7 @@ import numpy as np
 from .. import scene as sc
 from ..collision import CollisionChecker
 from ..kinematics import pose
-from ..robots import RobotSpec, get_spec
+from ..robots import RobotSpec, default_robot, get_spec
 from .card import Card, perturb, pinch_point
 from .handeye import pose_error
 from .session import Session, WaveConfig
@@ -161,14 +161,14 @@ def run(seed: int, n_cameras: int, spec: RobotSpec, card: Card | None = None,
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Kalibracja w symulacji, oceniana wzgledem prawdy.")
-    ap.add_argument("--robot", default="so101", help="nazwa ramienia (robot.yaml)")
+    ap.add_argument("--robot", default=None, help="nazwa ramienia (domyslnie pierwsze zainstalowane)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n", type=int, default=5, help="ile losowych stanowisk")
     ap.add_argument("--cameras", type=int, default=1, help="ile kamer na stanowisku")
     ap.add_argument("--extreme", action="store_true", help="karta na granicy przekrzywienia")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
-    spec = get_spec(a.robot)
+    spec = get_spec(a.robot or default_robot())
 
     rows = []
     for seed in range(a.seed, a.seed + a.n):

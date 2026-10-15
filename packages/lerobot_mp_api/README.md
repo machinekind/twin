@@ -131,7 +131,7 @@ The package is not on PyPI; it lives in the twin's repository, `packages/lerobot
 installs it from its clone, in the same command:
 
 ```bash
-pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
 ```
 
 A plugin installed into the twin's environment finds it there. A plugin's own environment

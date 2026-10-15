@@ -14,7 +14,7 @@ from lerobot_mp_api.entry_points import BACKENDS, ROBOTS
 
 pytest.importorskip("mujoco")
 
-from conftest import TESTBOT  # noqa: E402
+from conftest import BOT, TESTBOT  # noqa: E402
 
 import lerobot_mp.robot.base as twin_backend  # noqa: E402
 from lerobot_mp.robot import backend_context, backends, create_backend  # noqa: E402
@@ -36,9 +36,9 @@ def run(twin: Twin, seconds: float) -> None:
 
 
 # ------------------------------------------------------------ robot folders
-@pytest.mark.parametrize("name", ["so101", "a1x"])
-def test_so101_and_a1x_register_like_any_robot_package(name):
-    """They still live here, as packages that leave whole: folder and backends in `lerobot_mp.robot.<x>`."""
+@pytest.mark.parametrize("name", ["a1x"])
+def test_a1x_registers_like_any_robot_package(name):
+    """It still lives here, as a package that leaves whole: folder and backend in `lerobot_mp.robot.<x>`."""
     eps = {ep.name: ep.value for ep in entry_points(group="lerobot_mp.robots")}
     assert eps[name] == f"lerobot_mp.robot.{name}:ROBOT_DIR"
     folder = robot_folders()[name]
@@ -60,14 +60,14 @@ def test_a_robot_folder_from_an_installed_package_is_found_through_its_entry_poi
 def test_the_twin_itself_holds_no_robot_folder():
     package = REPO / "src" / "lerobot_mp"
     found = {p.parent.relative_to(package).parts[:2] for p in package.rglob("robot.yaml")}
-    assert found <= {("robot", "so101"), ("robot", "a1x")}      # the two packages that still have to leave
+    assert found <= {("robot", "a1x")}                          # the package that still has to leave
     assert not (REPO / "assets" / "robots").exists()
 
 
 def test_a_robot_plugin_that_does_not_load_leaves_the_others(install_dist, caplog):
     install_dist("broken-robot", {"lerobot_mp.robots": {"broken": "no_such_module:DIR"}})
     folders = robot_folders()
-    assert "broken" not in folders and {"so101", "a1x"} <= set(folders)
+    assert "broken" not in folders and {BOT, "a1x"} <= set(folders)
     assert "broken" in caplog.text
 
 
@@ -126,20 +126,43 @@ def test_the_description_names_the_robot_it_is_registered_as(install_dist, tmp_p
         get_spec("other")
 
 
+def test_the_demo_station_takes_an_installed_robot_and_names_what_to_install_otherwise(tmp_path, capsys):
+    from lerobot_mp.twin.cli import main
+    from lerobot_mp.twin.robots import default_robot
+
+    station = tmp_path / "twin.json"
+    assert main(["demo", "--path", str(station)]) == 0          # the first installed robot
+    ws = Workspace.load(station)
+    assert ws.robot == default_robot() and ws.spec().name == ws.robot
+    assert len(ws.cameras) == 2 and all(c.trusted for c in ws.cameras)
+    assert main(["demo", "--path", str(station), "--force", "--robot", BOT]) == 0
+    assert Workspace.load(station).robot == BOT
+
+    assert main(["demo", "--path", str(tmp_path / "other.json"), "--robot", "no_such_robot"]) == 1
+    assert "pip install soarm" in capsys.readouterr().err
+    assert not (tmp_path / "other.json").exists()
+
+
+def test_a_new_workspace_names_the_first_installed_robot():
+    from lerobot_mp.twin.robots import default_robot
+
+    assert Workspace().robot == default_robot() == next(iter(robot_folders()))
+
+
 # ------------------------------------------------------------ config for one robot
 def test_joint_tables_of_another_robot_are_skipped_and_this_robots_apply(tmp_path):
-    so101_tables = tmp_path / "so101.yaml"
-    so101_tables.write_text("joints: {shoulder_pan: {min: -50.0, max: 50.0}}\n"
-                            "safety: {home: {shoulder_pan: 10.0, gripper: 20.0}, velocity_scale: 0.5}\n")
+    bot_tables = tmp_path / "testbot.yaml"
+    bot_tables.write_text("joints: {j1: {min: -50.0, max: 50.0}}\n"
+                          "safety: {home: {j1: 10.0, gripper: 20.0}, velocity_scale: 0.5}\n")
     a1x = get_spec("a1x")
-    cfg = robot_config(a1x, so101_tables)
+    cfg = robot_config(a1x, bot_tables)
     assert cfg.joint("gripper").max == 100.0 and cfg.safety.home == a1x.home
     assert cfg.safety.velocity_scale == 0.5                             # the rest of the file applies
 
-    so101 = get_spec("so101")
-    cfg = robot_config(so101, so101_tables)
-    assert cfg.joint("shoulder_pan").max == 50.0
-    assert cfg.safety.home == {**so101.home, "shoulder_pan": 10.0, "gripper": 20.0}
+    bot = get_spec(BOT)
+    cfg = robot_config(bot, bot_tables)
+    assert cfg.joint("j1").max == 50.0
+    assert cfg.safety.home == {**bot.home, "j1": 10.0, "gripper": 20.0}
 
 
 def test_a_partial_home_in_the_file_keeps_the_rest_of_the_descriptions_home(tmp_path):
@@ -157,7 +180,7 @@ def test_the_config_check_at_startup_accepts_joint_tables(tmp_path, monkeypatch)
     from lerobot_mp.twin.cli import _use_config
 
     good = tmp_path / "local.yaml"
-    good.write_text("joints: {shoulder_pan: {min: -90.0}}\nfeetech: {baudrate: 500000}\n")
+    good.write_text("joints: {j1: {min: -90.0}}\ntestbot: {start: {j1: 5.0}}\n")
     _use_config(str(good))
     bad = tmp_path / "bad.yaml"
     bad.write_text("robot: {baudrate: 500000}\n")
@@ -168,7 +191,7 @@ def test_the_config_check_at_startup_accepts_joint_tables(tmp_path, monkeypatch)
 def test_a_backend_section_reaches_its_plugin_raw(testbot):
     spec = get_spec(testbot)
     cfg = robot_config(spec, overrides={"robot": {"backend": "testbot"}, "testbot": {"start": {"j1": 12.0}},
-                                        "feetech": {"baudrate": 9600}})
+                                        "other_backend": {"baudrate": 9600}})
     ctx = backend_context(cfg, spec)
     assert ctx.settings == {"start": {"j1": 12.0}}
     assert ctx.joints == spec.joints and ctx.limits["j2"] == (-60.0, 60.0)
@@ -183,12 +206,7 @@ def test_a_backend_section_reaches_its_plugin_raw(testbot):
 
 
 def test_backends_of_this_repository_are_registered_like_any_plugin():
-    found = backends()
-    assert {name: found[name].value for name in ("feetech", "lerobot", "a1x")} == {
-        "feetech": "lerobot_mp.robot.so101.feetech:create",
-        "lerobot": "lerobot_mp.robot.so101.lerobot_backend:create",
-        "a1x": "lerobot_mp.robot.a1x.backend:create",
-    }
+    assert backends()["a1x"].value == "lerobot_mp.robot.a1x.backend:create"
 
 
 # ------------------------------------------------------------ a plugin backend in the twin
@@ -255,15 +273,15 @@ def test_the_wrapper_reports_a_silent_link_the_way_the_backends_here_flag_it(tes
 def test_a_gripper_range_other_than_the_descriptions_is_reported(monkeypatch):
     from test_twin_runtime import FakeArm, connect_fake
 
-    twin = Twin(Workspace(), clock=VirtualClock(t0=0.0))
+    twin = Twin(Workspace(robot=BOT), clock=VirtualClock(t0=0.0))
     try:
         arm = FakeArm()
-        arm.grip_range = (-0.0951, 0.70)                    # open 15 servo degrees short of the description
+        arm.grip_range = (0.0, 0.015)                       # opens 5 mm short of the description's 20 mm
         connect_fake(twin, monkeypatch, arm)
         assert any("gripper_range_q" in w for w in twin.status.warnings)
         twin.disconnect()
 
-        arm.grip_range = (-0.0951, 0.9541)                  # within 20 servo ticks: no warning
+        arm.grip_range = (0.0, 0.0198)                      # within 3 % of the travel: no warning
         connect_fake(twin, monkeypatch, arm)
         assert not any("gripper_range_q" in w for w in twin.status.warnings)
     finally:

@@ -1,17 +1,19 @@
-# SO-101 digital twin
+# Robot arm digital twin
 
 A MuJoCo simulation that knows the same things about the desk as the real
 workstation: where the arm stands, where the cameras stand, what optics they
 have and how the servos really respond. A control strategy runs in it and on a
-real **SO-101** through the same code path, through the safety supervisor and
-with the same camera perception. Training and the policies are in `soarm-lab`
-(the so-arm101 repository), and a trained policy runs as the `policy` strategy
-in the panel's Strategies tab.
+real arm through the same code path, through the safety supervisor and with the
+same camera perception. The twin holds no robot of its own: robots and their
+backends come from installed packages. The SO-101 robot and its backends are the
+`soarm` package (the so-arm101 repository). Training and the policies are in
+`soarm-lab` (the same repository), and a trained policy runs as the `policy`
+strategy in the panel's Strategies tab.
 
 ```
   real workstation                            twin (MuJoCo)
  ┌──────────────────────┐   calibration     ┌──────────────────────────┐
- │ SO-101 (COM/socket)  │ ────────────────► │ arm from MuJoCo Menagerie│
+ │ arm via its backend  │ ────────────────► │ arm from its robot.yaml  │
  │ USB cameras around   │  card in gripper, │ cameras in the same      │
  │ desk, cube           │  ChArUco, sysid   │ poses, with the same K,  │
  └──────────▲───────────┘                   │ servos as measured       │
@@ -41,12 +43,13 @@ The twin is **measured from the workstation**, not modelled by eye:
   training randomizes conditions *around the measured* arm.
 - **One code path for simulation and arm**: the same strategy runner, the
   same safety supervisor, the same perception; going from sim to the arm is a
-  backend change (`sim` -> `feetech`, and `sim` -> `a1x` for the Galaxea A1X).
+  backend change (`sim` -> the arm's backend: `feetech` for the SO-101 from
+  `soarm`, `a1x` for the Galaxea A1X).
 
 ## What it enables
 
 - **Running control strategies** (a trained policy, a VLA, scripted motion) on
-  a real SO-101 through the safety supervisor, the same way as in simulation.
+  a real arm through the safety supervisor, the same way as in simulation.
 - **Locating objects seen only by the cameras**: no markers on the object; the
   cube is located to within 1-3 mm.
 - **Arbitrary placement of many cameras**: a moved camera is detected by
@@ -64,8 +67,8 @@ The twin is **measured from the workstation**, not modelled by eye:
   simulation the model and camera calibration, on hardware the
   `a1x` backend over CAN-FD (Linux, macOS, Windows) —
   [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
-- **Remote work**: the arm through a network bridge (`socket://`), and a
-  browser panel with a step-by-step guide and a hint on every control.
+- **Remote work**: a browser panel with a step-by-step guide and a hint on
+  every control.
 
 ## What it speeds up
 
@@ -98,21 +101,19 @@ The repository holds everything needed to run it, including models and data:
 
 | Directory | What is in it | In the repository? |
 |---|---|---|
-| `src/lerobot_mp/robot/so101/robot/` | arm model from MuJoCo Menagerie with STL meshes | yes |
 | `src/lerobot_mp/robot/a1x/robot/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
-| `assets/so101_preview.npz` | SO-101 reference model from Articulus: a test compares the twin's MJCF with it (rebuilt by `scripts/import_articulus_model.py`) | yes |
-| `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration | yes |
+| `examples/robots/testbot/` | the example robot: a robot folder and a backend that keeps the arm in memory | yes |
+| `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration; `lerobot-twin demo` writes the chosen robot into its copy | yes |
 | `assets/calib/*.txt` | example lens (Logitech Brio 4K 1280x720): K and distortion to load in Calibration, step 1 | yes |
 | `examples/twin.a1x.sim.json` | the same for the Galaxea A1X (`lerobot-twin demo --robot a1x`) | yes |
 | `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created on the first save in the panel or by `lerobot-twin demo` |
 | `workspace/calib/*.json` | every save of the camera poses (Calibration, step 2) as a separate file; the panel loads the newest, older ones can be picked from a list | yes: example sets from the A1X waves |
-| `configs/local.yaml` | your configuration (a copy of `configs/default.yaml`), e.g. gripper ticks | no (`.gitignore`) |
+| `configs/local.yaml` | your configuration (a copy of `configs/default.yaml`), e.g. a backend section | no (`.gitignore`) |
 
 When run from a clone, the default paths (`workspace/…`) are counted from the
 repository root, so `lerobot-twin ui` started from another directory lands in
 the same workstation. Paths given in flags are counted from the current
-directory as usual. Only things created on a given machine stay outside the
-repository: the LeRobot calibration (only the `lerobot` backend).
+directory as usual.
 
 **Requirements:** Python **3.12** (tested with 3.12.10), Git, OpenGL (any
 graphics card, including an integrated one). The tested package versions are in
@@ -129,7 +130,7 @@ py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass   # this window only; without it Activate.ps1 is blocked
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
 ```
 
 A fresh Windows blocks PowerShell scripts ("running scripts is disabled on this
@@ -154,8 +155,7 @@ sudo apt install python3.12 python3.12-venv libgl1 libglib2.0-0 libegl1   # Linu
 git clone https://github.com/machinekind/digital_twin_training.git && cd digital_twin_training
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
-pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
-sudo usermod -aG dialout $USER    # Linux: access to the arm's port (log out and in after this)
+pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
 ```
 
 On a Linux server without a display: `export MUJOCO_GL=egl` (NVIDIA), or
@@ -167,21 +167,30 @@ clone in the same command as the twin; `pip install -e ".[…]"` alone stops at 
 distribution found for lerobot-mp-api". uv reads the same path from `[tool.uv.sources]` in
 `pyproject.toml` (`uv sync`, `uv run`).
 
+The twin holds no robot. Install one next to it: `pip install soarm` for the
+SO-101 (the so-arm101 repository), or `pip install -e examples/robots/testbot`
+for the example robot.
+
 ### 2. Check
 
 ```bash
 lerobot-twin check
 ```
 
-It prints the versions (mujoco, viser, cv2, numpy), the arm models and the
-USB-serial ports: `OK` for every ready item, `BLAD` (error) for a missing one.
+It prints the versions (mujoco, viser, cv2, numpy), the installed arm models
+and the USB-serial ports: `OK` for every ready item, `BLAD` (error) for a
+missing one. With no robot installed it names what to install.
 
 ### 3. The twin's panel with the example workstation
 
 ```bash
-lerobot-twin demo     # examples/twin.sim.json -> workspace/twin.json (does not overwrite an existing one without --force)
+lerobot-twin demo     # examples/twin.sim.json with the first installed robot -> workspace/twin.json (does not overwrite an existing one without --force)
 lerobot-twin ui       # http://localhost:8080
 ```
+
+`lerobot-twin demo --robot NAME` picks another installed robot. With no robot
+installed, `demo` stops and names what to install (`pip install soarm`, or
+`pip install -e examples/robots/testbot`).
 
 Port 8080 taken (another server, a proxy)? `lerobot-twin ui --port 8765` and
 the address `http://localhost:8765`. At startup the panel prints in the console
@@ -192,7 +201,8 @@ used, also when the panel was started from another directory. `lerobot-twin work
 In the panel: the **Ramię** tab -> `sim` -> **Połącz**; the **Mapa** tab shows
 the table stitched from the two cameras, and the **Strategie** tab runs the
 strategies of installed packages ([below](#control-strategies)). Without `demo`
-the twin starts with an empty workstation (arm `sim`, no cameras); cameras are
+the twin starts with an empty workstation (the first installed robot, backend
+`sim`, no cameras); cameras are
 added in the Kamery tab (`Dodaj symulowana przed ramieniem`, then calibration,
 or in the Kalibracja tab `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
 The tab with the panel must be visible: viser draws nothing in a background
@@ -212,13 +222,11 @@ full installation (`.[twin,a1x,dev]`) the result is all `passed`.
 
 ### 5. A real SO-101
 
-The twin uses the `feetech` backend (`pyserial` alone, without LeRobot and its
-calibration). The port is shown by `lerobot-twin check` or "Wykryj porty" in the
-panel (Windows `COMx`, Linux `/dev/ttyACM0`). The gripper ticks in the
-`feetech:` section of the configuration (`gripper_closed_ticks` 1986 /
-`gripper_open_ticks` 2670) are the values of the example arm: check yours, put
-them in your copy of the configuration and match `gripper_range_q` in
-`src/lerobot_mp/robot/so101/robot/robot.yaml` (the panel warns when the two disagree):
+The SO-101 robot and its backends (`feetech`, `lerobot`, the COM<->TCP bridge)
+are the `soarm` package (the so-arm101 repository), installed next to the twin:
+`pip install "soarm[feetech]"`. Its `docs/first-contact.md` covers the port and
+the gripper ticks. The `feetech` backend reads its `feetech:` section from your
+copy of the configuration:
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
@@ -252,31 +260,11 @@ silniki A1X"). **The A1X has no brakes**: before the first session read
 
 ---
 
-## When the system does not see the arm
+## When the system does not see a USB device
 
-The arm is not a USB device by itself: it shows up as a **USB-serial adapter**
-on the controller board (most often a CH340, more rarely a CP210x or FTDI), and
-only that creates the COM port. The twin has no way to "search" for it: if the
-port is not in the system, there is nothing to open.
-
-Check what the system sees:
-
-```bash
-python -c "import serial.tools.list_ports as l; print([p.device for p in l.comports()] or 'BRAK')"
-```
-
-An empty list means one of three things, in this order of likelihood:
-
-1. **The cable**: many USB cables carry only the power wires. The arm lights
-   up and there is no port. Swap the cable for one you know carries data.
-2. **The adapter's driver**: the chip reached the system, but without a driver
-   it sits in Device Manager as an unknown device instead of a COM port. Look in
-   Device Manager for an entry with a yellow exclamation mark, check its
-   `VID`/`PID` and install the driver: `1A86:7523` is a CH340, `10C4:EA60` is a
-   CP210x, `0403:6001` is an FTDI.
-3. **A virtual machine or a remote desktop**: a device plugged into the
-   physical computer **does not** reach the guest system by itself. It has to be
-   passed through explicitly:
+A camera or a CAN adapter plugged into the physical computer **does not**
+reach a virtual machine or a remote desktop by itself. It has to be passed
+through explicitly:
 
 | Environment | Where to enable it |
 |---|---|
@@ -286,56 +274,9 @@ An empty list means one of three things, in this order of likelihood:
 | WSL2 | `usbipd bind --busid <id>` and `usbipd attach --wsl --busid <id>` |
 | Remote desktop (RDP) | in the client: Local Resources -> More -> tick the device |
 
-The same rule applies to a camera. If the camera is visible in the guest system
-but returns no frame (OpenCV opens it and right away gets
-`ERROR_OPERATION_ABORTED`), it is usually not the driver's fault: it is the same
-USB redirection that has to be enabled.
-
----
-
-## The arm on one machine, the twin on another
-
-Redirecting the whole USB over the network works well on a LAN and on a local
-hypervisor, and badly over the internet, and not because "it is slower". The
-Feetech protocol is request-response: the twin sends a frame and **waits** for
-the servo's answer before it sends the next one. Locally one such transaction
-costs **0.29 ms**. With USB redirection it costs as much as the link's RTT,
-times the number of URB round trips the driver needs for one frame.
-`feetech-servo-sdk` takes about **34 ms** for an answer at 1 Mbaud, so this is a
-race not worth starting on a link with an RTT of about 20 ms.
-
-The bridge carries **only the byte stream** over the network, not USB
-transactions, so one frame is one round trip instead of several. On the machine
-with the arm:
-
-```bash
-pip install -e packages/lerobot_mp_api -e ".[bridge]"
-lerobot-mp-bridge --port COM5 --listen 0.0.0.0:5555 --allow <IP-of-the-remote-machine>
-```
-
-On the machine with the twin, in the panel: Ramię = "SO-101 przez port
-(feetech)", Port = `socket://<address of the machine with the arm>:5555`. The
-`feetech` backend connects to the bridge directly, and the arm is read with one
-SYNC READ packet: one round trip per read over the network instead of six. A
-virtual serial port over TCP also works (**HW VSP3** or **com0com + com2tcp** on
-Windows, `socat` on Linux) entered in the Port field like an ordinary `COM3`.
-
-Measured: a ping of all six servos through the bridge over loopback is
-**0.40 ms** against 0.29 ms directly, so the bridge itself costs **0.11 ms** and
-the whole rest of the budget is the link's RTT. `--stats 5` shows the traffic
-live when you need to check whether anything flows at all.
-
-Two things worth remembering:
-
-* `--allow` is not decoration. An open TCP port on the other side moves a
-  physical arm: without an address list the bridge warns in the log and
-  listens to everyone.
-* A network disconnect **does not drop the arm**: the servos hold the last
-  commanded position. The bridge then closes the port so that the next client
-  does not find it busy.
-
-What is left is the camera: it has to be on the machine where the vision runs.
-The network carries the serial port here, not the image.
+If a camera is visible in the guest system but returns no frame (OpenCV opens
+it and right away gets `ERROR_OPERATION_ABORTED`), it is usually not the
+driver's fault: it is the same USB redirection that has to be enabled.
 
 ---
 
@@ -381,8 +322,8 @@ The twin reads a configuration file only when one is given:
 `lerobot-twin --config configs/local.yaml ui`. The model
 is `configs/default.yaml`, described by comments; a copy `configs/local.yaml` is
 in `.gitignore`. The twin reads the `safety` and `robot` (backend, port)
-sections; every other section belongs to the backend of that name (`feetech`,
-`lerobot`, `a1x`), which checks it itself, or to the strategy of that name, whose
+sections; every other section belongs to the backend of that name (`a1x`, or
+`feetech` from `soarm`), which checks it itself, or to the strategy of that name, whose
 settings form it prefills. The file can be shortened: missing
 keys take their default values, and an unknown key inside a section ends with a
 clear error. The arm's backend and port are chosen by the panel, not by the
@@ -402,10 +343,9 @@ The twin holds no robot: it finds them only in installed packages. A robot's
 package registers its folder and its hardware backend through entry points and
 never imports the twin: the contract types live in `lerobot-mp-api`
 ([packages/lerobot_mp_api](packages/lerobot_mp_api)), and a plugin depends on that,
-never on `lerobot-mp`. SO-101 and A1X still live here as such packages,
-`src/lerobot_mp/robot/so101/` and `src/lerobot_mp/robot/a1x/`, registered in this
-repository's `pyproject.toml` until they move to the so101 repository and to
-galaxeo:
+never on `lerobot-mp`. The SO-101 is such a package: `soarm`, from the
+so-arm101 repository. The A1X still lives here as one, `src/lerobot_mp/robot/a1x/`,
+registered in this repository's `pyproject.toml` until it moves to galaxeo:
 
 ```toml
 [project.entry-points."lerobot_mp.robots"]
@@ -421,8 +361,8 @@ The backend is any object with `connect`, `disconnect`, `read_joints`,
 robot's joints and limits, the port and the backend's own config section.
 [examples/robots/testbot](examples/robots/testbot) is a complete example, and the
 tests load it. Entry points live in the installed package's metadata: after
-pulling a version that changes them (this one registers the backends), run
-`pip install -e packages/lerobot_mp_api -e .` again, or the panel finds no backends.
+pulling a version that changes them, run
+`pip install -e packages/lerobot_mp_api -e .` again, or the panel finds stale backends.
 
 ## How it is built
 
@@ -436,18 +376,16 @@ src/lerobot_mp/
 │   ├── strategies.py  strategies from installed packages and their settings
 │   └── ui/        browser panel (viser)
 ├── robot/         the backend contract (re-exported) and plugin registry
-│   ├── so101/     SO-101 package, leaving for its repo: robot folder, backends feetech and lerobot, COM<->TCP bridge
 │   └── a1x/       A1X package, leaving for galaxeo: robot folder, backend a1x (CAN-FD)
 └── paths.py       default data paths counted from the clone's root
 ```
 
 The arm in simulation is MuJoCo physics in the twin's scene; a real arm is a
-backend from `robot/`, and the scene only mirrors it. The rest of the twin sees
+backend from the robot's package, and the scene only mirrors it. The rest of the twin sees
 no difference: the same strategy runner, the same supervisor and the same
 perception.
 
 ## Licence
 
-Apache-2.0. Third-party files (the SO-101 model from MuJoCo Menagerie, the
-reference model from Articulus, the Galaxea A1X URDF and meshes under the
+Apache-2.0. Third-party files (the Galaxea A1X URDF and meshes under the
 manufacturer's licence) and their licences: [NOTICE](NOTICE).

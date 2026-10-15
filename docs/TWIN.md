@@ -1,18 +1,19 @@
-# Cyfrowy bliźniak stanowiska SO-101
+# Cyfrowy bliźniak stanowiska z ramieniem robota
 
 Symulacja MuJoCo, która wie o biurku to samo, co prawdziwe stanowisko: gdzie
 stoi ramię, gdzie stoją kamery, jaką mają ogniskową i jak naprawdę odpowiadają
 serwa. Kamera skalibrowana na biurku trafia do symulacji **dokładnie w swojej
 pozie i ze swoją macierzą K**, a strategia sterowania jedzie w symulacji i na
 prawdziwym ramieniu tą samą ścieżką — przez nadzór bezpieczeństwa — i widzi
-kostkę tą samą percepcją. Trening i polityki są w pakiecie `soarm-lab`
+kostkę tą samą percepcją. Bliźniak nie ma własnego ramienia: ramiona i ich
+backendy dają zainstalowane pakiety. Trening i polityki są w pakiecie `soarm-lab`
 (repozytorium so-arm101), a wytrenowana polityka jedzie jako strategia `policy`
 w zakładce Strategie.
 
 ```
   prawdziwe stanowisko                        bliźniak (MuJoCo)
  ┌──────────────────────┐   kalibracja      ┌──────────────────────────┐
- │ SO-101 (COM/socket)  │ ────────────────► │ ramię z MuJoCo Menagerie │
+ │ ramię przez backend  │ ────────────────► │ ramię z robot.yaml       │
  │ kamery USB dookoła   │  karta w dłoni,   │ kamery w tych samych     │
  │ biurko, kostka       │  ChArUco, sysid   │ pozach, z tym samym K,   │
  └──────────▲───────────┘                   │ serwa jak zmierzone      │
@@ -54,25 +55,29 @@ py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass   # świeży Windows blokuje Activate.ps1; cmd.exe: .venv\Scripts\activate.bat
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
+pip install soarm    # ramię SO-101; robot przykładowy: pip install -e examples/robots/testbot
 lerobot-twin check
-lerobot-twin demo    # przykładowe stanowisko w symulacji -> workspace/twin.json
+lerobot-twin demo    # przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem -> workspace/twin.json
 ```
 
 - Linux bez ekranu: `export MUJOCO_GL=egl` (NVIDIA) albo `osmesa` (CPU,
-  `sudo apt install libosmesa6`). Port szeregowy: `sudo usermod -aG dialout $USER`.
-- Po instalacji LeRobota (`.[robot]`) sprawdź, czy `cv2` ma GUI — LeRobot
-  podmienia OpenCV na wersję bez okien; naprawa w README („Naprawa OpenCV po
-  LeRobocie”). Do bliźniaka LeRobot nie jest potrzebny (backend `feetech`).
+  `sudo apt install libosmesa6`).
+- Bliźniak nie ma własnego ramienia. Ramię SO-101 i jego backendy (`feetech`,
+  `lerobot`, most COM<->TCP) to pakiet `soarm` (repozytorium so-arm101),
+  instalowany obok bliźniaka.
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
 dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
 liczy się od katalogu repozytorium, niezależnie od katalogu uruchomienia; inny
 plik: `--workspace <plik>`. Bez pliku bliźniak startuje z pustym stanowiskiem
-(ramię `sim`, bez kamer). `lerobot-twin demo` kopiuje `examples/twin.sim.json`
-— dwie kamery symulowane, których kalibracja to ich prawdziwa poza w scenie
-(zaufane), więc „kostka z kamer” działa od razu.
-Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`).
+(pierwsze zainstalowane ramię, backend `sim`, bez kamer). `lerobot-twin demo`
+kopiuje `examples/twin.sim.json` i wpisuje w kopię pierwsze zainstalowane ramię
+(inne: `--robot <nazwa>`) — dwie kamery symulowane, których kalibracja to ich
+prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
+Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`). Bez
+zainstalowanego ramienia `demo` kończy się błędem i podaje, co zainstalować
+(`pip install soarm` albo `pip install -e examples/robots/testbot`).
 
 **Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
 wynik”) trafia do osobnego pliku `workspace/calib/<data-godzina>.json`
@@ -88,13 +93,11 @@ pierwszym zapisie.
 się go wskaże: `lerobot-twin --config configs/local.yaml ui` (opcja ustawia
 zmienną `LEROBOT_MP_CONFIG`). Sekcje `safety:` i `robot:` (`backend`, `port`)
 czyta bliźniak; każda inna sekcja należy do backendu o tej nazwie i sprawdza ją
-sam backend. Sekcja `feetech:` (opisana w `configs/default.yaml`): `center_ticks`
-(tik zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
-i 100 w skali aplikacji; domyślne 1986 / 2670 to przykładowe ramię), `baudrate`
-(1 000 000). Backend `lerobot` ma sekcję `lerobot:`, Galaxea A1X — `a1x:`, patrz
+sam backend. Klucze sekcji opisuje pakiet ramienia (SO-101: `feetech:` i
+`lerobot:` w pakiecie `soarm`); Galaxea A1X ma sekcję `a1x:`, patrz
 [Galaxea A1X](#galaxea-a1x). Opis samego ramienia (stawy, limity, poza domowa,
-zakres szczęki) leży w `robot.yaml` w folderze ramienia (SO-101:
-`src/lerobot_mp/robot/so101/robot/`, A1X: `src/lerobot_mp/robot/a1x/robot/`).
+zakres szczęki) leży w `robot.yaml` w folderze ramienia, w pakiecie ramienia
+(A1X: `src/lerobot_mp/robot/a1x/robot/`).
 
 ## Panel
 
@@ -166,7 +169,7 @@ stanu.
 
 | zakładka | co robi |
 |---|---|
-| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
+| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), backend z pakietu ramienia (SO-101 z `soarm`: `feetech`, `lerobot`), `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
 | **Kamery** | lista kamer z jedną plakietką stanu (SKALIBROWANA / DO KALIBRACJI / KALIBRACJA NIEPEWNA / PORUSZONA / BEZ OBRAZU / WYŁĄCZONA — kolory jak piramidy w 3D); wybrana kamera: podgląd, jedna linia „co dalej”, przycisk *Włączona / Wyłączona*, *Usuń kamerę* (drugie kliknięcie potwierdza); symulowana dodatkowo *Przesuwaj w 3D* (uchwyt) i *Postaw tu, skąd patrzysz w 3D*; liczby w zwiniętych *Szczegółach*; na dole *Dodaj symulowaną przed ramieniem* i *Szukaj kamer USB* (wybór i *Dodaj kamerę USB* pojawiają się po znalezieniu) |
 | **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru); *Tag na biurku*: poza taga z kamer i *Jedź nad tag* |
@@ -182,33 +185,14 @@ Wszystko poniżej jest przećwiczone na bliźniaku (`sim`) — ta sama ścieżka
 te same przyciski. Przed każdym krokiem na sprzęcie: ramię na stole, wolne
 miejsce dookoła, zasilacz podłączony, ręka przy STOP.
 
-**0. Ramię do komputera z bliźniakiem.** Zależnie od tego, gdzie działa bliźniak:
-- *lokalnie* — ramię wpięte do tego komputera: port `COMx` (Windows) albo
-  `/dev/ttyACM0` (Linux, użytkownik w grupie `dialout`); pokaże go
-  `lerobot-twin check` albo „Wykryj porty” w panelu;
-- *maszyna wirtualna albo zdalna* — *przepuszczenie USB w kliencie*
-  (przejściówka pojawia się jako `COMx`), albo
-- *most*: na komputerze przy ramieniu `lerobot-mp-bridge --port COMx --listen 0.0.0.0:5555 --allow <adres maszyny z bliźniakiem>`,
-  w panelu port `socket://<adres komputera przy ramieniu>:5555`. Odczyt ramienia
-  idzie jednym pakietem SYNC READ — przez sieć jeden przebieg na odczyt zamiast
-  sześciu. Maszyna zdalna musi **widzieć**
-  komputer przy ramieniu: sieć prywatna (Tailscale, ZeroTier) albo przekierowany
-  port. Most działa dobrze do ~20 ms RTT; `--stats` pokazuje, ile faktycznie schodzi.
+**0. Ramię do komputera z bliźniakiem.** Połączenie zależy od ramienia
+i opisuje je jego pakiet: SO-101 (port szeregowy, most COM<->TCP) — pakiet
+`soarm` (repozytorium so-arm101, `docs/first-contact.md`); Galaxea A1X (CAN) —
+rozdział [Galaxea A1X](#galaxea-a1x). Sekcję backendu wpisz w
+`configs/local.yaml`; panel uruchamiaj wtedy z `--config configs/local.yaml`.
 
-Przed pierwszym połączeniem sprawdź tiki chwytaka swojego ramienia (akapit
-**Chwytak** niżej) i wpisz je w `configs/local.yaml`; panel uruchamiaj wtedy
-z `--config configs/local.yaml`.
-
-W zakładce Ramię: `feetech`, port, **Połącz** (bez jazdy do domu). Suwaki mają
-pokazywać to, co ramię. UZBRÓJ + mały ruch jednym suwakiem.
-
-**Do bliźniaka używaj backendu `feetech`.** Backend `lerobot` liczy kąty od
-środka zakresu swojej kalibracji, a nie od tiku 2048 jak model — na typowej
-kalibracji SO-101 to −2° na `shoulder_pan` i −6,4° na `elbow_flex`, przy
-jednostronnym zakresie nawet ~35°; jego chwytak 0..100 to tiki 2031…3524
-zamiast 1986…2670. Panel pokazuje oba rozjazdy jako ostrzeżenie. Błędy serw
-i limity z EEPROM działają na obu backendach (`lerobot`: rejestr stanu co 3.
-odczyt).
+W zakładce Ramię: backend ramienia, port, **Połącz** (bez jazdy do domu).
+Suwaki mają pokazywać to, co ramię. UZBRÓJ + mały ruch jednym suwakiem.
 
 **1. Kamery.** Na maszynie wirtualnej/zdalnej najpierw przepuść
 kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj kamerę USB*. Kamera, która się otwiera, ale nie daje klatek, to prawie
@@ -270,18 +254,11 @@ z martwą pętlą albo nieświeżymi odczytami jest odrzucane.
 **Dalej: strategie.** Zakładka Strategie uruchamia strategie z zainstalowanych
 pakietów; wytrenowana polityka to strategia `policy` z `soarm-lab`.
 
-**Chwytak.** 0..100 w panelu to w bliźniaku kąt szczęki liniowo na zakresie
-`gripper_range_q` z `src/lerobot_mp/robot/so101/robot/robot.yaml`: 0 = −5,4°, 100 = 54,7°,
-czyli tiki serwa 1986 … 2670 przy zerze w 2048 — te same, co w sekcji `feetech:`.
-Domyślne tiki pochodzą z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź
-na ramieniu, że przy 0 szczęki się stykają — jeśli nie, zero szczęki w MJCF nie
-leży w `center_ticks` i trzeba to poprawić, zanim zaufa się chwytom: skopiuj
-`configs/default.yaml` do `configs/local.yaml` (jest w `.gitignore`), popraw
-w sekcji `feetech:` klucze `center_ticks`, `gripper_closed_ticks`,
-`gripper_open_ticks` (i ewentualnie `baudrate`), a `gripper_range_q` w `robot.yaml`
-ustaw na (tik − zero) · 2π / 4096 obu końców. Panel ostrzega po połączeniu, gdy
-oba miejsca się rozjeżdżają. Panel uruchamiaj przez
-`lerobot-twin --config configs/local.yaml ui`; wystarczy sama sekcja `feetech:`.
+**Chwytak.** 0..100 w panelu to w bliźniaku położenie szczęki liniowo na
+zakresie `gripper_range_q` z `robot.yaml` ramienia. Backend podaje swój zakres;
+panel ostrzega po połączeniu, gdy oba się rozjeżdżają. Sprawdź na ramieniu, że
+przy 0 szczęki się stykają. Tiki chwytaka SO-101 ustawia sekcja `feetech:`
+backendu z pakietu `soarm`.
 
 ---
 
@@ -568,7 +545,7 @@ zapas limitów bliźniaka. *Rozłącz* nic nie zwalnia: ramię trzyma pozę, w k
 stoi.
 
 **Dalej: kamery, intrynsyki, położenie kamer, Sim-Real, dynamika** — jak kroki
-1–5 procedury SO-101 wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach
+1–5 procedury wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach
 wystaje tak samo (ok. 70 mm), a fala losuje pozy z `A1X.wave_ranges`.
 
 ### Czym A1X różni się od SO-101 (bezpieczeństwo)
@@ -675,13 +652,13 @@ idzie za szczęką 1 przez równość w MJCF, usztywnioną regułą 6 (`solref`,
 | | |
 |---|---|
 | `lerobot-twin check` | czy środowisko jest gotowe (bez renderu) |
-| `lerobot-twin demo` | przykładowe stanowisko w symulacji → `workspace/twin.json` (`--force`, `--path`) |
+| `lerobot-twin demo` | przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem → `workspace/twin.json` (`--robot`, `--force`, `--path`) |
 | `lerobot-twin demo --robot a1x` | to samo z ramieniem Galaxea A1X (`examples/twin.a1x.sim.json`) |
 | `lerobot-twin ui` | panel w przeglądarce |
-| `lerobot-twin --config configs/local.yaml <polecenie>` | konfiguracja ramienia z pliku (tiki chwytaka, baudrate) |
+| `lerobot-twin --config configs/local.yaml <polecenie>` | konfiguracja ramienia z pliku (sekcje backendów, np. `a1x:`) |
 | `lerobot-twin card --tag-mm 50` | arkusz karty kalibracyjnej (PNG, A4) |
 | `lerobot-twin board --square-mm 28` | tablica ChArUco do intrynsyk (PNG, A4) |
-| `lerobot-twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy; `--robot a1x` na A1X |
+| `lerobot-twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy, na pierwszym zainstalowanym ramieniu; `--robot a1x` na A1X |
 | `lerobot-twin workspace` | co wiadomo o stanowisku |
 | `lerobot-twin export <folder>` | stanowisko jako dane: `scene.xml` + `assets/` + `station.json` — dla pakietów, które jadą na zmierzonym stanowisku bez importu bliźniaka (trening) |
 
@@ -854,9 +831,6 @@ src/lerobot_mp/twin/
 
 src/lerobot_mp/robot/
 ├── base.py, factory.py   kontrakt backendu (re-eksport z `lerobot_mp_api`) i rejestr wtyczek
-├── so101/                pakiet SO-101 (wyjdzie do repozytorium so101)
-│   ├── robot/            robot.yaml i model z MuJoCo Menagerie (Apache-2.0), commit ac6b2b0
-│   └── feetech.py, lerobot_backend.py, serial_bridge.py
 └── a1x/                  pakiet A1X (wyjdzie do galaxeo)
     ├── robot/            robot.yaml, URDF i siatki producenta (NIE Apache-2.0, NOTICE), a1x.xml ze skryptu
     └── backend.py        backend a1x (CAN-FD przez pakiet galaxeo)

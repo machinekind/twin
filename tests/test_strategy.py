@@ -21,6 +21,8 @@ import pytest
 
 pytest.importorskip("mujoco")
 
+from conftest import BOT  # noqa: E402
+
 import lerobot_mp.twin.strategy as twin_strategy  # noqa: E402
 from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
@@ -40,7 +42,7 @@ TWIN_PERIOD = 0.02
 
 @pytest.fixture
 def twin():
-    twin = Twin(Workspace(), clock=VirtualClock(t0=0.0))
+    twin = Twin(Workspace(robot=BOT), clock=VirtualClock(t0=0.0))
     try:
         yield twin
     finally:
@@ -92,8 +94,8 @@ def answer(target):
 def test_the_test_strategy_drives_the_simulated_twin_through_its_poses(twin):
     twin.connect("sim", threaded=False)
     home = dict(twin.status.measured)
-    first = dict(home, shoulder_pan=20.0)
-    last = dict(home, shoulder_pan=-15.0, elbow_flex=30.0)
+    first = dict(home, j1=20.0)
+    last = dict(home, j1=-15.0, j2=30.0)
 
     runner = StrategyRunner(twin, Waypoints([first, last]))
     runner.start(threaded=False)
@@ -115,7 +117,7 @@ def test_the_same_strategy_drives_hardware_through_the_supervisor(twin, monkeypa
     """Same code path on a (fake) real arm: every command is the supervisor's, rate-limited."""
     arm = FakeArm()
     connect_fake(twin, monkeypatch, arm)
-    target = dict(twin.status.measured, shoulder_pan=40.0)
+    target = dict(twin.status.measured, j1=40.0)
 
     runner = StrategyRunner(twin, Waypoints([target], tolerance=0.5))
     runner.start(threaded=False)
@@ -123,8 +125,8 @@ def test_the_same_strategy_drives_hardware_through_the_supervisor(twin, monkeypa
 
     assert runner.status.success
 
-    pans = [sent["shoulder_pan"] for sent in arm.sent if "shoulder_pan" in sent]
-    one_tick = twin.workspace.spec().max_vel["shoulder_pan"] * TWIN_PERIOD
+    pans = [sent["j1"] for sent in arm.sent if "j1" in sent]
+    one_tick = twin.workspace.spec().max_vel["j1"] * TWIN_PERIOD
     assert pans[-1] == pytest.approx(40.0, abs=0.5)
     assert np.abs(np.diff(pans)).max() <= one_tick * 1.05
 
@@ -160,7 +162,7 @@ def test_a_plugin_strategy_returns_plain_values_and_sees_the_whole_observation(t
 
     def three_steps_then_done(obs):
         if obs.step < 3:
-            return {"shoulder_pan": 5.0}
+            return {"j1": 5.0}
         return PluginAction(done=True)
 
     plugin = Plugin(three_steps_then_done)
@@ -170,7 +172,7 @@ def test_a_plugin_strategy_returns_plain_values_and_sees_the_whole_observation(t
 
     spec = twin.workspace.spec()
     run = plugin.started
-    assert run.robot == "so101"
+    assert run.robot == BOT
     assert run.simulated
     assert run.joints == spec.joints
     assert run.folder == spec.root
@@ -298,11 +300,11 @@ def test_the_contract_is_lerobot_mp_apis_own_not_a_copy(name):
 
 
 @pytest.mark.parametrize("bad_target, named", [
-    ({"shoulder_pan": math.nan}, "shoulder_pan"),
+    ({"j1": math.nan}, "j1"),
     ({"gripper": math.inf}, "gripper"),
     ({"arm_joint1": 10.0}, "arm_joint1"),
-    ({"shoulder_pan": True}, "nie liczba"),
-    ({"shoulder_pan": "5"}, "nie liczba"),
+    ({"j1": True}, "nie liczba"),
+    ({"j1": "5"}, "nie liczba"),
 ])
 def test_a_bad_target_stops_the_run_and_holds_the_measured_pose(twin, monkeypatch, bad_target, named):
     arm = FakeArm()
@@ -324,7 +326,7 @@ def test_a_bad_target_stops_the_run_and_holds_the_measured_pose(twin, monkeypatc
 
 def test_home_takes_the_arm_and_the_strategy_hears_why(twin):
     twin.connect("sim", threaded=False)
-    plugin = Plugin(answer({"shoulder_pan": 30.0}))
+    plugin = Plugin(answer({"j1": 30.0}))
     runner = StrategyRunner(twin, plugin)
     runner.start(threaded=False)
     drive(twin, runner, 0.3)
@@ -335,7 +337,7 @@ def test_home_takes_the_arm_and_the_strategy_hears_why(twin):
     assert runner.status.stopped_because.startswith("przerwana")
     assert plugin.stopped == runner.status.stopped_because
     with pytest.raises(RuntimeError):
-        twin.set_target({"shoulder_pan": 0.0}, owner=runner.owner)
+        twin.set_target({"j1": 0.0}, owner=runner.owner)
 
 
 def test_the_time_limit_ends_the_run(twin):
@@ -356,7 +358,7 @@ def test_a_strategy_that_refuses_to_start_leaves_the_arm_alone(twin):
         def start(self, run, obs):
             raise RuntimeError(f"uczona na a1x, stanowisko ma {run.robot}")
 
-    runner = StrategyRunner(twin, TrainedOnAnotherRobot(answer({"shoulder_pan": 30.0})))
+    runner = StrategyRunner(twin, TrainedOnAnotherRobot(answer({"j1": 30.0})))
 
     with pytest.raises(RuntimeError, match="uczona na a1x"):
         runner.start(threaded=False)
@@ -386,12 +388,12 @@ def test_an_object_without_hz_or_act_is_not_a_strategy(twin):
         StrategyRunner(twin, NoRate())
 
     with pytest.raises(ValueError, match="hz"):
-        StrategyRunner(twin, Waypoints([{"shoulder_pan": 0.0}], hz=0.0))
+        StrategyRunner(twin, Waypoints([{"j1": 0.0}], hz=0.0))
 
 
 def test_an_action_object_is_used_as_is(twin):
     twin.connect("sim", threaded=False)
-    runner = StrategyRunner(twin, Plugin(answer(Action(target={"shoulder_pan": 3.0}, note="jade"))))
+    runner = StrategyRunner(twin, Plugin(answer(Action(target={"j1": 3.0}, note="jade"))))
     runner.start(threaded=False)
     drive(twin, runner, 0.3)
 
@@ -425,7 +427,7 @@ def test_a_slow_strategy_that_outlives_stop_cannot_drive_the_next_run(twin, monk
     def slow(obs):
         inside_act.set()
         let_act_return.wait(5.0)
-        return {"shoulder_pan": 40.0}
+        return {"j1": 40.0}
 
     runner = StrategyRunner(twin, Plugin(slow))
     runner.join_timeout_s = 0.05
@@ -451,7 +453,7 @@ def test_a_slow_strategy_that_outlives_stop_cannot_drive_the_next_run(twin, monk
 
 def test_the_arm_taken_during_a_tick_reports_the_preempt_not_a_crash(twin, monkeypatch, caplog):
     twin.connect("sim", threaded=False)
-    plugin = Plugin(answer({"shoulder_pan": 5.0}))
+    plugin = Plugin(answer({"j1": 5.0}))
     runner = StrategyRunner(twin, plugin)
     runner.start(threaded=False)
 
@@ -493,7 +495,7 @@ def test_the_arm_taken_while_the_strategy_starts_still_gets_it_a_stop(twin):
         def start(self, run, obs):
             twin.home()
 
-    plugin = HomePressedDuringStart(answer({"shoulder_pan": 30.0}))
+    plugin = HomePressedDuringStart(answer({"j1": 30.0}))
     runner = StrategyRunner(twin, plugin)
 
     with pytest.raises(RuntimeError, match="ramie odebrane"):

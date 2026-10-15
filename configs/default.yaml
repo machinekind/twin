@@ -20,30 +20,13 @@ safety:
   # `safety.home` i `joints` w tym pliku nadpisuja je tylko dla ramienia o tych stawach.
 
 robot:
-  backend: sim         # sim albo wtyczka backendu: feetech | lerobot | a1x (lerobot-twin check)
-  port: null           # np. /dev/ttyACM0, /dev/tty.usbmodem58FA0958121, COM5; dla a1x: can0, xcan
+  backend: sim         # sim albo wtyczka backendu z pakietu ramienia (lerobot-twin check)
+  port: null           # port ramienia, np. COM5, /dev/ttyACM0; dla a1x: can0, xcan
 
 # Kazda inna sekcja nalezy do backendu albo strategii o tej nazwie. Backend sprawdza swoja sam;
 # sekcja strategii (np. `swing:`) wypelnia formularz jej ustawien w panelu (zakladka Strategie),
 # a nieznany klucz albo zly typ blokuje Uruchom.
 
-feetech:               # SO-101 wprost przez port szeregowy
-  baudrate: 1000000          # predkosc portu; STS3215 w SO-101 fabrycznie 1 Mbaud
-  center_ticks: 2048         # tik zera stawu (4096 tikow na obrot, montaz wysrodkowany)
-  gripper_closed_ticks: 1986 # szczeka zamknieta = 0 w skali aplikacji
-  gripper_open_ticks: 2670   # szczeka otwarta = 100; wartosci z EEPROM przykladowego ramienia
-  # Sprawdz swoje: rozewrzyj/zamknij szczeke reka i odczytaj Present_Position serwa chwytaka
-  # (np. programem Feetech FD) albo jego limity Min/Max_Position_Limit z EEPROM-u. Blizniak liczy
-  # kat szczeki z `gripper_range_q` w src/lerobot_mp/robot/so101/robot/robot.yaml - przy innym ramieniu popraw
-  # oba miejsca, inaczej panel ostrzega po polaczeniu, a `lift` sciska za mocno albo nie domyka.
-  torque_off_on_exit: false  # wiotkie ramie opada - wlacz tylko, gdy jest podparte
-
-lerobot:               # SO-101 przez LeRobota (pelny stos z kalibracja)
-  robot_id: so101_follower
-  kind: so101                # so101 | so100
-  use_degrees: true
-  max_relative_target: null  # przyciecie skoku przez LeRobota; null = nadzor blizniaka
-  calibration_dir: null
-  center_ticks: 2048
+# Sekcje backendow przychodza z pakietem ramienia (SO-101: `feetech:` i `lerobot:` w pakiecie soarm).
 
 # a1x:                 # Galaxea A1X po CAN-FD - klucze w docs/TWIN.md, rozdzial "Galaxea A1X"

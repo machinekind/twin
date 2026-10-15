@@ -15,6 +15,8 @@ import pytest
 
 pytest.importorskip("mujoco")
 
+from conftest import BOT  # noqa: E402
+
 from lerobot_mp.twin import scene as sc  # noqa: E402
 from lerobot_mp.twin.calib import tags  # noqa: E402
 from lerobot_mp.twin.calib.simulate import look_at  # noqa: E402
@@ -23,7 +25,7 @@ from lerobot_mp.twin.robots import get_spec  # noqa: E402
 from lerobot_mp.twin.tagbody import Observation, TagBody, learn_layout, locate, observe, optical_in_tag  # noqa: E402
 from lerobot_mp.twin.workspace import CameraRecord, Workspace  # noqa: E402
 
-SO101 = get_spec("so101")
+SPEC = get_spec(BOT)
 
 TAG = 0.03
 HALF = 0.02
@@ -60,13 +62,13 @@ def rig():
     R = T_body2base[:3, :3]
     eyes = [centre + 0.4 * R @ np.array(d) for d in ([0.55, 0.55, 0.65], [0.9, -0.35, 0.45], [-0.3, 0.9, 0.5])]
     views = [sc.CameraView(f"cam{k}", K, W, H, look_at(eye, centre)) for k, eye in enumerate(eyes)]
-    cfg = sc.SceneConfig(SO101, cameras=views, panels=panels)
-    ws = Workspace()
+    cfg = sc.SceneConfig(SPEC, cameras=views, panels=panels)
+    ws = Workspace(robot=BOT)
     for v in views:
         ws.add_camera(CameraRecord(v.name, "sim", W, H, K=K.tolist(), dist=None,
                                    T_cam2base=v.T_cam2base.tolist(), intrinsics_from="symulacja"))
     with sc.build(cfg) as scene:
-        scene.set_joints({"shoulder_pan": 110.0, "shoulder_lift": -95.0, "elbow_flex": 90.0})
+        scene.set_joints({"j1": -90.0, "j2": -60.0})                    # ramie z dala od kostki
         frames = {v.name: scene.render(v.name) for v in views}
     return T_body2base, layout, ws, frames
 
