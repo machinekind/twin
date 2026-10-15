@@ -28,6 +28,6 @@ ROBOTS = "lerobot_mp.robots"
 BACKENDS = "lerobot_mp.backends"
 
 #: A strategy: the entry point resolves to a class following `Strategy`. The twin builds its
-#: `settings` dataclass from the config section named like the strategy and the panel's form, and
-#: creates the strategy as `cls(settings)`, or `cls()` when the class has no `settings`.
+#: `settings` dataclass from the panel's form, which the config section named like the strategy
+#: prefills, and creates the strategy as `cls(settings)`, or `cls()` when the class has no `settings`.
 STRATEGIES = "lerobot_mp.strategies"

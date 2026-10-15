@@ -1,7 +1,7 @@
-"""Stanowisko jako dane: `scene.xml` + `station.json`, czytane zwyklym MuJoCo bez blizniaka.
+"""The station as data: `scene.xml` + `station.json`, read by plain MuJoCo without the twin.
 
-To jest granica dla treningu (so101): zmierzone stanowisko ma trafic do symulatora
-jako plik, nie przez import `lerobot_mp`.
+This is the boundary to the training package: the measured station reaches its simulator as
+files, not through an import of `lerobot_mp`.
 """
 
 from __future__ import annotations
@@ -35,23 +35,23 @@ def test_exported_scene_matches_the_live_one(exported):
     assert (model.nbody, model.njnt, model.ncam, model.nmesh) == \
         (live.model.nbody, live.model.njnt, live.model.ncam, live.model.nmesh)
     assert model.opt.timestep == live.model.opt.timestep
-    # Kamery dokladnie tam, gdzie w scenie na zywo, z tym samym K.
+    # The cameras where the live scene has them, with the same K.
     live.set_joints(ws.spec().home)
     q = live.data.qpos.copy()
     data.qpos[:] = q
     mujoco.mj_forward(model, data)
-    # XML niesie kwaterniony z szescioma cyframi - stad tolerancja mikrometrow.
+    # The XML carries quaternions with six significant digits, hence a tolerance of micrometres.
     assert np.allclose(data.cam_xpos, live.data.cam_xpos, atol=1e-5)
     assert np.allclose(data.cam_xmat, live.data.cam_xmat, atol=1e-5)
     assert np.array_equal(model.cam_intrinsic, live.model.cam_intrinsic)
     assert np.array_equal(model.cam_resolution, live.model.cam_resolution)
-    # Ramie pod tym samym prefiksem i z ta sama kinematyka: TCP w domu w tym samym miejscu.
+    # The arm under the same prefix, with the same kinematics: the TCP at home in the same place.
     tcp = sc.PREFIX + ws.spec().tcp_site
     assert np.allclose(data.site(tcp).xpos, live.data.site(tcp).xpos, atol=1e-5)
 
 
 def test_exported_scene_takes_task_objects(exported):
-    """Pakiet treningowy doklada obiekty zadania przez MjSpec, bez kodu blizniaka."""
+    """A training package adds its task's objects through MjSpec, without the twin's code."""
     _, folder = exported
     spec = mujoco.MjSpec.from_file(str(folder / "scene.xml"))
     body = spec.worldbody.add_body()

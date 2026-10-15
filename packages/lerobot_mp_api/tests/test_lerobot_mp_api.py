@@ -189,7 +189,7 @@ def test_a_strategy_follows_the_protocol_by_its_attributes():
 
 
 def test_the_strategy_protocol_is_not_checked_with_isinstance():
-    """`settings` is optional at runtime, so the twin checks `hz` and `act` by attribute."""
+    """Not runtime-checkable: a strategy needs only `hz` and `act`, which the twin checks by attribute."""
     with pytest.raises(TypeError):
         isinstance(Swing(SwingSettings(joint="j1")), Strategy)  # type: ignore[arg-type]
 

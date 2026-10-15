@@ -322,7 +322,7 @@ def _rotmat(quat) -> np.ndarray:
 
 
 def compose(cfg: SceneConfig) -> mujoco.MjSpec:
-    """Sklada scene od zera jako `MjSpec` (bez kompilacji)."""
+    """Composes the scene from scratch as an `MjSpec`, without compiling it."""
     t = cfg.table
     top = t.height
     # Ramie jako pierwsze: jego opcje fizyki (menagerie stroi je pod manipulacje -
@@ -444,17 +444,18 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
 
 
 def build(cfg: SceneConfig) -> Scene:
-    """Kompiluje scene od zera."""
+    """Composes and compiles the scene from scratch."""
     return Scene(cfg, compose(cfg).compile())
 
 
 def export(cfg: SceneConfig, folder: str | Path) -> Path:
-    """Zapisuje scene jako MJCF do `folder`: `scene.xml` i `assets/` z siatkami ramienia.
+    """Writes the scene as MJCF into `folder`: `scene.xml` and `assets/` with the arm's meshes.
 
-    Dla pakietow, ktore maja jechac na zmierzonym stanowisku bez importowania
-    blizniaka (trening): `mujoco.MjModel.from_xml_path(folder / "scene.xml")`
-    daje te sama scene, a `MjSpec.from_file` pozwala dolozyc obiekty zadania.
-    Karta i panele niosa tekstury z pamieci - nie wchodza do eksportu.
+    For packages that run on the measured station without importing the twin (training):
+    `mujoco.MjModel.from_xml_path(folder / "scene.xml")` gives the model `build(cfg)` compiles,
+    and `MjSpec.from_file` lets them add their task's objects. A scene with the calibration card
+    or panels is refused: their textures live in memory, not in files. Returns the path of
+    `scene.xml`.
     """
     if cfg.card is not None or cfg.panels:
         raise ValueError("eksport sceny: karta i panele nie wchodza do MJCF - zbuduj scene bez nich")
@@ -467,7 +468,7 @@ def export(cfg: SceneConfig, folder: str | Path) -> Path:
     for mesh in spec.meshes:
         shutil.copyfile(meshes / mesh.file, assets / Path(mesh.file).name)
         mesh.file = Path(mesh.file).name
-    # `to_xml` kompiluje po drodze, wiec siatki musza byc juz tam, gdzie wskaze XML.
+    # `to_xml` compiles along the way, so the meshes must already be where the XML points.
     spec.modelfiledir = str(folder)
     spec.meshdir = "assets"
     path = folder / "scene.xml"

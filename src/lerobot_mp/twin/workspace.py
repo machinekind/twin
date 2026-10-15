@@ -17,8 +17,8 @@ maja poze (`save_preset`), nigdy nie nadpisywany. `twin.json` trzyma kopie
 robocza wgranego zestawu (`calib_preset`); bez wskazania wgrywany jest
 najnowszy (`load`). Starszy zestaw wraca przez `load_preset`.
 
-Pakiet, ktory ma jechac na tym stanowisku bez importowania blizniaka (trening),
-dostaje je jako dane: `export` (`lerobot-twin export <folder>`).
+A package that runs on this station without importing the twin (training) gets
+it as data: `export` (`lerobot-twin export <folder>`).
 """
 
 from __future__ import annotations
@@ -237,11 +237,13 @@ class Workspace:
         return cfg
 
     def export(self, folder: str | Path) -> Path:
-        """Stanowisko jako dane dla pakietow, ktore nie importuja blizniaka (trening).
+        """Writes the station into `folder` as data for packages that do not import the twin (training).
 
-        `scene.xml` + `assets/` (stol, ramie, kamery z pelnym K - `scene.export`) i
-        `station.json`: kopia tego stanowiska (poza podstawy, kamery, dynamika
-        z identyfikacji, dom). Zwraca folder.
+        `scene.xml` and `assets/` (`scene.export`): the floor, table, lights, the arm and every
+        enabled camera that has a pose, with its full K (MJCF holds no distortion); a simulated
+        camera stands at its true pose. `station.json`: this workspace as `save` writes it to
+        `twin.json` (the table with the base pose, every camera with its K, distortion and
+        calibration, the identified dynamics, home). Returns the folder.
         """
         from .scene import export
 

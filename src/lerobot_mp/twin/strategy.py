@@ -19,8 +19,8 @@ see `strategies`.
 
 The runner ends a run, for every strategy, when:
 
-* a target names a joint the robot does not have, or is not a finite number (the arm then holds
-  where it measures);
+* `act` raises, or a target names a joint the robot does not have or is not a finite number (the
+  arm then holds where it measures);
 * the twin takes the arm away (Home, STOP, reconnect, another owner);
 * the arm disconnects;
 * the time limit runs out.
@@ -215,7 +215,7 @@ class StrategyRunner:
     def step_once(self, now: float | None = None, *, _run: _Run | None = None) -> bool:
         """One tick. False = the run is over (the reason is in `status.stopped_because`).
 
-        `now` [s]: the loop thread passes the wall clock, a test the simulated time.
+        `now` [s]: the loop thread passes `time.monotonic()`, a test the simulated time.
         """
         run = _run or self._run
         if run is None or run is not self._run or not self.status.running:
@@ -311,8 +311,8 @@ class StrategyRunner:
         )
 
     def _checked(self, target: Mapping[str, float]) -> dict[str, float]:
-        """The target as floats, or `_BadTarget`. A NaN that reached the supervisor once drove a
-        gripper past closed (grasp student, 2026-09-27)."""
+        """The target as floats, or `_BadTarget`. A NaN must not reach the supervisor: it can drive
+        a gripper past closed."""
         checked = {}
 
         for name, value in target.items():
@@ -432,7 +432,7 @@ class _LazyFrames(Mapping[str, Frame]):
 
 
 def _check_strategy(strategy: Any) -> None:
-    # By attributes, not `isinstance`: the protocol's `settings` is optional at runtime.
+    # By attributes, not `isinstance`: a strategy that does not subclass `Strategy` needs only these.
     if not hasattr(strategy, "hz") or not callable(getattr(strategy, "act", None)):
         raise TypeError(f"{type(strategy).__name__} nie jest strategia: potrzeba `hz` i `act(obs)`")
 
