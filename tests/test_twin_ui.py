@@ -1,7 +1,7 @@
 """Panel blizniaka: startuje, odswieza sie i obsluguje kamery symulowane bez przegladarki.
 
 Dalej - to, czego panel pilnuje przed prawdziwym ramieniem: jeden wlasciciel ramienia,
-uchwyt TCP na tej samej galezi IK, swiezosc detekcji kostki, kalibracja i zadania w tle.
+uchwyt TCP na tej samej galezi IK, kalibracja i zadania w tle.
 """
 
 from __future__ import annotations
@@ -90,8 +90,6 @@ def shared_app(tmp_path_factory):
 def app(shared_app):
     a = shared_app
     yield a
-    if a.runner is not None:
-        a.runner.stop("koniec testu")
     a.strategies.stop("koniec testu")
     for job in (a.calib_job, a.sysid_job, a.intr_job):
         job.stop()
@@ -243,31 +241,6 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.intr_job.state = jobs.IDLE
 
 
-def test_stale_or_repeated_cube_detection_does_not_keep_the_policy_going(app):
-    from lerobot_mp.twin.perception import CubeDetection, CubeTracker
-
-    def det(age: float) -> CubeDetection:
-        return CubeDetection(np.array([0.25, 0.0, 0.015]), np.eye(3), 100.0, 0.9, n_cameras=2,
-                             t=time.monotonic() - age)
-
-    app.cube_tracker, app._cube_used_t = CubeTracker(hold_s=0.2), 0.0
-    app.last_cube = det(0.0)
-    assert app._vision_cube() is not None
-    time.sleep(0.3)
-    # Ta sama detekcja podawana co takt (mapa wylaczona, kamera zamrozona) odnawiala hold_s bez konca.
-    assert app._vision_cube() is None and app.cube_tracker.source == "brak"
-    app.last_cube = det(2.0)                                    # detekcja z kadrow sprzed 2 s
-    assert app._vision_cube() is None
-    # Mapa wylaczona: zadnej starej detekcji w `last_cube`.
-    app.last_cube = det(0.0)
-    app.map_on.value = False
-    try:
-        app._tick_map({})
-        assert app.last_cube is None
-    finally:
-        app.map_on.value = True
-
-
 @pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
     from lerobot_mp.twin.calib.handeye import CameraFit, Fit
@@ -301,38 +274,11 @@ def _click(app, label: str) -> _Event:
 
 
 @pytest.mark.parametrize("action", ["stop", "home"])
-def test_stop_home_or_halt_while_the_policy_loads_never_lets_it_drive(app, monkeypatch, action):
-    """STOP/Dom 0,1 s po Uruchom trafialy w okno ladowania polityki (108-142 ms): STOP szedl do
-    starego runnera, nowa polityka brala ramie pod STOP-em, a po Skasuj STOP jechala - 83,7 st.
-    ruchu stawu (verify2, s15d); Dom byl przerywany przez `claim` polityki (s15c)."""
-    from lerobot_mp.twin.rl import policy as P
-
+def test_stop_or_home_during_a_start_never_lets_the_task_take_the_arm(app, action):
+    """STOP/Dom w oknie startu zadania (fala, identyfikacja): `_take_arm` z chwila startu odmawia,
+    takze po Skasuj STOP (verify2, s15c/s15d)."""
     app.twin.connect("sim", threaded=False)
-    app._refresh_policies()
-    app.pol_pick.value = next(o for o in app.pol_pick.options if "reach" in o)
-    real = P.Policy.load
     press = {"stop": lambda: app._emergency_stop(None), "home": lambda: app._go_home()}[action]
-
-    def load(path, device="cpu"):
-        pol = real(path, device)
-        press()                                             # operator klika w trakcie ladowania
-        return pol
-    monkeypatch.setattr(P.Policy, "load", staticmethod(load))
-    with pytest.raises(RuntimeError, match="aktywny STOP|w trakcie startu"):
-        app._start_policy(_Event())
-    assert app.twin.owner is None and not app.runner.status.running and not app.twin._engaged
-    assert "nie ruszyla" in app.runner.status.stopped_because
-    if action == "stop":
-        app.twin.clear_estop()                              # Skasuj STOP
-    start = dict(app.twin.joints())
-    for _ in range(100):
-        app.twin.step(0.02)
-    assert app.twin.owner is None and not app.runner.status.running
-    if action == "home":                                    # Dom jedzie swoja rampa - polityka jej nie przerwala
-        assert app.twin.safety_state.value in ("HOMING", "IDLE")
-    else:
-        assert max(abs(app.twin.joints()[k] - start[k]) for k in start) < 1.0
-    # To samo dla fali i identyfikacji (`_take_arm` z chwila startu).
     mark = app._motion_mark()
     press()
     if action == "stop":

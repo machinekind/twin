@@ -1,7 +1,7 @@
-"""Gdzie leza dane blizniaka: stanowisko i polityki.
+"""Gdzie leza dane blizniaka: stanowisko.
 
-Domyslne sciezki (`workspace/twin.json`, `workspace/policies`) przy
-uruchomieniu z klonu repozytorium licza sie od jego korzenia - tak samo
+Domyslna sciezka stanowiska (`workspace/twin.json`) przy uruchomieniu
+z klonu repozytorium liczy sie od jego korzenia - tak samo
 jak zasoby w `twin/robots.resolve_asset` - zeby `lerobot-twin ui` odpalone
 z innego katalogu nie zaczynalo od pustego stanowiska. Po zwyklej instalacji
 pakietu (bez klonu) zostaje katalog biezacy.

@@ -181,8 +181,8 @@ class Workspace:
     table: dict[str, Any] = field(default_factory=lambda: asdict(Table()))
     card: dict[str, Any] = field(default_factory=lambda: asdict(Card()))
     cameras: list[CameraRecord] = field(default_factory=list)
-    #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
-    #: pusta = model Menagerie. Srodek randomizacji w treningu.
+    #: Dynamika serw zidentyfikowana na tym ramieniu (`dynamics.Dynamics`);
+    #: pusta = model Menagerie. `export` daje ja treningowi w `station.json`.
     dynamics: dict[str, Any] = field(default_factory=dict)
     #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
     #: None = nie wybrano, `load` wgrywa najnowszy.

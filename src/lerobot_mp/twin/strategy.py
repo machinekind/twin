@@ -132,7 +132,7 @@ class StrategyRunner:
               guard: Callable[[], bool] | None = None) -> None:
         """Takes the arm and starts the run.
 
-        `gen` and `guard` go to `Twin.claim` (see `PolicyRunner.start`): a STOP or Home pressed while
+        `gen` and `guard` go to `Twin.claim` (see `TwinApp._claim_kw`): a STOP or Home pressed while
         the strategy was loading must not be overridden by it.
         """
         if not self.twin.connected:

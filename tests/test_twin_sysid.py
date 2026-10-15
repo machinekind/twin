@@ -19,8 +19,8 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from lerobot_mp.twin.rl.randomize import Dynamics, Randomization  # noqa: E402
-from lerobot_mp.twin.rl.sysid import (  # noqa: E402
+from lerobot_mp.twin.dynamics import UNFITTED_RANGES, Dynamics  # noqa: E402
+from lerobot_mp.twin.sysid import (  # noqa: E402
     IDENTIFIED, OWNER, Recording, Replayer, excitation, identify, plan_target, record,
 )
 from lerobot_mp.twin.robots import get_spec  # noqa: E402
@@ -77,13 +77,10 @@ def test_identification_on_the_panel_excitation_is_as_good_as_it_says():
     assert dyn.fitted == IDENTIFIED == ("damping", "armature", "delay")
     assert "z modelu" in dyn.source and "kp" in dyn.source and "frictionloss" in dyn.source
     assert np.isinf(out.band["kp"]) and np.isinf(out.band["frictionloss"])
-    # Prawdziwe ramie lezy w swiatach treningu wokol wyniku - WSZYSTKIE parametry, takze kp
-    # i tarcie (stare kp 0,85-1,15 wokol 1,0 nie zawieralo kp 0,7 / 0,8 / 1,3).
-    rand = Randomization.around(dyn)
-    for name in ("kp", "damping", "armature", "frictionloss"):
-        lo, hi = getattr(rand, name)
+    # kp i tarcie prawdziwego ramienia leza w szerokich zakresach `UNFITTED_RANGES` wokol wyniku
+    # (stare kp 0,85-1,15 wokol 1,0 nie zawieralo kp 0,7 / 0,8 / 1,3).
+    for name, (lo, hi) in UNFITTED_RANGES.items():
         assert lo * getattr(dyn, name) <= getattr(truth, name) <= hi * getattr(dyn, name), name
-    assert rand.min_delay <= delay * 20 <= rand.max_delay
 
 
 # ------------------------------------------------------------ nagranie na blizniaku
@@ -228,7 +225,7 @@ def test_record_under_real_arm_timing_keeps_the_documented_accuracy(monkeypatch)
     zegarem rejestratora - tlumienie +62 % (pasmo 35 %), armatura -11 %, opoznienie -7,5 ms,
     blad 0,35 st. Nagranie w taktach petli: tlumienie i armatura w kilku procentach.
     """
-    from lerobot_mp.twin.rl import sysid
+    from lerobot_mp.twin import sysid
 
     truth, delay = Dynamics(kp=0.85, damping=1.1, armature=0.9, frictionloss=1.2), 0.03
     arm = JitterArm(truth, delay)

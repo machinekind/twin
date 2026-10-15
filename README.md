@@ -2,9 +2,11 @@
 
 A MuJoCo simulation that knows the same things about the desk as the real
 workstation: where the arm stands, where the cameras stand, what optics they
-have and how the servos really respond. Policies trained in it on a GPU then run
-on a real **SO-101** through the same code path, through the safety supervisor
-and with the same camera perception.
+have and how the servos really respond. A control strategy runs in it and on a
+real **SO-101** through the same code path, through the safety supervisor and
+with the same camera perception. Training and the policies are in `soarm-lab`
+(the so-arm101 repository), and a trained policy runs as the `policy` strategy
+in the panel's Strategies tab.
 
 ```
   real workstation                            twin (MuJoCo)
@@ -14,9 +16,9 @@ and with the same camera perception.
  │ desk, cube           │  ChArUco, sysid   │ poses, with the same K,  │
  └──────────▲───────────┘                   │ servos as measured       │
             │                               └────────────┬─────────────┘
-            │  policy through the supervisor             │  thousands of MuJoCo Warp worlds
-            │  (same observation layouts)                ▼  PPO on the GPU
-            └────────────────────────────────── reach / lift policy
+            │  `policy` strategy through the supervisor  │  lerobot-twin export:
+            │  (the same code path as in simulation)     ▼  scene.xml + station.json
+            └────────────────────────────────── training in soarm-lab
 ```
 
 ## The problem it solves
@@ -35,31 +37,31 @@ The twin is **measured from the workstation**, not modelled by eye:
   matrix: intrinsics from a ChArUco board, position from a card with tags held
   in the gripper, all cameras at once.
 - **Servos**: dynamics are identified from a recorded motion (damping,
-  armature, delay); training randomizes conditions *around the measured* arm.
-- **Perception**: training sees the cube the way the cameras see it (delayed,
-  refreshed rarely, noisy), not the way the physics knows it.
-- **One code path for simulation and arm**: the same observation layouts, the
+  armature, delay) and leave with the station (`lerobot-twin export`), so
+  training randomizes conditions *around the measured* arm.
+- **One code path for simulation and arm**: the same strategy runner, the
   same safety supervisor, the same perception; going from sim to the arm is a
   backend change (`sim` -> `feetech`, and `sim` -> `a1x` for the Galaxea A1X).
 
 ## What it enables
 
-- **Training policies on a GPU** (`reach`, `lift`) and running them on a real
-  SO-101 through the safety supervisor.
-- **Grasping objects seen only by the cameras**: no markers on the object; the
+- **Running control strategies** (a trained policy, a VLA, scripted motion) on
+  a real SO-101 through the safety supervisor, the same way as in simulation.
+- **Locating objects seen only by the cameras**: no markers on the object; the
   cube is located to within 1-3 mm.
 - **Arbitrary placement of many cameras**: a moved camera is detected by
   itself (zoom by 1 %, rotation by 1°), and one camera can be relocalized
   quickly.
-- **Fine-tuning ready-made policies** on the measured dynamics of your own arm
-  instead of training from scratch.
+- **A measured station as data**: `lerobot-twin export` writes the scene
+  (`scene.xml`, `assets/`) and the station record (`station.json`: cameras,
+  identified dynamics) for packages that do not import the twin.
 - **Live Sim-Real comparison**: a frame from the real camera with the edges of
   the twin's render from the same pose drawn over it.
 - **Safe work with the arm**: one owner of motion at a time; STOP and Home take
   the arm from any owner; reaction to servo errors, link loss and collisions; a
   gripper that is squeezing an object does not let go on STOP.
 - **A second arm, the Galaxea A1X**: the same twin, panel and supervisor; in
-  simulation the model, camera calibration and RL environments, on hardware the
+  simulation the model and camera calibration, on hardware the
   `a1x` backend over CAN-FD (Linux, macOS, Windows) —
   [docs/TWIN.md](docs/TWIN.md#galaxea-a1x).
 - **Remote work**: the arm through a network bridge (`socket://`), and a
@@ -71,25 +73,19 @@ Measured on an RTX A4500:
 
 | | time |
 |---|---|
-| GPU physics (MuJoCo Warp) | **1.1 M steps/s**, thousands of worlds at once |
-| `reach` training | **about 2 min** |
-| `lift` training from scratch / fine-tuning | about 28 min / about 16 min |
 | Calibration of all cameras | one wave, about 20 poses; in simulation 0.16 mm / 0.013° error |
 | Servo dynamics identification | about 20 s of motion + a few seconds of fitting |
 | From a fresh clone to the panel | about 6 min of installation -> `lerobot-twin demo` -> `lerobot-twin ui` |
 
-Most iterations (task design, training, perception tuning, calibration, trying
-the whole chain) happen in the twin; on the hardware only the check is left.
+Most iterations (calibration, perception tuning, trying a strategy on the whole
+chain) happen in the twin; on the hardware only the check is left.
 
 ## Status
 
-In simulation: the `reach-v3` and `lift-v3` policies have 100 % success on the
-CPU (a different engine than in training), and `lift` with the cube seen **only
-by the cameras** picks it up 8/8. The tests are integration tests only: chains
-through several modules and behaviours dangerous to the hardware. The Galaxea
-A1X works in simulation (camera calibration 6/6 trusted, IK, wave, stable RL
-physics); its CAN backend is tested on a simulated bus, and there are no
-policies for the A1X yet. **The whole thing has not yet been tested on a real
+The tests are integration tests only: chains through several modules and
+behaviours dangerous to the hardware. The Galaxea A1X works in simulation
+(camera calibration 6/6 trusted, IK, wave); its CAN backend is tested on a
+simulated bus. **The whole thing has not yet been tested on a real
 arm (neither the SO-101 nor the A1X)**: that is the next step, with a
 step-by-step procedure in [docs/TWIN.md](docs/TWIN.md).
 Decisions and pitfalls: [HANDOFF.md](HANDOFF.md).
@@ -105,35 +101,26 @@ The repository holds everything needed to run it, including models and data:
 | `src/lerobot_mp/robot/so101/robot/` | arm model from MuJoCo Menagerie with STL meshes | yes |
 | `src/lerobot_mp/robot/a1x/robot/` | Galaxea A1X: the manufacturer's URDF and meshes (the manufacturer's licence, not Apache-2.0, see `NOTICE`) and `a1x.xml` from a script | yes |
 | `assets/so101_preview.npz` | SO-101 reference model from Articulus: a test compares the twin's MJCF with it (rebuilt by `scripts/import_articulus_model.py`) | yes |
-| `assets/policies/` | base policies `reach-v3` and `lift-v3` (a start for fine-tuning) | yes |
 | `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration | yes |
 | `assets/calib/*.txt` | example lens (Logitech Brio 4K 1280x720): K and distortion to load in Calibration, step 1 | yes |
 | `examples/twin.a1x.sim.json` | the same for the Galaxea A1X (`lerobot-twin demo --robot a1x`) | yes |
 | `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created on the first save in the panel or by `lerobot-twin demo` |
 | `workspace/calib/*.json` | every save of the camera poses (Calibration, step 2) as a separate file; the panel loads the newest, older ones can be picked from a list | yes: example sets from the A1X waves |
-| `workspace/policies/` | policies you train yourself | no |
 | `configs/local.yaml` | your configuration (a copy of `configs/default.yaml`), e.g. gripper ticks | no (`.gitignore`) |
 
 When run from a clone, the default paths (`workspace/…`) are counted from the
 repository root, so `lerobot-twin ui` started from another directory lands in
 the same workstation. Paths given in flags are counted from the current
 directory as usual. Only things created on a given machine stay outside the
-repository: the LeRobot calibration (only the `lerobot` backend) and the MuJoCo
-Warp kernel cache (about 100 s of compilation at the first training).
+repository: the LeRobot calibration (only the `lerobot` backend).
 
 **Requirements:** Python **3.12** (tested with 3.12.10), Git, OpenGL (any
-graphics card, including an integrated one). Policy training needs an **NVIDIA
-card with CUDA** (a driver that supports CUDA 12). Without it everything works
-except training: the panel, calibration, perception, dynamics identification
-and policy evaluation on the CPU. Disk space: about 5 GB for the `.venv` with
-CUDA torch (torch alone is about 3.9 GB), about 1 GB without NVIDIA (CPU torch);
-a CUDA install adds about 3 GB of pip cache (`pip install --no-cache-dir …`
-does not create it). The tested package versions are in
+graphics card, including an integrated one). The tested package versions are in
 [`constraints.txt`](constraints.txt).
 
 ### 1. Installation
 
-**Windows + NVIDIA card** (PowerShell):
+**Windows** (PowerShell):
 
 ```powershell
 git clone https://github.com/machinekind/digital_twin_training.git
@@ -142,9 +129,7 @@ py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass   # this window only; without it Activate.ps1 is blocked
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-# CUDA torch FIRST - torch from PyPI on Windows has no CUDA
-pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
-pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt
+pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
 ```
 
 A fresh Windows blocks PowerShell scripts ("running scripts is disabled on this
@@ -155,56 +140,26 @@ is `.venv\Scripts\activate.bat` and nothing more is needed. You can also skip
 activation and write `.venv\Scripts\python -m pip …`,
 `.venv\Scripts\lerobot-twin …`.
 
-RTX 50xx cards: `cu128` instead of `cu126`. Short on space on `C:`? Before the
-installation (in the same PowerShell window) move the temporary files and the
-pip cache to another drive:
+Short on space on `C:`? Before the installation (in the same PowerShell window)
+move the temporary files and the pip cache to another drive:
 
 ```powershell
 $env:TMP='D:\tmp'; $env:PIP_CACHE_DIR='D:\tmp\pipcache'   # cmd.exe: set TMP=D:\tmp & set PIP_CACHE_DIR=D:\tmp\pipcache
 ```
 
-**Linux + NVIDIA card** (x86_64, glibc ≥ 2.28, e.g. Ubuntu 22.04/24.04):
+**Linux** (x86_64, glibc ≥ 2.28, e.g. Ubuntu 22.04/24.04) **and macOS** (Apple Silicon):
 
 ```bash
-sudo apt install python3.12 python3.12-venv libgl1 libglib2.0-0 libegl1   # Ubuntu 22.04: python3.12 from the deadsnakes PPA
+sudo apt install python3.12 python3.12-venv libgl1 libglib2.0-0 libegl1   # Linux only; Ubuntu 22.04: python3.12 from the deadsnakes PPA
 git clone https://github.com/machinekind/digital_twin_training.git && cd digital_twin_training
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
-pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
-pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt
-sudo usermod -aG dialout $USER    # access to the arm's port (log out and in after this)
-```
-
-Torch from PyPI on Linux is built with CUDA 13 and needs a driver ≥ 580, which
-is why the `cu126` index is used here too. On a server without a display:
-`export MUJOCO_GL=egl`.
-
-**Without an NVIDIA card**: the same steps, only torch from the `cpu` index and
-without `train`:
-
-```powershell
-# Windows (PowerShell)
-git clone https://github.com/machinekind/digital_twin_training.git
-cd digital_twin_training
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process Bypass
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
+sudo usermod -aG dialout $USER    # Linux: access to the arm's port (log out and in after this)
 ```
 
-```bash
-# Linux (system packages as above) and macOS on Apple Silicon
-git clone https://github.com/machinekind/digital_twin_training.git && cd digital_twin_training
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu   # macOS: pip install torch==2.11.0
-pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
-```
-
-Linux without a display and without a GPU: additionally
-`sudo apt install libosmesa6` and `export MUJOCO_GL=osmesa`.
+On a Linux server without a display: `export MUJOCO_GL=egl` (NVIDIA), or
+without a GPU `sudo apt install libosmesa6` and `export MUJOCO_GL=osmesa`.
 
 `packages/lerobot_mp_api` is `lerobot-mp-api`, the contracts the twin shares with robot and
 strategy packages ([below](#control-strategies)). It is not on PyPI, so it is installed from the
@@ -218,11 +173,8 @@ distribution found for lerobot-mp-api". uv reads the same path from `[tool.uv.so
 lerobot-twin check
 ```
 
-It prints the versions (mujoco, viser, torch, cv2…), the SO-101 model and the
-USB-serial ports, and separately the readiness for training: torch with CUDA
-(`cuda.is_available`, the card), warp and mujoco_warp: `OK` for every ready
-item, `--` for an unavailable one. "Trening na GPU: niedostepny" (GPU training:
-unavailable) on a computer without NVIDIA is not an error.
+It prints the versions (mujoco, viser, cv2, numpy), the arm models and the
+USB-serial ports: `OK` for every ready item, `BLAD` (error) for a missing one.
 
 ### 3. The twin's panel with the example workstation
 
@@ -234,16 +186,15 @@ lerobot-twin ui       # http://localhost:8080
 Port 8080 taken (another server, a proxy)? `lerobot-twin ui --port 8765` and
 the address `http://localhost:8765`. At startup the panel prints in the console
 the full path of the workstation file (`istnieje` or `nowe, puste`: exists or
-new, empty) and the policies directory, so you can see that the
-`workspace/twin.json` from the clone is used, also when the panel was started
-from another directory. `lerobot-twin workspace` shows the same.
+new, empty), so you can see that the `workspace/twin.json` from the clone is
+used, also when the panel was started from another directory. `lerobot-twin workspace` shows the same.
 
-In the panel: the **Ramię** tab -> `sim` -> **Połącz**; the **Polityki** tab ->
-`lift-v3`, `lift: skad polozenie kostki` = **kamery**, and the cube is placed by
-the button `lift (sim): poloz kostke losowo`. Without `demo` the twin starts
-with an empty workstation (arm `sim`, no cameras); cameras are added in the
-Kamery tab (`Dodaj symulowana przed ramieniem`, then calibration, or in the
-Kalibracja tab `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
+In the panel: the **Ramię** tab -> `sim` -> **Połącz**; the **Mapa** tab shows
+the table stitched from the two cameras, and the **Strategie** tab runs the
+strategies of installed packages ([below](#control-strategies)). Without `demo`
+the twin starts with an empty workstation (arm `sim`, no cameras); cameras are
+added in the Kamery tab (`Dodaj symulowana przed ramieniem`, then calibration,
+or in the Kalibracja tab `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
 The tab with the panel must be visible: viser draws nothing in a background
 tab.
 
@@ -255,22 +206,11 @@ pytest -q -m "not render"     # a computer without OpenGL
 pyright                       # the contracts, the strategies and the example packages
 ```
 
-The twin's tests skip themselves without `mujoco`, `torch` or `viser`, and the
+The twin's tests skip themselves without `mujoco` or `viser`, and the
 `a1x` backend tests without the `galaxeo` package (the `a1x` extra). With the
 full installation (`.[twin,a1x,dev]`) the result is all `passed`.
 
-### 5. Training (NVIDIA only)
-
-```bash
-lerobot-twin train --task reach --iters 160
-lerobot-twin train --init assets/policies/reach-v3/policy.pt --iters 150    # fine-tuning a base policy
-lerobot-twin eval workspace/policies/<name>/policy.pt --rand                # evaluation, runs on the CPU
-```
-
-The results go to `workspace/policies/<name>/`. On a card with less than 20 GB
-of memory add `--envs 2048` or `1024`.
-
-### 6. A real SO-101
+### 5. A real SO-101
 
 The twin uses the `feetech` backend (`pyserial` alone, without LeRobot and its
 calibration). The port is shown by `lerobot-twin check` or "Wykryj porty" in the
@@ -288,7 +228,7 @@ lerobot-twin --config configs/local.yaml ui
 Next: [docs/TWIN.md](docs/TWIN.md), "Pierwszy test na prawdziwym stanowisku"
 (first test on a real workstation), from step 0.
 
-### 7. Galaxea A1X (CAN)
+### 6. Galaxea A1X (CAN)
 
 The `a1x` backend talks to the arm over CAN-FD through the `galaxeo` package
 (protocol and link, the galaxeo-manipulators repository):
@@ -430,7 +370,7 @@ field, a number or a switch per field, prefilled from the config file's section 
 name (`pi05:`). Start builds the dataclass strictly, so an unknown key, a missing one or a
 wrong type is refused before the arm moves, and creates the strategy as `Pi05(settings)`.
 The contract types live in `lerobot-mp-api`; a strategy package depends on that, never on
-`lerobot-mp` (MuJoCo, viser, torch). A strategy subclasses `Strategy[S]`, `S` its settings
+`lerobot-mp` (MuJoCo, viser, OpenCV). A strategy subclasses `Strategy[S]`, `S` its settings
 dataclass, which gives it the defaults (no settings, no time limit, empty `start` and `stop`)
 and lets a type checker check its methods against the contract. [examples/strategies/swing](examples/strategies/swing) is a complete example, and the
 tests load it.
@@ -438,7 +378,7 @@ tests load it.
 ## Configuration
 
 The twin reads a configuration file only when one is given:
-`lerobot-twin --config configs/local.yaml ui` (also `train`, `eval`). The model
+`lerobot-twin --config configs/local.yaml ui`. The model
 is `configs/default.yaml`, described by comments; a copy `configs/local.yaml` is
 in `.gitignore`. The twin reads the `safety` and `robot` (backend, port)
 sections; every other section belongs to the backend of that name (`feetech`,
@@ -491,7 +431,7 @@ packages/lerobot_mp_api/   lerobot-mp-api: the plugin contracts (strategy, backe
 src/lerobot_mp/
 ├── twin/          the twin: MuJoCo scene, the arm loop with the supervisor, cameras, perception, lerobot-twin
 │   ├── calib/     intrinsics from ChArUco, camera poses from the card in the gripper
-│   ├── rl/        RL environments, PPO on the GPU, policies, servo dynamics identification
+│   ├── sysid.py   servo dynamics identification; dynamics.py is its result
 │   ├── strategy.py  the control-strategy runner (the contract re-exported); waypoints.py is the test strategy
 │   ├── strategies.py  strategies from installed packages and their settings
 │   └── ui/        browser panel (viser)
@@ -503,7 +443,7 @@ src/lerobot_mp/
 
 The arm in simulation is MuJoCo physics in the twin's scene; a real arm is a
 backend from `robot/`, and the scene only mirrors it. The rest of the twin sees
-no difference: the same observation layouts, the same supervisor and the same
+no difference: the same strategy runner, the same supervisor and the same
 perception.
 
 ## Licence

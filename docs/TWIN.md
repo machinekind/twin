@@ -3,10 +3,11 @@
 Symulacja MuJoCo, która wie o biurku to samo, co prawdziwe stanowisko: gdzie
 stoi ramię, gdzie stoją kamery, jaką mają ogniskową i jak naprawdę odpowiadają
 serwa. Kamera skalibrowana na biurku trafia do symulacji **dokładnie w swojej
-pozie i ze swoją macierzą K**, polityka uczy się na tysiącach światów na GPU
-wokół **zmierzonej** dynamiki ramienia, a potem jedzie na prawdziwym ramieniu
-tą samą ścieżką — przez nadzór bezpieczeństwa — i widzi kostkę tą samą
-percepcją, którą widziała w symulacji.
+pozie i ze swoją macierzą K**, a strategia sterowania jedzie w symulacji i na
+prawdziwym ramieniu tą samą ścieżką — przez nadzór bezpieczeństwa — i widzi
+kostkę tą samą percepcją. Trening i polityki są w pakiecie `soarm-lab`
+(repozytorium so-arm101), a wytrenowana polityka jedzie jako strategia `policy`
+w zakładce Strategie.
 
 ```
   prawdziwe stanowisko                        bliźniak (MuJoCo)
@@ -16,18 +17,18 @@ percepcją, którą widziała w symulacji.
  │ biurko, kostka       │  ChArUco, sysid   │ pozach, z tym samym K,   │
  └──────────▲───────────┘                   │ serwa jak zmierzone      │
             │                               └────────────┬─────────────┘
-            │  polityka przez nadzór                     │  4096 światów MuJoCo Warp
-            │  (te same wzory obserwacji)                ▼  PPO na GPU
-            └────────────────────────────────── polityka reach / lift
+            │  strategia `policy` przez nadzór           │  lerobot-twin export:
+            │  (ta sama ścieżka co w symulacji)          ▼  scene.xml + station.json
+            └────────────────────────────────── trening w soarm-lab
 ```
 
 ## Stan
 
 | | |
 |---|---|
-| **Gotowe i przetestowane w symulacji** | model, kinematyka, scena z kamerami o pełnym K, kolizje, **kalibracja wielu kamer z karty w chwytaku**, **intrynsyki z ChArUco**, mapa stołu na żywo, **wykrywanie kostki z kamer**, **wykrywanie przestawionej kamery**, **środowiska RL CPU i GPU**, **PPO na GPU**, **identyfikacja dynamiki serw**, **runner polityk przez nadzór**, **panel webowy** |
+| **Gotowe i przetestowane w symulacji** | model, kinematyka, scena z kamerami o pełnym K, kolizje, **kalibracja wielu kamer z karty w chwytaku**, **intrynsyki z ChArUco**, mapa stołu na żywo, **wykrywanie kostki z kamer**, **wykrywanie przestawionej kamery**, **identyfikacja dynamiki serw**, **strategie przez nadzór** (`StrategyRunner`), **eksport stanowiska**, **panel webowy** |
 | **Do sprawdzenia na sprzęcie** | wszystko, co dotyka prawdziwego ramienia i prawdziwych kamer — procedura krok po kroku niżej |
-| **Drugie ramię: Galaxea A1X** | model, kinematyka, kalibracja kamer i środowiska RL na CPU w symulacji; backend `a1x` po CAN-FD przetestowany na symulowanej magistrali — sekcja [Galaxea A1X](#galaxea-a1x) |
+| **Drugie ramię: Galaxea A1X** | model, kinematyka i kalibracja kamer w symulacji; backend `a1x` po CAN-FD przetestowany na symulowanej magistrali — sekcja [Galaxea A1X](#galaxea-a1x) |
 | **Rozpoznanie** | rekonstrukcja 3D przedmiotów z biurka — [RESEARCH_3D.md](RESEARCH_3D.md) |
 
 Szczegóły, decyzje i pułapki: **[HANDOFF.md](../HANDOFF.md)**.
@@ -39,54 +40,38 @@ Szczegóły, decyzje i pułapki: **[HANDOFF.md](../HANDOFF.md)**.
 Skrót dla każdej platformy jest w README, „Szybki start na nowym komputerze”.
 Najważniejsze zasady:
 
-- **Torch z CUDA instaluj NAJPIERW, z indeksu PyTorcha**, a dopiero potem
-  projekt. Torch z PyPI na Windows jest bez CUDA (`torch.version.cuda == None`),
-  a na Linuksie wymaga CUDA 13 (sterownik ≥ 580). Gdy torch z PyPI trafi do
-  środowiska pierwszy, `pip install torch --index-url …` odpowie „already
-  satisfied” i CPU-owy torch zostanie — wtedy `pip uninstall torch` i od nowa.
-- Wersje sprawdzone razem są w `constraints.txt` (`-c constraints.txt`);
-  `mujoco` i `mujoco-warp` muszą mieć tę samą wersję (extra je wiążą).
+- Wersje sprawdzone razem są w `constraints.txt` (`-c constraints.txt`).
 - Kontrakty wtyczek to osobny pakiet `lerobot-mp-api` w `packages/lerobot_mp_api`
   (patrz [Jak to jest zbudowane](#jak-to-jest-zbudowane)). Nie ma go na PyPI, więc
   instaluje się go z klonu w tym samym poleceniu co bliźniaka:
   `pip install -e packages/lerobot_mp_api -e ".[…]"`; samo `pip install -e ".[…]"`
   kończy się „No matching distribution found for lerobot-mp-api”. uv bierze tę
   ścieżkę z `[tool.uv.sources]` w `pyproject.toml`.
-- Trening potrzebuje karty NVIDIA z CUDA. Bez niej instaluj bez `train`
-  (torch z indeksu `cpu`): panel, kalibracja, percepcja, identyfikacja
-  dynamiki i ewaluacja polityk na CPU działają.
 
 ```bash
-# Windows + NVIDIA (PowerShell); Linux: python3.12 i source .venv/bin/activate
+# Windows (PowerShell); Linux i macOS: python3.12 i source .venv/bin/activate
 py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass   # świeży Windows blokuje Activate.ps1; cmd.exe: .venv\Scripts\activate.bat
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126   # bez NVIDIA: .../whl/cpu
-pip install -e packages/lerobot_mp_api -e ".[twin,train,feetech,dev]" -c constraints.txt   # bez NVIDIA: ".[twin,feetech,dev]"
+pip install -e packages/lerobot_mp_api -e ".[twin,feetech,dev]" -c constraints.txt
 lerobot-twin check
 lerobot-twin demo    # przykładowe stanowisko w symulacji -> workspace/twin.json
 ```
-
-`lerobot-twin check` wypisuje osobno gotowość do treningu: wersję torcha, jego
-kompilację CUDA, `cuda.is_available()` i kartę, oraz `warp` (czy widzi GPU)
-i `mujoco_warp`.
 
 - Linux bez ekranu: `export MUJOCO_GL=egl` (NVIDIA) albo `osmesa` (CPU,
   `sudo apt install libosmesa6`). Port szeregowy: `sudo usermod -aG dialout $USER`.
 - Po instalacji LeRobota (`.[robot]`) sprawdź, czy `cv2` ma GUI — LeRobot
   podmienia OpenCV na wersję bez okien; naprawa w README („Naprawa OpenCV po
   LeRobocie”). Do bliźniaka LeRobot nie jest potrzebny (backend `feetech`).
-- Pierwsza kompilacja kerneli MuJoCo Warp trwa ~100 s; potem są w cache
-  (Windows `%LOCALAPPDATA%\NVIDIA\warp\Cache`, Linux `~/.cache/warp`).
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
-dynamika) i `workspace/policies/` są lokalne, poza repozytorium. Z klonu ich
-domyślne ścieżki liczą się od katalogu repozytorium, niezależnie od katalogu
-uruchomienia; inny plik: `--workspace <plik>`. Bez pliku bliźniak startuje
-z pustym stanowiskiem (ramię `sim`, bez kamer). `lerobot-twin demo` kopiuje
-`examples/twin.sim.json` — dwie kamery symulowane, których kalibracja to ich
-prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
+dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
+liczy się od katalogu repozytorium, niezależnie od katalogu uruchomienia; inny
+plik: `--workspace <plik>`. Bez pliku bliźniak startuje z pustym stanowiskiem
+(ramię `sim`, bez kamer). `lerobot-twin demo` kopiuje `examples/twin.sim.json`
+— dwie kamery symulowane, których kalibracja to ich prawdziwa poza w scenie
+(zaufane), więc „kostka z kamer” działa od razu.
 Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`).
 
 **Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
@@ -100,9 +85,8 @@ tą zmianą dostaje pierwszy zestaw ze swojej dotychczasowej pozy przy
 pierwszym zapisie.
 
 **Konfiguracja ramienia.** Bliźniak czyta plik konfiguracji tylko wtedy, gdy
-się go wskaże: `lerobot-twin --config configs/local.yaml ui` (także `train`,
-`eval`; opcja ustawia zmienną `LEROBOT_MP_CONFIG`, którą dziedziczy proces
-treningu uruchamiany z panelu). Sekcje `safety:` i `robot:` (`backend`, `port`)
+się go wskaże: `lerobot-twin --config configs/local.yaml ui` (opcja ustawia
+zmienną `LEROBOT_MP_CONFIG`). Sekcje `safety:` i `robot:` (`backend`, `port`)
 czyta bliźniak; każda inna sekcja należy do backendu o tej nazwie i sprawdza ją
 sam backend. Sekcja `feetech:` (opisana w `configs/default.yaml`): `center_ticks`
 (tik zera stawu, 2048), `gripper_closed_ticks` / `gripper_open_ticks` (szczęka 0
@@ -129,22 +113,20 @@ dlatego podgląd siedzi w procesie panelu.
 Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
 nim żółty **Skasuj STOP** (tylko przy aktywnym STOP-ie), plakietka stanu ramienia
 (ROZŁĄCZONE / ROZBROJONE / UZBROJONE / STERUJE: … / STOP AKTYWNY) i **Przewodnik**:
-zawsze widoczne jedno **Teraz:** („Krok N/8 (tytuł): zakładka > **przycisk**”,
+zawsze widoczne jedno **Teraz:** („Krok N/5 (tytuł): zakładka > **przycisk**”,
 albo co właśnie jedzie i jak to przerwać; aktywny STOP z przyczyną), a pod nim
-zwinięty folder **Kroki 0–8** z uwagami, których Teraz nie mówi (ostrzeżenia,
+zwinięty folder **Kroki 0–5** z uwagami, których Teraz nie mówi (ostrzeżenia,
 kamera bez kadru dłużej niż 3 s, przestawiona kamera; ich liczba w nazwie
-folderu) i listą kroków liczoną z bieżącego stanu — ramię, kamery, K, pozy, Sim-Real, dynamika, polityki. Na prawdziwym
-ramieniu dynamika zmierzona w sim i same polityki bazowe nie zaliczają kroków
-5 i 6; kroki 7–8 to sprawdzenie w bieżącej sesji panelu (liczy się polityka,
-która ruszyła na tym backendzie). W symulacji prowadzi przez te same kroki z
-kamerami symulowanymi. Każda
+folderu) i listą kroków liczoną z bieżącego stanu — ramię, kamery, K, pozy,
+Sim-Real, dynamika. Na prawdziwym ramieniu dynamika zmierzona w sim nie zalicza
+kroku 5. W symulacji prowadzi przez te same kroki z kamerami symulowanymi. Każda
 kontrolka ma podpowiedź po najechaniu (co robi, czy rusza ramieniem, jednostki),
 a każda zakładka zwiniętą notkę **Jak używać**. Logika przewodnika:
 `ui/guide.py` (bez visera, `tests/test_twin_guide.py`). Każdy ruch — z suwaków, z uchwytu
-w 3D, z polityki, z fali kalibracyjnej, z identyfikacji — idzie przez
+w 3D, ze strategii, z fali kalibracyjnej, z identyfikacji — idzie przez
 `runtime.Twin` i jego `SafetySupervisor`.
 
-**Ramię ma zawsze jednego właściciela**: panel (UZBRÓJ: suwaki i uchwyt 3D), polityka,
+**Ramię ma zawsze jednego właściciela**: panel (UZBRÓJ: suwaki i uchwyt 3D), strategia,
 fala kalibracyjna albo identyfikacja. Drugi nie ruszy, dopóki pierwszy nie
 skończy — panel mówi, kto ma ramię. **STOP**, **Dom**, **Połącz** i **Rozłącz**
 odbierają ramię każdemu, a ramię zostaje w **zmierzonej** pozie: nie dociska
@@ -155,14 +137,14 @@ się go ręcznie suwakiem. **Połącz / Rozłącz puszczają trzymany przedmiot*
 backendzie `feetech` (przy połączeniu serwa dostają cel = bieżąca pozycja) —
 przed nimi odłóż kostkę albo przytrzymaj ją ręką; w `sim` chwyt przetrwa.
 Każde uruchomienie na prawdziwym ramieniu wymaga świeżego potwierdzenia.
-STOP albo Dom wciśnięte w chwili startu polityki, fali czy identyfikacji
+STOP albo Dom wciśnięte w chwili startu strategii, fali czy identyfikacji
 wygrywają: zadanie nie weźmie ramienia pod aktywnym STOP-em i nie ruszy po
 *Skasuj STOP*.
 
 Pętla sama zatrzymuje ramię (STOP awaryjny, powód w pasku stanu), gdy:
 - serwo ramienia zgłosi błąd (przeciążenie, przegrzanie, napięcie, czujnik kąta);
 - staw ramienia jest ponad 25° od rozkazu dłużej niż 0,5 s — serwo, które
-  zwiotczało bez bitu błędu (każdy właściciel ruchu, nie tylko polityka);
+  zwiotczało bez bitu błędu (każdy właściciel ruchu, nie tylko strategia);
   jeśli prawdziwe serwa pod obciążeniem nie nadążą, podnieś
   `Twin.track_err_deg` / `track_err_s`;
 - serwa nie odpowiadają przez 5 odczytów z rzędu, albo pętla stanie na > 0,5 s.
@@ -187,9 +169,8 @@ stanu.
 | **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), `feetech` (port `COMx` / `/dev/ttyACM0` albo `socket://adres:5555` przez most), `lerobot`, `a1x` (Galaxea A1X po CAN: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
 | **Kamery** | lista kamer z jedną plakietką stanu (SKALIBROWANA / DO KALIBRACJI / KALIBRACJA NIEPEWNA / PORUSZONA / BEZ OBRAZU / WYŁĄCZONA — kolory jak piramidy w 3D); wybrana kamera: podgląd, jedna linia „co dalej”, przycisk *Włączona / Wyłączona*, *Usuń kamerę* (drugie kliknięcie potwierdza); symulowana dodatkowo *Przesuwaj w 3D* (uchwyt) i *Postaw tu, skąd patrzysz w 3D*; liczby w zwiniętych *Szczegółach*; na dole *Dodaj symulowaną przed ramieniem* i *Szukaj kamer USB* (wybór i *Dodaj kamerę USB* pojawiają się po znalezieniu) |
 | **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
-| **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru) |
-| **Trening** | PPO na GPU w osobnym procesie, z wykresem sukcesu; **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako środka randomizacji |
-| **Polityki** | lista z wynikami (GPU, CPU z randomizacją i bez), ewaluacja na CPU, **uruchomienie na bliźniaku** — sim albo prawdziwe ramię; `reach`: cel przeciągany w 3D; `lift`: kostka z symulacji albo **z kamer** |
+| **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru); *Tag na biurku*: poza taga z kamer i *Jedź nad tag* |
+| **Dynamika** | **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako dynamiki stanowiska (`lerobot-twin export` niesie ją w `station.json`) |
 | **Strategie** | strategie z zainstalowanych pakietów (entry points `lerobot_mp.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
 | **Sim-Real** | kadr prawdziwej kamery z nałożonymi krawędziami renderu bliźniaka z tej samej pozy i K, mediana rozjazdu w pikselach |
 
@@ -262,11 +243,11 @@ zmieniony po pomiarze blokuje zapis z powodem) albo *Odrzuć*. Wyjmij kartę.
 mają leżeć na krawędziach ramienia i stołu. Mediana > 3 px = coś jest źle
 (zmierzony tag? stół w bliźniaku nie na wysokości podstawy?).
 
-**5. Dynamika serw.** Zakładka Trening → *Identyfikuj na połączonym ramieniu*
+**5. Dynamika serw.** Zakładka Dynamika → *Identyfikuj na połączonym ramieniu*
 (~20 s ruchu po 12°; do pozy startowej ramię jedzie 30°/s) → *Zapisz jako
-dynamikę stanowiska*. Od teraz trening randomizuje wokół zmierzonego ramienia,
-nie katalogu. Z tego ruchu wyznaczalne są **tłumienie, armatura i opóźnienie**
-— na ruchu z panelu (5 stawów, 20 s), dla 13 syntetycznych ramion spoza siatki
+dynamikę stanowiska*. `lerobot-twin export` niesie ją w `station.json`, więc
+trening randomizuje wokół zmierzonego ramienia, nie katalogu. Z tego ruchu
+wyznaczalne są **tłumienie, armatura i opóźnienie** — na ruchu z panelu (5 stawów, 20 s), dla 13 syntetycznych ramion spoza siatki
 startowej i szumu 0,05°: tłumienie do 10,5%, armatura do 8,2%, opóźnienie do
 1,9 ms; podawany przedział niepewności zawsze obejmował prawdziwy błąd. Przy
 czasach jak na prawdziwym ramieniu (30 Hz z jitterem, odczyt co drugi takt)
@@ -277,41 +258,24 @@ panel pokazuje z przedziałem przy każdej wartości i z backendem, na którym
 nagrano. Dopasowanie, które niczego nie wyjaśnia (błąd niewiele mniejszy od
 modelu nominalnego albo przedział > 30% / nieskończony), ma wyłączone *Zapisz*
 — zapis tylko po zaznaczeniu *Zapisz mimo to*, i taki wynik nie zalicza kroku 5.
-Trening poszerza zakres każdego dopasowanego parametru co najmniej do jego
-przedziału niepewności.
 Wzmocnienia serw i tarcia suchego ten ruch nie rozróżnia (kp 0,63 dopasowuje
 się tak samo dobrze jak 1,0) — zostają z modelu, panel pisze przy nich
-„z modelu”, a trening po identyfikacji losuje je szerzej: kp ×0,6–1,5, tarcie
-×0,5–2,0. Dopasowanie trwa 7–11 s; STOP, *Połącz* i *Rozłącz* przerywają tylko
-nagrywanie — gotowe nagranie dopasowuje się do końca; przerwane świadomie
-(STOP, Dom, Połącz) panel pokazuje jako *Przerwane*, nie jako błąd. Nagranie
+„z modelu”, a opis wyniku podaje dla nich szerokie zakresy treningu: kp
+×0,6–1,5, tarcie ×0,5–2,0 (`dynamics.UNFITTED_RANGES`). Dopasowanie trwa
+7–11 s; STOP, *Połącz* i *Rozłącz* przerywają tylko nagrywanie — gotowe
+nagranie dopasowuje się do końca; przerwane świadomie (STOP, Dom, Połącz)
+panel pokazuje jako *Przerwane*, nie jako błąd. Nagranie
 z martwą pętlą albo nieświeżymi odczytami jest odrzucane.
 
-**6. Trening.** Najszybciej: **douczanie** gotowych polityk na zmierzonej
-dynamice — zakładka Trening, *Start z polityki* `reach-v3` / `lift-v3`,
-100–300 iteracji (`lerobot-twin train --init …`). Od zera: `reach` 160
-iteracji (~2,5 min), `lift` 600 (~30 min). Po treningu polityka sama przechodzi
-ewaluację na CPU.
-
-**7. `reach` na ramieniu.** Zakładka Polityki, polityka `reach`, potwierdzenie,
-*Uruchom*. Przeciągaj żółtą kulkę celu w 3D — ramię za nią jedzie. Polityka
-staje sama, gdy ramię nie nadąża za celem o więcej niż 25° (kolizja, blokada),
-i zostaje w zmierzonej pozie. Cel spoza obszaru treningu jest rzutowany na jego
-brzeg (kulka wraca na rzut).
-
-**8. `lift` z kamerami.** Kostka 3 cm w kolorze z listy na blacie przed ramieniem,
-zakładka Mapa ma ją pokazywać. Polityka `lift-v3` (albo jej douczona wersja),
-źródło kostki **kamery**, *Uruchom*. Gdy szczęki zasłonią kostkę, śledzenie
-przejmuje ją „w dłoni”. Polityka kończy sama („zadanie wykonane”), gdy kostka
-jest 6 cm nad blatem przez 10 taktów — liczonych tylko ze świeżej pozy (kamery
-albo „w dłoni”), nigdy z ostatnio widzianej.
+**Dalej: strategie.** Zakładka Strategie uruchamia strategie z zainstalowanych
+pakietów; wytrenowana polityka to strategia `policy` z `soarm-lab`.
 
 **Chwytak.** 0..100 w panelu to w bliźniaku kąt szczęki liniowo na zakresie
 `gripper_range_q` z `src/lerobot_mp/robot/so101/robot/robot.yaml`: 0 = −5,4°, 100 = 54,7°,
 czyli tiki serwa 1986 … 2670 przy zerze w 2048 — te same, co w sekcji `feetech:`.
 Domyślne tiki pochodzą z EEPROM-u jednego przykładowego serwa chwytaka. Sprawdź
 na ramieniu, że przy 0 szczęki się stykają — jeśli nie, zero szczęki w MJCF nie
-leży w `center_ticks` i trzeba to poprawić, zanim zaufa się `lift`: skopiuj
+leży w `center_ticks` i trzeba to poprawić, zanim zaufa się chwytom: skopiuj
 `configs/default.yaml` do `configs/local.yaml` (jest w `.gitignore`), popraw
 w sekcji `feetech:` klucze `center_ticks`, `gripper_closed_ticks`,
 `gripper_open_ticks` (i ewentualnie `baudrate`), a `gripper_range_q` w `robot.yaml`
@@ -584,7 +548,7 @@ przez … s i stoi — ramię głuche na 0x050 … albo zablokowane” i STOP. D
 wtedy (albo po zwolnieniu FF 2 i ponownym zasileniu) użyj **Włącz silniki A1X
 (FF 1-5-6)**. Przycisk jest widoczny tylko przy połączonym `a1x`, wymaga
 zaznaczenia potwierdzenia i odmawia przy uzbrojonym panelu albo gdy ramię ma
-polityka, fala lub identyfikacja. W trakcie sekwencji backend strumieniuje
+strategia, fala lub identyfikacja. W trakcie sekwencji backend strumieniuje
 `p_des` = zmierzona poza. Świeżo zasilone ramię słucha od razu i przycisku nie
 potrzebuje.
 
@@ -603,14 +567,9 @@ i kliknij jeszcze raz. W `sim` chwytak sceny zamyka się od razu.
 zapas limitów bliźniaka. *Rozłącz* nic nie zwalnia: ramię trzyma pozę, w której
 stoi.
 
-**Dalej: kamery, intrynsyki, położenie kamer, Sim-Real, dynamika, polityki** —
-jak kroki 1–8 procedury SO-101 wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach
-wystaje tak samo (ok. 70 mm), a fala losuje pozy z `A1X.wave_ranges`. Polityki
-bazowe (`reach-v3`, `lift-v3`) są uczone na SO-101: runner i ewaluacja odmawiają
-ich na stanowisku A1X („polityka uczona na so101, stanowisko ma a1x”). Politykę
-dla A1X trzeba nauczyć (`lerobot-twin train --task reach` ze stanowiskiem A1X,
-na karcie NVIDIA). Uwaga: MuJoCo Warp z modelem A1X (równość szczęk, bryły
-z siatek) nie był jeszcze sprawdzony na GPU.
+**Dalej: kamery, intrynsyki, położenie kamer, Sim-Real, dynamika** — jak kroki
+1–5 procedury SO-101 wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach
+wystaje tak samo (ok. 70 mm), a fala losuje pozy z `A1X.wave_ranges`.
 
 ### Czym A1X różni się od SO-101 (bezpieczeństwo)
 
@@ -707,28 +666,7 @@ idzie za szczęką 1 przez równość w MJCF, usztywnioną regułą 6 (`solref`,
 | kalibracja kamer, `calib-sim --robot a1x --n 3 --cameras 2` | 6/6 zaufanych; mediana 0,24 mm / 0,017°, najgorzej 0,82 mm / 0,041°, residuum 0,21 px |
 | sesja kalibracji, ziarno 0, 1 kamera | 16 póz, 0,20 mm, 0,017° |
 | kamera z boku (obrót ~180° względem podstawy), ziarno 1, 2 kamery | 2/2 zaufane (przed poprawką mediany obrotów w `calib/handeye.py`: 0/2) |
-| IK dla celów `reach` w skali A1X | 20/20, najgorzej 0,33 mm |
 | fala kalibracyjna: pozy z kartą nad stołem | 85 % (170/200) |
-| fizyka przy kroku RL 5 ms, losowe akcje przy kostce (2400 taktów) | zero NaN, kostka najwyżej 2,0 m/s i 23 mm nad blatem |
-| symetria szczęk przy gwałtownych akcjach | najgorzej 5,8 mm (z domyślną równością 36 mm) |
-| środowisko `lift` na A1X | przechodzi sprawdzenie Gymnasium |
-
-Nie ma jeszcze polityk dla A1X. Trening na GPU (`lerobot-twin train
---workspace <stanowisko A1X>`) czeka na sprawdzenie modelu w MuJoCo Warp.
-
-**`pickplace`.** Trzecie zadanie, dla obu ramion: chwyć kostkę widzianą
-z kamer, przenieś ją i odłóż na cel. Celem na biurku jest kulka celu z panelu
-rzutowana na blat (z = 0) i na pierścień celów z treningu, a w symulacji —
-płaska podkładka (ciało `mocap`, bez kolizji). Pchanie kostki nie zalicza
-zadania. Sukces wymaga, żeby kostka była wcześniej niesiona (chwycona
-i uniesiona ponad `lift_height`), leżała do 3 cm od celu, stała, a szczęki
-były otwarte. Na ramieniu kostka musi być przy tym świeżo widziana z kamer,
-nie „w dłoni”. Obserwacja `pickplace` ma 39 liczb dla SO-101 i 42 dla A1X.
-Ekspert IK rozwiązuje zadanie na CPU na obu ramionach (5 ziaren: SO-101 sukces
-po 89–106 taktach, A1X po 79–86 taktach z limitu 300; `tests/test_twin_rl.py`).
-Polityki `pickplace` jeszcze nie ma — trening na GPU
-(`lerobot-twin train --task pickplace`) to następny krok; do tego czasu
-`tests/test_twin_pickplace_from_cameras.py` się pomija.
 
 ---
 
@@ -736,7 +674,7 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 
 | | |
 |---|---|
-| `lerobot-twin check` | czy środowisko jest gotowe (bez renderu); osobno gotowość GPU do treningu |
+| `lerobot-twin check` | czy środowisko jest gotowe (bez renderu) |
 | `lerobot-twin demo` | przykładowe stanowisko w symulacji → `workspace/twin.json` (`--force`, `--path`) |
 | `lerobot-twin demo --robot a1x` | to samo z ramieniem Galaxea A1X (`examples/twin.a1x.sim.json`) |
 | `lerobot-twin ui` | panel w przeglądarce |
@@ -744,15 +682,12 @@ Polityki `pickplace` jeszcze nie ma — trening na GPU
 | `lerobot-twin card --tag-mm 50` | arkusz karty kalibracyjnej (PNG, A4) |
 | `lerobot-twin board --square-mm 28` | tablica ChArUco do intrynsyk (PNG, A4) |
 | `lerobot-twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy; `--robot a1x` na A1X |
-| `lerobot-twin train --task reach --iters 160` | PPO na GPU + ewaluacja na CPU; `--no-rand`, `--spread`, `--init <policy.pt>` (douczanie, np. `--init assets/policies/reach-v3/policy.pt --iters 150`) |
-| `lerobot-twin eval <policy.pt> --rand` | ewaluacja polityki w zwykłym MuJoCo |
-| `lerobot-twin policies` | zapisane polityki i ich wyniki |
 | `lerobot-twin workspace` | co wiadomo o stanowisku |
 | `lerobot-twin export <folder>` | stanowisko jako dane: `scene.xml` + `assets/` + `station.json` — dla pakietów, które jadą na zmierzonym stanowisku bez importu bliźniaka (trening) |
 
 ```bash
-pytest -q                                          # całość, z renderem i GPU
-pytest -q -m "not render"                          # maszyna bez OpenGL/GPU (testy CUDA pomijają się same, także bez mujoco_warp)
+pytest -q                                          # całość, z renderem
+pytest -q -m "not render"                          # maszyna bez OpenGL
 pytest -q -m "not cli"                             # bez testów CLI w podprocesie (kilka sekund)
 pytest -q -n auto --dist loadfile                  # równolegle, plik na jednym procesie (pytest-xdist)
 ```
@@ -783,15 +718,6 @@ w `addopts` — podaj go, gdy chcesz.
 | render 640×480 bez cieni i MSAA | 1,25 ms | 70 ms |
 | render 224×224 / 128×128 | 0,8 / 0,7 ms | – |
 | pętla sterowania | 48–50 Hz | 28 Hz |
-| MuJoCo Warp, 8192 światy | **1,1 mln kroków fizyki/s** | – |
-| środowisko GPU `reach` / `lift`, 4096 światów | 190 / 129 tys. kroków polityki/s | – |
-| trening `reach` (15 mln kroków) | **2 min** → CPU 100%, 1,5 mm od celu | – |
-| trening `lift` (59 mln kroków) | **28 min** → CPU 100% (96% z randomizacją) | – |
-| douczanie `lift` z modelem percepcji (29 mln kroków) | 16 min → CPU 98% z randomizacją, z kamer 8/8 | – |
-| douczanie `reach` / `lift` (13 / 29 mln kroków) | 1,5 / 16 min → CPU 100% / 100% | – |
-
-MuJoCo Warp zgadza się z MuJoCo na CPU: stawy po 2 s fizyki różnią się o
-0,001°, obserwacje środowisk GPU i CPU po 30 krokach o 6·10⁻⁵.
 
 ---
 
@@ -852,9 +778,6 @@ główny. Test renderuje kulki w znanych punktach stołu i porównuje środki ic
 | ~~półpiksel w pionie~~ | render 0,5 px **niżej** niż rzut K | dawna „kompensacja” była błędem pomiaru: środki czerwonych plam podnosił cień dolnej połowy kulki; maski segmentacji (czysta geometria) pokazały, że to ona przesuwała kadr. Po usunięciu błąd obrotu w kalibracji spadł 4× |
 | półpiksel w detektorze AprilTag | rogi o 0,5 px dalej niż w konwencji `projectPoints` | korekta w `tags.detect` |
 
-Renderer MuJoCo Warp (wsadowy, na GPU) liczy promienie przez środki pikseli
-z tych samych intrynsyk i zgadza się z OpenGL co do 0,05 px na maskach.
-
 ---
 
 ## Mapa stołu i kostka
@@ -886,73 +809,11 @@ Kostka (`perception.CubeDetector.detect_frames`):
    sprawdź, że kostka trzymana w szczękach daje kąt poniżej 0,40 rad. Kostka,
    która wypadła z dłoni, opada na blat
    („upuszczona”). Wykrycie ma czas kadru (`t`); stare i powtórzone nie
-   przedłużają życia kostki. Zamknięta pętla z `lift-v3`: sama kamera `a` —
-   17/17 ułożeń, kamery `a`+`b` — 14/14.
+   przedłużają życia kostki.
 
 Na blacie w symulacji: **1–3 mm, ~1°**. `CubeTracker` przejmuje kostkę, gdy
 kamery jej nie widzą: szczęka **zablokowana** (nie dojeżdża do rozkazu i stoi)
 → kostka jedzie z TCP w pozie zapisanej w chwili chwytu.
-
-### Percepcja w treningu
-
-Polityka `lift` uczona na **prawdziwej** pozycji kostki podnosiła ją 20/20
-razy — i tylko **7/20**, gdy pozycja przychodziła jak z kamer: co 100 ms,
-150 ms spóźniona. Podczas podnoszenia widziała kostkę „pod sobą” i wracała po
-nią. Dlatego trening widzi kostkę tak, jak ją da percepcja
-(`Randomization.cube_*`): opóźnienie 0–3 takty, odświeżanie co 1–3 takty,
-szum 2 mm, obrót złożony do ±45° — a nagroda liczy się z prawdy.
-
-| pełny łańcuch z kamerami na bliźniaku (8 ułożeń kostki) | podniesione |
-|---|---|
-| `lift-v1` — uczona na prawdziwej pozycji kostki | 1/8 |
-| `lift-v2` — `lift-v1` douczona z modelem percepcji (300 iteracji, 16 min) | **8/8** |
-| `lift-v3` — `lift-v2` douczona (300 iteracji); kończy sama, kostka 9,6–11,8 cm | **8/8** |
-
-Od zera z modelem percepcji uczenie szło bardzo wolno (0% po 220 iteracjach) —
-douczanie z polityki, która już umie chwytać, doszło do 98% w 300.
-Pilnuje tego `tests/test_twin_lift_from_cameras.py` — w czasie symulowanym,
-więc wynik nie zależy od obciążenia maszyny.
-
-## Polityki bazowe
-
-W repozytorium są dwie gotowe polityki (`assets/policies/`), widoczne w panelu
-i w `lerobot-twin policies` obok własnych ze stanowiska:
-
-| | zadanie | CPU bez / z randomizacją |
-|---|---|---|
-| `reach-v3` | dojazd TCP do punktu, nadgarstek blisko pozy domowej | 100% / 100%, 1,2 mm od celu |
-| `lift-v3` | chwyt i podniesienie kostki z kamer | 100% / 100% |
-
-Obie uczone wokół modelu Menagerie — po identyfikacji dynamiki na swoim ramieniu
-douczyć je (`--init`, 100–300 iteracji), zamiast uczyć od zera. Pliki niosą też
-wagi **krytyka** z treningu: douczanie z krytykiem od zera psuło politykę
-(`reach-v1`: 98% → 9% sukcesu po 100 iteracjach, dojeżdżała i odpływała od celu,
-bo niedouczony krytyk przy małej eksploracji nie odróżnia „przy celu” od „kilka
-mm obok”). Polityka bez zapisanego krytyka dostaje 30 iteracji rozgrzewki, w
-których uczy się tylko krytyk. „Nagroda” w logu treningu zawiera wartość stanu
-doliczaną na końcu epizodu — rośnie razem z krytykiem, o jakości mówi *sukces*.
-
-`lift-v3` pod limitem stawu bywa tylko tam, gdzie zadanie tego wymaga (kostka
-blisko podstawy — łokieć zgięty do +92°): 10 taktów na 20 epizodów, `lift-v2`
-26 i wymachy po chwycie. `reach-v2` kręciła nadgarstkiem do +150° w każdym
-epizodzie (obrót nie zmienia TCP, więc nagroda go nie widziała); `reach-v3`
-uczona z karą za obrót od pozy domowej (`roll_penalty`): mediana 13°, najwyżej
-48°, zero taktów przy limicie. Pilnuje tego `tests/test_twin_policies.py` —
-zachowanie **dostarczanych** plików polityk, nie tylko środowiska.
-
----
-
-## Uczenie ze wzmocnieniem
-
-| | |
-|---|---|
-| zadania | `reach` — TCP do punktu (sukces < 2 cm); `lift` — chwyt i podniesienie kostki 3 cm o 6 cm; epizod `lift` kończy się po 10 taktach sukcesu (liczone jak limit czasu — wartość stanu dalej jest bootstrapowana), kara za jazdę pod limity stawów i za ruch po sukcesie |
-| akcja | 6 liczb w [−1, 1]: przyrost celu stawów ramienia (≤ 0,05 rad na takt, 20 Hz), cel chwytaka bezwzględnie, ograniczony jak w nadzorze |
-| obserwacja | stawy i cele stawów (znormalizowane), TCP, cel albo kostka (położenie, obrót 6D), poprzednia akcja — **jedna definicja** (`rl/task.py`) dla CPU, GPU i ramienia; TCP i kostka liczone po krokach fizyki, zgodne z kątami stawów |
-| randomizacja | wzmocnienie, tłumienie, armatura i tarcie serw, masa i tarcie kostki, opóźnienie akcji, szum kątów — wokół `Workspace.dynamics` (identyfikacja); **percepcja kostki** jak z kamer (opóźnienie, odświeżanie, szum, symetria). `--no-rand` = dokładnie zmierzona dynamika i jej opóźnienie, model percepcji zostaje; ewaluacja „CPU bez randomizacji” też idzie na zmierzonym ramieniu, nie na Menagerie |
-| środowiska | `LeRobotMP/TwinReach-v0`, `LeRobotMP/TwinLift-v0` (Gymnasium, CPU); `rl.batch.BatchEnv` (MuJoCo Warp, GPU) |
-
----
 
 ## Jak to jest zbudowane
 
@@ -972,6 +833,8 @@ src/lerobot_mp/twin/
 ├── waypoints.py     strategia testowa: przejazd przez zadane pozy
 ├── strategies.py    strategie z wtyczek `lerobot_mp.strategies` i ich ustawienia (dataclass, budowana ściśle)
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
+├── sysid.py         identyfikacja dynamiki serw
+├── dynamics.py      dynamika zmierzona (`Dynamics`, zapis w stanowisku)
 ├── cli.py           lerobot-twin
 ├── calib/
 │   ├── tags.py        AprilTag 36h11 + korekta półpiksela
@@ -981,21 +844,11 @@ src/lerobot_mp/twin/
 │   ├── session.py     fala: szukanie, celowanie, kadr, rozrzut, bramki
 │   ├── simulate.py    sesja w symulacji względem prawdy
 │   └── topdown.py     rzut kadru na blat
-├── rl/
-│   ├── task.py        obserwacja, akcja, nagroda, starty - numpy i torch
-│   ├── env.py         Gymnasium na CPU
-│   ├── batch.py       tysiące światów MuJoCo Warp na GPU
-│   ├── ppo.py         PPO
-│   ├── policy.py      plik polityki (sieć + normalizacja + zadanie + wyniki)
-│   ├── evaluate.py    ewaluacja w zwykłym MuJoCo
-│   ├── randomize.py   dynamika zmierzona i zakresy randomizacji
-│   ├── sysid.py       identyfikacja dynamiki serw
-│   └── runner.py      polityka na żywym bliźniaku / ramieniu
 └── ui/
     ├── app.py         panel (viser)
     ├── bridge.py      scena MuJoCo w przeglądarce (węzeł na ciało)
     ├── guide.py       przewodnik: kroki procedury i następna akcja ze stanu panelu
-    ├── jobs.py        zadania w tle: trening (proces), kalibracje, identyfikacja
+    ├── jobs.py        zadania w tle: kalibracje, identyfikacja
     ├── strategy_tab.py zakładka Strategie: lista, formularz ustawień, Uruchom i Zatrzymaj
     └── watch.py       wykrywanie przestawionej kamery
 
@@ -1017,6 +870,6 @@ packages/lerobot_mp_api/      pakiet lerobot-mp-api: kontrakty wtyczek, tylko nu
 **Kontrakty wtyczek.** Typy kontraktu leżą w pakiecie `lerobot-mp-api`
 (`packages/lerobot_mp_api/`), a nie w bliźniaku. Wtyczka — pakiet ramienia (folder z `robot.yaml`
 i backend) albo pakiet strategii — zależy od niego, nigdy od `lerobot-mp`
-(MuJoCo, viser, torch). Bliźniak re-eksportuje te same klasy z `lerobot_mp.twin.strategy`
+(MuJoCo, viser, OpenCV). Bliźniak re-eksportuje te same klasy z `lerobot_mp.twin.strategy`
 i `lerobot_mp.robot.base`, więc dotychczasowe importy i sprawdzenia `isinstance` działają
 bez zmian. Gotowe wzory: `examples/robots/testbot` i `examples/strategies/swing`.

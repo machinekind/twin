@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lerobot-mp"
 version = "0.1.0"
-description = "Cyfrowy blizniak stanowiska z ramieniem robota: symulacja MuJoCo, kalibracja kamer, polityki RL"
+description = "Cyfrowy blizniak stanowiska z ramieniem robota: symulacja MuJoCo, kalibracja kamer, strategie sterowania"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -29,12 +29,8 @@ robot = ["lerobot[feetech]>=0.6,<0.7; python_version>='3.12'"]
 feetech = ["pyserial>=3.5"]
 # Most COM <-> TCP - potrzebny tylko na maszynie, do ktorej wpiete jest ramie.
 bridge = ["pyserial>=3.5"]
-# Cyfrowy blizniak: symulacja, srodowisko RL, panel webowy i polityki (torch - takze bez GPU).
-# UWAGA: torch zainstaluj NAJPIERW z indeksu PyTorcha (cu126 albo cpu), patrz README.
-twin = ["mujoco>=3.14,<3.15", "gymnasium>=1.0", "viser>=1.1", "pyserial>=3.5", "torch>=2.7,<2.12"]
-# Trening na GPU: tysiace swiatow MuJoCo Warp + PPO w torchu. mujoco i mujoco-warp musza
-# miec te sama wersje. Na Windows PyPI daje torch BEZ CUDA - kolo z CUDA z indeksu PyTorcha.
-train = ["mujoco>=3.14,<3.15", "mujoco-warp>=3.14,<3.15", "torch>=2.7,<2.12"]
+# Cyfrowy blizniak: symulacja, panel webowy, kalibracja kamer, identyfikacja dynamiki.
+twin = ["mujoco>=3.14,<3.15", "viser>=1.1", "pyserial>=3.5"]
 # Backend `a1x`: Galaxea A1X po CAN-FD. Protokol i lacze sa w pakiecie galaxeo (repozytorium
 # galaxeo-manipulators; wymaga scalonej galezi `pkg`). macOS (dongiel XCAN): do tego pyusb + brew install libusb.
 a1x = ["galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"]
