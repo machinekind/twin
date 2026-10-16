@@ -1,4 +1,4 @@
-# Handoff: cyfrowy bliźniak SO-101 i Galaxea A1X
+# Handoff: cyfrowy bliźniak stanowiska (SO-101, Galaxea A1X)
 
 Instrukcja uruchomienia i procedura testu na sprzęcie:
 **[docs/TWIN.md](docs/TWIN.md)**.
@@ -35,16 +35,16 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
 Klon ma wszystko do uruchomienia — instalacja per platforma:
 README, „Szybki start na nowym komputerze”.
 
-- **W repozytorium:** model ramienia i siatki (`src/lerobot_mp/robot/so101/robot`),
-  model referencyjny Articulusa do testu zgodności MJCF (`assets/so101_preview.npz`),
+- **W repozytorium:** robot przykładowy (`examples/robots/testbot`),
   polityki bazowe (`assets/policies`),
   przykładowe stanowisko w symulacji (`examples/twin.sim.json`,
   `lerobot-twin demo`), sprawdzone wersje pakietów (`constraints.txt`),
   licencje plików osób trzecich (`NOTICE`).
 - **Poza repozytorium (per maszyna):** `workspace/` (stanowisko i własne
-  polityki), `configs/local.yaml` (tiki chwytaka SO-101, sekcja `a1x` i reszta
-  konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (extra `a1x`), `.claude/`, cache kerneli Warp,
-  kalibracja LeRobota (tylko backend `lerobot`).
+  polityki), `configs/local.yaml` (sekcje backendów, np. `a1x`, i reszta
+  konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (extra `a1x`), `.claude/`, cache kerneli Warp.
+- **Ramię SO-101** i jego backendy (`feetech`, `lerobot`, most COM<->TCP) to
+  pakiet `soarm` (repozytorium so-arm101), instalowany obok bliźniaka.
 - Domyślne ścieżki (`workspace/…`) z klonu liczą się od katalogu
   repozytorium (`src/lerobot_mp/paths.py`), więc katalog uruchomienia nie ma
   znaczenia; bez klonu — od katalogu bieżącego.
@@ -68,7 +68,6 @@ README, „Szybki start na nowym komputerze”.
 | `twin/rl/runner.py` | polityka na `Twin`, stop przy rozjeździe > 25° (w zmierzonej pozie), stop po wykonaniu zadania, czekanie na kostkę | test na bliźniaku; pełny łańcuch z kamerami w czasie symulowanym (`test_twin_lift_from_cameras`) |
 | `twin/ui/*` | panel (viser), zadania w tle, most sceny, strażnik kamer | test startu panelu + scenariusz w przeglądarce |
 | `twin/runtime.py` | pętla ramienia: jeden właściciel ruchu, STOP/Dom w zmierzonej pozie, reakcja na błędy serw i utratę łącza, render bez blokady pętli | `tests/test_twin_runtime.py` (czas symulowany) |
-| `robot/so101/feetech.py` | + `socket://` (most, `TCP_NODELAY`), SYNC READ z powrotem do odczytów po kolei, suma kontrolna odpowiedzi, bity błędów serw (`faults()`), limity z EEPROM (`joint_limits()`) | testy na symulowanej magistrali |
 | `twin/robots.py` (`RobotSpec`, `A1X`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia; drugi opis — **Galaxea A1X** | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_a1x_sim.py` |
 | `src/lerobot_mp/robot/a1x/robot/`, `scripts/import_a1x_model.py` | model A1X z URDF producenta, każda reguła przetworzenia z testem, skrypt odtwarza plik bajt w bajt | kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm), fala 85 % póz z kartą nad stołem, fizyka RL przy 5 ms bez NaN, szczęki symetryczne do 5,8 mm |
 | `robot/a1x/backend.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
@@ -115,9 +114,6 @@ psujących stanowisko albo przeniesienie sim-real.
   STOP dopiero po 2 s błędu. STOP i Dom nie puszczają ściskającego chwytaka.
 - **Strażnik rozjazdu dla każdego właściciela** (25° przez 0,5 s) — serwo,
   które zwiotczało bez bitu błędu, kończyło `move` „normalnie” 63° od celu.
-- **Do bliźniaka backend `feetech`** — `lerobot` liczy kąty od środka swojego
-  zakresu kalibracji (przesunięcie 2–35°) i ma inne tiki chwytaka; wykrywane
-  i zgłaszane, ale nie przeliczane (backend ma zostać zgodny z LeRobotem).
 - **Koniec epizodu po sukcesie liczony jak limit czasu** — PPO dalej
   bootstrapuje wartość stanu; zero na końcu uczyło polityki wisieć tuż pod
   progiem sukcesu.
@@ -133,11 +129,9 @@ psujących stanowisko albo przeniesienie sim-real.
    polityki*) — domyślne są uczone wokół modelu Menagerie. Douczanie zamiast
    uczenia od zera: `lift` z modelem percepcji od zera po 220 iteracjach miała
    0% sukcesu, a douczana z `lift-v1` startuje od umiejętności chwytu.
-   **Przy pierwszym połączeniu sprawdzić zero chwytaka**: chwytak 0 w bliźniaku
-   to −5,4° kąta szczęki (tiki z konfiguracji); jeśli na ramieniu przy 0
-   szczęki się nie stykają, zero szczęki w MJCF nie leży w `center_ticks`.
-   Poprawka: `robot.center_ticks` / `gripper_closed_ticks` / `gripper_open_ticks`
-   w `configs/local.yaml` i `lerobot-twin --config configs/local.yaml ui`.
+   **Przy pierwszym połączeniu sprawdzić zero chwytaka**: przy 0 szczęki mają
+   się stykać. Na SO-101 tiki chwytaka ustawia sekcja `feetech:` backendu
+   z pakietu `soarm`.
 3. **Obserwacje obrazowe w RL** — renderer MuJoCo Warp (wsadowy, na GPU)
    zgadza się z OpenGL do 0,05 px; środowisko obrazowe to kolejny krok
    (mapa stołu z kamer jako wejście, jak w galaxeo).

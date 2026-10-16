@@ -1,11 +1,12 @@
 """Panel blizniaka: startuje, odswieza sie i obsluguje kamery symulowane bez przegladarki.
 
 Dalej - to, czego panel pilnuje przed prawdziwym ramieniem: jeden wlasciciel ramienia,
-uchwyt TCP na tej samej galezi IK, swiezosc detekcji kostki, kalibracja i zadania w tle.
+uchwyt TCP na tej samej galezi IK, kalibracja i zadania w tle.
 """
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -16,6 +17,8 @@ import pytest
 pytest.importorskip("viser")
 pytest.importorskip("mujoco")
 
+from conftest import BOT  # noqa: E402
+
 from lerobot_mp.twin.ui import jobs  # noqa: E402
 
 
@@ -23,6 +26,14 @@ def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def a_panel(path):
+    """Panel na nowym stanowisku z robotem testowym (`path` - plik stanowiska)."""
+    from lerobot_mp.twin.ui.app import TwinApp
+
+    path.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+    return TwinApp(path, host="127.0.0.1", port=free_port())
 
 
 class _Client:
@@ -51,9 +62,7 @@ def _look_at_pose(eye, target):
 
 @pytest.mark.render
 def test_panel_starts_adds_a_simulated_camera_and_maps_the_table(tmp_path):
-    from lerobot_mp.twin.ui.app import TwinApp
-
-    app = TwinApp(tmp_path / "twin.json", host="127.0.0.1", port=free_port())
+    app = a_panel(tmp_path / "twin.json")
     try:
         app._tick_slow()
         app._add_sim_camera(app.T_b2w @ _look_at_pose([0.6, -0.4, 0.45], [0.2, 0.0, 0.0]))
@@ -79,9 +88,7 @@ def test_panel_starts_adds_a_simulated_camera_and_maps_the_table(tmp_path):
 # ------------------------------------------------------------------ jeden panel na reszte testow
 @pytest.fixture(scope="module")
 def shared_app(tmp_path_factory):
-    from lerobot_mp.twin.ui.app import TwinApp
-
-    app = TwinApp(tmp_path_factory.mktemp("panel") / "twin.json", host="127.0.0.1", port=free_port())
+    app = a_panel(tmp_path_factory.mktemp("panel") / "twin.json")
     yield app
     app.close()
 
@@ -90,8 +97,6 @@ def shared_app(tmp_path_factory):
 def app(shared_app):
     a = shared_app
     yield a
-    if a.runner is not None:
-        a.runner.stop("koniec testu")
     a.strategies.stop("koniec testu")
     for job in (a.calib_job, a.sysid_job, a.intr_job):
         job.stop()
@@ -105,15 +110,22 @@ def app(shared_app):
             a.twin.release(owner)
 
 
-def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app):
-    """Z shoulder_pan 109,5 st. przeciagniecie o 1 cm dawalo "poprawne" IK 180 st. dalej."""
+def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app, monkeypatch):
+    """Przy podstawie obroconej daleko przeciagniecie o 1 cm dawalo "poprawne" IK 180 st. dalej.
+
+    Robot testowy ma jedna galaz IK - druga galaz (podstawa 180 st. dalej) podstawia tu `ik`.
+    """
     spec = app.ws.spec()
-    start = dict(spec.home, shoulder_pan=109.5)
+    start = dict(spec.home, j1=30.0)
     kin = app._kin_gizmo
     p = kin.tcp(start)[:3, 3]
     tang = np.array([-p[1], p[0], 0.0]) / np.hypot(p[0], p[1])
-    old = kin.ik(p - 0.01 * tang, seed=start, restarts=2)      # tak liczyl uchwyt przed poprawka
-    assert old.ok and max(abs(old.joints[k] - start[k]) for k in start if k != spec.gripper) > 90
+    ik = kin.ik
+
+    def other_branch(*a, **kw):
+        sol = ik(*a, **kw)
+        sol.joints = dict(sol.joints, j1=sol.joints["j1"] - 180.0)
+        return sol
 
     with app.twin.lock:
         app.twin.scene.set_joints(start)
@@ -128,7 +140,10 @@ def test_tcp_gizmo_rejects_a_jump_to_the_other_ik_branch(app):
         app._on_tcp_gizmo()
         return app.twin._target
 
+    monkeypatch.setattr(kin, "ik", other_branch)
     assert drag(p - 0.01 * tang) is None                        # odrzucone, cel bez zmian
+    assert "inna galaz" in app.tcp_md.content
+    monkeypatch.setattr(kin, "ik", ik)
     app._gizmo_seed = None
     target = drag(p + 0.01 * tang)                              # w druga strone - ta sama galaz
     assert target is not None
@@ -145,7 +160,7 @@ def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
     def wave(job):
         arm = jobs._OwnedArm(app.twin, job)
         for k in range(1000):
-            arm.move(dict(home, shoulder_pan=20.0 if k % 2 else -20.0), 0.3)
+            arm.move(dict(home, j1=20.0 if k % 2 else -20.0), 0.3)
             moves.append(k)
 
     app.calib_job.start(wave)
@@ -243,31 +258,6 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.intr_job.state = jobs.IDLE
 
 
-def test_stale_or_repeated_cube_detection_does_not_keep_the_policy_going(app):
-    from lerobot_mp.twin.perception import CubeDetection, CubeTracker
-
-    def det(age: float) -> CubeDetection:
-        return CubeDetection(np.array([0.25, 0.0, 0.015]), np.eye(3), 100.0, 0.9, n_cameras=2,
-                             t=time.monotonic() - age)
-
-    app.cube_tracker, app._cube_used_t = CubeTracker(hold_s=0.2), 0.0
-    app.last_cube = det(0.0)
-    assert app._vision_cube() is not None
-    time.sleep(0.3)
-    # Ta sama detekcja podawana co takt (mapa wylaczona, kamera zamrozona) odnawiala hold_s bez konca.
-    assert app._vision_cube() is None and app.cube_tracker.source == "brak"
-    app.last_cube = det(2.0)                                    # detekcja z kadrow sprzed 2 s
-    assert app._vision_cube() is None
-    # Mapa wylaczona: zadnej starej detekcji w `last_cube`.
-    app.last_cube = det(0.0)
-    app.map_on.value = False
-    try:
-        app._tick_map({})
-        assert app.last_cube is None
-    finally:
-        app.map_on.value = True
-
-
 @pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
     from lerobot_mp.twin.calib.handeye import CameraFit, Fit
@@ -301,38 +291,11 @@ def _click(app, label: str) -> _Event:
 
 
 @pytest.mark.parametrize("action", ["stop", "home"])
-def test_stop_home_or_halt_while_the_policy_loads_never_lets_it_drive(app, monkeypatch, action):
-    """STOP/Dom 0,1 s po Uruchom trafialy w okno ladowania polityki (108-142 ms): STOP szedl do
-    starego runnera, nowa polityka brala ramie pod STOP-em, a po Skasuj STOP jechala - 83,7 st.
-    ruchu stawu (verify2, s15d); Dom byl przerywany przez `claim` polityki (s15c)."""
-    from lerobot_mp.twin.rl import policy as P
-
+def test_stop_or_home_during_a_start_never_lets_the_task_take_the_arm(app, action):
+    """STOP/Dom w oknie startu zadania (fala, identyfikacja): `_take_arm` z chwila startu odmawia,
+    takze po Skasuj STOP (verify2, s15c/s15d)."""
     app.twin.connect("sim", threaded=False)
-    app._refresh_policies()
-    app.pol_pick.value = next(o for o in app.pol_pick.options if "reach" in o)
-    real = P.Policy.load
     press = {"stop": lambda: app._emergency_stop(None), "home": lambda: app._go_home()}[action]
-
-    def load(path, device="cpu"):
-        pol = real(path, device)
-        press()                                             # operator klika w trakcie ladowania
-        return pol
-    monkeypatch.setattr(P.Policy, "load", staticmethod(load))
-    with pytest.raises(RuntimeError, match="aktywny STOP|w trakcie startu"):
-        app._start_policy(_Event())
-    assert app.twin.owner is None and not app.runner.status.running and not app.twin._engaged
-    assert "nie ruszyla" in app.runner.status.stopped_because
-    if action == "stop":
-        app.twin.clear_estop()                              # Skasuj STOP
-    start = dict(app.twin.joints())
-    for _ in range(100):
-        app.twin.step(0.02)
-    assert app.twin.owner is None and not app.runner.status.running
-    if action == "home":                                    # Dom jedzie swoja rampa - polityka jej nie przerwala
-        assert app.twin.safety_state.value in ("HOMING", "IDLE")
-    else:
-        assert max(abs(app.twin.joints()[k] - start[k]) for k in start) < 1.0
-    # To samo dla fali i identyfikacji (`_take_arm` z chwila startu).
     mark = app._motion_mark()
     press()
     if action == "stop":
@@ -397,7 +360,7 @@ def test_status_line_says_the_gripper_is_disabled_when_not_drivable(app, monkeyp
     assert "chwytak wylaczony" in app._status_text()
     FakeA1X.drivable = True
     assert "XCAN" not in app._status_text()
-    monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, SO-101): steruje
+    monkeypatch.setattr(app.twin, "_backend", object())   # backend bez tej metody (sim, testbot): steruje
     assert "XCAN" not in app._status_text()
     app.twin._backend = None
 
@@ -663,12 +626,12 @@ def test_the_strategies_tab_draws_an_installed_strategys_settings(app, swing):
 
 
 def test_the_strategys_config_section_prefills_its_form(app, swing, tmp_path, monkeypatch):
-    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: elbow_flex\n  cycles: 3\n")
+    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: j2\n  cycles: 3\n")
 
     tab = choose_strategy(app, swing)
 
     assert tab.section_problem == ""
-    assert tab._inputs["joint"].value == "elbow_flex"
+    assert tab._inputs["joint"].value == "j2"
     assert tab._inputs["cycles"].value == 3
 
 
@@ -676,7 +639,7 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
     from lerobot_mp.twin.strategy import StrategyRunner
 
     app.twin.connect("sim", threaded=False)
-    tab = choose_strategy(app, swing, joint="shoulder_pan", period_s=1.0)
+    tab = choose_strategy(app, swing, joint="j1", period_s=1.0)
 
     tab.start()
 
@@ -704,10 +667,10 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
 
 
 def test_a_wrong_key_in_the_strategys_config_section_is_refused_before_start(app, swing, tmp_path, monkeypatch):
-    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: shoulder_pan\n  amplitud: 5\n")
+    a_config_file(tmp_path, monkeypatch, "swing:\n  joint: j1\n  amplitud: 5\n")
     app.twin.connect("sim", threaded=False)
 
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
 
     assert "amplitud" in tab.section_problem
     assert "Uruchom odmowi" in tab.about_md.content
@@ -733,7 +696,7 @@ def test_a_strategy_needs_a_fresh_confirmation_on_a_real_arm(app, swing, monkeyp
     from test_twin_runtime import FakeArm, connect_fake
 
     connect_fake(app.twin, monkeypatch, FakeArm())
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
 
     with pytest.raises(RuntimeError, match="zaznacz potwierdzenie"):
         tab.start()
@@ -748,7 +711,7 @@ def test_a_strategy_needs_a_fresh_confirmation_on_a_real_arm(app, swing, monkeyp
 
 def test_stop_ends_a_running_strategy(app, swing):
     app.twin.connect("sim", threaded=False)
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
     tab.start()
 
     app._emergency_stop(None)
@@ -809,7 +772,7 @@ def test_a_float_setting_with_an_int_default_keeps_its_decimals(app, install_dis
 def test_a_second_start_while_the_first_is_starting_is_refused(app, swing, monkeypatch):
     """viser runs each click on its own thread: two runners would drive the arm under one owner."""
     app.twin.connect("sim", threaded=False)
-    tab = choose_strategy(app, swing, joint="shoulder_pan")
+    tab = choose_strategy(app, swing, joint="j1")
 
     inside = threading.Event()
     let_go = threading.Event()

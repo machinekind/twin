@@ -1,7 +1,7 @@
-"""Kalibracja kamer z karty w chwytaku: pelna sesja.
+"""Kalibracja kamer z karty w chwytaku: planowanie fali, zestawy polozen, dopasowanie.
 
-Cala sesja - ramie, fala, render, detekcja, dopasowanie, bramki - w symulacji,
-wzgledem prawdziwych poz kamer i karty, ktorych sesja nie widzi.
+Pelnej sesji w symulacji tu nie ma: robot testowy (dwa stawy, bez nadgarstka) nie obraca
+karty, wiec fala nie zbiera roznych katow.
 """
 
 from __future__ import annotations
@@ -10,24 +10,7 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from lerobot_mp.twin.calib.simulate import run  # noqa: E402
-from lerobot_mp.twin.robots import get_spec  # noqa: E402
-
-
-# ----------------------------------------------------------------- sesja
-@pytest.mark.render
-def test_full_session_in_simulation_calibrates_the_camera():
-    """Cala sesja: fala, render, detekcja, dopasowanie i werdykt - wzgledem prawdy."""
-    res = run(seed=0, n_cameras=1, spec=get_spec("so101"))
-    cam = next(iter(res.trusted))
-    assert res.trusted[cam], res.reasons[cam]
-    # Zaufane sesje na ziarnach 0..5 daja 0,3-1,7 mm i 0,006-0,19 st. (srednio ok. 0,5 mm);
-    # ziarno 0 jest najgorsze z nich. Prog 1 mm przy jednym ziarnie lamal sie od samej zmiany
-    # drogi fali (inny kat szczeki przy chwytaku 0) - stary uklad tez mial 1,15-1,17 mm na
-    # ziarnach 8 i 12. Do chwytania 25-milimetrowej kostki 2 mm to wciaz zapas.
-    assert res.err_mm[cam] < 2.0
-    assert res.err_deg[cam] < 0.25
-    assert res.poses < 40, "fala ma sie zmiescic w kilkudziesieciu pozach, nie w maksimum"
+from conftest import BOT  # noqa: E402
 
 
 # ------------------------------------------------------------ planowanie fali
@@ -69,7 +52,7 @@ def _session(spec_name: str, seed: int, cameras=("c0", "c1")):
     return s, world
 
 
-@pytest.mark.parametrize("spec_name", ("a1x", "so101"))
+@pytest.mark.parametrize("spec_name", ("a1x", BOT))
 def test_wave_search_sweeps_both_sides_of_the_table_in_every_run(spec_name):
     """Na stanowisku A1X fala zwiedzila tylko prawa strone stolu: szukanie bylo losowym
     spacerem w stawach z limitem przejazdu, a nie zamiataniem. Teraz kazde 16 poz bez
@@ -123,7 +106,7 @@ def test_step2_results_are_kept_as_presets_and_newest_loads_by_default(tmp_path)
     def pose(x):
         return [[1, 0, 0, x], [0, 1, 0, 0], [0, 0, 1, 0.5], [0, 0, 0, 1]]
 
-    ws = Workspace(path=tmp_path / "twin.json")
+    ws = Workspace(robot=BOT, path=tmp_path / "twin.json")
     ws.add_camera(CameraRecord("front", T_cam2base=pose(0.1),
                                calibration={"trusted": True, "time": "2026-09-26T10:00:00"}))
     ws.save()                                           # stare stanowisko: jego poza staje sie pierwszym zestawem

@@ -30,6 +30,11 @@
       </body>
     </body>
   </worldbody>
+  <contact>
+    <!-- link1's capsule starts inside the base cylinder; the base is welded to the world, so the
+         parent-child filter does not drop that contact and it would hold j1 still. -->
+    <exclude body1="base" body2="link1"/>
+  </contact>
   <equality>
     <joint joint1="gripper_m" joint2="gripper" polycoef="0 -1 0 0 0"/>
   </equality>

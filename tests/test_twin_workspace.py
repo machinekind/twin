@@ -10,6 +10,8 @@ import pytest
 
 pytest.importorskip("mujoco")
 
+from conftest import BOT  # noqa: E402
+
 from lerobot_mp.twin.calib.handeye import CameraFit, Fit  # noqa: E402
 from lerobot_mp.twin.workspace import CameraRecord, Workspace, nominal_K  # noqa: E402
 
@@ -28,7 +30,7 @@ def trusted_fit(name: str = "front") -> Fit:
 
 def test_real_camera_pose_is_not_trusted_without_a_trusted_charuco_K():
     """Dopasowanie z nominalnym K przechodzi prog residuum, a poza jest przesunieta o centymetry."""
-    ws = Workspace()
+    ws = Workspace(robot=BOT)
     ws.add_camera(CameraRecord("nominalna"))                       # krok 1 pominiety
     ws.add_camera(charuco_camera("slaba", trusted=False))           # sesja ChArUco niezaufana
     ws.add_camera(CameraRecord("sym", "sim", K=nominal_K(640, 480).tolist(), intrinsics_from="symulacja"))

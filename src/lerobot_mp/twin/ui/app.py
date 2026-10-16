@@ -1,16 +1,19 @@
-"""Panel cyfrowego blizniaka w przegladarce (viser): ramie, kamery, kalibracja, mapa, trening, polityki, strategie.
+"""Panel cyfrowego blizniaka w przegladarce (viser): ramie, kamery, kalibracja, mapa, dynamika, strategie.
 
     lerobot-twin ui                      # http://localhost:8080 (tez zdalnie: --host 0.0.0.0)
 
 Jedna petla odswieza widok (poza sceny ~30 Hz, kadry ~5 Hz, mapa ~3 Hz),
-a wszystko, co trwa dluzej - fala kalibracyjna, intrynsyki, identyfikacja,
-trening, ewaluacja - idzie w tle (`jobs`), wiec zaden przycisk nie blokuje
-interfejsu ani petli sterowania ramieniem.
+a wszystko, co trwa dluzej - fala kalibracyjna, intrynsyki, identyfikacja -
+idzie w tle (`jobs`), wiec zaden przycisk nie blokuje interfejsu ani petli
+sterowania ramieniem.
 
 Zasada bezpieczenstwa, ta sama co w reszcie aplikacji: kazdy ruch ramienia
-- z suwakow, z uchwytu w 3D, z polityki, z fali - idzie przez
+- z suwakow, z uchwytu w 3D, ze strategii, z fali - idzie przez
 `runtime.Twin` i jego `SafetySupervisor`. Przycisk STOP jest nad zakladkami,
 zawsze widoczny.
+
+Trening i polityki sa w pakiecie soarm-lab (repozytorium so-arm101); wytrenowana polityka
+jedzie tu jako strategia `policy` z zakladki Strategie.
 """
 
 from __future__ import annotations
@@ -28,14 +31,13 @@ import cv2
 import mujoco
 import numpy as np
 import viser
-from viser import uplot
 
 from .. import scene as sc
 from ..calib.card import Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import Board
 from ..kinematics import inverse, pose
-from ..perception import CubeDetector, CubeTracker, TableMapper
+from ..perception import CubeDetector, TableMapper
 from ..runtime import Twin
 from ...paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
@@ -55,12 +57,11 @@ logger = logging.getLogger(__name__)
 
 #: Wlasciciel ramienia (`Twin.claim`), gdy steruje panel: suwaki i uchwyt TCP ze sprzeglem.
 PANEL_OWNER = "panel"
-POLICY_OWNER = "polityka"
 #: Najwiekszy skok stawu [st.] miedzy kolejnymi rozwiazaniami IK uchwytu TCP. Zmierzone:
 #: przeciagniecie uchwytu o 1-2 cm z shoulder_pan ~108 st. dawalo "poprawne" IK na
 #: drugiej galezi - 178-180 st. zmiany, cale ramie przez stol w ~1,3 s.
 GIZMO_MAX_STEP_DEG = 15.0
-#: Po takiej przerwie w przeciaganiu uchwyt TCP wraca na koncowke (Dom, polityka,
+#: Po takiej przerwie w przeciaganiu uchwyt TCP wraca na koncowke (Dom, strategia,
 #: suwaki, przebudowa - uchwyt nie moze zostac w starym miejscu jako "cel").
 GIZMO_IDLE_S = 0.5
 #: Kadr starszy niz tyle [s] nie jest kadrem "na zywo" (zamrozony strumien).
@@ -68,8 +69,6 @@ FRAME_MAX_AGE = 1.0
 #: Przewodnik mowi "kamera nie daje kadru" dopiero po takiej przerwie [s] - przestoje
 #: przekazania USB ponad `FRAME_MAX_AGE` przelaczaly uwage i krok 1 co chwile.
 GUIDE_FRAME_LOST = 3.0
-#: Detekcja kostki starsza niz tyle [s] nie trafia do polityki jako nowa.
-CUBE_MAX_AGE = 0.5
 #: Niepewnosc chwili kadru [s] wzgledem jego znacznika czasu (opoznienie kamery i USB).
 MASK_WINDOW = (-0.15, 0.25)
 #: Najdalsze przesuniecie [px] sylwetki ramienia w masce - dalej to raczej zla historia katow.
@@ -109,26 +108,18 @@ CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 
                "zolta": ((20, 100, 90), (35, 255, 255), (20, 100, 90), (35, 255, 255))}
 
 
-#: "Jak uzywac" na gorze zakladek Mapa, Trening, Polityki, Strategie i Sim-Real (Ramie, Kamery i Kalibracja
+#: "Jak uzywac" na gorze zakladek Mapa, Dynamika, Strategie i Sim-Real (Ramie, Kamery i Kalibracja
 #: prowadza same).
 TAB_HELP = {
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
         "1. Sprawdz pokrycie blatu pod mapa.\n"
         "2. Wybierz **Kolor kostki**, poloz kostke 3 cm przed ramieniem - ma sie pojawic ramka i polozenie.\n"
-        "3. **lift** i **pickplace** z kamer (Polityki) potrzebuja wlaczonych **Mapy na zywo** i **Szukaj kostki**."),
-    "Trening": (
-        "1. **Dynamika serw**: polacz ramie, **Identyfikuj** (~20 s ruchu), **Zapisz jako dynamike stanowiska**.\n"
-        "2. Najszybciej douczanie: **Start z polityki** reach-v3 / lift-v3, 100-300 iteracji, **Ucz**.\n"
-        "3. Od zera: Zadanie, Iteracje (reach ~160, lift ~600), **Ucz**; postep na wykresie, "
-        "**Zatrzymaj** zapisuje polityke.\n"
-        "Trening idzie w osobnym procesie na GPU - ramieniem nie rusza."),
-    "Polityki": (
-        "1. Wybierz polityke - wyniki GPU i CPU pod lista; **Ewaluuj na CPU** nie rusza ramieniem.\n"
-        "2. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
-        "3. reach: przeciagaj zolta kulke celu w 3D; pickplace: kulka to cel odlozenia (rzutowany na blat). "
-        "lift i pickplace na prawdziwym ramieniu: kostka z **kamer**.\n"
-        "4. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
+        "3. **Tag na biurku**: **Znajdz tag w kamerach**, potem **Jedz nad tag** (rusza ramieniem)."),
+    "Dynamika": (
+        "1. Polacz ramie (zakladka Ramie), **Identyfikuj** (~20 s ruchu), potem **Zapisz jako dynamike "
+        "stanowiska**.\n"
+        "2. Dynamika stanowiska idzie z `lerobot-twin export` w station.json - z niej korzysta trening."),
     "Strategie": (
         "1. Strategie przychodza z zainstalowanych pakietow (entry points `lerobot_mp.strategies`), "
         "np. `pip install -e examples/strategies/swing`; po instalacji **Odswiez liste**.\n"
@@ -177,7 +168,7 @@ def fitted_names(dyn, sysid_default: bool = False) -> tuple[str, ...]:
     """
     names = getattr(dyn, "fitted", None)
     if names is None and sysid_default:
-        from ..rl import sysid
+        from .. import sysid
         names = getattr(sysid, "IDENTIFIED", ())
     return tuple(names or ())
 
@@ -478,25 +469,15 @@ class TwinApp:
         self._t_grab = 0.0
         self.frame_lock = threading.Lock()
         self.calib_job, self.intr_job = jobs.Job("kalibracja"), jobs.Job("intrynsyki")
-        self.sysid_job, self.eval_job = jobs.Job("identyfikacja"), jobs.Job("ewaluacja")
-        from ..rl.policy import DEFAULT_DIR
-        self.policies_dir = DEFAULT_DIR.resolve()
-        self.train = jobs.TrainingJob(self.policies_dir, self.ws_path)
-        self.runner = None
-        self.policy = None
-        #: Licznik "operator zatrzymal ruch" (STOP, Dom, Polacz/Rozlacz, Zatrzymaj). Start polityki,
+        self.sysid_job = jobs.Job("identyfikacja")
+        #: Licznik "operator zatrzymal ruch" (STOP, Dom, Polacz/Rozlacz, Zatrzymaj). Start strategii,
         #: fali i identyfikacji zapamietuje go na poczatku i bierze ramie tylko, gdy sie nie zmienil
-        #: (`_motion_mark`, `_take_arm`) - STOP wcisniety w trakcie ladowania polityki ginal.
+        #: (`_motion_mark`, `_take_arm`) - STOP wcisniety w trakcie startu ginal.
         self._motion_gen = 0
         self.cube_det = CubeDetector()
-        self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
-        self.last_cube = None
-        #: Chwila kadrow ostatniej detekcji podanej polityce - ta sama detekcja nie idzie drugi raz.
-        self._cube_used_t = 0.0
         from ..kinematics import RobotKinematics
-        self._kin_vision = RobotKinematics(self.ws.spec())
         # Punkty ramienia do przesuniecia maski w kadrze - wlasna kinematyka (maski licza
-        # petla panelu i przyciski visera, a `_kin_vision` jest w watku polityki).
+        # petla panelu i przyciski visera).
         self._kin_mask = RobotKinematics(self.ws.spec())
         self._mask_lock = threading.Lock()
         # Uchwyt TCP: wlasna kinematyka (callbacki visera ida z wielu watkow naraz,
@@ -508,8 +489,6 @@ class TwinApp:
         self._engage_t = 0.0
         #: (t, katy) z ostatnich ~3 s - maska ramienia w pozie z chwili kadru, nie renderu.
         self._joint_hist: deque[tuple[float, dict[str, float]]] = deque(maxlen=120)
-        self._goal_base: np.ndarray | None = None
-        self._reach_task = None                         # obszar celow reach bez uruchomionej polityki
         self._map_pose_key = None
         self._intr_solve = threading.Event()
         self._dirty_rebuild = 0.0                       # kamera spoza modelu przeciagana - przebudowa po chwili
@@ -526,15 +505,10 @@ class TwinApp:
         self.estimates: dict[str, Any] = {}
         self._dirty_save = 0.0                          # przeciaganie kamery: zapis po chwili spokoju
         # Przewodnik: najlepsza mediana Sim-Real kazdej kamery od ostatniej zmiany pozy/stolu/K
-        # (zatrzask - krok 4 nie migocze z szumem), co juz jechalo na danym backendzie
-        # ("reach", "lift-kamery"), backend, na ktorym ruszyl biezacy `runner`, ostatni kadr
-        # kazdej kamery (kamera "bez kadru" dopiero po GUIDE_FRAME_LOST s) i lista polityk
-        # z ostatniego odswiezenia (bez czytania dysku w kazdym takcie).
+        # (zatrzask - krok 4 nie migocze z szumem) i ostatni kadr kazdej kamery (kamera
+        # "bez kadru" dopiero po GUIDE_FRAME_LOST s).
         self._simreal_px: dict[str, float] = {}
-        self._ran: dict[str, set[str]] = {}
-        self._runner_backend = ""
         self._frame_seen: dict[str, float] = {}
-        self._policy_list: list[dict] = []
         # Widok zakladki Ramie: klucz ostatniego przemalowania (`_render_arm`), stan suwakow,
         # ostatnia plakietka stanu - przemalowanie tylko przy zmianie.
         self._arm_key = None
@@ -546,7 +520,7 @@ class TwinApp:
         self._guide_last: gd.Guide | None = None
         t_start = time.monotonic()
 
-        # Serwer powstaje DOPIERO teraz, gdy cale ciezkie przygotowanie (scena, torch,
+        # Serwer powstaje DOPIERO teraz, gdy cale ciezkie przygotowanie (scena,
         # stanowisko) jest za nami: viser slucha od chwili utworzenia, a przegladarka
         # polaczona w polowie budowy panelu potrafila zostac z pustym widokiem.
         # Potem od razu panel (lekki), a na koncu siatki ramienia (~350 tys. trojkatow).
@@ -572,10 +546,8 @@ class TwinApp:
             self._build_calibration()
         with tabs.add_tab("Mapa", icon=viser.Icon.MAP):
             self._build_map()
-        with tabs.add_tab("Trening", icon=viser.Icon.BRAIN):
-            self._build_training()
-        with tabs.add_tab("Polityki", icon=viser.Icon.PLAYER_PLAY):
-            self._build_policies()
+        with tabs.add_tab("Dynamika", icon=viser.Icon.ACTIVITY):
+            self._build_dynamics()
         with tabs.add_tab("Strategie", icon=viser.Icon.ROUTE):
             self.strategies = StrategyTab(self)
         with tabs.add_tab("Sim-Real", icon=viser.Icon.ARROWS_DIFF):
@@ -648,7 +620,6 @@ class TwinApp:
     def _save(self) -> None:
         self.ws.save(self.ws_path)
         self.ws_path = Path(self.ws.path).resolve()
-        self.train.workspace_path = self.ws_path
 
     @property
     def T_b2w(self) -> np.ndarray:
@@ -667,7 +638,7 @@ class TwinApp:
         # Styl + kotwica STOP-u; naglowek nigdy nie znika, wiec styl jest zawsze na stronie.
         self._css = g.add_html(PANEL_CSS + '<span id="tw-stop"></span>')
         stop = g.add_button("STOP", color="red", icon=viser.Icon.HAND_STOP,
-                            hint="Zatrzymanie awaryjne, zawsze dostepne: ramie staje w zmierzonej pozie, polityka, "
+                            hint="Zatrzymanie awaryjne, zawsze dostepne: ramie staje w zmierzonej pozie, strategia, "
                                  "fala i nagranie identyfikacji sie koncza, panel sie rozbraja. Sciskajacy chwytak "
                                  "dalej sciska. Ruszyc dalej: Skasuj STOP (zolty, pod STOP-em).")
         self.state_html = g.add_html(self._state_chip_html("off", ""))
@@ -676,11 +647,11 @@ class TwinApp:
                                       hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne. "
                                            "Ramie samo nie rusza - potem UZBROJ, zeby sterowac.")
         self.status_md = g.add_markdown("", visible=False)
-        # Przewodnik: gdzie operator jest w procedurze (docs/TWIN.md, kroki 0-8) i jedna nastepna
+        # Przewodnik: gdzie operator jest w procedurze (docs/TWIN.md, kroki 0-5) i jedna nastepna
         # akcja. Logika w `guide.py`, tu tylko wyswietlanie. Widoczna zawsze tylko linia "Teraz";
         # uwagi i lista krokow zwiniete - rozwiniete zabieraly ok. 190-400 px nad kazda zakladka.
         self.guide_md = g.add_markdown("")
-        self.guide_folder = g.add_folder("Kroki 0-8", expand_by_default=False)
+        self.guide_folder = g.add_folder("Kroki 0-5", expand_by_default=False)
         with self.guide_folder:
             self.guide_notes_md = g.add_markdown("")
             self.guide_steps_md = g.add_markdown("")
@@ -700,12 +671,10 @@ class TwinApp:
 
     def _emergency_stop(self, event=None) -> None:
         """STOP: najpierw nadzor (ramie staje w zmierzonej pozie), dopiero potem sprzatanie watkow."""
-        self._motion_gen += 1                           # start w toku (ladowanie polityki) nie wezmie ramienia
+        self._motion_gen += 1                           # start w toku (strategia) nie wezmie ramienia
         try:
             self.twin.estop("STOP z panelu")
         finally:
-            if self.runner is not None:
-                self.runner.stop("STOP z panelu")
             self.strategies.stop("STOP z panelu")
             self.calib_job.stop()
             self.sysid_job.stop()                       # tylko nagranie - dopasowanie jest chronione
@@ -728,8 +697,6 @@ class TwinApp:
             return "kalibracja kamer"
         if me != jobs.SYSID_OWNER and self.sysid_job.running and "recording" not in self.sysid_job.data:
             return "identyfikacja dynamiki"
-        if me != POLICY_OWNER and self.runner is not None and self.runner.status.running:
-            return "polityka"
         owner = self.twin.owner
         if owner is not None and owner not in (PANEL_OWNER, me):
             return owner
@@ -785,8 +752,6 @@ class TwinApp:
         bez zadnej akcji operatora), z pominieciem potwierdzen z ich startu.
         """
         self._motion_gen += 1                           # start w toku nie wezmie ramienia po (roz)laczeniu
-        if self.runner is not None:
-            self.runner.stop(reason)
         self.strategies.stop(reason)
         self.calib_job.stop()
         # Identyfikacja: przerywa tylko nagranie. Po nim zadanie jest chronione
@@ -801,7 +766,7 @@ class TwinApp:
     def _reset_confirmations(self) -> None:
         """Kazdy przejazd prawdziwego ramienia wymaga swiezego potwierdzenia (karta, wolne miejsce)."""
         self.calib_ask.reset()
-        for box in (self.dyn_confirm, self.pol_confirm, self.strategies.confirm):
+        for box in (self.dyn_confirm, self.tag_confirm, self.strategies.confirm):
             box.value = False
 
     def _status_text(self) -> str:
@@ -811,13 +776,8 @@ class TwinApp:
         moved = [c.name for c in self.ws.cameras if c.enabled and self.watch.moved(c.name)]
         if moved:
             parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
-        if self.runner is not None and self.runner.status.running:
-            parts.append(f"Polityka: jedzie ({self.runner.status.step} krokow)")
         if self.strategies.running:
             parts.append(f"Strategia: jedzie ({self.strategies.runner.status.step} krokow)")
-        if self.train.running:
-            p = self.train.progress() or {}
-            parts.append(f"Trening: {p.get('iteration', 0)}/{p.get('iterations', '?')} it.")
         # Trwale ostrzezenia ramienia (kalibracja chwytaka niezgodna z blizniakiem, chwytak
         # poluzowany po przeciazeniu) - `RobotStatus.warnings`; starszy status ich nie ma.
         warns = [str(w) for w in (getattr(st, "warnings", None) or [])]
@@ -873,17 +833,8 @@ class TwinApp:
                 intrinsics_problem=problem, calibrated=c.calibrated, trusted=c.trusted,
                 reason=str(c.calibration.get("reason", "") or ""), moved=self.watch.moved(c.name),
                 simreal_px=self._simreal_px.get(c.name)))
-        runner = self.runner
-        running = runner is not None and runner.status.running
-        vision = runner is not None and runner.cube_provider == self._vision_cube
-        if runner is not None and runner.status.success and self._runner_backend:
-            # Krok 7/8: polityka choc raz doszla do celu - zapisane pod backendem, na ktorym
-            # RUSZYLA (`_start_policy`), nie pod obecnym: stary runner z sukcesem w sim po
-            # Polacz feetech zaliczal "lift z kamer" prawdziwemu ramieniu, ktore nie drgnelo.
-            self._ran.setdefault(self._runner_backend, set()).add(runner.task.name + ("-kamery" if vision else ""))
         jobs_on = (("kalibracja kamer", self.calib_job.running), ("pomiar obiektywu", self.intr_job.running),
-                   ("identyfikacja", self.sysid_job.running), ("trening", self.train.running),
-                   ("ewaluacja", self.eval_job.running))
+                   ("identyfikacja", self.sysid_job.running))
         dyn = self.ws.dynamics
         dyn_src = str(dyn.get("source") or "zmierzona") if dyn else ""
         return gd.GuideSnapshot(
@@ -892,12 +843,9 @@ class TwinApp:
             cameras=tuple(cams), dynamics=dyn_src, dynamics_backend=gd.dynamics_backend(dyn_src),
             dynamics_useful=gd.dynamics_useful(dyn),
             dyn_result_useful=bool(self.sysid_job.data.get("useful", True)),
-            policies=tuple((p["name"], p["task"], bool(p.get("bundled"))) for p in self._policy_list),
-            jobs=tuple(n for n, on in jobs_on if on), policy_running=runner.task.name if running else "",
-            policy_from_cameras=running and vision, calib_result_pending=self._calib_pending,
+            jobs=tuple(n for n, on in jobs_on if on), calib_result_pending=self._calib_pending,
             dyn_result_pending=bool(self.dyn_keep.visible),
             calib_progress=float(self.calib_job.progress) if self.calib_job.running else None,
-            ran=frozenset(self._ran.get(backend, ()) if connected else ()),
             intr_camera=str(self.intr_job.data.get("camera", "")) if self.intr_job.running else "")
 
     def _tick_guide(self) -> None:
@@ -912,7 +860,7 @@ class TwinApp:
         self.guide_notes_md.content = notes
         self.guide_steps_md.content = gd.render_steps(guide)
         n = notes.count("**Uwaga:**")
-        set_if(self.guide_folder, "label", f"Uwagi ({n}) i kroki 0-8" if n else "Kroki 0-8")
+        set_if(self.guide_folder, "label", f"Uwagi ({n}) i kroki 0-5" if n else "Kroki 0-5")
 
     # ================================================================== ramie
     def _build_arm(self) -> None:
@@ -954,7 +902,7 @@ class TwinApp:
             g.add_html('<span id="tw-arm"></span>')
             arm_on = g.add_button("UZBROJ", color="gray", icon=viser.Icon.LOCK,
                                   hint="Uzbrojony panel RUSZA ramieniem: suwaki i Uchwyt 3D ustawiaja cel od "
-                                       "ZMIERZONEJ pozy. Odmowa przy STOP-ie albo gdy ramie ma polityka, fala, "
+                                       "ZMIERZONEJ pozy. Odmowa przy STOP-ie albo gdy ramie ma strategia, fala, "
                                        "identyfikacja; STOP, Dom i Polacz rozbrajaja.")
             arm_off = g.add_button("UZBROJONE - kliknij, by rozbroic", color="orange", icon=viser.Icon.BOLT,
                                    visible=False,
@@ -1025,7 +973,7 @@ class TwinApp:
                 s.on_update(on_slide)
 
             disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X, color="gray",
-                                      hint="Konczy polityke, fale i identyfikacje, odbiera ramie wszystkim i "
+                                      hint="Konczy strategie, fale i identyfikacje, odbiera ramie wszystkim i "
                                            "rozlacza backend. Silnikow nie zwalnia - ramie trzyma poze. "
                                            "Zmiana zestawu: Rozlacz, potem Polacz.")
             # Galaxea A1X: sekwencja wlaczenia FF 1-5-6 tylko recznie (zasilone od nowa ramie slucha od
@@ -1040,7 +988,7 @@ class TwinApp:
                                           hint="Tylko gdy ramie zglasza sie, ale nie slucha rozkazow (blad 'gluche "
                                                "na 0x050'). Wysyla FF 1 -> 5 -> 6 z celem = zmierzona poza przed, "
                                                "miedzy i po kazdym kodzie. Odmowa, gdy panel jest uzbrojony albo "
-                                               "ramie ma polityka / fala / identyfikacja.")
+                                               "ramie ma strategia / fala / identyfikacja.")
                 self.a1x_md = g.add_markdown("")
 
         def show_a1x() -> None:
@@ -1222,7 +1170,7 @@ class TwinApp:
         return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]
 
     def _go_home(self) -> None:
-        """Pozycja domowa: odbiera ramie kazdemu (panel, polityka, fala) - takze startowi w toku.
+        """Pozycja domowa: odbiera ramie kazdemu (panel, strategia, fala) - takze startowi w toku.
         Pod STOP-em najpierw go kasuje: po zatrzymaniu zawsze ma byc jedno klikniecie do domu
         (ramie bez hamulcow w gorze - operator nie ma szukac zoltego przycisku)."""
         self._motion_gen += 1
@@ -1230,12 +1178,6 @@ class TwinApp:
             self.twin.clear_estop()
         self.twin.home()
         self._gizmo_seed = None
-
-    def _halt_policy(self) -> None:
-        """Polityki > Zatrzymaj: takze polityka, ktora dopiero laduje sie po Uruchom, nie ruszy."""
-        self._motion_gen += 1
-        if self.runner is not None:
-            self.runner.stop("zatrzymana z panelu")
 
     def _connect(self, backend: str, port: str | None, go_home: bool = False, **kw) -> None:
         """Polacz: najpierw koniec wszystkiego, co jezdzi, i nowe potwierdzenia (moze to byc inne ramie)."""
@@ -1257,7 +1199,7 @@ class TwinApp:
             self._notify(event, "Brak ramienia", "Najpierw polacz ramie (np. sim).", error=True)
             return
         # Sprzeglo = panel bierze ramie na wlasnosc. Gdy jedzie fala, identyfikacja albo
-        # polityka - odmowa z powodem; wczesniej suwaki pisaly cel na zmiane z nimi.
+        # strategia - odmowa z powodem; wczesniej suwaki pisaly cel na zmiane z nimi.
         try:
             busy = self._busy(PANEL_OWNER)
             if busy:
@@ -1310,8 +1252,6 @@ class TwinApp:
             T_new = self.twin.scene.T_base2world
             self.base_frame.position, self.base_frame.wxyz = T_new[:3, 3], mat_to_wxyz(T_new[:3, :3])
             self._refresh_cameras()
-            if self._goal_base is not None:           # cel reach jest w ukladzie podstawy - kula za nia
-                self._set_goal(self._goal_base)
             self._notify(event, "Stanowisko", "Stol zapisany, scena przebudowana.")
 
         self.tcp_gizmo = self.server.scene.add_transform_controls("/uchwyt_tcp", scale=0.12, disable_rotations=True,
@@ -1376,7 +1316,7 @@ class TwinApp:
         driving = (self.arm_engage.value and owner == PANEL_OWNER
                    and time.monotonic() - self._gizmo_t < GIZMO_IDLE_S)
         if self.tcp_gizmo_on.value and not driving:
-            # Uchwyt wraca na koncowke, gdy nikt go nie ciagnie: po Domu, przebudowie, polityce
+            # Uchwyt wraca na koncowke, gdy nikt go nie ciagnie: po Domu, przebudowie, strategii
             # czy suwakach nastepne male przesuniecie celowalo w STARE miejsce koncowki.
             with self.twin.lock:
                 d, site = self.twin.scene.data, self.twin.scene.kin.site_id
@@ -2422,7 +2362,7 @@ class TwinApp:
             raise RuntimeError("zadna wlaczona kamera nie daje obrazu")
         if self.calib_job.running:
             raise RuntimeError("ramie juz pokazuje karte")
-        # Fala bierze ramie na wlasnosc PRZED startem: jedzie polityka albo identyfikacja -
+        # Fala bierze ramie na wlasnosc PRZED startem: jedzie strategia albo identyfikacja -
         # odmowa z powodem (wczesniej trzy watki pisaly cel na zmiane i ramie skakalo).
         # Odebranie ramienia (Dom, STOP, polaczenie) przerywa fale przez `calib_job.stop`.
         self._take_arm(jobs.CALIB_OWNER, preempt=self.calib_job.stop, mark=mark)
@@ -2523,41 +2463,53 @@ class TwinApp:
         g.add_markdown("Kadry wszystkich skalibrowanych kamer przerysowane na blat i zszyte - przedmiot na stole "
                        "trafia w swoje prawdziwe (x, y), skadkolwiek patrzy kamera.")
         self.map_on = g.add_checkbox("Mapa na zywo", True,
-                                     hint="Zszywa kadry zaufanych kamer w mape blatu (ok. 3 razy na s). Wylaczenie "
-                                          "zatrzymuje polityke, ktora bierze kostke z kamer.")
+                                     hint="Zszywa kadry zaufanych kamer w mape blatu (ok. 3 razy na s).")
         self.map_3d = g.add_checkbox("Pokaz mape na blacie w 3D", True,
                                      hint="Kladzie mape na blacie w widoku 3D - tylko widok.")
         self.map_img = g.add_image(np.zeros((224, 224, 3), np.uint8), label="Mapa blatu", format="jpeg",
                                    jpeg_quality=80)
         self.cube_on = g.add_checkbox("Szukaj kostki", True,
-                                      hint="Wykrywa kostke 3 cm w kolorze ponizej (piksele ramienia nie glosuja). "
-                                           "Potrzebne dla lift z kamer; wylaczenie zatrzymuje taka polityke.")
+                                      hint="Wykrywa kostke 3 cm w kolorze ponizej (piksele ramienia nie glosuja).")
         self.cube_color = g.add_dropdown("Kolor kostki", tuple(CUBE_COLORS), initial_value="czerwona",
                                          hint="Kolor kostki dla detektora (progi HSV); dziala od razu.")
         self.map_md = g.add_markdown("")
         self.map_node = None
         self.cube_node = self.server.scene.add_box("/percepcja/kostka", color=(255, 80, 200), dimensions=(0.03,) * 3,
                                                    opacity=0.5, wireframe=True, visible=False)
+        with g.add_folder("Tag na biurku"):
+            self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
+                                       hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
+                                            "'Zmierzony bok taga' w zakladce Kamery.")
+            self.tag_above_cm = g.add_number("wysokosc nad tagiem [cm]", 8.0, min=2.0, max=30.0, step=1.0,
+                                             hint="Ile nad srodkiem taga (wzdluz osi z podstawy) ma stanac "
+                                                  "koncowka po 'Jedz nad tag'.")
+            find_tag = g.add_button("Znajdz tag w kamerach", icon=viser.Icon.TARGET,
+                                    hint="Kadry wlaczonych kamer z zaufana poza -> poza taga w ukladzie "
+                                         "podstawy (mediana z kamer), zielona plytka w 3D. Ramieniem nie rusza.")
+            self.tag_confirm = g.add_checkbox("Prawdziwe ramie: rozumiem, ze sie ruszy", False,
+                                              hint="Prawdziwe ramie: potwierdzenie przed kazdym Jedz nad tag (gasnie "
+                                                   "po starcie). W sim niepotrzebne.")
+            goto_tag = g.add_button("Jedz nad tag", icon=viser.Icon.PLAYER_PLAY, color="orange",
+                                    hint="RUSZA ramieniem: IK do punktu nad znalezionym tagiem, rampa przez "
+                                         "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
+                                         "ramieniu, zaznaczonego potwierdzenia powyzej.")
+            self.tag_md = g.add_markdown("")
+        self._tag_fix = None
 
         @self.cube_color.on_update
         def _(event):
             lo, hi, lo2, hi2 = CUBE_COLORS[self.cube_color.value]
             self.cube_det.hsv_lo, self.cube_det.hsv_hi, self.cube_det.hsv_lo2, self.cube_det.hsv_hi2 = lo, hi, lo2, hi2
 
-        def vision_off(event):
-            # Bez mapy nie ma detekcji kostki - polityka z kostka "z kamer" jechalaby do
-            # ostatniego polozenia. Zatrzymujemy ja jawnie, zamiast czekac na `hold_s`.
-            if event.client is None or (self.map_on.value and self.cube_on.value):
-                return
-            if self._vision_policy_running():
-                self.runner.stop("mapa albo szukanie kostki wylaczone - kostka z kamer niedostepna")
-                self._notify(event, "Polityka zatrzymana", "Bez mapy i szukania kostki polityka nie wie, gdzie ona jest.")
-        self.map_on.on_update(vision_off)
-        self.cube_on.on_update(vision_off)
+        @find_tag.on_click
+        @self._safe
+        def _(event):
+            self._find_tag()
 
-    def _vision_policy_running(self) -> bool:
-        return (self.runner is not None and self.runner.status.running
-                and self.runner.cube_provider == self._vision_cube)
+        @goto_tag.on_click
+        @self._safe
+        def _(event):
+            self._goto_tag()
 
     def _mapper_now(self) -> TableMapper | None:
         key = tuple((c.name, c.enabled, c.trusted, str(c.T_cam2base), str(c.K)) for c in self.ws.cameras)
@@ -2568,21 +2520,7 @@ class TwinApp:
         return self.mapper
 
     def _tick_map(self, frames: dict[str, np.ndarray]) -> None:
-        """Mapa i detekcja kostki. `last_cube` dostaje NOWA detekcje albo None - nigdy stara.
-
-        Wczesniej `last_cube` zostawal z ostatniej detekcji, gdy mapa byla wylaczona,
-        brakowalo kamer albo cos rzucilo - polityka dostawala ja co takt jako swieza,
-        `hold_s` trackera nie mijal i zgubiona kostka nigdy nie zatrzymywala ramienia.
-        Przypisanie na koncu (zamiast None na poczatku) - watek polityki nie widzi
-        "nie ma kostki" przez caly czas dopasowania.
-        """
-        det = None
-        try:
-            det = self._map_and_detect(frames)
-        finally:
-            self.last_cube = det
-
-    def _map_and_detect(self, frames: dict[str, np.ndarray]):
+        """Mapa blatu i detekcja kostki - do ogladania: mapa, ramka kostki w 3D, jej polozenie."""
         mapper = self._mapper_now() if self.map_on.value else None
         if mapper is None:
             self.map_md.content = "Brak zaufanej, skalibrowanej kamery - najpierw kalibracja." if self.map_on.value \
@@ -2590,7 +2528,7 @@ class TwinApp:
             if self.map_node is not None:
                 self.map_node.visible = False
             self.cube_node.visible = False
-            return None
+            return
         table, wsum = mapper.fuse(frames)
         self._img(self.map_img, "mapa", table)
         cover = float((wsum > 1e-6).mean())
@@ -2644,89 +2582,34 @@ class TwinApp:
         else:
             self.cube_node.visible = False
         self.map_md.content = txt
-        return det
 
-    # =============================================================== trening
-    def _build_training(self) -> None:
+    # ============================================================== dynamika
+    def _build_dynamics(self) -> None:
+        """Identyfikacja dynamiki serw na polaczonym ramieniu i jej zapis jako dynamiki stanowiska."""
         g = self.server.gui
-        self._tab_help("Trening")
-        with g.add_folder("Nowy trening (PPO na GPU, MuJoCo Warp)"):
-            self.tr_task = g.add_dropdown("Zadanie", ("reach", "lift", "pickplace"), initial_value="reach",
-                                          hint="reach - koncowka do punktu; lift - chwyt i podniesienie kostki; "
-                                               "pickplace - kostka przeniesiona na cel na blacie i puszczona. "
-                                               "Przy Start z polityki zadanie bierze sie z polityki.")
-            self.tr_envs = g.add_dropdown("Swiatow naraz", ("1024", "2048", "4096", "8192"), initial_value="4096",
-                                          hint="Ile swiatow MuJoCo Warp naraz na GPU; 4096 sprawdzone na A4500, "
-                                               "wiecej = wiecej pamieci GPU.")
-            self.tr_iters = g.add_number("Iteracje", 200, min=10, max=5000, step=10,
-                                         hint="Iteracje PPO. Od zera: reach ok. 160 (~2,5 min), lift ok. 600 "
-                                              "(~30 min); douczanie 100-300.")
-            self.tr_rand = g.add_checkbox("Randomizacja dziedziny", True,
-                                          hint="Losuje dynamike serw, kostke i opoznienia wokol zmierzonej "
-                                               "dynamiki. Odznaczone = dokladnie zmierzona (model percepcji "
-                                               "kostki zostaje).")
-            self.tr_spread = g.add_slider("Szerokosc randomizacji", 0.0, 2.0, 0.1, 1.0,
-                                          hint="Mnoznik zakresow randomizacji (0-2, 1 = domyslne) wokol dynamiki "
-                                               "zmierzonej na ramieniu (Dynamika serw ponizej).")
-            self.tr_name = g.add_text("Nazwa (puste = zadanie + data)", "",
-                                      hint="Katalog nowej polityki; ta sama nazwa co istniejaca nadpisuje jej "
-                                           "przebieg.")
-            self.tr_init = g.add_dropdown("Start z polityki", ("(od zera)",), initial_value="(od zera)",
-                                          hint="Douczanie z wag wybranej polityki (np. reach-v3 / lift-v3 po "
-                                               "identyfikacji dynamiki), 100-300 iteracji. Zadanie bierze sie "
-                                               "wtedy z polityki.")
-            start = g.add_button("Ucz", icon=viser.Icon.PLAYER_PLAY, color="green",
-                                 hint="Trening w osobnym procesie na GPU (pierwsza iteracja po ~20 s kompilacji). "
-                                      "Ramieniem nie rusza; drugi trening naraz - odmowa.")
-            stop = g.add_button("Zatrzymaj (zapisze polityke)", icon=viser.Icon.PLAYER_STOP,
-                                hint="Konczy trening i zapisuje polityke z miejsca, w ktorym stanal.")
-            self.tr_bar = g.add_progress_bar(0.0, animated=True, visible=False)
-            self.tr_md = g.add_markdown("")
-            self.tr_plot = g.add_uplot(
-                (np.array([0.0]), np.array([0.0])),
-                (uplot.Series(label="mln krokow"), uplot.Series(label="sukces", stroke="#ffc400", width=2)),
-                title="Sukces w trakcie treningu", aspect=1.6, visible=False,
-                scales={"y": uplot.Scale(range=(0, 1))})
-        with g.add_folder("Dynamika serw (sim-to-real)"):
-            self.dyn_md = g.add_markdown("")
-            ident = g.add_button("Identyfikuj na polaczonym ramieniu (~20 s ruchu)", icon=viser.Icon.ACTIVITY,
-                                 hint="RUSZA ramieniem ~20 s (ruchy po 12 st.; do pozy startowej 30 st./s), potem "
-                                      "7-11 s dopasowania bez ramienia. Odmowa, gdy ramie ma inne zadanie.")
-            self.dyn_confirm = g.add_checkbox("Prawdziwe ramie: przestrzen wokol wolna", False,
-                                              hint="Prawdziwe ramie: potwierdzenie przed kazda identyfikacja (gasnie "
-                                                   "po starcie). W sim niepotrzebne.")
-            self.dyn_bar = g.add_progress_bar(0.0, visible=False)
-            self.dyn_res = g.add_markdown("")
-            self.dyn_force = g.add_checkbox("Zapisz mimo to (wynik nic nie wyjasnia)", False, visible=False,
-                                            hint="Tylko gdy identyfikacja uznala wynik za nieprzydatny (niepewnosc "
-                                                 "ponad 30% albo blad prawie jak model). Zaznaczone odblokowuje "
-                                                 "Zapisz; przewodnik i tak nie zalicza kroku 5.")
-            keep = g.add_button("Zapisz jako dynamike stanowiska", icon=viser.Icon.DEVICE_FLOPPY, color="green",
-                                visible=False,
-                                hint="Wynik identyfikacji staje sie dynamika stanowiska - srodkiem randomizacji "
-                                     "w kolejnych treningach. Wynik, ktory nic nie wyjasnia, zapisuje dopiero po "
-                                     "zaznaczeniu 'Zapisz mimo to'.")
-            reset = g.add_button("Wroc do modelu Menagerie", icon=viser.Icon.RESTORE,
-                                 hint="Kasuje zapisana dynamike (bez pytania): trening wraca do modelu Menagerie.")
-            self.dyn_keep = keep
+        self._tab_help("Dynamika")
+        self.dyn_md = g.add_markdown("")
+        ident = g.add_button("Identyfikuj na polaczonym ramieniu (~20 s ruchu)", icon=viser.Icon.ACTIVITY,
+                             hint="RUSZA ramieniem ~20 s (ruchy po 12 st.; do pozy startowej 30 st./s), potem "
+                                  "7-11 s dopasowania bez ramienia. Odmowa, gdy ramie ma inne zadanie.")
+        self.dyn_confirm = g.add_checkbox("Prawdziwe ramie: przestrzen wokol wolna", False,
+                                          hint="Prawdziwe ramie: potwierdzenie przed kazda identyfikacja (gasnie "
+                                               "po starcie). W sim niepotrzebne.")
+        self.dyn_bar = g.add_progress_bar(0.0, visible=False)
+        self.dyn_res = g.add_markdown("")
+        self.dyn_force = g.add_checkbox("Zapisz mimo to (wynik nic nie wyjasnia)", False, visible=False,
+                                        hint="Tylko gdy identyfikacja uznala wynik za nieprzydatny (niepewnosc "
+                                             "ponad 30% albo blad prawie jak model). Zaznaczone odblokowuje "
+                                             "Zapisz; przewodnik i tak nie zalicza kroku 5.")
+        keep = g.add_button("Zapisz jako dynamike stanowiska", icon=viser.Icon.DEVICE_FLOPPY, color="green",
+                            visible=False,
+                            hint="Wynik identyfikacji staje sie dynamika stanowiska (twin.json; lerobot-twin "
+                                 "export daje ja treningowi). Wynik, ktory nic nie wyjasnia, zapisuje dopiero po "
+                                 "zaznaczeniu 'Zapisz mimo to'.")
+        reset = g.add_button("Wroc do modelu Menagerie", icon=viser.Icon.RESTORE,
+                             hint="Kasuje zapisana dynamike (bez pytania): stanowisko wraca do modelu Menagerie.")
+        self.dyn_keep = keep
         self._show_dynamics()
-
-        @start.on_click
-        @self._safe
-        def _(event):
-            name = self.tr_name.value.strip() or f"{self.tr_task.value}-{time.strftime('%Y%m%d-%H%M%S')}"
-            init = None
-            if self.tr_init.value != "(od zera)":
-                from ..rl.policy import list_policies
-                init = next(p["path"] for p in list_policies(self.policies_dir) if p["name"] == self.tr_init.value)
-            self._save()
-            self.train.start(self.tr_task.value, int(self.tr_envs.value), int(self.tr_iters.value),
-                             float(self.tr_spread.value), self.tr_rand.value, name, init=init)
-            self._notify(event, "Trening ruszyl", f"{name}: pierwsza iteracja po kompilacji kerneli (~20 s)")
-
-        @stop.on_click
-        def _(event):
-            self.train.stop()
 
         @ident.on_click
         @self._safe
@@ -2740,7 +2623,7 @@ class TwinApp:
                 if "recording" in self.sysid_job.data:
                     raise RuntimeError("trwa dopasowanie poprzedniego nagrania - poczekaj na wynik")
                 raise RuntimeError("identyfikacja juz trwa")
-            # Ramie dla identyfikacji albo odmowa z powodem - fala czy polityka w toku mieszaly
+            # Ramie dla identyfikacji albo odmowa z powodem - fala czy strategia w toku mieszaly
             # swoje cele z pobudzeniem, a nagranie z obu szlo do dopasowania dynamiki.
             self._take_arm(jobs.SYSID_OWNER, preempt=self.sysid_job.stop, mark=mark)
             self.dyn_keep.visible = False
@@ -2794,7 +2677,7 @@ class TwinApp:
         self._show_dynamics()
 
     def _show_dynamics(self) -> None:
-        from ..rl.randomize import Dynamics
+        from ..dynamics import Dynamics
         d = Dynamics.from_dict(self.ws.dynamics)
         names = fitted_names(d)
         if names:
@@ -2802,33 +2685,13 @@ class TwinApp:
             vals = f"dopasowane: {', '.join(fitted)}" + (f"; z modelu: {', '.join(fixed)}" if fixed else "")
         else:                                           # model albo zapis bez listy dopasowanych
             vals = ", ".join(sum(dynamics_parts(d, ()), []))
-        self.dyn_md.content = (f"Srodek randomizacji: **{d.source}** - {vals}"
+        self.dyn_md.content = (f"Dynamika stanowiska: **{d.source}** - {vals}"
                                + (f", blad dopasowania {d.fit_deg:.2f} st." if d.fit_deg else "")
                                + ("" if gd.dynamics_useful(self.ws.dynamics) else
                                   "  \n**Ta dynamika nic nie wyjasnia** - powtorz identyfikacje albo "
                                   "Wroc do modelu Menagerie."))
 
-    def _tick_training(self) -> None:
-        p = self.train.progress()
-        running = self.train.running
-        self.tr_bar.visible = running
-        if p:
-            self.tr_bar.value = 100 * p["iteration"] / max(1, p["iterations"])
-            hist = p.get("history", [])
-            if hist:
-                self.tr_plot.visible = True
-                self.tr_plot.data = (np.array([h["steps"] / 1e6 for h in hist]), np.array([h["success"] for h in hist]))
-            state = "trwa" if running else ("koniec" if self.train.exit_code == 0 else
-                                            f"proces zakonczony kodem {self.train.exit_code}")
-            self.tr_md.content = (f"**{self.train.run_dir.name}** ({state}): iteracja {p['iteration']}/{p['iterations']}, "
-                                  f"{p['steps'] / 1e6:.1f} mln krokow, {p['fps'] / 1e3:.0f} tys./s, "
-                                  f"sukces **{p['success']:.0%}**, {p['elapsed']:.0f} s")
-            if not running and self.train.exit_code is not None:
-                tail = self.train.tail(4)
-                if "Ewaluacja" in tail or "Zapisano" in tail:
-                    self.tr_md.content += f"\n\n```\n{tail}\n```"
-        elif running:
-            self.tr_md.content = "kompilacja kerneli MuJoCo Warp i pierwsza iteracja..."
+    def _tick_dynamics(self) -> None:
         j = self.sysid_job
         self.dyn_bar.visible = j.running
         if j.running:
@@ -2871,215 +2734,6 @@ class TwinApp:
             self.dyn_res.content = f"**Przerwane**: {j.message or 'identyfikacja przerwana'}"
             self.dyn_keep.visible = self.dyn_force.visible = False
             j.data["shown"] = "cancel"
-
-    # =============================================================== polityki
-    def _build_policies(self) -> None:
-        g = self.server.gui
-        self._tab_help("Polityki")
-        self.pol_pick = g.add_dropdown("Polityka", ("-",), initial_value="-",
-                                       hint="Polityka do ewaluacji i uruchomienia: bazowe (reach-v3, lift-v3) i "
-                                            "nauczone na stanowisku.")
-        refresh = g.add_button("Odswiez liste", icon=viser.Icon.REFRESH,
-                               hint="Czyta liste polityk z dysku od nowa (np. po treningu z wiersza polecen).")
-        self.pol_md = g.add_markdown("")
-        ev = g.add_button("Ewaluuj na CPU (zwykle MuJoCo, 50 epizodow)", icon=viser.Icon.CHART_BAR,
-                          hint="Epizody w zwyklym MuJoCo na CPU, bez randomizacji i z nia; wynik zapisuje w "
-                               "polityce (bazowych z repozytorium nie nadpisuje). Ramieniem nie rusza.")
-        self.pol_eval_md = g.add_markdown("")
-        with g.add_folder("Uruchom na blizniaku"):
-            self.pol_cube_src = g.add_dropdown("lift/pickplace: skad polozenie kostki", ("symulacja", "kamery"),
-                                               initial_value="symulacja",
-                                               hint="Tylko lift i pickplace. symulacja - kostka z blizniaka (tylko ramie sim); "
-                                                    "kamery - ta sama percepcja co na biurku (zakladka Mapa, zaufana "
-                                                    "kamera). Prawdziwe ramie: tylko kamery.")
-            self.pol_confirm = g.add_checkbox("Prawdziwe ramie: rozumiem, ze sie ruszy", False,
-                                              hint="Prawdziwe ramie: potwierdzenie przed kazdym Uruchom (gasnie po "
-                                                   "starcie). W sim niepotrzebne.")
-            run = g.add_button("Uruchom", icon=viser.Icon.PLAYER_PLAY, color="green",
-                               hint="Polityka jedzie na polaczonym ramieniu (przez nadzor) - RUSZA ramieniem. "
-                                    "Odmowa przy aktywnym STOP-ie albo gdy ramie ma fala / identyfikacja; "
-                                    "STOP, Dom albo Zatrzymaj w trakcie startu - nie rusza. Panel sie rozbraja.")
-            halt = g.add_button("Zatrzymaj", icon=viser.Icon.PLAYER_STOP,
-                                hint="Zatrzymuje polityke - takze jeszcze ladowana po Uruchom; ramie trzyma "
-                                     "ostatni cel.")
-            new_goal = g.add_button("reach: losowy cel", icon=viser.Icon.TARGET,
-                                    hint="Nowy losowy cel z obszaru treningu (zolta kulka); gdy jedzie reach, "
-                                         "ramie za nim pojedzie. Cel mozna tez przeciagac w 3D.")
-            new_cube = g.add_button("lift (sim): poloz kostke losowo", icon=viser.Icon.CUBE,
-                                    hint="Tylko w blizniaku: kladzie kostke w losowym miejscu blatu symulacji "
-                                         "(dodaje ja do sceny, gdy jej nie ma). Ramieniem nie rusza.")
-            self.pol_run_md = g.add_markdown("")
-        with g.add_folder("Tag na biurku"):
-            self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
-                                       hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
-                                            "'Zmierzony bok taga' w zakladce Kamery.")
-            self.tag_above_cm = g.add_number("wysokosc nad tagiem [cm]", 8.0, min=2.0, max=30.0, step=1.0,
-                                             hint="Ile nad srodkiem taga (wzdluz osi z podstawy) ma stanac "
-                                                  "koncowka po 'Jedz nad tag'.")
-            find_tag = g.add_button("Znajdz tag w kamerach", icon=viser.Icon.TARGET,
-                                    hint="Kadry wlaczonych kamer z zaufana poza -> poza taga w ukladzie "
-                                         "podstawy (mediana z kamer), zielona plytka w 3D. Ramieniem nie rusza.")
-            goto_tag = g.add_button("Jedz nad tag", icon=viser.Icon.PLAYER_PLAY, color="orange",
-                                    hint="RUSZA ramieniem: IK do punktu nad znalezionym tagiem, rampa przez "
-                                         "nadzor. Wymaga wolnego ramienia (panel rozbrojony) i, na prawdziwym "
-                                         "ramieniu, zaznaczonego potwierdzenia z zakladki Polityki.")
-            self.tag_md = g.add_markdown("")
-        self._tag_fix = None
-        self.goal_node = self.server.scene.add_icosphere("/cel", radius=0.012, color=(255, 196, 0), visible=False)
-        self.goal_gizmo = self.server.scene.add_transform_controls("/cel_uchwyt", scale=0.08, disable_rotations=True,
-                                                                   visible=False)
-        self._refresh_policies()
-
-        @refresh.on_click
-        def _(event):
-            self._refresh_policies()
-
-        @self.pol_pick.on_update
-        def _(event):
-            self._show_policy()
-
-        @ev.on_click
-        @self._safe
-        def _(event):
-            path = self._policy_path()
-            self.eval_job.start(lambda job: jobs.run_eval(job, path, self.ws))
-
-        @self.goal_gizmo.on_update
-        def _(event):
-            self._set_goal((inverse(self.T_b2w) @ np.r_[self.goal_gizmo.position, 1.0])[:3])
-
-        @new_goal.on_click
-        @self._safe
-        def _(event):
-            from ..rl import task as tk
-            g_ = tk.sample_goals(self.twin.scene.kin, tk.make_task("reach", self.ws.spec()), np.random.default_rng(), 1)[0]
-            self._set_goal(g_)
-
-        @new_cube.on_click
-        @self._safe
-        def _(event):
-            self._place_cube_randomly()
-
-        @find_tag.on_click
-        @self._safe
-        def _(event):
-            self._find_tag()
-
-        @goto_tag.on_click
-        @self._safe
-        def _(event):
-            self._goto_tag()
-
-        @run.on_click
-        @self._safe
-        def _(event):
-            self._start_policy(event)
-
-        @halt.on_click
-        def _(event):
-            self._halt_policy()
-
-    def _policy_path(self) -> str:
-        from ..rl.policy import list_policies
-        for p in list_policies(self.policies_dir):
-            if p["name"] == self.pol_pick.value:
-                return p["path"]
-        raise RuntimeError("wybierz polityke")
-
-    def _refresh_policies(self) -> None:
-        from ..rl.policy import list_policies
-        items = list_policies(self.policies_dir)
-        self._policy_list = items
-        opts = tuple(p["name"] for p in items) or ("-",)
-        cur = self.pol_pick.value
-        self.pol_pick.options = opts
-        self.pol_pick.value = cur if cur in opts else opts[0]
-        if hasattr(self, "tr_init"):
-            init_opts = ("(od zera)",) + tuple(p["name"] for p in items)
-            if self.tr_init.options != init_opts:
-                cur = self.tr_init.value
-                self.tr_init.options = init_opts
-                self.tr_init.value = cur if cur in init_opts else "(od zera)"
-        self._show_policy()
-
-    def _show_policy(self) -> None:
-        from ..rl.policy import list_policies
-        p = next((x for x in list_policies(self.policies_dir) if x["name"] == self.pol_pick.value), None)
-        if p is None:
-            self.pol_md.content = "Brak polityk - naucz pierwsza w zakladce Trening."
-            return
-        ev = p["evals"]
-        lines = [f"**{p['name']}** - zadanie `{p['task']}`, {p['steps'] / 1e6:.1f} mln krokow, {p['created']}",
-                 f"- GPU (trening, z eksploracja): {p['success'] or 0:.0%}"]
-        for k, label in (("cpu_nominal", "CPU bez randomizacji"), ("cpu_rand", "CPU z randomizacja")):
-            if k in ev:
-                e = ev[k]
-                extra = ", ".join(f"{kk} {vv:.1f}" for kk, vv in e.items() if kk.endswith("_mm"))
-                lines.append(f"- {label}: **{e['success']:.0%}** ({extra})")
-        self.pol_md.content = "\n".join(lines)
-
-    def _set_goal(self, p_base: np.ndarray) -> None:
-        """Cel reach: rzutowany na obszar, z ktorego losowano cele w treningu, i tam pokazany.
-
-        Uchwyt celu mozna bylo zaciagnac pod blat - polityka bez limitu epizodu wciskala
-        wtedy szczeki w stol, az serwo zablokowalo sie na 25 st. rozjazdu. Uchwyt
-        wraca na rzutowany punkt, zeby bylo widac, dokad ramie naprawde jedzie.
-        """
-        from ..rl import task as tk
-        from ..rl.runner import project_goal
-        runner = self.runner if self.runner is not None and self.runner.task.name in ("reach", "pickplace") \
-            else None
-        if runner is not None and runner.task.target:
-            # pickplace: cel odlozenia na blacie (z = 0) i w pierscieniu celow z treningu;
-            # podkladka celu w blizniaku idzie za nim.
-            runner.goal = np.asarray(p_base, float)
-            g = np.asarray(runner.target, float)
-            self._show_target_pad(g)
-        elif runner is not None:
-            runner.goal = np.asarray(p_base, float)       # setter rzutuje na obszar zadania tej polityki
-            g = np.asarray(runner.goal, float)
-        else:
-            if self._reach_task is None:
-                self._reach_task = tk.make_task("reach", self.ws.spec())
-            g = project_goal(self._reach_task, np.asarray(p_base, float))
-        self._goal_base = g
-        pw = (self.T_b2w @ np.r_[g, 1.0])[:3]
-        self.goal_node.position = pw
-        if np.abs(np.asarray(self.goal_gizmo.position) - pw).max() > 1e-4:
-            self.goal_gizmo.position = pw
-
-    def _cube_in_scene(self) -> bool:
-        return self._body_in_scene("cube")
-
-    def _body_in_scene(self, name: str) -> bool:
-        with self.twin.lock:
-            return name in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
-
-    def _configure_objects(self, cube: bool, pad: bool) -> None:
-        """Kostka i/lub podkladka celu pickplace w scenie blizniaka (przebudowa, stan zostaje)."""
-        from ..rl import task as tk
-        from ..rl.env import TARGET_RGBA, TARGET_SIZE
-        task = tk.make_task("lift", self.ws.spec())
-        h = task.cube_half
-        objs, sensors = [], []
-        if cube:
-            objs.append(sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0), mass=task.cube_mass))
-            sensors.append("cube")
-        if pad:
-            # Tylko do ogladania (mocap, bez kolizji) - kostka przez nia przenika.
-            objs.append(sc.Box("target", TARGET_SIZE, (0.3, 0.1), rgba=TARGET_RGBA, free=False, mocap=True))
-        self.twin.configure(objects=objs, grasp_sensors=sensors)
-
-    def _show_target_pad(self, target_base: np.ndarray) -> None:
-        """Podkladka celu pickplace w blizniaku na `target_base` (uklad podstawy, blat)."""
-        from ..rl.env import TARGET_SIZE
-        if not self._body_in_scene("target"):
-            return
-        with self.twin.lock:
-            s = self.twin.scene
-            k = int(s.model.body_mocapid[s.model.body("target").id])
-            T = s.T_base2world
-            s.data.mocap_pos[k] = T[:3, :3] @ np.array([target_base[0], target_base[1], TARGET_SIZE[2]]) + T[:3, 3]
 
     # ------------------------------------------------------------ tag na biurku
     def _find_tag(self) -> None:
@@ -3127,8 +2781,8 @@ class TwinApp:
             raise RuntimeError("ramie nie jest polaczone")
         if self.twin.owner is not None:
             raise RuntimeError(f"ramie zajete: {self.twin.owner} - rozbroj panel / zatrzymaj")
-        if not self.twin.status.simulated and not self.pol_confirm.value:
-            raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie w zakladce Polityki")
+        if not self.twin.status.simulated and not self.tag_confirm.value:
+            raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie nad przyciskiem Jedz nad tag")
         p = hover_point(fix.T_tag2base, self.tag_above_cm.value / 100.0)
         cmd = {k: float(v) for k, v in (self.twin.status.command or self.twin.joints()).items()}
         sol = self._kin_gizmo.ik(p, seed=cmd)
@@ -3138,7 +2792,7 @@ class TwinApp:
         target = {k: float(v) for k, v in sol.joints.items() if k != gripper}
         jump = max(abs(target[k] - cmd.get(k, target[k])) for k in target)
         duration = max(2.0, jump / 20.0)                     # najwyzej 20 st./s, nadzor i tak ogranicza
-        self.pol_confirm.value = False
+        self.tag_confirm.value = False
         self.tag_md.content = f"jade nad tag: {jump:.0f} st. najwiekszy skok, {duration:.1f} s"
 
         def run():
@@ -3155,184 +2809,9 @@ class TwinApp:
 
         threading.Thread(target=run, name="tag-move", daemon=True).start()
 
-    def _place_cube_randomly(self) -> None:
-        from ..rl import task as tk
-        task = tk.make_task("lift", self.ws.spec())
-        if not self._cube_in_scene():
-            self._configure_objects(cube=True, pad=self._body_in_scene("target"))
-        pos, quat = tk.sample_cubes(task, np.random.default_rng(), 1)
+    def _body_in_scene(self, name: str) -> bool:
         with self.twin.lock:
-            s = self.twin.scene
-            m, d = s.model, s.data
-            b = m.body("cube").id
-            a, dv = m.jnt_qposadr[m.body_jntadr[b]], m.jnt_dofadr[m.body_jntadr[b]]
-            T = s.T_base2world
-            qb, qw = np.zeros(4), np.zeros(4)
-            mujoco.mju_mat2Quat(qb, T[:3, :3].ravel())
-            mujoco.mju_mulQuat(qw, qb, quat[0])
-            d.qpos[a:a + 3] = T[:3, :3] @ pos[0] + T[:3, 3]
-            d.qpos[a + 3:a + 7] = qw
-            d.qvel[dv:dv + 6] = 0.0
-            mujoco.mj_forward(m, d)
-
-    def _sim_cube(self):
-        with self.twin.lock:
-            s = self.twin.scene
-            b = s.model.body("cube").id
-            Ti = inverse(s.T_base2world)
-            return (Ti[:3, :3] @ s.data.xpos[b] + Ti[:3, 3]).copy(), (Ti[:3, :3] @ s.data.xmat[b].reshape(3, 3)).copy()
-
-    def _vision_cube(self):
-        """Kostka z kamer dla polityki - z dlonia, gdy szczeki ja zaslaniaja albo niosa.
-
-        Do trackera idzie tylko detekcja NOWA (z kadrow pozniejszych niz poprzednio
-        podana) i mlodsza niz `CUBE_MAX_AGE`. Stara detekcja podawana co takt jako
-        swieza odnawiala `hold_s` w nieskonczonosc - zamrozona kamera albo wylaczona
-        mapa i polityka jechala po kostke, ktorej juz tam nie bylo.
-        """
-        kin = self._kin_vision
-        st = self.twin.status
-        joints = dict(st.measured) or self.twin.joints()
-        q = kin.to_q(joints)
-        # Rozkaz chwytaka, ktory NAPRAWDE idzie do serwa (`status.command`), a nie `runner.q_cmd`:
-        # runner startuje od zmierzonego kata szczeki, wiec po STOP/Dom z kostka w szczekach
-        # tracker nie widzial "sciska" i nie bral kostki "w dloni" - polityka stawala z
-        # "kamery jej nie widza" (verify2, s1).
-        grip = kin.spec.gripper
-        k = kin.spec.joints.index(grip)
-        sent = (getattr(st, "command", None) or {}).get(grip)
-        if sent is not None:
-            cmd = kin.to_q({**joints, grip: float(sent)})[k]
-        else:
-            cmd = self.runner.q_cmd[k] if self.runner is not None else q[k]
-        now = time.monotonic()
-        det = self.last_cube
-        if det is not None and (det.confidence <= 0.4 or not det.t or det.t <= self._cube_used_t
-                                or now - det.t > CUBE_MAX_AGE):
-            det = None
-        if det is not None:
-            self._cube_used_t = det.t
-        return self.cube_tracker.update(det, kin.tcp(joints), q[k], cmd, self._grip_closed_q(), now)
-
-    def _grip_closed_q(self) -> float:
-        """Kat szczeki [rad] pustego, zamknietego chwytaka (chwytak 0) - `grip_closed` trackera.
-
-        Ten sam, co w polityce (`Limits.lo` jej biegacza), a nie dolny kraniec MJCF:
-        po przeliczeniu chwytaka przez tiki serwa zamknieta szczeka stoi na -5,4 st.,
-        a MJCF ma -10 st. - warunek "szczeka stoi szerzej niz zamknieta" byl wtedy
-        zawsze prawdziwy i pusta dlon mogla wyjsc na "w dloni".
-        """
-        runner = self.runner
-        if runner is not None and getattr(runner, "limits", None) is not None:
-            return float(runner.limits.lo[runner.limits.grip])
-        kin = self._kin_vision
-        return float(kin.to_q({kin.spec.gripper: 0.0})[kin.spec.joints.index(kin.spec.gripper)])
-
-    def _start_policy(self, event) -> None:
-        from ..rl.policy import Policy
-        from ..rl.runner import PolicyRunner
-        # Przed wszystkimi sprawdzeniami: STOP, Dom, Polacz albo Zatrzymaj od tej chwili (ladowanie
-        # polityki trwa 100-150 ms) = polityka nie bierze ramienia (`_claim_kw`).
-        mark = self._motion_mark()
-        if not self.twin.connected:
-            raise RuntimeError("polacz ramie w zakladce Ramie (sim, zeby bezpiecznie sprawdzic)")
-        if not self.twin.status.simulated and not self.pol_confirm.value:
-            raise RuntimeError("prawdziwe ramie: zaznacz potwierdzenie, ze sie ruszy")
-        if self._estop_active():
-            raise RuntimeError("aktywny STOP - Skasuj STOP (zolty, pod STOP-em)")
-        busy = self._busy(POLICY_OWNER)
-        if busy:
-            raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
-        if self.runner is not None:
-            self.runner.stop("nowa polityka")
-        pol = Policy.load(self._policy_path())
-        provider = None
-        if pol.task.target and not self._body_in_scene("target"):
-            # Podkladka celu (tylko do ogladania); kostka zostaje, jesli juz byla w scenie.
-            self._configure_objects(cube=self._cube_in_scene(), pad=True)
-        if pol.task.cube:
-            if self.pol_cube_src.value == "symulacja":
-                if not self.twin.status.simulated:
-                    raise RuntimeError("na prawdziwym ramieniu kostka musi pochodzic z kamer")
-                if not self._cube_in_scene():
-                    self._place_cube_randomly()
-                provider = self._sim_cube
-            else:
-                if self.mapper is None:
-                    raise RuntimeError("kostka z kamer wymaga co najmniej jednej skalibrowanej kamery (zakladka Mapa)")
-                if not (self.map_on.value and self.cube_on.value):
-                    raise RuntimeError("kostka z kamer wymaga wlaczonej mapy i szukania kostki (zakladka Mapa)")
-                self.cube_tracker = CubeTracker.for_spec(self.ws.spec())
-                self._cube_used_t = 0.0
-                provider = self._vision_cube
-        self._release_panel()
-        self.policy = pol
-        # Sukces lift na ramieniu liczy sie tylko ze swiezej pozy kostki (kamery / w dloni),
-        # nigdy z "ostatnio widzianej" - runner pyta tracker o zrodlo co takt.
-        source = (lambda: self.cube_tracker.source) if provider == self._vision_cube else None
-        self.runner = PolicyRunner(self.twin, pol, cube_provider=provider, cube_source=source)
-        self._runner_backend = str(self.twin.status.backend)  # przewodnik: sukces liczy sie TEMU backendowi
-        if pol.task.name == "reach":
-            p = (inverse(self.T_b2w) @ np.r_[self.goal_gizmo.position, 1.0])[:3]
-            if not self.goal_node.visible:
-                from ..rl import task as tk
-                p = tk.sample_goals(self.twin.scene.kin, pol.task, np.random.default_rng(), 1)[0]
-            self._set_goal(p)
-            self.runner.episode_limit = False                # cel przeciagany na zywo - bez limitu epizodu
-        elif pol.task.target:
-            # pickplace: cel odlozenia z uchwytu celu (rzutowany na blat), a gdy go nie widac -
-            # losowany jak w treningu, co najmniej `target_min_sep` od kostki.
-            p = (inverse(self.T_b2w) @ np.r_[self.goal_gizmo.position, 1.0])[:3]
-            if not self.goal_node.visible:
-                from ..rl import task as tk
-                cube = self._sim_cube()[0] if self._cube_in_scene() else np.array([0.2, 0.0, pol.task.cube_half])
-                p = tk.sample_targets(pol.task, np.random.default_rng(), cube[None])[0]
-            self._set_goal(p)
-        self.goal_node.visible = self.goal_gizmo.visible = pol.task.name in ("reach", "pickplace")
-        try:
-            # Bierze ramie ("polityka") albo RuntimeError: zajete, aktywny STOP, odebrane od `mark`.
-            self.runner.start(**self._claim_kw(mark))
-        except RuntimeError as exc:
-            self.runner.status.stopped_because = f"nie ruszyla: {exc}"
-            raise
-        self.pol_confirm.value = False                       # nastepne uruchomienie - nowe potwierdzenie
-
-    def _tick_policies(self) -> None:
-        if self.runner is not None:
-            rs = self.runner.status
-            txt = (f"{'**jedzie**' if rs.running else 'stoi'} - krok {rs.step}, {rs.hz:.0f} Hz")
-            if self.runner.task.name == "reach" and np.isfinite(rs.distance):
-                txt += f", do celu **{rs.distance * 1000:.0f} mm**" + (" (w celu)" if rs.success else "")
-                if rs.goal_clamped:
-                    txt += " - cel przyciety do obszaru z treningu"
-            if self.runner.task.target and np.isfinite(rs.distance):
-                # pickplace: odleglosc kostki od celu odlozenia (xy)
-                txt += f", kostka do celu **{rs.distance * 1000:.0f} mm**" + (" (niesiona)" if rs.carried else "")
-                if rs.goal_clamped:
-                    txt += " - cel przesuniety na obszar z treningu"
-            if self.runner.cube_provider == self._vision_cube:
-                txt += f", kostka: **{self.cube_tracker.source}**"
-            if self.runner.task.cube and self.twin.status.simulated and self._cube_in_scene():
-                pos, _ = self._sim_cube()
-                txt += f"  \nprawda symulacji: kostka **{100 * (pos[2] - self.runner.task.cube_half):.1f} cm** nad blatem"
-            if not rs.running and rs.stopped_because:
-                txt += f"  \nzatrzymana: {rs.stopped_because}"
-            self.pol_run_md.content = txt
-        j = self.eval_job
-        if j.running:
-            self.pol_eval_md.content = f"ewaluacja... {j.message}"
-        elif j.state == jobs.DONE and j.data.get("shown") is not j.result:
-            self._show_policy()
-            lines = []
-            for k, label in (("cpu_nominal", "bez randomizacji"), ("cpu_rand", "z randomizacja")):
-                e = (j.result or {}).get(k)
-                if e:
-                    lines.append(f"- CPU {label}: **{e['success']:.0%}** z {e['episodes']} epizodow")
-            self.pol_eval_md.content = "\n".join(lines)
-            j.data["shown"] = j.result
-        elif j.state == jobs.FAILED and j.data.get("shown") != "err":
-            self.pol_eval_md.content = f"**Blad**: {j.error}"
-            j.data["shown"] = "err"
+            return name in [self.twin.scene.model.body(b).name for b in range(self.twin.scene.model.nbody)]
 
     # =============================================================== sim-real
     def _build_simreal(self) -> None:
@@ -3480,8 +2959,7 @@ class TwinApp:
                 if h is not None and h.visible:
                     self._img(h, f"piramida/{name}/{id(h)}", thumb(img, 160))
         self._tick_calibration()
-        self._tick_training()
-        self._tick_policies()
+        self._tick_dynamics()
         self.strategies.tick()
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
@@ -3547,7 +3025,7 @@ class TwinApp:
         if self.stream is not None:
             print(f"Podglad kamer:  {self.stream.url}  (z sieci: http://<adres-maszyny>:{self.stream.port}/)",
                   flush=True)
-        t_slow = t_map = t_watch = t_list = 0.0
+        t_slow = t_map = t_watch = 0.0
         frames: dict[str, np.ndarray] = {}
         try:
             while not self._stop.is_set():
@@ -3555,26 +3033,19 @@ class TwinApp:
                 self._guard("scena", self._sync_mirror)
                 self._record_joints(t0)
                 self._guard("ramie", self._tick_arm)
-                vision_policy = self._vision_policy_running()
                 if t0 - t_slow > 0.2:
                     t_slow = t0
-                    # Kadry osobno od reszty odswiezania: blad w zakladce Trening nie moze
+                    # Kadry osobno od reszty odswiezania: blad w jednej zakladce nie moze
                     # zostawic mapy z kadrami sprzed minuty (wczesniej `... or frames`).
                     frames = self._guard("kadry", self._fresh_frames, 0.1) or {}
                     self._guard("odswiezanie", self._tick_slow, frames)
-                if t0 - t_map > (0.12 if vision_policy else 0.33):
+                if t0 - t_map > 0.33:
                     t_map = t0
-                    if vision_policy:                          # polityka z kamer: kadry swieze na te mape
-                        frames = self._guard("kadry", self._fresh_frames, 0.05) or {}
                     self._guard("mapa", self._tick_map, frames)
                     self._guard("sim-real", self._tick_simreal, frames)
                 if t0 - t_watch > 2.0:
                     t_watch = t0
                     self._guard("straznik kamer", self._tick_watch, frames)
-                if t0 - t_list > 5.0:
-                    t_list = t0
-                    if self.train.exit_code is not None and self.train.run_dir is not None:
-                        self._guard("lista polityk", self._refresh_policies)
                 if self._dirty_save and t0 - self._dirty_save > 1.0:
                     self._dirty_save = 0.0
                     self._guard("zapis", self._save)
@@ -3588,30 +3059,19 @@ class TwinApp:
             self.close()
 
     def close(self) -> None:
-        """Najpierw ramie (polityka, zadania, rozlaczenie), dopiero potem trening i serwer.
-
-        Wczesniej `train.shutdown` (do 8 s na zapis polityki + 5 s na zabicie) szlo
-        PRZED rozlaczeniem ramienia, a drugie Ctrl+C w tym czasie pomijalo
-        `twin.close()` - proces konczyl sie bez czystego rozlaczenia serw.
-        """
+        """Najpierw ramie (strategia, zadania, rozlaczenie), dopiero potem serwer."""
         self._stop.set()
         try:
-            if self.runner is not None:
-                self.runner.stop("zamkniecie panelu")
             self.strategies.stop("zamkniecie panelu")
-            for job in (self.calib_job, self.sysid_job, self.intr_job, self.eval_job):
+            for job in (self.calib_job, self.sysid_job, self.intr_job):
                 job.stop()
         finally:
             try:
                 self.twin.close()
             finally:
-                try:
-                    # Trening w osobnym procesie bez konsoli - bez tego zostawal po zamknieciu panelu.
-                    self._guard("trening", self.train.shutdown)
-                finally:
-                    if self.stream is not None:
-                        self._guard("podglad kamer", self.stream.stop)
-                    self.server.stop()
+                if self.stream is not None:
+                    self._guard("podglad kamer", self.stream.stop)
+                self.server.stop()
 
 
 def main(argv: list[str] | None = None) -> int:

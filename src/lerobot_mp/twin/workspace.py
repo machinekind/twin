@@ -33,7 +33,7 @@ import numpy as np
 
 from ..paths import data_path
 from .calib.card import Card
-from .robots import RobotSpec, get_spec
+from .robots import RobotSpec, default_robot, get_spec
 from .scene import CameraView, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
@@ -170,9 +170,11 @@ class CameraRecord:
 
 @dataclass
 class Workspace:
-    robot: str = "so101"
-    #: "sim" - blizniak bez sprzetu, "feetech" - serwa wprost, "lerobot" - przez LeRobota,
-    #: "a1x" - Galaxea A1X po CAN.
+    #: Ramie z zainstalowanego pakietu (`robots.robot_folders`); nowe stanowisko bierze
+    #: pierwsze zarejestrowane (`robots.default_robot`).
+    robot: str = field(default_factory=default_robot)
+    #: "sim" - blizniak bez sprzetu, inaczej wtyczka backendu z pakietu ramienia
+    #: (np. "a1x" - Galaxea A1X po CAN).
     backend: str = "sim"
     #: Poza domowa tego stanowiska [jednostki aplikacji] ("Ustaw dom = tu" w panelu);
     #: None = poza domowa z opisu ramienia (`RobotSpec.home`).
@@ -181,8 +183,8 @@ class Workspace:
     table: dict[str, Any] = field(default_factory=lambda: asdict(Table()))
     card: dict[str, Any] = field(default_factory=lambda: asdict(Card()))
     cameras: list[CameraRecord] = field(default_factory=list)
-    #: Dynamika serw zidentyfikowana na tym ramieniu (`rl.randomize.Dynamics`);
-    #: pusta = model Menagerie. Srodek randomizacji w treningu.
+    #: Dynamika serw zidentyfikowana na tym ramieniu (`dynamics.Dynamics`);
+    #: pusta = model Menagerie. `export` daje ja treningowi w `station.json`.
     dynamics: dict[str, Any] = field(default_factory=dict)
     #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
     #: None = nie wybrano, `load` wgrywa najnowszy.

@@ -1,5 +1,5 @@
 {
-  "robot": "so101",
+  "robot": "testbot",
   "backend": "sim",
   "port": null,
   "table": {

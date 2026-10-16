@@ -14,6 +14,8 @@ import pytest
 
 pytest.importorskip("mujoco")
 
+from conftest import BOT  # noqa: E402
+
 from lerobot_mp.robot import backend_context  # noqa: E402
 from lerobot_mp.robot.base import RobotBackend, RobotInfo  # noqa: E402
 from lerobot_mp.twin import runtime as rt  # noqa: E402
@@ -22,7 +24,7 @@ from lerobot_mp.twin.robots import get_spec  # noqa: E402
 from lerobot_mp.twin.runtime import Twin  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
 
-SO101 = get_spec("so101")
+SPEC = get_spec(BOT)
 
 DT = 0.02
 
@@ -46,7 +48,7 @@ class FakeArm(RobotBackend):
     def __init__(self, start: dict[str, float] | None = None, vmax: float | None = None,
                  delay: float = 0.0, amax: float | None = None, vmax_of: dict[str, float] | None = None):
         self.info = RobotInfo(name="udawane", simulated=False)
-        self.pos = dict(SO101.home, **(start or {}))
+        self.pos = dict(SPEC.home, **(start or {}))
         self.goal = dict(self.pos)
         self.vmax = vmax
         self.vmax_of = dict(vmax_of or {})
@@ -189,7 +191,7 @@ class FakeArm(RobotBackend):
 def twin():
     # Petla bez watku na zegarze wirtualnym: `step(dt)` go przesuwa (`connect(threaded=False)` bez
     # `clock` tez by go zalozyl - tu jawnie).
-    tw = Twin(Workspace(), clock=VirtualClock(t0=0.0))
+    tw = Twin(Workspace(robot=BOT), clock=VirtualClock(t0=0.0))
     try:
         yield tw
     finally:
@@ -249,29 +251,29 @@ def test_home_preempts_the_owner_and_the_arm_does_not_snap_back(twin, monkeypatc
     called = []
     twin.claim("polityka", preempt=lambda: called.append(True))
     twin.set_engaged(True)
-    twin.set_target({"shoulder_pan": 60.0}, owner="polityka")
+    twin.set_target({"j1": 60.0}, owner="polityka")
     run(twin, 1.0)
-    assert arm.pos["shoulder_pan"] > 55
+    assert arm.pos["j1"] > 55
     twin.home()
     assert called == [True] and twin.owner is None
     with pytest.raises(RuntimeError, match="odebrane"):
-        twin.set_target({"shoulder_pan": 60.0}, owner="polityka")   # spozniony takt starej polityki
-    twin.set_target({"shoulder_pan": 60.0})                          # albo ktos bez wlasnosci
+        twin.set_target({"j1": 60.0}, owner="polityka")   # spozniony takt starej polityki
+    twin.set_target({"j1": 60.0})                          # albo ktos bez wlasnosci
     run(twin, 3.5)
     tail = []
     for _ in range(50):
         twin.step(DT)
-        tail.append(arm.pos["shoulder_pan"])
-    assert max(abs(v - SO101.home["shoulder_pan"]) for v in tail) < 0.5
+        tail.append(arm.pos["j1"])
+    assert max(abs(v - SPEC.home["j1"]) for v in tail) < 0.5
 
 
 def test_move_belongs_to_the_calibration_and_refuses_a_foreign_owner():
     """Fala (`move`) i polityka nie moga pisac celu na zmiane: fala bierze ramie, polityka
     wtedy nie rusza, a fala nie ruszy, gdy ramie ma polityka."""
-    tw = Twin(Workspace())
+    tw = Twin(Workspace(robot=BOT))
     try:
         tw.connect("sim")
-        tw.move({"shoulder_pan": 5.0}, duration=0.2, settle=0.05)
+        tw.move({"j1": 5.0}, duration=0.2, settle=0.05)
         assert tw.owner == "kalibracja"
         with pytest.raises(RuntimeError, match="ramie zajete: kalibracja"):
             tw.claim("polityka")
@@ -279,11 +281,11 @@ def test_move_belongs_to_the_calibration_and_refuses_a_foreign_owner():
         assert tw.owner is None
         tw.claim("polityka")
         with pytest.raises(RuntimeError, match="ramie zajete: polityka"):
-            tw.move({"shoulder_pan": 10.0}, duration=0.2)
+            tw.move({"j1": 10.0}, duration=0.2)
         tw.release("polityka")
         # Fala, ktorej ramie odebrano miedzy przejazdami, nie bierze wolnego ramienia na nowo.
         with pytest.raises(RuntimeError, match="ramie odebrane"):
-            tw.move({"shoulder_pan": 10.0}, duration=0.2, take=False)
+            tw.move({"j1": 10.0}, duration=0.2, take=False)
         assert tw.owner is None
     finally:
         tw.close()
@@ -292,43 +294,43 @@ def test_move_belongs_to_the_calibration_and_refuses_a_foreign_owner():
 def test_estop_holds_the_measured_pose_not_the_last_command(twin, monkeypatch):
     arm = FakeArm()
     connect_fake(twin, monkeypatch, arm)
-    arm.blocked["elbow_flex"] = 30.0
+    arm.blocked["j2"] = 30.0
     twin.set_engaged(True)
-    twin.set_target({"elbow_flex": 70.0})
+    twin.set_target({"j2": 55.0})
     run(twin, 1.0)
     twin.estop()
     run(twin, 0.3)
     assert twin.safety_state.value == "ESTOP"
-    assert arm.sent[-1]["elbow_flex"] == pytest.approx(30.0, abs=0.5)
+    assert arm.sent[-1]["j2"] == pytest.approx(30.0, abs=0.5)
 
 
 def test_connect_without_moving_sends_nothing_to_a_joint_outside_the_limits(twin, monkeypatch):
-    """Ramie nr 2 spoczywa z shoulder_lift -101 st. przy limicie -95: polaczenie bez ruchu nie moze
+    """Ramie spoczywa z j2 -66 st. przy limicie -60: polaczenie bez ruchu nie moze
     skoczyc do limitu, a pierwszy ruch wraca w zakres powoli - takze przez backend, ktory
-    przycina rozkaz do limitow konfiguracji (jak `FeetechArm.send_joints`)."""
-    arm = FakeArm({"shoulder_lift": -101.0})
+    przycina rozkaz do limitow konfiguracji."""
+    arm = FakeArm({"j2": -66.0})
     arm.clamp_to_limits = True
     connect_fake(twin, monkeypatch, arm)
     run(twin, 1.0)
     assert arm.sent == []
     twin.set_engaged(True)
-    twin.set_target({"shoulder_pan": 5.0})
+    twin.set_target({"j1": 5.0})
     twin.step(DT)
-    assert arm.sent[0]["shoulder_lift"] == pytest.approx(-101.0, abs=0.5)
+    assert arm.sent[0]["j2"] == pytest.approx(-66.0, abs=0.5)
     run(twin, 0.2)
-    steps = np.diff([s["shoulder_lift"] for s in arm.sent])
+    steps = np.diff([s["j2"] for s in arm.sent])
     assert np.abs(steps).max() <= 15.0 * DT * 1.5 + 1e-6
     run(twin, 1.0)
-    assert arm.sent[-1]["shoulder_lift"] >= -95.0 - 1e-6
+    assert arm.sent[-1]["j2"] >= -60.0 - 1e-6
     # Poszerzenie limitow backendu bylo chwilowe - staw w zakresie, limity znow z konfiguracji.
-    assert arm.backend_limits["shoulder_lift"][0] == pytest.approx(-95.0)
-    assert twin.joint_limits()["shoulder_lift"][0] == pytest.approx(-95.0)
+    assert arm.backend_limits["j2"][0] == pytest.approx(-60.0)
+    assert twin.joint_limits()["j2"][0] == pytest.approx(-60.0)
 
 
 def test_a_backend_no_plugin_provides_refuses_instead_of_simulating(twin):
     """A request that reaches `create_backend` wants hardware: a backend plugin or an error naming the
     installed ones, never a simulation."""
-    with pytest.raises(ValueError, match="nieznany_backend.*feetech"):
+    with pytest.raises(ValueError, match=f"nieznany_backend.*{BOT}"):
         twin.connect("nieznany_backend", port="", threaded=False)
     assert not twin.connected
     assert "nieznany_backend" in twin.status.error
@@ -366,7 +368,7 @@ def test_servo_fault_triggers_estop_and_preempts_the_owner(twin, monkeypatch):
     twin.claim("identyfikacja", preempt=lambda: called.append(True))
     twin.set_engaged(True)
     run(twin, 0.2)
-    arm.fault_list = ["shoulder_lift: przeciazenie"]
+    arm.fault_list = ["j2: przeciazenie"]
     twin.step(DT)
     assert twin.safety_state.value == "ESTOP"
     assert "przeciazenie" in twin.status.error
@@ -381,7 +383,7 @@ def test_link_loss_stops_sending(twin, monkeypatch):
     arm = FakeArm()
     connect_fake(twin, monkeypatch, arm)
     twin.set_engaged(True)
-    twin.set_target({"shoulder_pan": 20.0})
+    twin.set_target({"j1": 20.0})
     run(twin, 0.2)
     n = len(arm.sent)
     arm.fault_list = ["brak odpowiedzi serw od 300 ms"]
@@ -395,24 +397,24 @@ def test_a_long_loop_gap_is_not_turned_into_a_command_jump(twin, monkeypatch):
     connect_fake(twin, monkeypatch, arm)
     twin.claim("polityka")
     twin.set_engaged(True)
-    twin.set_target({"shoulder_pan": 80.0}, owner="polityka")
+    twin.set_target({"j1": 80.0}, owner="polityka")
     run(twin, 0.1)
-    before = arm.sent[-1]["shoulder_pan"]
+    before = arm.sent[-1]["j1"]
     twin.step(0.9)                                         # 0,9 s bez taktu
-    after = arm.sent[-1]["shoulder_pan"]
-    assert after - before <= 140.0 * 1.5 * DT + 1e-6
+    after = arm.sent[-1]["j1"]
+    assert after - before <= SPEC.max_vel["j1"] * 1.5 * DT + 1e-6
     assert twin.owner is None and "przerwa" in twin.status.error
 
 
 def test_backend_limits_narrow_the_config_limits(twin, monkeypatch):
     arm = FakeArm()
-    arm.limits = {"wrist_flex": (-200.0, 88.0)}
+    arm.limits = {"j2": (-200.0, 50.0)}
     connect_fake(twin, monkeypatch, arm)
-    assert twin.joint_limits()["wrist_flex"] == (-95.0, 88.0)
+    assert twin.joint_limits()["j2"] == (-60.0, 50.0)
     twin.set_engaged(True)
-    twin.set_target({"wrist_flex": 95.0})
+    twin.set_target({"j2": 60.0})
     run(twin, 2.0)
-    assert arm.sent[-1]["wrist_flex"] == pytest.approx(88.0)
+    assert arm.sent[-1]["j2"] == pytest.approx(50.0)
 
 
 def test_loop_death_preempts_the_owner(twin, monkeypatch):
@@ -446,18 +448,18 @@ def test_a_short_link_stall_does_not_send_a_jump_when_the_link_returns(twin, mon
     connect_fake(twin, monkeypatch, arm)
     twin.claim("kalibracja")
     twin.set_engaged(True)
-    twin.set_target({"shoulder_pan": 80.0}, owner="kalibracja")
+    twin.set_target({"j1": 80.0}, owner="kalibracja")
     run(twin, 0.1)
-    n, last = len(arm.sent), arm.sent[-1]["shoulder_pan"]
+    n, last = len(arm.sent), arm.sent[-1]["j1"]
     t_meas = twin.status.measured_t
     stall(twin, arm, 3)
     assert len(arm.sent) == n                              # nic nie poszlo w trakcie
     # Panel i identyfikacja widza to, co naprawde poszlo, i ze pomiaru nie bylo.
-    assert twin.status.command["shoulder_pan"] == pytest.approx(last)
+    assert twin.status.command["j1"] == pytest.approx(last)
     assert twin.status.measured_t == t_meas
     run(twin, 0.5)
-    goals = [last] + [s["shoulder_pan"] for s in arm.sent[n:]]
-    assert np.abs(np.diff(goals)).max() <= 140.0 * 1.5 * DT + 1e-6
+    goals = [last] + [s["j1"] for s in arm.sent[n:]]
+    assert np.abs(np.diff(goals)).max() <= SPEC.max_vel["j1"] * 1.5 * DT + 1e-6
     assert goals[-1] > last + 20                           # ruch jedzie dalej
     assert twin.safety_state.value == "ACTIVE" and twin.owner == "kalibracja"
 
@@ -489,7 +491,7 @@ def test_gripper_overload_eases_the_squeeze_instead_of_estop(twin, monkeypatch):
     """Przeciazenie TYLKO chwytaka przy mocnym chwycie: bez STOP-u, szczeki luzniej, ostrzezenie."""
     arm = FakeArm()
     squeeze(twin, monkeypatch, arm)
-    arm.fault_list = ["gripper (serwo 6): przeciazenie"]
+    arm.fault_list = ["gripper (serwo 3): przeciazenie"]
     run(twin, 1.0)
     assert twin.safety_state.value == "ACTIVE" and twin.owner == "polityka"
     assert not twin.status.error
@@ -497,9 +499,9 @@ def test_gripper_overload_eases_the_squeeze_instead_of_estop(twin, monkeypatch):
     assert arm.sent[-1]["gripper"] == pytest.approx(ease)  # wlasciciel dalej chce 5
     assert 30.0 - arm.sent[-1]["gripper"] > Twin.grip_squeeze_margin   # chwyt zostaje
     assert any("chwytak" in w and "przeciazenie" in w for w in twin.status.warnings)
-    twin.set_target({"shoulder_pan": 10.0}, owner="polityka")   # reszta ramienia jedzie dalej
+    twin.set_target({"j1": 10.0}, owner="polityka")   # reszta ramienia jedzie dalej
     run(twin, 0.5)
-    assert arm.sent[-1]["shoulder_pan"] == pytest.approx(10.0)
+    assert arm.sent[-1]["j1"] == pytest.approx(10.0)
     # Blad trwa mimo odciazenia - STOP, a chwytak staje na zmierzonym rozwarciu: to docisk
     # podtrzymywal przeciazenie (patrz test_gripper_fault_stop_releases_the_squeeze_...).
     run(twin, 1.0)
@@ -511,9 +513,9 @@ def test_gripper_overload_eases_the_squeeze_instead_of_estop(twin, monkeypatch):
 def test_arm_fault_with_a_gripper_fault_stops_at_once(twin, monkeypatch):
     arm = FakeArm()
     squeeze(twin, monkeypatch, arm)
-    arm.fault_list = ["gripper (serwo 6): przeciazenie", "elbow_flex (serwo 3): przegrzanie"]
+    arm.fault_list = ["gripper (serwo 3): przeciazenie", "j2 (serwo 2): przegrzanie"]
     twin.step(DT)
-    assert twin.safety_state.value == "ESTOP" and "elbow_flex" in twin.status.error
+    assert twin.safety_state.value == "ESTOP" and "j2" in twin.status.error
     run(twin, 0.3)
     assert arm.sent[-1]["gripper"] == pytest.approx(30.0 - Twin.grip_ease)
 
@@ -522,12 +524,12 @@ def test_arm_fault_with_a_gripper_fault_stops_at_once(twin, monkeypatch):
 def test_connect_ignores_a_single_corrupt_read(twin, monkeypatch):
     """Jedna przeklamana ramka (0 tikow = -180 st.) tuz po polaczeniu nie zostaje poza startowa."""
     arm = FakeArm()
-    arm.glitch = [{"shoulder_pan": -180.0}]
+    arm.glitch = [{"j1": -180.0}]
     connect_fake(twin, monkeypatch, arm)
-    assert twin.status.command["shoulder_pan"] == pytest.approx(SO101.home["shoulder_pan"])
+    assert twin.status.command["j1"] == pytest.approx(SPEC.home["j1"])
     twin.set_engaged(True)
     run(twin, 0.2)
-    assert all(abs(s["shoulder_pan"] - SO101.home["shoulder_pan"]) < 1.0 for s in arm.sent)
+    assert all(abs(s["j1"] - SPEC.home["j1"]) < 1.0 for s in arm.sent)
 
 
 def test_set_engaged_with_an_owner_only_touches_its_own_clutch(twin, monkeypatch):
@@ -545,8 +547,8 @@ def pan_trace(twin, arm, seconds):
     pos = []
     for _ in range(int(round(seconds / DT))):
         twin.step(DT)
-        pos.append(arm.pos["shoulder_pan"])
-    return pos, [s["shoulder_pan"] for s in arm.sent[n:]]
+        pos.append(arm.pos["j1"])
+    return pos, [s["j1"] for s in arm.sent[n:]]
 
 
 def test_a_late_reply_after_a_stall_does_not_become_the_reseed_pose(twin, monkeypatch):
@@ -560,7 +562,7 @@ def test_a_late_reply_after_a_stall_does_not_become_the_reseed_pose(twin, monkey
     connect_fake(twin, monkeypatch, arm)
     twin.claim("panel")
     twin.set_engaged(True, owner="panel")
-    twin.set_target({"shoulder_pan": 90.0}, owner="panel")
+    twin.set_target({"j1": 90.0}, owner="panel")
     run(twin, 0.2)
     late = dict(arm.pos)                                   # poza, o ktora pytal odczyt sprzed przestoju
     run(twin, 0.12)
@@ -569,8 +571,8 @@ def test_a_late_reply_after_a_stall_does_not_become_the_reseed_pose(twin, monkey
         if k == 6:
             twin.estop()
         twin.step(DT)
-    at_release = arm.pos["shoulder_pan"]
-    assert at_release - late["shoulder_pan"] > 10           # serwo dojechalo do ostatniego rozkazu
+    at_release = arm.pos["j1"]
+    assert at_release - late["j1"] > 10           # serwo dojechalo do ostatniego rozkazu
     pos, sent = pan_trace(twin, arm, 0.6)
     assert sent, "po powrocie lacza nic nie poszlo"
     assert min(sent) >= at_release - 1.0
@@ -587,7 +589,7 @@ def test_reads_that_never_agree_after_a_stall_stop_the_arm(twin, monkeypatch):
     run(twin, 0.1)
     n = len(arm.sent)
     arm.silent = 2
-    arm.glitch = [{"shoulder_pan": v} for v in (10.0, -10.0) * 30]
+    arm.glitch = [{"j1": v} for v in (10.0, -10.0) * 30]
     run(twin, 1.5)
     assert len(arm.sent) == n
     assert twin.safety_state.value == "ESTOP" and "nie zgadzaja" in twin.status.error
@@ -623,51 +625,50 @@ def test_tracking_guard_still_stops_a_blocked_joint_with_stale_reads(twin, monke
     connect_fake(twin, monkeypatch, arm)
     twin.claim("panel")
     twin.set_engaged(True, owner="panel")
-    arm.blocked["shoulder_pan"] = arm.pos["shoulder_pan"]   # bez momentu od poczatku
-    twin.set_target({"shoulder_pan": 100.0}, owner="panel")
+    arm.blocked["j1"] = arm.pos["j1"]   # bez momentu od poczatku
+    twin.set_target({"j1": 80.0}, owner="panel")
     t = 0.0
     while twin.safety_state.value != "ESTOP" and t < 3.0:
         twin.step(DT)
         t += DT
-    assert twin.safety_state.value == "ESTOP" and "shoulder_pan" in twin.status.error
+    assert twin.safety_state.value == "ESTOP" and "j1" in twin.status.error
     assert t <= 1.0
     run(twin, 0.3)
-    assert arm.sent[-1]["shoulder_pan"] == pytest.approx(arm.blocked["shoulder_pan"], abs=1.0)
+    assert arm.sent[-1]["j1"] == pytest.approx(arm.blocked["j1"], abs=1.0)
 
 
 # ------------------------------------------------------------ runda 3: trzymanie pozy przy STOP/Dom
 def test_stop_at_speed_does_not_snap_back_after_the_stopping_distance(twin, monkeypatch):
-    """STOP w pelnym biegu wrist_roll (220 st./s): serwo hamuje najwyzej ~2230 st./s^2, czyli
-    ~11 st. - trzymanie punktu przed ta droga hamowania cofalo je o 6-14 st. (emulator)."""
+    """STOP w pelnym biegu j1 (90 st./s): serwo hamuje najwyzej ~2230 st./s^2, czyli ~1,8 st.
+    - trzymanie punktu przed ta droga hamowania cofalo je o tyle (przy 220 st./s o 6-14 st.)."""
     arm = FakeArm(vmax=250.0, amax=2232.0)
     connect_fake(twin, monkeypatch, arm)
     twin.set_engaged(True)
-    twin.set_target({"wrist_roll": -140.0})
+    twin.set_target({"j1": -80.0})
     run(twin, 2.0)
-    twin.set_target({"wrist_roll": 140.0})
+    twin.set_target({"j1": 80.0})
     run(twin, 0.52)
     twin.estop()
     trace = []
     for _ in range(40):
         twin.step(DT)
-        trace.append(arm.pos["wrist_roll"])
-    # Zostaje tylko przeregulowanie wlasnego celu przez serwo (P hamuje od v/kp = 8,8 st., a droga
-    # hamowania to 10,8 st.) - ~2,6 st., tyle samo na koncu kazdego szybkiego ruchu suwakiem.
-    assert max(trace) - trace[-1] < 3.0
-    assert trace[-1] <= twin.status.command["wrist_roll"] + 0.5
+        trace.append(arm.pos["j1"])
+    # P hamuje od v/kp = 3,6 st., dalej niz droga hamowania (1,8 st.): serwo nie przeregulowuje celu.
+    assert max(trace) - trace[-1] < 0.5
+    assert trace[-1] <= twin.status.command["j1"] + 0.5
 
 
 def test_move_raises_when_the_arm_stops_short_of_the_command(monkeypatch):
     """Staw oparty 15 st. przed celem (ponizej progu straznika 25 st.) - `move` nie konczy sie
     "normalnie", tylko mowi, ktory staw nie dojechal."""
     arm = FakeArm()
-    arm.wall["shoulder_pan"] = (-1e9, 65.0)
+    arm.wall["j1"] = (-1e9, 65.0)
     monkeypatch.setattr(rt, "create_backend", lambda cfg, spec: arm)
-    tw = Twin(Workspace(), clock=VirtualClock())
+    tw = Twin(Workspace(robot=BOT), clock=VirtualClock())
     try:
         tw.connect("feetech", port="COM_TEST", threaded=False)
-        with pytest.raises(RuntimeError, match="shoulder_pan"):
-            move_stepped(tw, {"shoulder_pan": 80.0}, duration=0.5, settle=0.2)
+        with pytest.raises(RuntimeError, match="j1"):
+            move_stepped(tw, {"j1": 80.0}, duration=0.5, settle=0.2)
     finally:
         tw.close()
     assert_on_time(tw)
@@ -687,7 +688,7 @@ def test_claim_and_clutch_are_refused_under_estop(twin, monkeypatch):
     assert not twin.set_engaged(True)
     assert not twin._engaged
     with pytest.raises(RuntimeError, match="aktywny STOP"):
-        twin.move({"shoulder_pan": 20.0}, duration=0.2)
+        twin.move({"j1": 20.0}, duration=0.2)
     assert twin.owner is None and not twin._engaged
     twin.clear_estop()
     twin.claim("polityka")
@@ -696,7 +697,7 @@ def test_claim_and_clutch_are_refused_under_estop(twin, monkeypatch):
 
 def test_claim_after_a_preempt_since_the_mark_is_refused_and_home_keeps_ramping(twin, monkeypatch):
     """Dom wcisniety w trakcie startu polityki: jej `claim` przerywal rampe do domu (verify2, s15c)."""
-    arm = FakeArm({"shoulder_pan": 50.0})
+    arm = FakeArm({"j1": 50.0})
     connect_fake(twin, monkeypatch, arm)
     mark = twin.preempt_gen
     twin.home()
@@ -706,7 +707,7 @@ def test_claim_after_a_preempt_since_the_mark_is_refused_and_home_keeps_ramping(
         twin.claim("polityka", guard=lambda: False)
     assert twin.owner is None
     run(twin, 3.5)
-    assert arm.pos["shoulder_pan"] == pytest.approx(SO101.home["shoulder_pan"], abs=0.5)
+    assert arm.pos["j1"] == pytest.approx(SPEC.home["j1"], abs=0.5)
     twin.claim("polityka", gen=twin.preempt_gen, guard=lambda: True)
     assert twin.owner == "polityka"
 
@@ -729,7 +730,7 @@ def test_reconnect_keeps_a_squeezing_gripper_closed_when_the_backend_knows_the_g
     n = len(arm.sent)
     twin.claim("panel")
     twin.set_engaged(True, owner="panel")
-    twin.set_target({"shoulder_pan": 5.0}, owner="panel")
+    twin.set_target({"j1": 5.0}, owner="panel")
     run(twin, 1.0)
     assert arm.sent[n:] and max(s["gripper"] for s in arm.sent[n:]) == pytest.approx(5.0)
 
@@ -794,7 +795,7 @@ def test_a_target_equal_to_the_gripper_guess_does_not_make_the_position_known(tw
 # ------------------------------------------------------ Ustaw dom = tu: chwytak zamkniety
 @pytest.fixture
 def home_twin(tmp_path):
-    tw = Twin(Workspace(path=tmp_path / "twin.json"))
+    tw = Twin(Workspace(robot=BOT, path=tmp_path / "twin.json"))
     try:
         yield tw
     finally:
@@ -862,16 +863,16 @@ def test_set_home_here_with_a_measured_gripper_only_records_it_closed(home_twin,
 
 
 def test_move_waits_for_a_speed_capped_command_instead_of_failing_arrival():
-    """Suwak Predkosc 20 st./s ogranicza rozkaz nadzoru; obrot nadgarstka o 60 st. potrzebuje 3 s,
+    """Suwak Predkosc 20 st./s ogranicza rozkaz nadzoru; obrot j1 o 60 st. potrzebuje 3 s,
     a staly termin 0,5 + 0,4 + 1,5 s konczyl przejazd bledem "rozkaz jeszcze jedzie" - fala
     z 21 i 11 obserwacjami przepadla na jednym takim przejezdzie."""
-    tw = Twin(Workspace(), clock=VirtualClock())
+    tw = Twin(Workspace(robot=BOT), clock=VirtualClock())
     try:
         tw.connect("sim", threaded=False)
         tw.set_speed(20.0)
-        roll = tw.joints()["wrist_roll"]
-        move_stepped(tw, {"wrist_roll": roll + 60.0}, duration=0.5, settle=0.2)
-        assert abs(tw.status.command["wrist_roll"] - (roll + 60.0)) < 1.0
+        pan = tw.joints()["j1"]
+        move_stepped(tw, {"j1": pan + 60.0}, duration=0.5, settle=0.2)
+        assert abs(tw.status.command["j1"] - (pan + 60.0)) < 1.0
         tw.home()
     finally:
         tw.close()
@@ -883,53 +884,53 @@ def test_a_partial_target_of_the_same_owner_merges_over_its_pending_target(twin,
     tego samego wlasciciela jedzie dalej (nie staje na ostatnim wyslanym rozkazie)."""
     arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
     connect_fake(twin, monkeypatch, arm)
-    pan = twin.status.command["shoulder_pan"]
+    pan = twin.status.command["j1"]
     twin.claim("specs")
     twin.set_engaged(True, owner="specs")
     twin.set_target({"gripper": 0.0}, owner="specs")
     twin.step(DT)
     assert 0.0 < twin.status.command["gripper"] < 100.0
     for i in range(1, 60):
-        twin.set_target({"shoulder_pan": pan + 0.1 * i}, owner="specs")
+        twin.set_target({"j1": pan + 0.1 * i}, owner="specs")
         twin.step(DT)
     assert twin._target["gripper"] == 0.0
     assert twin.status.command["gripper"] == pytest.approx(0.0)
-    assert twin.status.command["shoulder_pan"] == pytest.approx(pan + 5.9, abs=0.2)
+    assert twin.status.command["j1"] == pytest.approx(pan + 5.9, abs=0.2)
 
 
 def test_a_partial_target_does_not_merge_over_another_owners_target(twin, monkeypatch):
     arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
     connect_fake(twin, monkeypatch, arm)
-    pan = twin.status.command["shoulder_pan"]
+    pan = twin.status.command["j1"]
     twin.claim("specs")
     twin.set_engaged(True, owner="specs")
     twin.set_target({"gripper": 0.0}, owner="specs")
     twin.step(DT)
     twin.release("specs")
     twin.claim("panel")
-    twin.set_target({"shoulder_pan": pan + 2.0}, owner="panel")
+    twin.set_target({"j1": pan + 2.0}, owner="panel")
     g = twin.status.command["gripper"]
     assert 0.0 < g < 100.0 and twin._target["gripper"] == pytest.approx(g)     # from the ramp start
     # Without an owner: never merged either.
     twin.set_target({"gripper": 0.0}, owner="panel")
-    twin.set_target({"shoulder_pan": pan + 3.0})
+    twin.set_target({"j1": pan + 3.0})
     assert twin._target["gripper"] == pytest.approx(twin.status.command["gripper"])
 
 
 def test_hold_command_stops_the_arm_where_its_command_is_and_keeps_the_gripper_goal(twin, monkeypatch):
     arm = FakeArm(start={"gripper": 100.0}, vmax=300.0)
     connect_fake(twin, monkeypatch, arm)
-    pan = twin.status.command["shoulder_pan"]
+    pan = twin.status.command["j1"]
     twin.claim("specs")
     twin.set_engaged(True, owner="specs")
-    twin.set_target({"shoulder_pan": pan + 30.0, "gripper": 0.0}, owner="specs")
+    twin.set_target({"j1": pan + 30.0, "gripper": 0.0}, owner="specs")
     run(twin, 0.1)
     held = twin.hold_command(owner="specs")
     assert held is not None and held["gripper"] == 0.0
-    at = twin.status.command["shoulder_pan"]
-    assert pan < at < pan + 30.0 and held["shoulder_pan"] == pytest.approx(at)
+    at = twin.status.command["j1"]
+    assert pan < at < pan + 30.0 and held["j1"] == pytest.approx(at)
     run(twin, 1.0)
-    assert twin.status.command["shoulder_pan"] == pytest.approx(at)
+    assert twin.status.command["j1"] == pytest.approx(at)
     assert twin.status.command["gripper"] == pytest.approx(0.0)
     with pytest.raises(RuntimeError):
         twin.hold_command(owner="panel")

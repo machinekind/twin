@@ -8,8 +8,9 @@ lives in the `lerobot-mp-api` package, `lerobot_mp_api.backend`: a backend from 
 package registers a factory under the `lerobot_mp.backends` entry point group; the twin calls it
 with a `BackendContext`, plain data with everything the backend may use.
 
-This module re-exports the same classes, so `lerobot_mp.robot.base.RobotBackend is
-lerobot_mp_api.RobotBackend` and the backends that still live here keep their imports.
+Backends come from installed packages. This module re-exports the same classes, so
+`lerobot_mp.robot.base.RobotBackend is lerobot_mp_api.RobotBackend` and the A1X backend in
+`a1x/` imports them from here.
 """
 
 from lerobot_mp_api.backend import BackendContext, BackendPlugin, RobotBackend, RobotInfo

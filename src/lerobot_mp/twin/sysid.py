@@ -59,9 +59,9 @@ from typing import Any
 import mujoco
 import numpy as np
 
-from .. import scene as sc
-from ..robots import RobotSpec
-from .randomize import UNFITTED_RANGES, Dynamics
+from . import scene as sc
+from .dynamics import UNFITTED_RANGES, Dynamics
+from .robots import RobotSpec
 
 #: Nazwa wlasciciela ramienia (`Twin.claim`) na czas nagrania.
 OWNER = "identyfikacja"
@@ -767,8 +767,8 @@ def identify(rec: Recording, spec: RobotSpec, control_hz: float = 20.0, on_progr
                   + (f"; z modelu (niewyznaczalne z tego ruchu): {', '.join(fixed)}"
                      + (f", w treningu szeroko ({ranges})" if ranges else "") if fixed else "")).strip()
     dyn.fit_deg = best_c
-    # Pasmo w dynamice (opoznienie w taktach, jak `dyn.delay`) - z niego `Randomization.around`
-    # rozszerza zakresy treningu, a `assess` ocenia, czy wynik w ogole zapisywac.
+    # Pasmo w dynamice (opoznienie w taktach, jak `dyn.delay`) - z niego trening (soarm-lab)
+    # rozszerza swoje zakresy, a `assess` ocenia, czy wynik w ogole zapisywac.
     dyn.band = {n: float(band[n] * control_hz if n == "delay" else band[n]) for n in dyn.fitted}
     return FitResult(dyn, base, band, calls[0], profiles)
 

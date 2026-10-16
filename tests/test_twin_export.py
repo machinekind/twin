@@ -15,6 +15,8 @@ pytest.importorskip("mujoco")
 
 import mujoco  # noqa: E402
 
+from conftest import BOT  # noqa: E402
+
 from lerobot_mp.twin import scene as sc  # noqa: E402
 from lerobot_mp.twin.robots import resolve_asset  # noqa: E402
 from lerobot_mp.twin.workspace import Workspace  # noqa: E402
@@ -53,6 +55,7 @@ def test_exported_scene_matches_the_live_one(exported):
 def test_exported_scene_takes_task_objects(exported):
     """A training package adds its task's objects through MjSpec, without the twin's code."""
     _, folder = exported
+    station = mujoco.MjModel.from_xml_path(str(folder / "scene.xml"))
     spec = mujoco.MjSpec.from_file(str(folder / "scene.xml"))
     body = spec.worldbody.add_body()
     body.name = "cube"
@@ -62,14 +65,15 @@ def test_exported_scene_takes_task_objects(exported):
     geom.type = mujoco.mjtGeom.mjGEOM_BOX
     geom.size = [0.015, 0.015, 0.015]
     model = spec.compile()
-    assert model.body("cube").id > 0 and model.nmesh == 18
+    assert model.body("cube").id > 0 and model.nbody == station.nbody + 1
+    assert model.nmesh == station.nmesh and model.ncam == station.ncam
 
 
 def test_station_json_is_the_workspace(exported):
     ws, folder = exported
     data = json.loads((folder / "station.json").read_text(encoding="utf-8"))
     assert data == ws.to_dict()
-    assert data["robot"] == "so101" and "dynamics" in data and data["table"]["base_xy"] == [-0.35, 0.0]
+    assert data["robot"] == BOT and "dynamics" in data and data["table"]["base_xy"] == [-0.35, 0.0]
 
 
 def test_card_and_panels_do_not_export(tmp_path):

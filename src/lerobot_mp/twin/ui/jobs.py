@@ -1,23 +1,16 @@
-"""Zadania w tle dla panelu: trening, kalibracje, identyfikacja, ewaluacja.
+"""Zadania w tle dla panelu: kalibracje i identyfikacja dynamiki.
 
 Kazde zadanie ma stan (`state`), postep 0..1, komunikat i wynik - panel tylko
-je czyta w swojej petli, wiec zaden przycisk nie blokuje interfejsu. Trening
-idzie w OSOBNYM PROCESIE (`lerobot-twin train`): zajmuje GPU na kilkanascie
-minut, a padniecie sterownika CUDA nie moze zabrac ze soba panelu ani petli
-sterowania ramieniem.
+je czyta w swojej petli, wiec zaden przycisk nie blokuje interfejsu.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import subprocess
-import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -94,105 +87,6 @@ class Job:
             return True
         t.join(timeout)
         return not t.is_alive()
-
-
-class TrainingJob:
-    """`lerobot-twin train` w osobnym procesie; postep z `progress.json` przebiegu."""
-
-    def __init__(self, policies_dir: Path, workspace_path: Path | None):
-        self.policies_dir = Path(policies_dir).resolve()
-        self.workspace_path = workspace_path
-        self.proc: subprocess.Popen | None = None
-        self.run_dir: Path | None = None
-        self.log_path: Path | None = None
-        self._log = None
-        self.started = 0.0
-
-    @property
-    def running(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
-
-    def start(self, task: str, envs: int, iters: int, spread: float, randomize: bool, name: str,
-              init: str | None = None) -> Path:
-        if self.running:
-            raise RuntimeError("trening juz trwa")
-        self.run_dir = self.policies_dir / name
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        (self.run_dir / "STOP").unlink(missing_ok=True)
-        (self.run_dir / "progress.json").unlink(missing_ok=True)
-        cmd = [sys.executable, "-m", "lerobot_mp.twin.cli", "train", "--task", task, "--envs", str(envs),
-               "--iters", str(iters), "--spread", str(spread), "--name", name, "--out", str(self.policies_dir),
-               "--stop-file", str(self.run_dir / "STOP")]
-        if not randomize:
-            cmd.append("--no-rand")
-        if init:
-            cmd += ["--init", str(init)]
-        if self.workspace_path is not None:
-            cmd += ["--workspace", str(self.workspace_path)]
-        self.log_path = self.run_dir / "train.log"
-        if self._log is not None:
-            self._log.close()
-        self._log = open(self.log_path, "w", encoding="utf-8")
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
-        self.proc = subprocess.Popen(cmd, stdout=self._log, stderr=subprocess.STDOUT, creationflags=flags)
-        self.started = time.time()
-        return self.run_dir
-
-    def stop(self) -> None:
-        if self.run_dir is not None:
-            (self.run_dir / "STOP").touch()
-
-    def shutdown(self, timeout: float = 8.0) -> None:
-        """Konczy trening razem z panelem: STOP (zapis polityki), chwila na zapis, potem zabicie.
-
-        Proces bez konsoli (CREATE_NO_WINDOW) nie dostaje Ctrl+C z panelu - zostawal
-        po zamknieciu panelu, zajmowal GPU i pisal do katalogu polityki, a nowy
-        panel nie mial do niego uchwytu i pozwalal wlaczyc drugi trening obok.
-        """
-        proc = self.proc
-        if proc is not None and proc.poll() is None:
-            try:
-                self.stop()
-                proc.wait(timeout)
-            except subprocess.TimeoutExpired:
-                logger.warning("Trening nie skonczyl sie po STOP w %.0f s - zabijam proces", timeout)
-                proc.kill()
-                try:
-                    proc.wait(5.0)
-                except subprocess.TimeoutExpired:          # pragma: no cover - proces nie daje sie zabic
-                    logger.error("Proces treningu %s nie daje sie zabic", proc.pid)
-            except OSError:                                # pragma: no cover - katalog przebiegu zniknal
-                proc.kill()
-        self._close_log()
-
-    def _close_log(self) -> None:
-        if self._log is not None:
-            try:
-                self._log.close()
-            finally:
-                self._log = None
-
-    def progress(self) -> dict[str, Any] | None:
-        if self.run_dir is None:
-            return None
-        try:
-            return json.loads((self.run_dir / "progress.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-
-    def tail(self, n: int = 6) -> str:
-        if self.log_path is None or not self.log_path.exists():
-            return ""
-        lines = [ln for ln in self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if ln.strip() and "Module " not in ln and "Kernel cache" not in ln]
-        return "\n".join(lines[-n:])
-
-    @property
-    def exit_code(self) -> int | None:
-        code = None if self.proc is None else self.proc.poll()
-        if code is not None:
-            self._close_log()                              # proces skonczyl - uchwyt logu juz niepotrzebny
-        return code
 
 
 # ------------------------------------------------------------ kalibracja
@@ -430,7 +324,7 @@ def run_sysid(job: Job, twin) -> Any:
     W `job.data` dla panelu: "base" (blad modelu nominalnego), "band" (niepewnosc dopasowanych
     parametrow), "useful" i "useless_why" (`fit_verdict`), "backend" (na czym nagrano).
     """
-    from ..rl.sysid import excitation, identify, record
+    from ..sysid import excitation, identify, record
 
     job.message = "ruch pobudzajacy (ramie sie rusza)"
     job.data["backend"] = str(getattr(twin.status, "backend", "") or "")
@@ -499,23 +393,3 @@ def fit_verdict(res) -> tuple[bool, str]:
     if useful:
         return True, ""
     return False, "; ".join(why) or "identyfikacja uznala wynik za nieprzydatny"
-
-
-def run_eval(job: Job, policy_path: str, workspace, episodes: int = 50) -> Any:
-    from ..rl.evaluate import evaluate
-    from ..rl.policy import Policy
-    from ..rl.randomize import Dynamics, Randomization
-
-    pol = Policy.load(policy_path)
-    out = {}
-    for k, (label, rand) in enumerate((("nominal", None), ("rand", Randomization.around(
-            Dynamics.from_dict(workspace.dynamics))))):
-        job.message = f"ewaluacja {label}"
-        job.progress = 0.5 * k
-        out[f"cpu_{label}"] = evaluate(pol, episodes, randomization=rand, workspace=workspace)
-    pol.meta.evals.update(out)
-    from ..rl.policy import is_bundled
-    if not is_bundled(policy_path):                   # bazowych z repozytorium nie nadpisujemy
-        pol.save(policy_path)
-    job.data["evals"] = out
-    return out
