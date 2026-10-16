@@ -140,7 +140,7 @@ psujących stanowisko albo przeniesienie sim-real.
 5. **Rekonstrukcja 3D przedmiotów** — [docs/RESEARCH_3D.md](docs/RESEARCH_3D.md);
    MuJoCo Warp ma render gaussian splats, co pozwala wstawić zeskanowany
    przedmiot do renderu treningowego.
-6. **Pierwsza sesja na Galaxea A1X** według [docs/TWIN.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md),
+6. **Pierwsza sesja na Galaxea A1X** według [galaxeo/robot/README.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md),
    „Pierwsza sesja krok po kroku”: *Połącz* bez domu, zmierzyć `a1x.joint_offsets_deg`
    i `a1x.gripper_fb_closed/open`, mały ruch, Dom, złożenie przed wyłączeniem, potem
    kamery i fala. Po drodze rozstrzygnąć tabelę „Do sprawdzenia na pierwszej sesji”

@@ -67,7 +67,7 @@ The twin is **measured from the workstation**, not modelled by eye:
   next to the twin): the same twin, panel and supervisor; in simulation the
   model and camera calibration, on hardware the `a1x` backend over CAN-FD
   (Linux, macOS, Windows) — galaxeo's
-  [docs/TWIN.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md).
+  [galaxeo/robot/README.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
 - **Remote work**: a browser panel with a step-by-step guide and a hint on
   every control.
 
@@ -251,7 +251,7 @@ lerobot-twin demo --robot a1x      # an A1X workstation in simulation (does not 
 
 The hardware, the `a1x` section of the configuration and the first session are
 in galaxeo's
-[docs/TWIN.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md).
+[galaxeo/robot/README.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
 **The A1X has no brakes**: read it before the first session.
 
 ---
@@ -325,7 +325,7 @@ keys take their default values, and an unknown key inside a section ends with a
 clear error. The arm's backend and port are chosen by the panel, not by the
 file. The keys are described in [docs/TWIN.md](docs/TWIN.md), the paragraph
 "Konfiguracja ramienia"; a robot package documents its own backend's section (the
-`a1x` section: galaxeo's [docs/TWIN.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md)).
+`a1x` section: galaxeo's [galaxeo/robot/README.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md)).
 
 ## Adding a robot
 

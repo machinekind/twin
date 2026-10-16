@@ -268,10 +268,9 @@ Galaxea A1X (opis ramienia, model MuJoCo, przykładowe stanowisko w symulacji
 i backend `a1x` po CAN-FD) jest w pakiecie `galaxeo` z repozytorium
 [galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators).
 Bliźniak znajduje ramię i backend przez entry points pakietu, który instaluje
-się obok bliźniaka. Z nazwy znają go jeszcze panel (folder „Silniki A1X” z przyciskiem
+się obok bliźniaka. Z nazwy zna go jeszcze panel (folder „Silniki A1X” z przyciskiem
 włączenia FF 1-5-6 i stan chwytaka po XCAN; do uogólnienia jako akcje
-backendu) i budżet kontaktów treningu w `twin/rl/batch.py` (odchodzi
-z treningiem do so101).
+backendu).
 
 ```bash
 pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
@@ -281,7 +280,7 @@ lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twi
 
 Sprzęt i łącze CAN, sekcja `a1x:` konfiguracji, pierwsza sesja krok po kroku
 i bezpieczeństwo (A1X nie ma hamulców) opisuje
-[docs/TWIN.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/TWIN.md).
+[galaxeo/robot/README.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
 
 ---
 
