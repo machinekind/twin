@@ -278,9 +278,71 @@ pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.g
 lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
 ```
 
-Sprzęt i łącze CAN, sekcja `a1x:` konfiguracji, pierwsza sesja krok po kroku
-i bezpieczeństwo (A1X nie ma hamulców) opisuje
+Sprzęt i łącze CAN, sekcję `a1x:` konfiguracji i bezpieczeństwo (A1X nie ma
+hamulców) opisuje
 [galaxeo/robot/README.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
+Pierwszą sesję przez panel bliźniaka opisuje podrozdział niżej.
+
+### Pierwsza sesja krok po kroku
+
+Przed sesją: ramię złożone i oparte, miejsce pod nim wolne, pod ręką wyłącznik
+awaryjny zasilacza i STOP panelu, na magistrali nic innego nie nadaje. Łącze
+sprawdzone: na Linuksie `ip -det -s link show can0`, na macOS
+`python -m galaxeo.xcan_usb --normal`, potem je zamknij. Sekcja `a1x:` jest
+w `configs/local.yaml`. Jej klucze i pole Port dla każdego systemu opisuje
+[galaxeo/robot/README.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
+
+**0. Połączenie.** `lerobot-twin --config configs/local.yaml ui`, zakładka
+Ramię: zestaw *Galaxea A1X* dla tego systemu, *Połącz* — nigdy nie jedzie do
+domu. Nic nie idzie na magistralę, dopóki czegoś nie ruszysz. Suwaki pokazują
+zmierzoną pozę, a przewodnik podpowiada ten sam krok. *Połącz* kończy się
+błędem, gdy:
+
+- przez 3 s nie przyjdzie żadna ramka `0x052` — łącze nie wstało albo ramię
+  nie ma zasilania;
+- telemetria jest zamrożona — ramię zostało zwolnione (FF 2). Podeprzyj je,
+  wyłącz i włącz zasilanie. FF 1-5-6 tego nie naprawia, bo pozy zwolnionego
+  ramienia nie da się odczytać.
+
+Złożone ramię stoi zwykle **poza limitami bliźniaka** (J2 ok. −0,2°, J3 ok.
++1,5° przy limitach 3…177° i −187…−3°). To normalne: nadzór zostawia staw tam,
+gdzie stoi (miękkie limity, jak ramię nr 2 SO-101). Pierwszy ruch suwakiem J2
+albo J3 wyprowadza staw w zakres z prędkością 15°/s.
+
+**1. Mały ruch.** UZBRÓJ, potem jeden suwak (np. J1 Podstawa) o kilka stopni.
+Strumień `p_des` startuje od **zmierzonej** pozy. Jedzie najwyżej 90°/s
+(backend) i nie szybciej niż pozwala nadzór. Sprawdź kierunki i to, że suwaki
+idą za ramieniem. Ramię zgłasza się, ale nie jedzie? Po ok. 1 s pojawia się
+błąd „… st. od rozkazu przez … s i stoi — ramię głuche na 0x050 … albo
+zablokowane” i STOP. Dopiero wtedy (albo po zwolnieniu FF 2 i ponownym
+zasileniu) użyj **Włącz silniki A1X (FF 1-5-6)**. Przycisk jest widoczny tylko
+przy połączonym `a1x`, wymaga zaznaczenia potwierdzenia i odmawia przy
+uzbrojonym panelu albo gdy ramię zajmuje strategia, fala lub identyfikacja.
+W trakcie sekwencji backend strumieniuje `p_des` = zmierzona poza. Świeżo
+zasilone ramię słucha od razu i przycisku nie potrzebuje.
+
+**2. Dom i wyłączenie.** *Dom* A1X to uniesiona poza z modelu (J2 57°, J3 −92°,
+J4 34°, szczęki zamknięte). Pierwszy Dom to więc duży ruch w górę.
+*Ustaw dom = tu* zapisuje zmierzoną pozę ramienia i **zawsze chwytak 0
+(zamknięty)**: to umowa stanowiska, dom = szczęki zamknięte. Najpierw zamknij
+puste szczęki naprawdę. Dopóki chwytak nie był w tym połączeniu sterowany
+(grupa 7 w spoczynku jest niepewna, patrz pomiar chwytaka w
+[docs/HARDWARE.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/HARDWARE.md))
+albo jest bez sprzężenia (`gripper_fb_*` = `null`), bliźniak przyjmuje od tej
+chwili, że szczęki są zamknięte (panel, szczęki w 3D, następne „otwórz” jako
+rampa od 0). Jeśli chwytak był już sterowany w tej sesji, przycisk tylko
+zapisuje dom, a stan chwytaka (wtedy już zmierzony) zostaje (ostrzeżenie w logu
+„chwytak juz sterowany”): zamknij go suwakiem i kliknij jeszcze raz. W `sim`
+chwytak sceny zamyka się od razu.
+**Przed wyłączeniem zasilania złóż ramię** suwakami (J2 → 3°, J3 → −3°, reszta
+→ 0) i podeprzyj je, bo A1X nie ma hamulców. Ostatnie 3° do ogranicznika to
+zapas limitów bliźniaka. *Rozłącz* nic nie zwalnia: ramię trzyma pozę, w której
+stoi.
+
+**Dalej: kamery, intrynsyki, położenie kamer, Sim-Real, dynamika** — jak kroki
+1–5 procedury [Pierwszy test na prawdziwym stanowisku](#pierwszy-test-na-prawdziwym-stanowisku--krok-po-kroku)
+wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach wystaje tak samo
+(ok. 70 mm), a fala losuje pozy z `wave_ranges` w `robot.yaml` ramienia.
 
 ---
 
