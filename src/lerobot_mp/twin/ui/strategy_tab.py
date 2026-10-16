@@ -291,7 +291,18 @@ class StrategyTab:
         return name in self._given and value != ""
 
     def _cameras(self) -> list[str]:
-        return [camera.name for camera in self.app.ws.cameras if camera.enabled]
+        """Enabled workspace cameras, then the cameras on the arm, each name once.
+
+        With a real arm a camera on the arm has frames only through the enabled workspace camera of
+        its name, which is listed already; one without it would die at the first tick as a missing
+        frame, so it is left out.
+        """
+        fixed = [camera.name for camera in self.app.ws.cameras if camera.enabled]
+        if not self.app.twin.arm_simulated():
+            return fixed
+
+        on_arm = [name for name in self.app.twin.spec.cameras if name not in fixed]
+        return fixed + on_arm
 
     def halt(self) -> None:
         """Strategie > Zatrzymaj: also a strategy that is still starting never takes the arm."""

@@ -68,7 +68,8 @@ class RunInfo:
     gripper: str | None
     #: The limits that hold on this arm now [app units]: the description's, narrowed to the hardware's.
     limits: Mapping[str, tuple[float, float]]
-    #: Highest commanded speed [app units / s]: the supervisor never goes faster.
+    #: Highest commanded speed [app units / s] when the run starts: the supervisor's limit (the description's
+    #: `max_vel` x `velocity_scale`, under the panel's speed cap). The operator may lower the cap during the run.
     max_vel: Mapping[str, float]
     #: The robot's folder: `robot.yaml` and the model, for a strategy with its own kinematics.
     folder: Path

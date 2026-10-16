@@ -38,3 +38,17 @@ joint_labels:
 
 connections:
   - {label: "Robot testowy (w pamieci)", backend: testbot}
+
+# A wrist camera on the hand, 3 cm above it, looking along the jaws: the camera's z (forward) is the
+# hand's x, its y (down) the hand's -z.
+cameras:
+  wrist:
+    body: hand
+    pose:
+      - [0.0, 0.0, 1.0, 0.0]
+      - [-1.0, 0.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0, 0.03]
+      - [0.0, 0.0, 0.0, 1.0]
+    fovy_deg: 60.0
+    width: 160
+    height: 120

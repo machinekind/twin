@@ -127,6 +127,10 @@ class SafetySupervisor:
         for name, limiter in self._limiters.items():
             limiter.max_rate = self._max_vel(name)
 
+    def max_vel(self) -> dict[str, float]:
+        """Highest speed of each joint now [units/s]: `max_vel` x `velocity_scale`, under the speed cap."""
+        return {name: self._max_vel(name) for name in self.names}
+
     def _max_vel(self, name: str) -> float:
         v = max(self.cfg.joint(name).max_vel * self.cfg.safety.velocity_scale, 1e-3)
         cap = getattr(self, "speed_cap", None)

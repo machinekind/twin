@@ -5,8 +5,8 @@ and optionally `demo.json`, an example workspace in simulation (`lerobot-twin de
 The description says only what the MJCF cannot: which joints form the arm in app order, which
 one is the gripper, where the tool point (TCP) is, which body carries the calibration card, the
 app's joint limits and speeds (tighter than the mechanical ones), jaw thresholds, the desk the
-arm works on, and how the panel labels the joints and connects the arm. Ranges, masses and
-meshes stay in the MJCF and are read from it.
+arm works on, cameras the scene mounts on the arm (`cameras`), and how the panel labels the
+joints and connects the arm. Ranges, masses and meshes stay in the MJCF and are read from it.
 
 App units are LeRobot's: joints in degrees, gripper 0..100. `kinematics.RobotKinematics` maps
 the gripper linearly onto `RobotSpec.gripper_range_q` (closed, open) in MJCF units, and a backend
@@ -31,6 +31,7 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
 from lerobot_mp_api.entry_points import ROBOTS
 
@@ -100,6 +101,28 @@ class Desk:
     map_side: float = 0.56
 
 
+Row4 = tuple[float, float, float, float]
+Matrix4 = tuple[Row4, Row4, Row4, Row4]
+
+
+@dataclass(frozen=True)
+class RobotCamera:
+    """A camera riding on a body of the arm, e.g. a wrist camera.
+
+    An ideal pinhole: square pixels and the principal point at the image centre, so `fovy_deg`
+    (the vertical field of view) and the size say everything about the image. The scene renders
+    it from the arm's pose; with a real arm the twin serves the workspace camera of the same name.
+    """
+
+    #: MJCF body the camera is fixed to.
+    body: str
+    #: T_cam2body, 4x4, in OpenCV camera axes: z forward, y down, x right.
+    pose: Matrix4
+    fovy_deg: float
+    width: int
+    height: int
+
+
 @dataclass(frozen=True)
 class Connection:
     """One way the panel offers to connect the arm: a backend plugin and its port."""
@@ -149,8 +172,8 @@ class RobotSpec:
     #: Ranges [app units] the wave samples the other joints from: tighter than the mechanical ones,
     #: so the card circles above the table and not behind the arm.
     wave_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
-    #: Cameras mounted on the arm (camera names in the MJCF).
-    onboard_cameras: tuple[str, ...] = ()
+    #: Cameras the scene adds on bodies of the arm, by name: what a strategy sees from the arm.
+    cameras: dict[str, RobotCamera] = field(default_factory=dict)
     #: Bodies of both jaws (fixed, moving): grip contact sensors of the RL tasks.
     jaw_bodies: tuple[str, str] = ("", "")
     #: Joint limits [app units]: tighter than the mechanical ones in the MJCF.
@@ -224,8 +247,51 @@ def _check(spec: RobotSpec, path: Path) -> None:
             problems.append(f"`{table}` wymienia stawy spoza `joints`: {sorted(names - joints)}")
     if not spec.mjcf_path.is_file():
         problems.append(f"nie ma pliku modelu {spec.mjcf_path}")
+    else:
+        problems.extend(_camera_problems(spec))
     if problems:
         raise ValueError(f"{path}:\n  " + "\n  ".join(problems))
+
+
+def _camera_problems(spec: RobotSpec) -> list[str]:
+    if not spec.cameras:
+        return []
+
+    # Imported here: a description without cameras loads without MuJoCo (the `twin` extra).
+    import mujoco
+
+    model = mujoco.MjSpec.from_file(str(spec.mjcf_path))
+    model_cameras = {camera.name for camera in model.cameras}
+    problems = []
+
+    for name, camera in spec.cameras.items():
+        where = f"`cameras.{name}`"
+        if model.body(camera.body) is None:
+            problems.append(f"{where}: nie ma ciala {camera.body!r} w modelu")
+        if name in model_cameras:
+            problems.append(f"{where}: model ma juz kamere o tej nazwie")
+        if not _is_rigid(np.asarray(camera.pose, float)):
+            problems.append(f"{where}: `pose` musi byc przeksztalceniem sztywnym "
+                            "(obrot, przesuniecie, ostatni wiersz 0 0 0 1)")
+        if not 0.0 < camera.fovy_deg < 180.0:
+            problems.append(f"{where}: `fovy_deg` musi lezec miedzy 0 a 180")
+        if not _is_size(camera.width) or not _is_size(camera.height):
+            problems.append(f"{where}: `width` i `height` musza byc dodatnimi liczbami calkowitymi")
+
+    return problems
+
+
+def _is_rigid(T: np.ndarray) -> bool:
+    R = T[:3, :3]
+    orthonormal = np.allclose(R @ R.T, np.eye(3), atol=1e-6)
+    right_handed = np.isclose(np.linalg.det(R), 1.0, atol=1e-6)
+    last_row = np.array_equal(T[3], [0.0, 0.0, 0.0, 1.0])
+    return bool(orthonormal and right_handed and last_row)
+
+
+def _is_size(value: object) -> bool:
+    # YAML `true` is a bool, and a bool is an int in Python.
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 @lru_cache(maxsize=1)

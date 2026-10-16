@@ -68,7 +68,7 @@ lerobot-twin demo    # przykładowe stanowisko w symulacji z pierwszym zainstalo
   instalowany obok bliźniaka.
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
-dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
+wygląd sceny, dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
 liczy się od katalogu repozytorium, niezależnie od katalogu uruchomienia; inny
 plik: `--workspace <plik>`. Bez pliku bliźniak startuje z pustym stanowiskiem
 (pierwsze zainstalowane ramię, backend `sim`, bez kamer). `lerobot-twin demo`
@@ -454,6 +454,105 @@ główny. Test renderuje kulki w znanych punktach stołu i porównuje środki ic
 | ~~półpiksel w pionie~~ | render 0,5 px **niżej** niż rzut K | dawna „kompensacja” była błędem pomiaru: środki czerwonych plam podnosił cień dolnej połowy kulki; maski segmentacji (czysta geometria) pokazały, że to ona przesuwała kadr. Po usunięciu błąd obrotu w kalibracji spadł 4× |
 | półpiksel w detektorze AprilTag | rogi o 0,5 px dalej niż w konwencji `projectPoints` | korekta w `tags.detect` |
 
+## Cameras on the arm
+
+A camera that rides on the arm, such as a wrist camera, belongs to the arm's
+description. `robot.yaml` has an optional `cameras:` section. It maps each
+camera name to the body the camera rides on and to what the camera sees. The
+test robot declares this one:
+
+```yaml
+cameras:
+  wrist:
+    body: hand            # the MJCF body the camera rides on
+    pose:                 # T_cam2body, 4x4, in OpenCV axes: z forward, y down, x right
+      - [0.0, 0.0, 1.0, 0.0]
+      - [-1.0, 0.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0, 0.03]
+      - [0.0, 0.0, 0.0, 1.0]
+    fovy_deg: 60.0        # vertical field of view
+    width: 160
+    height: 120
+```
+
+The camera is an ideal pinhole. Its pixels are square and its principal point
+is the image centre. So `f = (height / 2) / tan(fovy_deg / 2)`,
+`cx = (width − 1) / 2` and `cy = (height − 1) / 2`, as in
+`scene.CameraView.from_fov`. The description fails to load if a camera has an
+unknown or missing key, a body that is not in the model, or a name the model
+already gives a camera. It also fails if `pose` is not a rigid transform or a
+size is not a positive integer.
+
+The scene mounts each such camera on its body. Its name in the model is
+`robot/<name>`. The scene renders it at its own size, after `mj_camlight`.
+After a physics step the twin runs only `mj_kinematics`. Without
+`mj_camlight` the camera would see the hand from before the last substep.
+A strategy gets the camera's frame from `CameraHub.arm_frame_t(name)`, the
+default frame source of `StrategyRunner`. The source depends on the arm:
+
+- **Simulated arm** (nothing connected, or `sim`). The hub renders the frame
+  from the scene at the moment of the read, like a simulated workspace camera.
+- **Real arm** (also one still connecting, or one whose loop died). The scene
+  only mirrors the arm. The frame comes from the workspace camera **of the same
+  name**. That camera is the physical wrist camera, added like any other. The
+  panel names a new camera `kameraN`. You rename it in `twin.json`. Without
+  such a camera there is no frame.
+
+The panel and calibration read workspace cameras through `CameraHub.frame_t`.
+In both, the physical wrist camera always shows its own stream. The scene
+leaves it out. The camera rides on the arm and is not fixed to the base. Its
+`T_cam2base` therefore means nothing, and the scene ignores it. That holds
+whether the pose came from a wave or from a saved preset of that name.
+Calibrating its pose is pointless. Calibrating its intrinsics in step 1 still
+makes sense.
+
+A simulated workspace camera may not take the name of a camera on the arm,
+because the scene renders both by name. Adding such a camera fails. Building
+the scene from a workspace that holds one fails too. A real camera with that
+name is fine. The Strategies tab gives a strategy the enabled workspace cameras
+in `Observation.frames[name]`. With a simulated arm it adds the cameras on the
+arm. It lists each name once. With a real arm, a camera on the arm has frames
+only as the enabled workspace camera of its name. The Kamery tab and the 3D
+view do not show cameras on the arm and do not calibrate them. Their pose comes
+from the description.
+
+## Scene look
+
+The `look` section in `twin.json` sets the scene's lights and the headlight.
+The headlight is MuJoCo's light at the camera's eye. A workspace without the
+section has the twin's default look, the lighting the twin always had:
+
+```json
+"look": {
+  "lights": [
+    {"pos": [0.4, -0.6, 1.6], "dir": [-0.4, 0.6, -1.6], "diffuse": 0.55, "directional": false, "castshadow": true},
+    {"pos": [-0.5, 0.3, 1.4], "dir": [0.5, -0.3, -1.4], "diffuse": 0.35, "directional": false, "castshadow": false}
+  ],
+  "headlight": {"ambient": 0.35, "diffuse": 0.35, "specular": 0.5}
+}
+```
+
+`pos` is relative to the centre of the table top. `dir` need not be a unit
+vector. `diffuse` and the headlight's values are grey levels, the same on all
+three channels. `directional: true` makes a directional light, like the sun.
+Otherwise the light is a spot light. `pos` and `dir` are required. The other
+keys default to `diffuse` 0.7, `directional` false and `castshadow` true. An
+unknown key fails the load. The table's colour is in `table.rgba`.
+
+Use another look for a policy trained on another scene. In simulation the grasp
+student grasped 46 cubes of 50 under its training look and 34 under the twin's
+look. This is its look. Its table has `"rgba": [0.55, 0.45, 0.35, 1.0]`.
+
+```json
+"look": {
+  "lights": [
+    {"pos": [0.0, 0.0, 1.8], "dir": [0.0, 0.0, -1.0], "directional": true},
+    {"pos": [1.0, -1.0, 1.3], "dir": [-0.4, 0.4, -1.0], "diffuse": 0.5}
+  ],
+  "headlight": {"ambient": 0.3, "diffuse": 0.6, "specular": 0.0}
+}
+```
+
 ---
 
 ## Mapa stołu i kostka
@@ -495,13 +594,13 @@ kamery jej nie widzą: szczęka **zablokowana** (nie dojeżdża do rozkazu i sto
 
 ```
 src/lerobot_mp/twin/
-├── robots.py        opisy ramion z folderów (`robot.yaml`), tylko z wtyczek `lerobot_mp.robots`
+├── robots.py        opisy ramion z folderów (`robot.yaml`, z kamerami na ramieniu), tylko z wtyczek `lerobot_mp.robots`
 ├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów i strategii surowe (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
-├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K, karta, obiekty, panele, czujniki chwytu; eksport do MJCF
+├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K i na ramieniu, karta, obiekty, panele, czujniki chwytu, wygląd; eksport do MJCF
 ├── collision.py     kolizje pozy i drogi do niej
-├── workspace.py     stanowisko w JSON: ramię, port, stół, karta, kamery (+ prawda symulowanych), dynamika
-├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane
+├── workspace.py     stanowisko w JSON: ramię, port, stół, wygląd sceny, karta, kamery (+ prawda symulowanych), dynamika
+├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane i na ramieniu
 ├── camera_stream.py wątek kamery: zawsze najnowsza klatka, bez kolejki
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
 ├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
