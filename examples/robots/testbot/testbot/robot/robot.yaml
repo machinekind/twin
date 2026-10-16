@@ -13,7 +13,8 @@ tcp_closing: [0.0, 1.0, 0.0]
 fingertips: [tip1, tip2]
 jaw_bodies: [jaw1, jaw2]
 
-home: {j1: 0.0, j2: 20.0, gripper: 50.0}
+# Gripper closed, like the station's home ("Ustaw dom = tu" stores the jaws closed).
+home: {j1: 0.0, j2: 20.0, gripper: 0.0}
 limits:
   j1: [-90.0, 90.0]
   j2: [-60.0, 60.0]

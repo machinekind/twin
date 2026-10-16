@@ -426,7 +426,7 @@ def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(
     _click(app, "Start: ramie pokaze karte kamerom (kam)")
     assert started == [(["kam"], False)]
     started.clear()
-    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="a1x", simulated=False))
+    monkeypatch.setattr(app.twin, "status", RobotStatus(connected=True, backend="testbot", simulated=False))
     _click(app, "Start: ramie pokaze karte kamerom (kam)")
     assert started == [] and app.wave_btn.color == "orange" and "Kliknij jeszcze raz" in app.wave_btn.label
     _click(app, app.wave_btn.label)

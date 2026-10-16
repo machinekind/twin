@@ -6,11 +6,29 @@ karty, wiec fala nie zbiera roznych katow.
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
+
+
+def _installed(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+#: The wave tests come from the A1X station (six joints, a base that must sweep both sides of
+#: the table); with galaxeo installed next to the twin they run on the A1X too.
+WAVE_ROBOTS = [
+    BOT,
+    pytest.param("a1x", marks=pytest.mark.skipif(not _installed("galaxeo.robot"),
+                                                 reason="A1X przychodzi z pakietu galaxeo")),
+]
 
 
 # ------------------------------------------------------------ planowanie fali
@@ -52,7 +70,7 @@ def _session(spec_name: str, seed: int, cameras=("c0", "c1")):
     return s, world
 
 
-@pytest.mark.parametrize("spec_name", ("a1x", BOT))
+@pytest.mark.parametrize("spec_name", WAVE_ROBOTS)
 def test_wave_search_sweeps_both_sides_of_the_table_in_every_run(spec_name):
     """Na stanowisku A1X fala zwiedzila tylko prawa strone stolu: szukanie bylo losowym
     spacerem w stawach z limitem przejazdu, a nie zamiataniem. Teraz kazde 16 poz bez
@@ -73,14 +91,15 @@ def test_wave_search_sweeps_both_sides_of_the_table_in_every_run(spec_name):
             world.close()
 
 
-def test_wave_aims_at_a_camera_only_after_two_detections_and_never_goes_home_for_it():
+@pytest.mark.parametrize("spec_name", WAVE_ROBOTS)
+def test_wave_aims_at_a_camera_only_after_two_detections_and_never_goes_home_for_it(spec_name):
     """Jedna detekcja malego taga z daleka dawala lustrzana poze kamery, w ktora celowala
     co druga poza; gdy kadru nie dalo sie trafic, fala wracala do domu (stracony przejazd).
     Kamera z jedna detekcja nie jest namierzona; namierzona bez osiagalnego kadru dostaje
     poze z zamiatania, nie dom."""
     import numpy as np
 
-    s, world = _session("a1x", 3)
+    s, world = _session(spec_name, 3)
     try:
         p = s.progress["c0"]
         T = np.eye(4)
@@ -132,10 +151,11 @@ def test_step2_results_are_kept_as_presets_and_newest_loads_by_default(tmp_path)
     assert Workspace.load(tmp_path / "twin.json").camera("front").T_cam2base[0][3] == 0.2, "bez wyboru - najnowszy"
 
 
-def test_a_move_that_does_not_arrive_costs_one_pose_not_the_session():
+@pytest.mark.parametrize("spec_name", WAVE_ROBOTS)
+def test_a_move_that_does_not_arrive_costs_one_pose_not_the_session(spec_name):
     """Fala z 21 i 11 obserwacjami padla na jednym "ruch nie dojechal do celu" (nadgarstek pod
     ograniczeniem predkosci). Taki przejazd to pominieta poza; dopiero trzy z rzedu koncza sesje."""
-    s, world = _session("a1x", 5)
+    s, world = _session(spec_name, 5)
     try:
         robot = s.robot
         fails = {"left": 0}
@@ -144,7 +164,7 @@ def test_a_move_that_does_not_arrive_costs_one_pose_not_the_session():
         def move(joints, duration):
             if fails["left"] > 0:
                 fails["left"] -= 1
-                raise RuntimeError("ruch nie dojechal do celu w 1.9 s: rozkaz jeszcze jedzie (arm_joint6)")
+                raise RuntimeError("ruch nie dojechal do celu w 1.9 s: rozkaz jeszcze jedzie (j2)")
             real_move(joints, duration)
 
         robot.move = move

@@ -28,7 +28,9 @@ tą samą ścieżką kodu, którą pójdzie sprzęt:
   douczania na zmierzonej dynamice;
 - **drugie ramię — Galaxea A1X**: opis ramienia i model z URDF producenta,
   kalibracja kamer, IK, fala i środowiska RL w symulacji; backend `a1x` po CAN-FD
-  (pakiet `galaxeo`) przetestowany na udawanym ramieniu — sprzęt jeszcze nie;
+  przetestowany na udawanym ramieniu — sprzęt jeszcze nie. Pakiet ramienia jest
+  w galaxeo (`galaxeo/robot/`, galaxeo-manipulators), bliźniak znajduje go przez
+  entry points;
 
 ## Repozytorium na innym komputerze
 
@@ -42,7 +44,7 @@ README, „Szybki start na nowym komputerze”.
   licencje plików osób trzecich (`NOTICE`).
 - **Poza repozytorium (per maszyna):** `workspace/` (stanowisko i własne
   polityki), `configs/local.yaml` (sekcje backendów, np. `a1x`, i reszta
-  konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (extra `a1x`), `.claude/`, cache kerneli Warp.
+  konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (ramię A1X, obok bliźniaka), `.claude/`, cache kerneli Warp.
 - **Ramię SO-101** i jego backendy (`feetech`, `lerobot`, most COM<->TCP) to
   pakiet `soarm` (repozytorium so-arm101), instalowany obok bliźniaka.
 - Domyślne ścieżki (`workspace/…`) z klonu liczą się od katalogu
@@ -68,9 +70,8 @@ README, „Szybki start na nowym komputerze”.
 | `twin/rl/runner.py` | polityka na `Twin`, stop przy rozjeździe > 25° (w zmierzonej pozie), stop po wykonaniu zadania, czekanie na kostkę | test na bliźniaku; pełny łańcuch z kamerami w czasie symulowanym (`test_twin_lift_from_cameras`) |
 | `twin/ui/*` | panel (viser), zadania w tle, most sceny, strażnik kamer | test startu panelu + scenariusz w przeglądarce |
 | `twin/runtime.py` | pętla ramienia: jeden właściciel ruchu, STOP/Dom w zmierzonej pozie, reakcja na błędy serw i utratę łącza, render bez blokady pętli | `tests/test_twin_runtime.py` (czas symulowany) |
-| `twin/robots.py` (`RobotSpec`, `A1X`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia; drugi opis — **Galaxea A1X** | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_a1x_sim.py` |
-| `src/lerobot_mp/robot/a1x/robot/`, `scripts/import_a1x_model.py` | model A1X z URDF producenta, każda reguła przetworzenia z testem, skrypt odtwarza plik bajt w bajt | kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm), fala 85 % póz z kartą nad stołem, fizyka RL przy 5 ms bez NaN, szczęki symetryczne do 5,8 mm |
-| `robot/a1x/backend.py` | backend `a1x`: CAN-FD przez pakiet `galaxeo` (SocketCAN, XCAN na macOS, PCAN na Windows); strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, cisza/zamrożenie/głuchota → błąd i STOP, włączenie FF 1-5-6 tylko przyciskiem | `tests/test_a1x.py` na udawanym ramieniu (wirtualny zegar); integracja z `Twin` |
+| `twin/robots.py` (`RobotSpec`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_home_stages.py` (dom etapami na robocie testowym) |
+| `galaxeo/robot/` w galaxeo-manipulators | pakiet A1X poza bliźniakiem: opis ramienia, model z URDF producenta, przykładowe stanowisko, backend `a1x` po CAN-FD (strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, włączenie FF 1-5-6 tylko przyciskiem) | testy modelu i backendu w galaxeo; tu `tests/test_a1x_in_twin.py` (z galaxeo obok bliźniaka): `Twin` na udawanej magistrali; kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm) |
 | `twin/tagbody.py` | **bryła z kilkoma AprilTagami**: układ tagów uczony z kadrów kamer stanowiska (pary w jednym kadrze + wspólne dopasowanie wszystkich rogów), poza bryły z kamer z pozą. Dziś nic w panelu go nie używa | `tests/test_twin_tagbody.py` (układ 0,1 mm, poza 1 mm / 1° od prawdy w symulacji) |
 
 Testy: `pytest -q`. Zestaw to wyłącznie testy integracyjne (łańcuch przez kilka
@@ -139,7 +140,7 @@ psujących stanowisko albo przeniesienie sim-real.
 5. **Rekonstrukcja 3D przedmiotów** — [docs/RESEARCH_3D.md](docs/RESEARCH_3D.md);
    MuJoCo Warp ma render gaussian splats, co pozwala wstawić zeskanowany
    przedmiot do renderu treningowego.
-6. **Pierwsza sesja na Galaxea A1X** według [docs/TWIN.md](docs/TWIN.md#galaxea-a1x),
+6. **Pierwsza sesja na Galaxea A1X** według [galaxeo/robot/README.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md),
    „Pierwsza sesja krok po kroku”: *Połącz* bez domu, zmierzyć `a1x.joint_offsets_deg`
    i `a1x.gripper_fb_closed/open`, mały ruch, Dom, złożenie przed wyłączeniem, potem
    kamery i fala. Po drodze rozstrzygnąć tabelę „Do sprawdzenia na pierwszej sesji”
@@ -147,7 +148,7 @@ psujących stanowisko albo przeniesienie sim-real.
    przy 90°/s).
 7. **`pickplace` na GPU** (zadanie scalone, ekspert IK rozwiązuje je na CPU na obu
    ramionach): najpierw 5 linii próby `mujoco_warp.put_model` z
-   `src/lerobot_mp/robot/a1x/robot/a1x.xml` (równość szczęk, bryły z siatek) i pomiar
+   `galaxeo/robot/a1x/a1x.xml` z galaxeo (równość szczęk, bryły z siatek) i pomiar
    `nconmax/njmax` dla A1X (w `batch.py` wpisano nie zmierzone 64/384; na CPU szczyt
    12 kontaktów / 49 wierszy), potem porównanie GPU z CPU
    (test `test_gpu_pickplace_matches_the_cpu_env` usunięty przy odchudzaniu — odtworzyć
@@ -167,18 +168,9 @@ psujących stanowisko albo przeniesienie sim-real.
 1. **Licencja galaxeo-manipulators** — `calib/tags.py`, `calib/handeye.py`
    i idea `calib/topdown.py` przeniesione z atrybucją; zakładamy zgodę machinekind.
 2. Które zadania po `reach` i `lift`: pick-and-place, nalewanie, sortowanie?
-3. **Licencja URDF i siatek A1X** (`src/lerobot_mp/robot/a1x/robot/`) — od producenta przez
-   galaxeo-manipulators, `package.xml`: „Proprietary”, warunki nieznane. W repozytorium
-   Apache-2.0 są wydzielone i opisane w `NOTICE`; do decyzji: zgoda Galaxea, albo
-   zamiast kopii ścieżka do zewnętrznego klonu i `scripts/import_a1x_model.py --urdf`.
-4. **`galaxeo.xcan_usb` i GPL-2.0** — układy komend i rekordów sterownika XCAN są
-   przepisane z jądra Linuksa (`peak_usb`, GPL-2.0). Moduł nie jest w tym repozytorium:
-   przychodzi z pakietem `galaxeo` (extra `a1x`) i jest potrzebny tylko na macOS. Do
-   decyzji: licencja galaxeo-manipulators (brak pliku licencji) i czy moduł GPL zostaje
-   w pakiecie importowanym z projektu Apache-2.0.
-5. **Scalenie gałęzi `pkg` w galaxeo-manipulators** — extra `a1x` wskazuje
-   `galaxeo-manipulators@main`, a pakiet `galaxeo` jest na razie tylko na `pkg`. Do
-   scalenia instalacja z lokalnego klonu (`pip install -e ../galaxeo-manipulators`).
+3. **Licencja URDF i siatek A1X** i **`galaxeo.xcan_usb` (GPL-2.0)** — wyszły z tego
+   repozytorium razem z pakietem A1X: bliźniak nie zawiera ani nie importuje niczego
+   z galaxeo. Oba pytania zostają w galaxeo-manipulators.
 
 ---
 

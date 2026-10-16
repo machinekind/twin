@@ -1,25 +1,7 @@
 lerobot-mp - cyfrowy bliźniak stanowiska z ramieniem robota
 Licencja projektu: Apache-2.0 (pyproject.toml).
 
-Repozytorium zawiera pliki osób trzecich, rozpowszechniane na ich licencjach:
-
-1. src/lerobot_mp/robot/a1x/robot/  (a1x.urdf, siatki STL w assets/, a1x.xml)
-   URDF i siatki ramienia Galaxea A1X od producenta (Galaxea), przez pakiet
-   ros2_ws/src/galaxea_a1xy_description repozytorium galaxeo-manipulators
-   (package.xml: licencja "Proprietary", źródło "userguide-galaxea/URDF").
-   Warunki licencji producenta nie są podane - te pliki NIE są objęte
-   licencją Apache-2.0 projektu. a1x.xml to przetworzenie URDF wygenerowane
-   skryptem scripts/import_a1x_model.py (reguły w src/lerobot_mp/robot/a1x/robot/README.md).
-
-2. galaxeo.xcan_usb  (NIE w tym repozytorium - zależność opcjonalna)
-   Backend a1x (src/lerobot_mp/robot/a1x.py) importuje pakiet galaxeo
-   z repozytorium machinekind/galaxeo-manipulators (extra "a1x" w pyproject.toml,
-   instalowany z gita; repozytorium nie ma pliku licencji). Jego moduł
-   galaxeo/xcan_usb.py - sterownik przejściówki XCAN / PCAN-USB FD przez libusb,
-   używany tylko na macOS - zawiera układy komend i rekordów przepisane ze
-   źródeł jądra Linuksa (drivers/net/can/usb/peak_usb/pcan_usb_fd.c,
-   include/linux/can/dev/peak_canfd.h), licencja GPL-2.0. Moduł jest wydzielony
-   w galaxeo i nie jest tu kopiowany ani rozpowszechniany; czy projekt
-   Apache-2.0 może na nim polegać - do decyzji (HANDOFF.md, sekcja 5).
+Repozytorium nie zawiera plików osób trzecich: modele i siatki ramion są w pakietach ramion
+(SO-101: soarm z repozytorium so-arm101, Galaxea A1X: galaxeo z repozytorium galaxeo-manipulators).
 
 Pełny tekst licencji Apache-2.0: https://www.apache.org/licenses/LICENSE-2.0

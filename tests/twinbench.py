@@ -5,7 +5,7 @@ time one loop tick at a time, and `Bench.call` runs a blocking call (`Twin.move`
 Nothing waits in wall time, so ten simulated seconds of motion cost a fraction of a second and the
 timings repeat to the tick.
 
-    bench = Bench.sim("a1x")
+    bench = Bench.sim("testbot")
     bench.call(lambda: bench.twin.move(goal, 2.0, owner="test"))
     bench.pump(until=lambda: bench.twin.owner is None, max_sim_s=10.0)
 """
@@ -38,7 +38,7 @@ class Bench:
         self._late0 = self.clock.late
 
     @classmethod
-    def sim(cls, robot: str = "a1x", *, t0: float = 100.0, ws: Workspace | None = None) -> Bench:
+    def sim(cls, robot: str = "testbot", *, t0: float = 100.0, ws: Workspace | None = None) -> Bench:
         """A simulated `robot` (or workspace `ws`) on a fresh `VirtualClock` starting at `t0` s."""
         tw = rt.Twin(ws if ws is not None else Workspace(robot=robot), clock=VirtualClock(t0=t0))
         tw.connect("sim", threaded=False)

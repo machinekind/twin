@@ -26,24 +26,12 @@ dependencies = [
 # Cyfrowy blizniak: symulacja, panel webowy, kalibracja kamer, identyfikacja dynamiki.
 # pyserial: `lerobot-twin check` wypisuje przejsciowki USB-serial.
 twin = ["mujoco>=3.14,<3.15", "viser>=1.1", "pyserial>=3.5"]
-# Backend `a1x`: Galaxea A1X po CAN-FD. Protokol i lacze sa w pakiecie galaxeo (repozytorium
-# galaxeo-manipulators; wymaga scalonej galezi `pkg`). macOS (dongiel XCAN): do tego pyusb + brew install libusb.
-a1x = ["galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"]
 # Skrypty z research/3d (otoczki wypukle, dobor chwytu).
 research = ["trimesh>=4,<6"]
 dev = ["pytest>=7.4", "pyright>=1.1"]
 
 [project.scripts]
 lerobot-twin = "lerobot_mp.twin.cli:main"
-
-# Robots and their backends come from installed packages through these entry point groups. The
-# A1X package (src/lerobot_mp/robot/a1x) registers here like any robot package (see
-# examples/robots/testbot) until it moves to galaxeo.
-[project.entry-points."lerobot_mp.robots"]
-a1x = "lerobot_mp.robot.a1x:ROBOT_DIR"
-
-[project.entry-points."lerobot_mp.backends"]
-a1x = "lerobot_mp.robot.a1x.backend:create"
 
 # uv (`uv run`, `uv sync`) takes the contracts from the clone, editable, like the pip line above.
 [tool.uv.sources]
@@ -65,7 +53,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 lerobot_mp = ["py.typed"]
-"lerobot_mp.robot.a1x" = ["robot/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/lerobot_mp_api/tests"]

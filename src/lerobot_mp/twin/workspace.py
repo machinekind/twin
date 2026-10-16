@@ -173,8 +173,7 @@ class Workspace:
     #: Ramie z zainstalowanego pakietu (`robots.robot_folders`); nowe stanowisko bierze
     #: pierwsze zarejestrowane (`robots.default_robot`).
     robot: str = field(default_factory=default_robot)
-    #: "sim" - blizniak bez sprzetu, inaczej wtyczka backendu z pakietu ramienia
-    #: (np. "a1x" - Galaxea A1X po CAN).
+    #: "sim" - blizniak bez sprzetu, inaczej wtyczka backendu z pakietu ramienia.
     backend: str = "sim"
     #: Poza domowa tego stanowiska [jednostki aplikacji] ("Ustaw dom = tu" w panelu);
     #: None = poza domowa z opisu ramienia (`RobotSpec.home`).
