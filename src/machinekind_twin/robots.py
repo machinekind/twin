@@ -47,7 +47,7 @@ ENTRY_POINT_GROUP = ROBOTS
 #: The robot a workspace names when no package registers one: the twin's example robot.
 FALLBACK_ROBOT = "testbot"
 #: What to install when the robot a workspace names is not registered.
-INSTALL_HINT = ("zainstaluj pakiet ramienia obok blizniaka (uv pip install, np. SO-101: README, sekcja 5); "
+INSTALL_HINT = ("zainstaluj pakiet ramienia obok blizniaka (uv pip install --no-sources, np. SO-101: README, sekcja 5); "
                 "robota przykladowego instaluje uv sync")
 
 

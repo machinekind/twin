@@ -56,7 +56,7 @@ uv run twin ui    # the first start writes the example workstation with the firs
   `sudo apt install libosmesa6`).
 - The twin holds no robot of its own. The SO-101 and its backends (`feetech`, `lerobot`, the
   COM<->TCP bridge) are the `soarm` package from so-arm101, installed next to the twin with
-  `uv pip install` (README, section 5).
+  `uv pip install --no-sources` (README, section 5).
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
 wygląd sceny, dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
@@ -264,7 +264,7 @@ włączenia FF 1-5-6 i stan chwytaka po XCAN; do uogólnienia jako akcje
 backendu).
 
 ```bash
-uv pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
+uv pip install --no-sources "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
 # macOS z przejściówką XCAN: "galaxeo[xcan] @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
 uv run twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
 ```

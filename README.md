@@ -146,7 +146,8 @@ and strategy packages ([below](#control-strategies)). It is not on PyPI, so `uv 
 from the clone.
 
 The twin holds no robot of its own. Robots are packages installed next to it with
-`uv pip install` (sections 5 and 6). `uv run` keeps them, a plain `uv sync` removes them, and
+`uv pip install --no-sources` (sections 5 and 6). `--no-sources` keeps the clone's copy of the
+contracts: a robot repository may name its own copy for its development. `uv run` keeps them, a plain `uv sync` removes them, and
 `uv sync --inexact` keeps them.
 
 ### 2. Check
@@ -204,8 +205,8 @@ are the `soarm` package from the so-arm101 repository. Install it next to the tw
 `soarm-lab` for the `policy` and `ik` strategies:
 
 ```bash
-uv pip install "soarm[feetech] @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm" \
-               "soarm-lab @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm_lab"
+uv pip install --no-sources "soarm[feetech] @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm" \
+                            "soarm-lab @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm_lab"
 ```
 
 Its `docs/first-contact.md` covers the port and the gripper ticks. In the
@@ -229,7 +230,7 @@ the `a1x` backend over CAN-FD. Install it next to the twin, which finds it
 through its entry points:
 
 ```bash
-uv pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
+uv pip install --no-sources "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
 # macOS (XCAN dongle): "galaxeo[xcan] @ git+..." and brew install libusb; Windows (PCAN): "galaxeo[pcan] @ git+..."
 uv run twin demo --robot a1x      # an A1X workstation in simulation (does not overwrite an existing one without --force)
 ```
