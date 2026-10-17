@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -58,6 +59,35 @@ def _look_at_pose(eye, target):
     x = np.cross(z, [0, 0, 1.0])
     x /= np.linalg.norm(x)
     return pose(np.column_stack([x, np.cross(z, x), z]), eye)
+
+
+class _SceneRecorder:
+    """A viser scene API that records what the mirror adds: (method, name)."""
+
+    def __init__(self):
+        self.added: list[tuple[str, str]] = []
+
+    def __getattr__(self, method):
+        def add(name, *args, **kw):
+            self.added.append((method, name))
+            return SimpleNamespace(remove=lambda: None)
+        return add
+
+
+def test_the_3d_view_draws_every_geom_of_an_arm_built_from_primitives():
+    """Cylinders and capsules never reached the 3D view: the geom type is a numpy.int32, and
+    `numpy.int32 in (mjtGeom, ...)` is False. The test robot showed only its boxes."""
+    import mujoco
+
+    from machinekind_twin.robots import get_spec
+    from machinekind_twin.ui.bridge import SceneMirror
+
+    model = mujoco.MjModel.from_xml_path(str(get_spec(BOT).mjcf_path))
+    scene = _SceneRecorder()
+    SceneMirror(SimpleNamespace(scene=scene), model)
+
+    shapes = sorted(method for method, _ in scene.added if method != "add_frame")
+    assert shapes == ["add_box"] * 3 + ["add_cylinder"] * 3
 
 
 @pytest.mark.render

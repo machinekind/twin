@@ -102,7 +102,8 @@ The repository holds everything needed to run it, including models and data:
 
 | Directory | What is in it | In the repository? |
 |---|---|---|
-| `examples/robots/testbot/` | the example robot: a robot folder and a backend that keeps the arm in memory | yes |
+| `examples/robots/arm6/` | the example arm: six joints and a parallel gripper built from primitives, and a backend that keeps the arm in memory; `uv sync` installs it | yes |
+| `examples/robots/testbot/` | the test robot: two joints and a slide gripper; the tests install it | yes |
 | `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration; the first `twin ui` and `twin demo` write the robot into its copy | yes |
 | `assets/calib/*.txt` | example lens (Logitech Brio 4K 1280x720): K and distortion to load in Calibration, step 1 | yes |
 | `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created by the first `twin ui` |
@@ -127,7 +128,7 @@ uv sync
 ```
 
 `uv sync` creates `.venv` with the twin and its panel, the plugin contracts from
-`packages/machinekind_twin_api`, the example robot and strategy from `examples/`, and pytest,
+`packages/machinekind_twin_api`, the example arm and strategy from `examples/`, and pytest,
 pyright and ruff. `uv run <command>` runs a command in it, so nothing needs activating.
 
 uv itself: `curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS and Linux,
@@ -168,7 +169,7 @@ uv run twin ui       # http://localhost:8080
 
 On the first start, with no `workspace/twin.json` yet, `twin ui` writes the example
 workstation: `examples/twin.sim.json` with the first installed robot (after a bare `uv sync`, the
-example robot) and two simulated cameras
+example arm) and two simulated cameras
 with a trusted calibration. `twin demo` writes it again: `--force` overwrites your workstation,
 and `--robot NAME` picks another installed robot.
 
@@ -315,6 +316,14 @@ file. The keys are described in [docs/TWIN.md](docs/TWIN.md), the paragraph
 
 ## Adding a robot
 
+Each robot is its own package, in its own repository. This repository holds only examples.
+The SO-101 package, [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm)
+in so-arm101, is the reference. It holds the robot folder, the backends and a README on using the
+arm with the twin. The Galaxea A1X package is `galaxeo`, in
+[galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators).
+[examples/robots/arm6](examples/robots/arm6) is a minimal example to copy. The tests use a smaller
+one, [examples/robots/testbot](examples/robots/testbot).
+
 A robot is a folder: `robot.yaml` and the MJCF model it names. `robot.yaml` holds
 what the model does not: the joints in app order, the gripper and its range in
 model units, the tool point, joint limits and speeds, the home pose, the desk the
@@ -326,13 +335,10 @@ in OpenCV axes, `fovy_deg`, size): a strategy gets their frames in
 workspace camera of the same name. The folder may also ship `demo.json`, an
 example workstation in simulation that `twin demo --robot NAME` copies.
 
-The twin holds no robot: it finds them only in installed packages. A robot's
-package registers its folder and its hardware backend through entry points and
-never imports the twin: the contract types live in `machinekind-twin-api`
-([packages/machinekind_twin_api](packages/machinekind_twin_api)), and a plugin depends on that,
-never on `machinekind-twin`. The SO-101 is such a package: `soarm`, from the
-so-arm101 repository; the Galaxea A1X is another: `galaxeo`, from the
-galaxeo-manipulators repository. A package registers both in its `pyproject.toml`:
+The twin finds robots only in installed packages. A robot's package registers its folder and its
+hardware backend through entry points. It never imports the twin. It depends on
+`machinekind-twin-api` ([packages/machinekind_twin_api](packages/machinekind_twin_api)), which
+holds the contract types. A package registers both in its `pyproject.toml`:
 
 ```toml
 [project.entry-points."machinekind_twin.robots"]
@@ -346,10 +352,8 @@ The backend is any object with `connect`, `disconnect`, `read_joints`,
 `send_joints` and `is_connected`; the optional methods are listed on
 `machinekind_twin_api.BackendPlugin`. `create` gets a `machinekind_twin_api.BackendContext`: the
 robot's joints and limits, the port and the backend's own config section.
-[examples/robots/testbot](examples/robots/testbot) is a complete example, and the
-tests load it. Entry points live in the installed package's metadata: after
-pulling a version that changes them, run
-`uv sync` again, or the panel finds stale backends.
+Entry points live in the installed package's metadata. After pulling a version of a robot
+package that changes them, install that package again, or the panel finds stale backends.
 
 ## How it is built
 

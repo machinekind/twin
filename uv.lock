@@ -362,8 +362,8 @@ twin = [
 [package.dev-dependencies]
 dev = [
     { name = "machinekind-twin", extra = ["twin"] },
+    { name = "machinekind-twin-arm6" },
     { name = "machinekind-twin-swing" },
-    { name = "machinekind-twin-testbot" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
@@ -385,8 +385,8 @@ provides-extras = ["twin", "research"]
 [package.metadata.requires-dev]
 dev = [
     { name = "machinekind-twin", extras = ["twin"] },
+    { name = "machinekind-twin-arm6", editable = "examples/robots/arm6" },
     { name = "machinekind-twin-swing", editable = "examples/strategies/swing" },
-    { name = "machinekind-twin-testbot", editable = "examples/robots/testbot" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=7.4" },
     { name = "ruff", specifier = ">=0.6" },
@@ -410,9 +410,9 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "machinekind-twin-swing"
+name = "machinekind-twin-arm6"
 version = "0.1.0"
-source = { editable = "examples/strategies/swing" }
+source = { editable = "examples/robots/arm6" }
 dependencies = [
     { name = "machinekind-twin-api" },
 ]
@@ -421,9 +421,9 @@ dependencies = [
 requires-dist = [{ name = "machinekind-twin-api", specifier = ">=0.1,<0.2" }]
 
 [[package]]
-name = "machinekind-twin-testbot"
+name = "machinekind-twin-swing"
 version = "0.1.0"
-source = { editable = "examples/robots/testbot" }
+source = { editable = "examples/strategies/swing" }
 dependencies = [
     { name = "machinekind-twin-api" },
 ]

@@ -1,0 +1,73 @@
+<mujoco model="arm6">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"/>
+  <default>
+    <joint damping="1" armature="0.01"/>
+    <position kp="80" kv="4"/>
+  </default>
+  <asset>
+    <material name="shell" rgba="0.86 0.87 0.89 1"/>
+    <material name="joint" rgba="0.22 0.24 0.27 1"/>
+    <material name="accent" rgba="0.95 0.52 0.12 1"/>
+  </asset>
+  <worldbody>
+    <body name="base">
+      <geom name="base" type="cylinder" size="0.06 0.02" pos="0 0 0.02" material="joint" mass="2"/>
+      <body name="turret" pos="0 0 0.04" gravcomp="1">
+        <joint name="base_yaw" axis="0 0 1" range="-2.8 2.8"/>
+        <geom type="cylinder" size="0.045 0.035" pos="0 0 0.035" material="shell" mass="0.4"/>
+        <body name="upper_arm" pos="0 0 0.075" gravcomp="1">
+          <joint name="shoulder" axis="0 1 0" range="-1.9 1.9"/>
+          <geom type="cylinder" size="0.032 0.035" quat="0.7071068 0.7071068 0 0" material="joint" mass="0.15"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.17" size="0.024" material="shell" mass="0.3"/>
+          <body name="forearm" pos="0 0 0.17" gravcomp="1">
+            <joint name="elbow" axis="0 1 0" range="-2.4 2.4"/>
+            <geom type="cylinder" size="0.027 0.03" quat="0.7071068 0.7071068 0 0" material="joint" mass="0.1"/>
+            <geom type="capsule" fromto="0 0 0 0.15 0 0" size="0.019" material="shell" mass="0.2"/>
+            <body name="wrist" pos="0.15 0 0" gravcomp="1">
+              <joint name="wrist_pitch" axis="0 1 0" range="-2.0 2.0"/>
+              <geom type="cylinder" size="0.021 0.024" quat="0.7071068 0.7071068 0 0" material="joint" mass="0.06"/>
+              <body name="wrist_link" pos="0.045 0 0" gravcomp="1">
+                <joint name="wrist_yaw" axis="0 0 1" range="-2.0 2.0"/>
+                <geom type="cylinder" size="0.018 0.02" material="joint" mass="0.05"/>
+                <body name="hand" pos="0.03 0 0" gravcomp="1">
+                  <joint name="wrist_roll" axis="1 0 0" range="-3.0 3.0"/>
+                  <geom type="cylinder" size="0.02 0.006" quat="0.7071068 0 0.7071068 0" material="joint" mass="0.02"/>
+                  <geom name="palm" type="box" size="0.012 0.035 0.014" pos="0.02 0 0" material="shell" mass="0.08"/>
+                  <site name="tcp" pos="0.059 0 0"/>
+                  <body name="jaw1" pos="0.034 0 0" gravcomp="1">
+                    <joint name="gripper" type="slide" axis="0 1 0" range="0 0.025"/>
+                    <geom name="tip1" type="box" size="0.025 0.003 0.01" pos="0.025 0.005 0" material="accent" mass="0.02"/>
+                  </body>
+                  <body name="jaw2" pos="0.034 0 0" gravcomp="1">
+                    <joint name="gripper_m" type="slide" axis="0 1 0" range="-0.025 0"/>
+                    <geom name="tip2" type="box" size="0.025 0.003 0.01" pos="0.025 -0.005 0" material="accent" mass="0.02"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- The base is welded to the world, so the parent-child filter keeps base-turret contacts;
+         the other two pairs touch across one joint at rest. -->
+    <exclude body1="base" body2="turret"/>
+    <exclude body1="forearm" body2="wrist_link"/>
+    <exclude body1="wrist" body2="hand"/>
+  </contact>
+  <equality>
+    <joint joint1="gripper_m" joint2="gripper" polycoef="0 -1 0 0 0"/>
+  </equality>
+  <actuator>
+    <position name="base_yaw" joint="base_yaw"/>
+    <position name="shoulder" joint="shoulder" kp="150" kv="8"/>
+    <position name="elbow" joint="elbow" kp="120" kv="6"/>
+    <position name="wrist_pitch" joint="wrist_pitch"/>
+    <position name="wrist_yaw" joint="wrist_yaw"/>
+    <position name="wrist_roll" joint="wrist_roll"/>
+    <position name="gripper" joint="gripper" kp="50" kv="2"/>
+  </actuator>
+</mujoco>

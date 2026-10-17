@@ -26,6 +26,8 @@ def _installed(module: str) -> bool:
 #: the table); with galaxeo installed next to the twin they run on the A1X too.
 WAVE_ROBOTS = [
     BOT,
+    pytest.param("arm6", marks=pytest.mark.skipif(not _installed("arm6"),
+                                                  reason="ramie przykladowe instaluje uv sync")),
     pytest.param("a1x", marks=pytest.mark.skipif(not _installed("galaxeo.robot"),
                                                  reason="A1X przychodzi z pakietu galaxeo")),
 ]

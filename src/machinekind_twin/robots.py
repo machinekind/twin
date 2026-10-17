@@ -16,7 +16,7 @@ Robots come only from installed packages (`robot_folders`): a robot's package re
 folder under the `machinekind_twin.robots` entry point group, named like the robot, loading to the path
 of the folder. The twin itself holds no robot: the SO-101 is the `soarm` package (so-arm101
 repository), the Galaxea A1X the `galaxeo` package (galaxeo-manipulators repository), and
-`examples/robots/testbot` is the twin's example robot.
+`examples/robots/arm6` is the twin's example arm and `examples/robots/testbot` its test robot.
 
 `robot_config(spec)` builds the twin configuration for one robot from its description.
 """
@@ -44,8 +44,8 @@ ROBOT_FILE = "robot.yaml"
 DEMO_FILE = "demo.json"
 ENTRY_POINT_GROUP = ROBOTS
 
-#: The robot a workspace names when no package registers one: the twin's example robot.
-FALLBACK_ROBOT = "testbot"
+#: The robot a workspace names when no package registers one: the twin's example arm.
+FALLBACK_ROBOT = "arm6"
 #: What to install when the robot a workspace names is not registered.
 INSTALL_HINT = ("zainstaluj pakiet ramienia obok blizniaka (uv pip install --no-sources, np. SO-101: README, sekcja 5); "
                 "robota przykladowego instaluje uv sync")

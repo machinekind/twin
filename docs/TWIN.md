@@ -43,7 +43,7 @@ Najważniejsze zasady:
 
 - `uv sync` installs the versions in `uv.lock`: the twin with its panel, the plugin contracts
   `machinekind-twin-api` from `packages/machinekind_twin_api` (see
-  [Jak to jest zbudowane](#jak-to-jest-zbudowane)), the example robot and strategy from
+  [Jak to jest zbudowane](#jak-to-jest-zbudowane)), the example arm and strategy from
   `examples/` and the dev tools. The contracts are not on PyPI.
 
 ```bash
@@ -632,4 +632,4 @@ packages/machinekind_twin_api/      pakiet machinekind-twin-api: kontrakty wtycz
 i backend) albo pakiet strategii — zależy od niego, nigdy od `machinekind-twin`
 (MuJoCo, viser, OpenCV). Bliźniak re-eksportuje te same klasy z `machinekind_twin.strategy`
 i `machinekind_twin.backends.base`, więc dotychczasowe importy i sprawdzenia `isinstance` działają
-bez zmian. Gotowe wzory: `examples/robots/testbot` i `examples/strategies/swing`.
+bez zmian. Gotowe wzory: `examples/robots/arm6`, `examples/robots/testbot` i `examples/strategies/swing`.

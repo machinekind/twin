@@ -71,7 +71,9 @@ class SceneMirror:
             if b not in self.bodies:
                 self.bodies[b] = sc.add_frame(f"{root}/b{b}", show_axes=False)
             name = f"{root}/b{b}/g{g}"
-            t, size, color = m.geom_type[g], m.geom_size[g], _rgb(rgba)
+            # The enum, not numpy.int32: `numpy.int32 in (mjtGeom, ...)` is False, which dropped every
+            # cylinder and capsule.
+            t, size, color = mujoco.mjtGeom(int(m.geom_type[g])), m.geom_size[g], _rgb(rgba)
             opacity = float(rgba[3]) if rgba[3] < 0.99 else None
             local = dict(position=m.geom_pos[g].copy(), wxyz=m.geom_quat[g].copy())
             if t == mujoco.mjtGeom.mjGEOM_MESH:
