@@ -79,7 +79,7 @@ Measured on an RTX A4500:
 |---|---|
 | Calibration of all cameras | one wave, about 20 poses; in simulation 0.16 mm / 0.013° error |
 | Servo dynamics identification | about 20 s of motion + a few seconds of fitting |
-| From a fresh clone to the panel | about 6 min of installation -> `twin demo` -> `twin ui` |
+| From a fresh clone to the panel | `uv sync` -> `uv run twin ui` |
 
 Most iterations (calibration, perception tuning, trying a strategy on the whole
 chain) happen in the twin; on the hardware only the check is left.
@@ -103,9 +103,9 @@ The repository holds everything needed to run it, including models and data:
 | Directory | What is in it | In the repository? |
 |---|---|---|
 | `examples/robots/testbot/` | the example robot: a robot folder and a backend that keeps the arm in memory | yes |
-| `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration; `twin demo` writes the chosen robot into its copy | yes |
+| `examples/twin.sim.json` | example workstation in simulation: two cameras with a trusted calibration; the first `twin ui` and `twin demo` write the robot into its copy | yes |
 | `assets/calib/*.txt` | example lens (Logitech Brio 4K 1280x720): K and distortion to load in Calibration, step 1 | yes |
-| `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created on the first save in the panel or by `twin demo` |
+| `workspace/twin.json` | **your** workstation: cameras and their calibration, port, table, measured dynamics | no: per desk, created by the first `twin ui` |
 | `workspace/calib/*.json` | every save of the camera poses (Calibration, step 2) as a separate file; the panel loads the newest, older ones can be picked from a list | yes: example sets from the A1X waves |
 | `configs/local.yaml` | your configuration (a copy of `configs/default.yaml`), e.g. a backend section | no (`.gitignore`) |
 
@@ -114,127 +114,107 @@ repository root, so `twin ui` started from another directory lands in
 the same workstation. Paths given in flags are counted from the current
 directory as usual.
 
-**Requirements:** Python **3.12** (tested with 3.12.10), Git, OpenGL (any
-graphics card, including an integrated one). The tested package versions are in
-[`constraints.txt`](constraints.txt).
+**Requirements:** [uv](https://docs.astral.sh/uv/getting-started/installation/), Git and
+OpenGL (any graphics card, including an integrated one). uv installs Python 3.12 and the package
+versions in `uv.lock`.
 
 ### 1. Installation
 
-**Windows** (PowerShell):
-
-```powershell
-git clone https://github.com/machinekind/digital_twin_training.git
-cd digital_twin_training
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process Bypass   # this window only; without it Activate.ps1 is blocked
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -e packages/machinekind_twin_api -e ".[twin,dev]" -c constraints.txt
-```
-
-A fresh Windows blocks PowerShell scripts ("running scripts is disabled on this
-system"), hence `Set-ExecutionPolicy` before activation: in every new window
-before `.venv\Scripts\activate`, or once for good:
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. In `cmd.exe` activation
-is `.venv\Scripts\activate.bat` and nothing more is needed. You can also skip
-activation and write `.venv\Scripts\python -m pip …`,
-`.venv\Scripts\twin …`.
-
-Short on space on `C:`? Before the installation (in the same PowerShell window)
-move the temporary files and the pip cache to another drive:
-
-```powershell
-$env:TMP='D:\tmp'; $env:PIP_CACHE_DIR='D:\tmp\pipcache'   # cmd.exe: set TMP=D:\tmp & set PIP_CACHE_DIR=D:\tmp\pipcache
-```
-
-**Linux** (x86_64, glibc ≥ 2.28, e.g. Ubuntu 22.04/24.04) **and macOS** (Apple Silicon):
-
 ```bash
-sudo apt install python3.12 python3.12-venv libgl1 libglib2.0-0 libegl1   # Linux only; Ubuntu 22.04: python3.12 from the deadsnakes PPA
-git clone https://github.com/machinekind/digital_twin_training.git && cd digital_twin_training
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install -e packages/machinekind_twin_api -e ".[twin,dev]" -c constraints.txt
+git clone https://github.com/machinekind/twin.git
+cd twin
+uv sync
 ```
 
-On a Linux server without a display: `export MUJOCO_GL=egl` (NVIDIA), or
-without a GPU `sudo apt install libosmesa6` and `export MUJOCO_GL=osmesa`.
+`uv sync` creates `.venv` with the twin and its panel, the plugin contracts from
+`packages/machinekind_twin_api`, the SO-101 packages `soarm` and `soarm-lab` from so-arm101, and
+pytest, pyright and ruff. `uv run <command>` runs a command in it, so nothing needs activating.
 
-`packages/machinekind_twin_api` is `machinekind-twin-api`, the contracts the twin shares with robot and
-strategy packages ([below](#control-strategies)). It is not on PyPI, so it is installed from the
-clone in the same command as the twin; `pip install -e ".[…]"` alone stops at "No matching
-distribution found for machinekind-twin-api". uv reads the same path from `[tool.uv.sources]` in
-`pyproject.toml` (`uv sync`, `uv run`).
+uv itself: `curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS and Linux,
+`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` on Windows.
 
-The twin holds no robot. Install one next to it: `pip install soarm` for the
-SO-101 (the so-arm101 repository), or `pip install -e examples/robots/testbot`
-for the example robot.
+Linux (x86_64, glibc ≥ 2.28, e.g. Ubuntu 22.04/24.04) needs the OpenGL libraries:
+`sudo apt install libgl1 libglib2.0-0 libegl1`. On a server without a display:
+`export MUJOCO_GL=egl` (NVIDIA), or without a GPU `sudo apt install libosmesa6` and
+`export MUJOCO_GL=osmesa`.
+
+Short on space on `C:`? Put uv's cache on another drive before `uv sync`:
+`$env:UV_CACHE_DIR='D:\uv-cache'` (cmd.exe: `set UV_CACHE_DIR=D:\uv-cache`).
+
+`packages/machinekind_twin_api` is `machinekind-twin-api`, the contracts the twin shares with robot
+and strategy packages ([below](#control-strategies)). It is not on PyPI, so `uv sync` installs it
+from the clone.
+
+The twin holds no robot of its own; `uv sync` brings the SO-101. The example robot is
+`uv pip install -e examples/robots/testbot`. A later `uv sync` removes it again, and
+`uv sync --inexact` keeps it.
 
 ### 2. Check
 
 ```bash
-twin check
+uv run twin check
 ```
 
 It prints the versions (mujoco, viser, cv2, numpy), the installed arm models
 and the USB-serial ports: `OK` for every ready item, `BLAD` (error) for a
 missing one. With no robot installed it names what to install.
 
-### 3. The twin's panel with the example workstation
+### 3. The twin's panel
 
 ```bash
-twin demo     # examples/twin.sim.json with the first installed robot -> workspace/twin.json (does not overwrite an existing one without --force)
-twin ui       # http://localhost:8080
+uv run twin ui       # http://localhost:8080
 ```
 
-`twin demo --robot NAME` picks another installed robot. With no robot
-installed, `demo` stops and names what to install (`pip install soarm`, or
-`pip install -e examples/robots/testbot`).
+On the first start, with no `workspace/twin.json` yet, `twin ui` writes the example
+workstation: `examples/twin.sim.json` with the first installed robot and two simulated cameras
+with a trusted calibration. `twin demo` writes it again: `--force` overwrites your workstation,
+and `--robot NAME` picks another installed robot.
 
-Port 8080 taken (another server, a proxy)? `twin ui --port 8765` and
-the address `http://localhost:8765`. At startup the panel prints in the console
-the full path of the workstation file (`istnieje` or `nowe, puste`: exists or
-new, empty), so you can see that the `workspace/twin.json` from the clone is
-used, also when the panel was started from another directory. `twin workspace` shows the same.
+Port 8080 taken (another server, a proxy)? `uv run twin ui --port 8765` and the address
+`http://localhost:8765`. At startup the panel prints in the console the full path of the
+workstation file and its state: `istnieje` (exists), `nowe: przykladowe stanowisko` (the example
+was just written) or `nowe, puste` (new and empty, when no robot is installed). It shows that the
+`workspace/twin.json` from the clone is used, also when the panel was started from another
+directory. `twin workspace` shows the same.
 
 In the panel: the **Ramię** tab -> `sim` -> **Połącz**; the **Mapa** tab shows
 the table stitched from the two cameras, and the **Strategie** tab runs the
-strategies of installed packages ([below](#control-strategies)). Without `demo`
-the twin starts with an empty workstation (the first installed robot, backend
-`sim`, no cameras); cameras are
-added in the Kamery tab (`Dodaj symulowana przed ramieniem`, then calibration,
-or in the Kalibracja tab `Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
+strategies of installed packages ([below](#control-strategies)). Cameras are added in the
+Kamery tab (`Dodaj symulowana przed ramieniem`, then calibration, or in the Kalibracja tab
+`Symulacja: pomin - wpisz prawdziwe polozenie kamer`).
 The tab with the panel must be visible: viser draws nothing in a background
 tab.
 
 ### 4. Tests
 
 ```bash
-pytest -q
-pytest -q -m "not render"     # a computer without OpenGL
-pyright                       # the contracts, the strategies and the example packages
+uv run pytest -q
+uv run pytest -q -m "not render"     # a computer without OpenGL
+uv run pyright                       # the contracts, the strategies and the example packages
 ```
 
-The twin's tests skip themselves without `mujoco` or `viser`, and the tests
-of the A1X in the twin (`tests/test_a1x_in_twin.py`) without the `galaxeo`
-package. With `.[twin,dev]` and galaxeo installed next to the twin (section 6)
-the result is all `passed`.
+The tests of the A1X in the twin (`tests/test_a1x_in_twin.py`) skip themselves without the
+`galaxeo` package. With galaxeo installed too (section 6) the result is all `passed`.
 
 ### 5. A real SO-101
 
 The SO-101 robot and its backends (`feetech`, `lerobot`, the COM<->TCP bridge)
-are the `soarm` package (the so-arm101 repository), installed next to the twin:
-`pip install "soarm[feetech]"`. Its `docs/first-contact.md` covers the port and
-the gripper ticks. The `feetech` backend reads its `feetech:` section from your
-copy of the configuration:
+are the `soarm` package from the so-arm101 repository, and `uv sync` installs it with the
+`feetech` backend. Its `docs/first-contact.md` covers the port and the gripper ticks. In the
+panel, **Ramię** -> `SO-101 przez port (feetech)`: with one USB-serial device plugged in, the
+Port field fills itself. The `feetech` backend reads its `feetech:` section from your copy of
+the configuration:
 
 ```bash
 cp configs/default.yaml configs/local.yaml      # Windows: copy configs\default.yaml configs\local.yaml
-twin --config configs/local.yaml ui
+uv run twin --config configs/local.yaml ui
 ```
 
 Next: [docs/TWIN.md](docs/TWIN.md), "Pierwszy test na prawdziwym stanowisku"
 (first test on a real workstation), from step 0.
+
+`uv.lock` pins so-arm101 at a commit of its `main`.
+`uv lock --upgrade-package soarm --upgrade-package soarm-lab` moves it to the latest one.
 
 ### 6. Galaxea A1X (CAN)
 
@@ -244,10 +224,12 @@ the `a1x` backend over CAN-FD. Install it next to the twin, which finds it
 through its entry points:
 
 ```bash
-pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
+uv pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
 # macOS (XCAN dongle): "galaxeo[xcan] @ git+..." and brew install libusb; Windows (PCAN): "galaxeo[pcan] @ git+..."
-twin demo --robot a1x      # an A1X workstation in simulation (does not overwrite an existing one without --force)
+uv run twin demo --robot a1x      # an A1X workstation in simulation (does not overwrite an existing one without --force)
 ```
+
+A later `uv sync` removes galaxeo again, and `uv sync --inexact` keeps it.
 
 The hardware, the `a1x` section of the configuration and the first session are
 in galaxeo's
@@ -363,7 +345,7 @@ robot's joints and limits, the port and the backend's own config section.
 [examples/robots/testbot](examples/robots/testbot) is a complete example, and the
 tests load it. Entry points live in the installed package's metadata: after
 pulling a version that changes them, run
-`pip install -e packages/machinekind_twin_api -e .` again, or the panel finds stale backends.
+`uv sync` again, or the panel finds stale backends.
 
 ## How it is built
 

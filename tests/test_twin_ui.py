@@ -585,6 +585,40 @@ def test_home_works_straight_after_a_stop(app):
         app.twin.disconnect()
 
 
+class _Port:
+    def __init__(self, device: str, vid: int | None):
+        self.device, self.vid = device, vid
+
+
+def test_usb_serial_port_is_the_one_device_with_a_usb_id(monkeypatch):
+    lp = pytest.importorskip("serial.tools.list_ports")
+    from machinekind_twin.ui.app import usb_serial_port
+
+    monkeypatch.setattr(lp, "comports", lambda: [_Port("/dev/ttyS0", None), _Port("/dev/ttyACM0", 0x1A86)])
+    assert usb_serial_port() == "/dev/ttyACM0"
+    monkeypatch.setattr(lp, "comports", lambda: [_Port("/dev/ttyACM0", 0x1A86), _Port("/dev/ttyACM1", 0x1A86)])
+    assert usb_serial_port() is None
+
+
+def test_a_preset_without_a_port_fills_the_field_with_the_saved_port_or_the_one_usb_device(app, monkeypatch):
+    from machinekind_twin.ui import app as panel
+
+    sim, typed = "symulacja (blizniak jest ramieniem)", "Robot testowy (w pamieci)"
+    before = app.arm_backend.value
+    monkeypatch.setattr(panel, "usb_serial_port", lambda: "/dev/ttyACM0")
+    try:
+        app.arm_backend.value = sim
+        app.arm_backend.value = typed
+        assert app.arm_port.value == "/dev/ttyACM0"
+
+        monkeypatch.setattr(app.ws, "port", "/dev/ttyUSB3")
+        app.arm_backend.value = sim
+        app.arm_backend.value = typed
+        assert app.arm_port.value == "/dev/ttyUSB3"
+    finally:
+        app.arm_backend.value = before
+
+
 def test_startup_flag_connects_the_arm(app):
     """`twin ui --arm`: ramie polaczone przy starcie - bez klikania."""
     app._startup(arm=True)

@@ -127,25 +127,21 @@ the twin's repository: `examples/robots/testbot` and `examples/strategies/swing`
 
 ## Installing
 
-The package is not on PyPI; it lives in the twin's repository, `packages/machinekind_twin_api`. The twin
-installs it from its clone, in the same command:
-
-```bash
-pip install -e packages/machinekind_twin_api -e ".[twin,dev]" -c constraints.txt
-```
+The package is not on PyPI; it lives in the twin's repository, `packages/machinekind_twin_api`.
+`uv sync` in the twin's clone installs it from there, editable.
 
 A plugin installed into the twin's environment finds it there. A plugin's own environment
 without the twin takes it from git:
 
 ```bash
-pip install "machinekind-twin-api @ git+https://github.com/machinekind/digital_twin_training.git@main#subdirectory=packages/machinekind_twin_api"
+pip install "machinekind-twin-api @ git+https://github.com/machinekind/twin.git@main#subdirectory=packages/machinekind_twin_api"
 ```
 
 A plugin package names it by version, `machinekind-twin-api>=0.1,<0.2`, not by that git URL: pip
 replaces an installed editable copy with the one from a direct URL, and refuses to install both
 in one command. A uv project can point `[tool.uv.sources]` at the git URL instead; pip ignores it.
 
-Tests: `pytest packages/machinekind_twin_api/tests` from the twin's root, or `pytest` here.
+Tests: `uv run pytest packages/machinekind_twin_api/tests` from the twin's root.
 
 ## Licence
 

@@ -22,7 +22,7 @@ the backend's own config section.
 Try it in the twin's environment, which already has `machinekind-twin-api`:
 
 ```bash
-pip install -e examples/robots/testbot
+uv pip install -e examples/robots/testbot
 twin ui      # workspace robot: testbot, then "Robot testowy (w pamieci)"
 ```
 

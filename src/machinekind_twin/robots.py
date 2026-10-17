@@ -47,8 +47,8 @@ ENTRY_POINT_GROUP = ROBOTS
 #: The robot a workspace names when no package registers one: the twin's example robot.
 FALLBACK_ROBOT = "testbot"
 #: What to install when the robot a workspace names is not registered.
-INSTALL_HINT = ("zainstaluj pakiet ramienia: SO-101 - pip install soarm (repozytorium so-arm101), "
-                "robot przykladowy - pip install -e examples/robots/testbot")
+INSTALL_HINT = ("zainstaluj pakiet ramienia: SO-101 - uv sync w klonie blizniaka (pakiet soarm "
+                "z repozytorium so-arm101), robot przykladowy - uv pip install -e examples/robots/testbot")
 
 
 def resolve_asset(path: str | Path) -> Path:

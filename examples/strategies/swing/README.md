@@ -41,7 +41,7 @@ plain mapping of joint targets would do as well.
 Try it in the twin's environment, which already has `machinekind-twin-api`:
 
 ```bash
-pip install -e examples/strategies/swing
+uv pip install -e examples/strategies/swing
 twin ui      # panel: Strategie (Strategies) > swing, joint: shoulder_pan, Uruchom (Run)
 ```
 

@@ -122,7 +122,7 @@ TAB_HELP = {
         "2. Dynamika stanowiska idzie z `twin export` w station.json - z niej korzysta trening."),
     "Strategie": (
         "1. Strategie przychodza z zainstalowanych pakietow (entry points `machinekind_twin.strategies`), "
-        "np. `pip install -e examples/strategies/swing`; po instalacji **Odswiez liste**.\n"
+        "np. `uv pip install -e examples/strategies/swing`; po instalacji **Odswiez liste**.\n"
         "2. Wybierz strategie - formularz to jej ustawienia, wypelnione z sekcji pliku konfiguracji o tej samej "
         "nazwie. Nieznany klucz albo zly typ: Uruchom odmawia, zanim ramie drgnie.\n"
         "3. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
@@ -221,6 +221,16 @@ def smear_mask(mask: np.ndarray, shifts: list[tuple[float, float]]) -> np.ndarra
         if (dx or dy) and sx < ex and sy < ey:
             out[y0 + sy:y0 + ey, x0 + sx:x0 + ex] |= crop[sy:ey, sx:ex]
     return out
+
+
+def usb_serial_port() -> str | None:
+    """The one USB-serial device plugged in; None when there is none, several, or no pyserial."""
+    try:
+        from serial.tools.list_ports import comports
+    except ImportError:
+        return None
+    devices = sorted(str(p.device) for p in comports() if p.vid is not None)
+    return devices[0] if len(devices) == 1 else None
 
 
 #: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
@@ -879,9 +889,12 @@ class TwinApp:
                                                    "sprzet z domyslnym laczem (A1X: xcan na macOS, can0 na Linuksie, "
                                                    "PCAN na Windows; SO-101: feetech przez port). Zestaw wpisuje "
                                                    "Port, ktory mozna potem poprawic. Dziala po Polacz.")
-            self.arm_port = g.add_text("Port", self.ws.port or (presets[current][1] or ""),
+            preset_port = presets[current][1]
+            self.arm_port = g.add_text("Port", self._typed_port() if preset_port is None
+                                       else self.ws.port or preset_port,
                                        hint="feetech/lerobot: COMx, /dev/ttyACM0 albo socket://adres:5555 "
-                                            "(`twin check` wypisuje porty). a1x: can0 (Linux), xcan "
+                                            "(`twin check` wypisuje porty; jedno podlaczone urzadzenie "
+                                            "USB-serial wpisuje sie samo). a1x: can0 (Linux), xcan "
                                             "albo xcan:6 (macOS), PCAN_USBBUS1 (Windows); pusty = domyslny. "
                                             "sim: nieuzywany.")
             connect = g.add_button("Polacz", icon=viser.Icon.PLUG_CONNECTED, color="green",
@@ -892,6 +905,8 @@ class TwinApp:
         @self.arm_backend.on_update
         def _(event):
             port = presets.get(self.arm_backend.value, (None, None))[1]
+            if port is None and not self.arm_port.value.strip():
+                port = self._typed_port()
             if port is not None:
                 self.arm_port.value = port
             self._render_arm(force=True)
@@ -1165,6 +1180,11 @@ class TwinApp:
         presets = {c.label: (c.backend, c.port) for c in conns}
         presets["symulacja (blizniak jest ramieniem)"] = ("sim", "")
         return presets
+
+    def _typed_port(self) -> str:
+        """The Port field for a preset that leaves the port to the field: the workstation's saved
+        port, else the one USB-serial device plugged in."""
+        return self.ws.port or usb_serial_port() or ""
 
     def _preset_backend(self) -> str:
         return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]
