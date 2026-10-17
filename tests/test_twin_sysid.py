@@ -16,9 +16,9 @@ pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
 
-from lerobot_mp.twin.dynamics import Dynamics  # noqa: E402
-from lerobot_mp.twin.robots import get_spec  # noqa: E402
-from lerobot_mp.twin.sysid import (  # noqa: E402
+from machinekind_twin.dynamics import Dynamics  # noqa: E402
+from machinekind_twin.robots import get_spec  # noqa: E402
+from machinekind_twin.sysid import (  # noqa: E402
     OWNER, Recording, Replayer, excitation, identify, plan_target, record,
 )
 
@@ -57,8 +57,8 @@ def test_identification_says_what_this_motion_cannot_determine():
 # ------------------------------------------------------------ nagranie na blizniaku
 @pytest.fixture
 def twin():
-    from lerobot_mp.twin.runtime import Twin
-    from lerobot_mp.twin.workspace import Workspace
+    from machinekind_twin.runtime import Twin
+    from machinekind_twin.workspace import Workspace
 
     tw = Twin(Workspace(robot=BOT))
     try:

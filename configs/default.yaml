@@ -1,12 +1,12 @@
-# Konfiguracja ramienia dla cyfrowego blizniaka (lerobot-twin).
+# Konfiguracja ramienia dla cyfrowego blizniaka (twin).
 #
-# Sekcje `safety` i `robot` czyta blizniak (`lerobot_mp/twin/config.py`), kazda inna -
+# Sekcje `safety` i `robot` czyta blizniak (`machinekind_twin/config.py`), kazda inna -
 # backend albo strategia o tej nazwie. Wartosci nieobecne w pliku biora sie z wartosci domyslnych, wiec mozna
 # nadpisac pojedynczy parametr bez przepisywania calosci. Nieznany klucz
 # w sekcji konczy sie bledem, a nie cichym zignorowaniem.
 #
-# Uruchomienie:  lerobot-twin --config configs/local.yaml ui
-#                - ustawia zmienna LEROBOT_MP_CONFIG. Mozna ja tez ustawic samemu.
+# Uruchomienie:  twin --config configs/local.yaml ui
+#                - ustawia zmienna MACHINEKIND_TWIN_CONFIG. Mozna ja tez ustawic samemu.
 # Wlasne wartosci trzymaj w kopii: configs/local.yaml (jest w .gitignore) -
 # wystarczy w niej sekcja, ktora zmieniasz, np. tylko `robot:`.
 
@@ -20,7 +20,7 @@ safety:
   # `safety.home` i `joints` w tym pliku nadpisuja je tylko dla ramienia o tych stawach.
 
 robot:
-  backend: sim         # sim albo wtyczka backendu z pakietu ramienia (lerobot-twin check)
+  backend: sim         # sim albo wtyczka backendu z pakietu ramienia (twin check)
   port: null           # port ramienia, np. COM5, /dev/ttyACM0; lacze CAN: can0, xcan
 
 # Kazda inna sekcja nalezy do backendu albo strategii o tej nazwie. Backend sprawdza swoja sam;

@@ -3,7 +3,7 @@
 # potrzebuje ten projekt - reszta zaleznosci dobiera sie sama.
 #
 # Uzycie (patrz README "Szybki start na nowym komputerze"):
-#   pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
+#   pip install -e packages/machinekind_twin_api -e ".[twin,dev]" -c constraints.txt
 
 numpy==2.2.6
 PyYAML==6.0.3

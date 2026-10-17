@@ -16,13 +16,13 @@ import pytest
 
 mujoco = pytest.importorskip("mujoco")
 
-from lerobot_mp.twin import cameras, runtime  # noqa: E402
-from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
-from lerobot_mp.twin.robots import get_spec  # noqa: E402
-from lerobot_mp.twin.runtime import Twin  # noqa: E402
-from lerobot_mp.twin.scene import CameraView, SceneConfig, build  # noqa: E402
-from lerobot_mp.twin.strategy import StrategyRunner  # noqa: E402
-from lerobot_mp.twin.workspace import CameraRecord, Workspace  # noqa: E402
+from machinekind_twin import cameras, runtime  # noqa: E402
+from machinekind_twin.clock import VirtualClock  # noqa: E402
+from machinekind_twin.robots import get_spec  # noqa: E402
+from machinekind_twin.runtime import Twin  # noqa: E402
+from machinekind_twin.scene import CameraView, SceneConfig, build  # noqa: E402
+from machinekind_twin.strategy import StrategyRunner  # noqa: E402
+from machinekind_twin.workspace import CameraRecord, Workspace  # noqa: E402
 
 from test_strategy import Plugin, drive  # noqa: E402
 
@@ -241,7 +241,7 @@ def test_a_strategy_sees_the_camera_on_the_arm_in_its_observation(twin):
 @pytest.fixture
 def panel(testbot, tmp_path, monkeypatch):
     pytest.importorskip("viser")
-    from lerobot_mp.twin.ui.app import TwinApp
+    from machinekind_twin.ui.app import TwinApp
 
     from test_twin_ui import free_port
 

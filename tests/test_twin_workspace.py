@@ -12,8 +12,8 @@ pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
 
-from lerobot_mp.twin.calib.handeye import CameraFit, Fit  # noqa: E402
-from lerobot_mp.twin.workspace import CameraRecord, Workspace, nominal_K  # noqa: E402
+from machinekind_twin.calib.handeye import CameraFit, Fit  # noqa: E402
+from machinekind_twin.workspace import CameraRecord, Workspace, nominal_K  # noqa: E402
 
 
 def charuco_camera(name: str = "front", trusted: bool = True) -> CameraRecord:

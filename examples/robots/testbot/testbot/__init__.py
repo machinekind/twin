@@ -2,10 +2,10 @@
 
 It is the template for a robot's own repository. `pyproject.toml` registers both halves:
 
-* `lerobot_mp.robots`: `testbot = "testbot:ROBOT_DIR"`, the folder with `robot.yaml` and the model;
-* `lerobot_mp.backends`: `testbot = "testbot.backend:create"`, the backend factory.
+* `machinekind_twin.robots`: `testbot = "testbot:ROBOT_DIR"`, the folder with `robot.yaml` and the model;
+* `machinekind_twin.backends`: `testbot = "testbot.backend:create"`, the backend factory.
 
-Nothing here imports the twin: the backend uses only the contracts (`lerobot-mp-api`).
+Nothing here imports the twin: the backend uses only the contracts (`machinekind-twin-api`).
 """
 
 from pathlib import Path

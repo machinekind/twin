@@ -7,25 +7,25 @@ import json
 import shutil
 from pathlib import Path
 
-import lerobot_mp_api.backend as api_backend
+import machinekind_twin_api.backend as api_backend
 import pytest
 import yaml
-from lerobot_mp_api.entry_points import BACKENDS, ROBOTS
+from machinekind_twin_api.entry_points import BACKENDS, ROBOTS
 
 pytest.importorskip("mujoco")
 
 from conftest import BOT, TESTBOT  # noqa: E402
 
-import lerobot_mp.robot.base as twin_backend  # noqa: E402
-from lerobot_mp.robot import backend_context, create_backend  # noqa: E402
-from lerobot_mp.robot.factory import PluginBackend  # noqa: E402
-from lerobot_mp.twin.cli import main, parser  # noqa: E402
-from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
-from lerobot_mp.twin.robots import (  # noqa: E402
+import machinekind_twin.backends.base as twin_backend  # noqa: E402
+from machinekind_twin.backends import backend_context, create_backend  # noqa: E402
+from machinekind_twin.backends.factory import PluginBackend  # noqa: E402
+from machinekind_twin.cli import main, parser  # noqa: E402
+from machinekind_twin.clock import VirtualClock  # noqa: E402
+from machinekind_twin.robots import (  # noqa: E402
     DEMO_FILE, ROBOT_FILE, get_spec, load_robot, robot_config, robot_folders,
 )
-from lerobot_mp.twin.runtime import Twin  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin.runtime import Twin  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 DT = 0.02
@@ -46,14 +46,14 @@ def test_a_robot_folder_from_an_installed_package_is_found_through_its_entry_poi
 
 
 def test_the_twin_itself_holds_no_robot_folder():
-    package = REPO / "src" / "lerobot_mp"
+    package = REPO / "src" / "machinekind_twin"
     found = {p.parent.relative_to(package).parts[:2] for p in package.rglob("robot.yaml")}
     assert not found
     assert not (REPO / "assets" / "robots").exists()
 
 
 def test_a_robot_plugin_that_does_not_load_leaves_the_others(install_dist, caplog):
-    install_dist("broken-robot", {"lerobot_mp.robots": {"broken": "no_such_module:DIR"}})
+    install_dist("broken-robot", {"machinekind_twin.robots": {"broken": "no_such_module:DIR"}})
     folders = robot_folders()
     assert "broken" not in folders and BOT in folders
     assert "broken" in caplog.text
@@ -64,7 +64,8 @@ def a_folder_package(install_dist, tmp_path, dist: str, name: str) -> Path:
     folder = tmp_path / f"{dist}-folder"
     shutil.copytree(TESTBOT / "testbot" / "robot", folder)
     module = dist.replace("-", "_")
-    install_dist(dist, {"lerobot_mp.robots": {name: f"{module}:DIR"}}, {module: f"DIR = {str(folder)!r}\n"})
+    install_dist(dist, {"machinekind_twin.robots": {name: f"{module}:DIR"}},
+                 {module: f"DIR = {str(folder)!r}\n"})
     return folder
 
 
@@ -134,7 +135,7 @@ def test_the_description_names_the_robot_it_is_registered_as(install_dist, tmp_p
 
 
 def test_the_demo_station_takes_an_installed_robot_and_names_what_to_install_otherwise(tmp_path, capsys):
-    from lerobot_mp.twin.robots import default_robot
+    from machinekind_twin.robots import default_robot
 
     station = tmp_path / "twin.json"
     assert main(["demo", "--path", str(station)]) == 0          # the first installed robot
@@ -150,7 +151,7 @@ def test_the_demo_station_takes_an_installed_robot_and_names_what_to_install_oth
 
 
 def test_a_new_workspace_names_the_first_installed_robot():
-    from lerobot_mp.twin.robots import default_robot
+    from machinekind_twin.robots import default_robot
 
     assert Workspace().robot == default_robot() == next(iter(robot_folders()))
 
@@ -204,7 +205,7 @@ def test_a_partial_home_in_the_file_keeps_the_rest_of_the_descriptions_home(test
 
 
 def test_the_config_check_at_startup_accepts_joint_tables(tmp_path, monkeypatch):
-    from lerobot_mp.twin.cli import _use_config
+    from machinekind_twin.cli import _use_config
 
     good = tmp_path / "local.yaml"
     good.write_text("joints: {j1: {min: -90.0}}\ntestbot: {start: {j1: 5.0}}\n")
@@ -234,21 +235,22 @@ def test_a_backend_section_reaches_its_plugin_raw(testbot):
 
 # ------------------------------------------------------------ a plugin backend in the twin
 @pytest.mark.parametrize("name", api_backend.__all__)
-def test_the_backend_contract_is_lerobot_mp_apis_own_not_a_copy(name):
-    """A plugin subclasses `lerobot_mp_api.RobotBackend`; the factory's `isinstance` must recognise it."""
+def test_the_backend_contract_is_machinekind_twin_apis_own_not_a_copy(name):
+    """A plugin subclasses `machinekind_twin_api.RobotBackend`; the factory's `isinstance` must
+    recognise it."""
     assert getattr(twin_backend, name) is getattr(api_backend, name)
 
 
-def test_the_twin_reads_the_entry_point_groups_lerobot_mp_api_names():
-    from lerobot_mp.robot import factory
-    from lerobot_mp.twin import robots
+def test_the_twin_reads_the_entry_point_groups_machinekind_twin_api_names():
+    from machinekind_twin import robots
+    from machinekind_twin.backends import factory
 
     assert robots.ENTRY_POINT_GROUP == ROBOTS
     assert factory.ENTRY_POINT_GROUP == BACKENDS
 
 
 def test_the_test_robot_package_never_imports_the_twin():
-    """Only the contracts (`lerobot_mp_api`), anywhere in the package, also inside a function."""
+    """Only the contracts (`machinekind_twin_api`), anywhere in the package, also inside a function."""
     for path in (TESTBOT / "testbot").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
@@ -259,7 +261,7 @@ def test_the_test_robot_package_never_imports_the_twin():
                 continue
 
             for module in modules:
-                assert module.split(".")[0] != "lerobot_mp", f"{path}: {module}"
+                assert module.split(".")[0] != "machinekind_twin", f"{path}: {module}"
 
 
 def test_the_twin_drives_the_test_robot_through_its_plugin(testbot):

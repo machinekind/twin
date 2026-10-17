@@ -1,7 +1,7 @@
 """Strategies from installed packages: found through entry points, built strictly from their settings,
 run by the same `StrategyRunner` as the twin's test strategy.
 
-The example package `examples/strategies/swing` lives outside `src/lerobot_mp/`; the `swing`
+The example package `examples/strategies/swing` lives outside `src/machinekind_twin/`; the `swing`
 fixture installs it the way pip would.
 """
 
@@ -12,21 +12,21 @@ import subprocess
 import sys
 
 import pytest
-from lerobot_mp_api.entry_points import STRATEGIES
+from machinekind_twin_api.entry_points import STRATEGIES
 
 pytest.importorskip("mujoco")
 
 from conftest import BOT, SWING  # noqa: E402
 
-from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
-from lerobot_mp.twin.runtime import Twin  # noqa: E402
-from lerobot_mp.twin.strategies import ENTRY_POINT_GROUP, config_section, load_strategy, strategies  # noqa: E402
-from lerobot_mp.twin.strategy import StrategyRunner  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin.clock import VirtualClock  # noqa: E402
+from machinekind_twin.runtime import Twin  # noqa: E402
+from machinekind_twin.strategies import ENTRY_POINT_GROUP, config_section, load_strategy, strategies  # noqa: E402
+from machinekind_twin.strategy import StrategyRunner  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 from test_strategy import drive  # noqa: E402
 
-GROUP = "lerobot_mp.strategies"
+GROUP = "machinekind_twin.strategies"
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def install_strategy(install_dist, dist: str, source: str) -> str:
 # --------------------------------------------------------------------------- discovery
 
 
-def test_the_twin_reads_the_entry_point_group_lerobot_mp_api_names():
+def test_the_twin_reads_the_entry_point_group_machinekind_twin_api_names():
     assert ENTRY_POINT_GROUP == STRATEGIES == GROUP
 
 
@@ -63,7 +63,7 @@ def test_a_strategy_from_an_installed_package_is_found_through_its_entry_point(s
     assert plugin.name == "swing"
     assert plugin.cls.__name__ == "Swing"
     assert plugin.cls.__module__ == "swing"
-    assert plugin.source == "lerobot-mp-swing 0.1.0 (swing:Swing)"
+    assert plugin.source == "machinekind-twin-swing 0.1.0 (swing:Swing)"
     assert plugin.summary == "Swings one joint around where it starts, then waits for it to come back."
 
 
@@ -77,7 +77,7 @@ def test_the_example_package_imports_nothing_from_the_twin_at_runtime():
         "import sys\n"
         f"sys.path.insert(0, {str(SWING)!r})\n"
         "import swing\n"
-        "print(sorted(m for m in sys.modules if m.split('.')[0] == 'lerobot_mp'))\n"
+        "print(sorted(m for m in sys.modules if m.split('.')[0] == 'machinekind_twin'))\n"
     )
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
 
@@ -289,7 +289,7 @@ def test_a_strategy_the_panel_cannot_build_is_refused_when_loaded(install_dist, 
 def test_the_config_section_named_like_the_strategy(tmp_path, monkeypatch):
     config = tmp_path / "local.yaml"
     config.write_text("swing:\n  joint: j2\n  cycles: 1\nempty:\nbroken: 3\n", encoding="utf-8")
-    monkeypatch.setenv("LEROBOT_MP_CONFIG", str(config))
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(config))
 
     assert config_section("swing") == {"joint": "j2", "cycles": 1}
     assert config_section("empty") == {}

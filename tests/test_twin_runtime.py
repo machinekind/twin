@@ -16,13 +16,13 @@ pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
 
-from lerobot_mp.robot import backend_context  # noqa: E402
-from lerobot_mp.robot.base import RobotBackend, RobotInfo  # noqa: E402
-from lerobot_mp.twin import runtime as rt  # noqa: E402
-from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
-from lerobot_mp.twin.robots import get_spec  # noqa: E402
-from lerobot_mp.twin.runtime import Twin  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin import runtime as rt  # noqa: E402
+from machinekind_twin.backends import backend_context  # noqa: E402
+from machinekind_twin.backends.base import RobotBackend, RobotInfo  # noqa: E402
+from machinekind_twin.clock import VirtualClock  # noqa: E402
+from machinekind_twin.robots import get_spec  # noqa: E402
+from machinekind_twin.runtime import Twin  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 SPEC = get_spec(BOT)
 
@@ -340,7 +340,7 @@ def test_config_file_keeps_foreign_sections_for_backends_but_fails_on_unknown_ke
     """Top-level sections the twin does not read stay raw for backend plugins (a file copied from
     the old `configs/default.yaml` still loads), but a typo inside a section the twin reads must
     still fail instead of silently dropping a safety setting."""
-    from lerobot_mp.twin.config import TwinConfig, load_config
+    from machinekind_twin.config import TwinConfig, load_config
 
     old = tmp_path / "old.yaml"
     old.write_text(

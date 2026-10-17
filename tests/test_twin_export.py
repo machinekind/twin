@@ -1,7 +1,7 @@
 """The station as data: `scene.xml` + `station.json`, read by plain MuJoCo without the twin.
 
 This is the boundary to the training package: the measured station reaches its simulator as
-files, not through an import of `lerobot_mp`.
+files, not through an import of `machinekind_twin`.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import mujoco  # noqa: E402
 
 from conftest import BOT  # noqa: E402
 
-from lerobot_mp.twin import scene as sc  # noqa: E402
-from lerobot_mp.twin.robots import resolve_asset  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin import scene as sc  # noqa: E402
+from machinekind_twin.robots import resolve_asset  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 
 @pytest.fixture(scope="module")

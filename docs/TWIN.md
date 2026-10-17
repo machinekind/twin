@@ -18,7 +18,7 @@ w zakładce Strategie.
  │ biurko, kostka       │  ChArUco, sysid   │ pozach, z tym samym K,   │
  └──────────▲───────────┘                   │ serwa jak zmierzone      │
             │                               └────────────┬─────────────┘
-            │  strategia `policy` przez nadzór           │  lerobot-twin export:
+            │  strategia `policy` przez nadzór           │  twin export:
             │  (ta sama ścieżka co w symulacji)          ▼  scene.xml + station.json
             └────────────────────────────────── trening w soarm-lab
 ```
@@ -42,11 +42,11 @@ Skrót dla każdej platformy jest w README, „Szybki start na nowym komputerze�
 Najważniejsze zasady:
 
 - Wersje sprawdzone razem są w `constraints.txt` (`-c constraints.txt`).
-- Kontrakty wtyczek to osobny pakiet `lerobot-mp-api` w `packages/lerobot_mp_api`
+- Kontrakty wtyczek to osobny pakiet `machinekind-twin-api` w `packages/machinekind_twin_api`
   (patrz [Jak to jest zbudowane](#jak-to-jest-zbudowane)). Nie ma go na PyPI, więc
   instaluje się go z klonu w tym samym poleceniu co bliźniaka:
-  `pip install -e packages/lerobot_mp_api -e ".[…]"`; samo `pip install -e ".[…]"`
-  kończy się „No matching distribution found for lerobot-mp-api”. uv bierze tę
+  `pip install -e packages/machinekind_twin_api -e ".[…]"`; samo `pip install -e ".[…]"`
+  kończy się „No matching distribution found for machinekind-twin-api”. uv bierze tę
   ścieżkę z `[tool.uv.sources]` w `pyproject.toml`.
 
 ```bash
@@ -55,10 +55,10 @@ py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass   # świeży Windows blokuje Activate.ps1; cmd.exe: .venv\Scripts\activate.bat
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-pip install -e packages/lerobot_mp_api -e ".[twin,dev]" -c constraints.txt
+pip install -e packages/machinekind_twin_api -e ".[twin,dev]" -c constraints.txt
 pip install soarm    # ramię SO-101; robot przykładowy: pip install -e examples/robots/testbot
-lerobot-twin check
-lerobot-twin demo    # przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem -> workspace/twin.json
+twin check
+twin demo    # przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem -> workspace/twin.json
 ```
 
 - Linux bez ekranu: `export MUJOCO_GL=egl` (NVIDIA) albo `osmesa` (CPU,
@@ -71,7 +71,7 @@ lerobot-twin demo    # przykładowe stanowisko w symulacji z pierwszym zainstalo
 wygląd sceny, dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
 liczy się od katalogu repozytorium, niezależnie od katalogu uruchomienia; inny
 plik: `--workspace <plik>`. Bez pliku bliźniak startuje z pustym stanowiskiem
-(pierwsze zainstalowane ramię, backend `sim`, bez kamer). `lerobot-twin demo`
+(pierwsze zainstalowane ramię, backend `sim`, bez kamer). `twin demo`
 kopiuje `examples/twin.sim.json` i wpisuje w kopię pierwsze zainstalowane ramię
 (inne: `--robot <nazwa>`) — dwie kamery symulowane, których kalibracja to ich
 prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
@@ -90,8 +90,8 @@ tą zmianą dostaje pierwszy zestaw ze swojej dotychczasowej pozy przy
 pierwszym zapisie.
 
 **Konfiguracja ramienia.** Bliźniak czyta plik konfiguracji tylko wtedy, gdy
-się go wskaże: `lerobot-twin --config configs/local.yaml ui` (opcja ustawia
-zmienną `LEROBOT_MP_CONFIG`). Sekcje `safety:` i `robot:` (`backend`, `port`)
+się go wskaże: `twin --config configs/local.yaml ui` (opcja ustawia
+zmienną `MACHINEKIND_TWIN_CONFIG`). Sekcje `safety:` i `robot:` (`backend`, `port`)
 czyta bliźniak; każda inna sekcja należy do backendu o tej nazwie i sprawdza ją
 sam backend. Klucze sekcji opisuje pakiet ramienia (SO-101: `feetech:` i
 `lerobot:` w pakiecie `soarm`); Galaxea A1X (pakiet `galaxeo`) ma sekcję `a1x:`,
@@ -102,9 +102,9 @@ ramienia.
 ## Panel
 
 ```bash
-lerobot-twin ui                  # http://localhost:8080; zajęty port: --port 8765
-lerobot-twin ui --host 0.0.0.0   # także z sieci — panel nie ma hasła, tylko w zaufanej sieci
-lerobot-twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJPEG, tylko odczyt)
+twin ui                  # http://localhost:8080; zajęty port: --port 8765
+twin ui --host 0.0.0.0   # także z sieci — panel nie ma hasła, tylko w zaufanej sieci
+twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJPEG, tylko odczyt)
 ```
 
 **Podgląd kamer** (`--stream-port`): kadry, które panel i tak pobiera, po HTTP na osobnym porcie —
@@ -173,8 +173,8 @@ stanu.
 | **Kamery** | lista kamer z jedną plakietką stanu (SKALIBROWANA / DO KALIBRACJI / KALIBRACJA NIEPEWNA / PORUSZONA / BEZ OBRAZU / WYŁĄCZONA — kolory jak piramidy w 3D); wybrana kamera: podgląd, jedna linia „co dalej”, przycisk *Włączona / Wyłączona*, *Usuń kamerę* (drugie kliknięcie potwierdza); symulowana dodatkowo *Przesuwaj w 3D* (uchwyt) i *Postaw tu, skąd patrzysz w 3D*; liczby w zwiniętych *Szczegółach*; na dole *Dodaj symulowaną przed ramieniem* i *Szukaj kamer USB* (wybór i *Dodaj kamerę USB* pojawiają się po znalezieniu) |
 | **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru); *Tag na biurku*: poza taga z kamer i *Jedź nad tag* |
-| **Dynamika** | **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako dynamiki stanowiska (`lerobot-twin export` niesie ją w `station.json`) |
-| **Strategie** | strategie z zainstalowanych pakietów (entry points `lerobot_mp.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
+| **Dynamika** | **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako dynamiki stanowiska (`twin export` niesie ją w `station.json`) |
+| **Strategie** | strategie z zainstalowanych pakietów (entry points `machinekind_twin.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
 | **Sim-Real** | kadr prawdziwej kamery z nałożonymi krawędziami renderu bliźniaka z tej samej pozy i K, mediana rozjazdu w pikselach |
 
 ---
@@ -229,7 +229,7 @@ mają leżeć na krawędziach ramienia i stołu. Mediana > 3 px = coś jest źle
 
 **5. Dynamika serw.** Zakładka Dynamika → *Identyfikuj na połączonym ramieniu*
 (~20 s ruchu po 12°; do pozy startowej ramię jedzie 30°/s) → *Zapisz jako
-dynamikę stanowiska*. `lerobot-twin export` niesie ją w `station.json`, więc
+dynamikę stanowiska*. `twin export` niesie ją w `station.json`, więc
 trening randomizuje wokół zmierzonego ramienia, nie katalogu. Z tego ruchu
 wyznaczalne są **tłumienie, armatura i opóźnienie** — na ruchu z panelu (5 stawów, 20 s), dla 13 syntetycznych ramion spoza siatki
 startowej i szumu 0,05°: tłumienie do 10,5%, armatura do 8,2%, opóźnienie do
@@ -275,7 +275,7 @@ backendu).
 ```bash
 pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
 # macOS z przejściówką XCAN: "galaxeo[xcan] @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
-lerobot-twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
+twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
 ```
 
 Sprzęt i łącze CAN, sekcję `a1x:` konfiguracji i bezpieczeństwo (A1X nie ma
@@ -292,7 +292,7 @@ sprawdzone: na Linuksie `ip -det -s link show can0`, na macOS
 w `configs/local.yaml`. Jej klucze i pole Port dla każdego systemu opisuje
 [galaxeo/robot/README.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
 
-**0. Połączenie.** `lerobot-twin --config configs/local.yaml ui`, zakładka
+**0. Połączenie.** `twin --config configs/local.yaml ui`, zakładka
 Ramię: zestaw *Galaxea A1X* dla tego systemu, *Połącz* — nigdy nie jedzie do
 domu. Nic nie idzie na magistralę, dopóki czegoś nie ruszysz. Suwaki pokazują
 zmierzoną pozę, a przewodnik podpowiada ten sam krok. *Połącz* kończy się
@@ -350,16 +350,16 @@ wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach wystaje tak sam
 
 | | |
 |---|---|
-| `lerobot-twin check` | czy środowisko jest gotowe (bez renderu) |
-| `lerobot-twin demo` | przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem → `workspace/twin.json` (`--robot`, `--force`, `--path`) |
-| `lerobot-twin demo --robot NAZWA` | to samo z innym zainstalowanym ramieniem; pakiet ramienia może mieć własne stanowisko w folderze ramienia (`demo.json`), np. `a1x` z galaxeo |
-| `lerobot-twin ui` | panel w przeglądarce |
-| `lerobot-twin --config configs/local.yaml <polecenie>` | konfiguracja ramienia z pliku (sekcje backendów, np. `a1x:`) |
-| `lerobot-twin card --tag-mm 50` | arkusz karty kalibracyjnej (PNG, A4) |
-| `lerobot-twin board --square-mm 28` | tablica ChArUco do intrynsyk (PNG, A4) |
-| `lerobot-twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy, na pierwszym zainstalowanym ramieniu; `--robot NAZWA` na innym zainstalowanym ramieniu |
-| `lerobot-twin workspace` | co wiadomo o stanowisku |
-| `lerobot-twin export <folder>` | stanowisko jako dane: `scene.xml` + `assets/` + `station.json` — dla pakietów, które jadą na zmierzonym stanowisku bez importu bliźniaka (trening) |
+| `twin check` | czy środowisko jest gotowe (bez renderu) |
+| `twin demo` | przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem → `workspace/twin.json` (`--robot`, `--force`, `--path`) |
+| `twin demo --robot NAZWA` | to samo z innym zainstalowanym ramieniem; pakiet ramienia może mieć własne stanowisko w folderze ramienia (`demo.json`), np. `a1x` z galaxeo |
+| `twin ui` | panel w przeglądarce |
+| `twin --config configs/local.yaml <polecenie>` | konfiguracja ramienia z pliku (sekcje backendów, np. `a1x:`) |
+| `twin card --tag-mm 50` | arkusz karty kalibracyjnej (PNG, A4) |
+| `twin board --square-mm 28` | tablica ChArUco do intrynsyk (PNG, A4) |
+| `twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy, na pierwszym zainstalowanym ramieniu; `--robot NAZWA` na innym zainstalowanym ramieniu |
+| `twin workspace` | co wiadomo o stanowisku |
+| `twin export <folder>` | stanowisko jako dane: `scene.xml` + `assets/` + `station.json` — dla pakietów, które jadą na zmierzonym stanowisku bez importu bliźniaka (trening) |
 
 ```bash
 pytest -q                                          # całość, z renderem
@@ -369,7 +369,7 @@ pytest -q -n auto --dist loadfile                  # równolegle, plik na jednym
 ```
 
 Testy domu etapami i `Twin.move` jadą na zegarze wirtualnym
-(`twin/clock.py`): bliźniak bez wątku pętli (`connect(threaded=False)`),
+(`clock.py`): bliźniak bez wątku pętli (`connect(threaded=False)`),
 `VirtualClock` przesuwa `step(dt)`, a `move` czyta ten sam zegar
 (`Twin.clock`). Rampy i dojazd liczą się w sekundach symulowanych: dziesięć
 sekund ruchu to ułamek sekundy procesora, a czasy powtarzają się co do taktu.
@@ -410,7 +410,7 @@ tablicy ChArUco** (`calib/intrinsics.py`) — inaczej poza jest dopasowywana do
 nominalnego K z 65° pola widzenia i wychodzi pewna siebie i przesunięta.
 Tablica to ArUco 5×5, inny słownik niż tagi karty (36h11).
 
-### Wynik w symulacji (`lerobot-twin calib-sim --n 5 --cameras 2`)
+### Wynik w symulacji (`twin calib-sim --n 5 --cameras 2`)
 
 | | przed poprawką półpiksela | **po** |
 |---|---|---|
@@ -593,8 +593,8 @@ kamery jej nie widzą: szczęka **zablokowana** (nie dojeżdża do rozkazu i sto
 ## Jak to jest zbudowane
 
 ```
-src/lerobot_mp/twin/
-├── robots.py        opisy ramion z folderów (`robot.yaml`, z kamerami na ramieniu), tylko z wtyczek `lerobot_mp.robots`
+src/machinekind_twin/
+├── robots.py        opisy ramion z folderów (`robot.yaml`, z kamerami na ramieniu), tylko z wtyczek `machinekind_twin.robots`
 ├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów i strategii surowe (`TwinConfig`)
 ├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
 ├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K i na ramieniu, karta, obiekty, panele, czujniki chwytu, wygląd; eksport do MJCF
@@ -604,13 +604,13 @@ src/lerobot_mp/twin/
 ├── camera_stream.py wątek kamery: zawsze najnowsza klatka, bez kolejki
 ├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
 ├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
-├── strategy.py      `StrategyRunner`; kontrakt strategii (`Observation`, `Strategy`, `Action`) re-eksportowany z `lerobot_mp_api`
+├── strategy.py      `StrategyRunner`; kontrakt strategii (`Observation`, `Strategy`, `Action`) re-eksportowany z `machinekind_twin_api`
 ├── waypoints.py     strategia testowa: przejazd przez zadane pozy
-├── strategies.py    strategie z wtyczek `lerobot_mp.strategies` i ich ustawienia (dataclass, budowana ściśle)
+├── strategies.py    strategie z wtyczek `machinekind_twin.strategies` i ich ustawienia (dataclass, budowana ściśle)
 ├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
 ├── sysid.py         identyfikacja dynamiki serw
 ├── dynamics.py      dynamika zmierzona (`Dynamics`, zapis w stanowisku)
-├── cli.py           lerobot-twin
+├── cli.py           twin
 ├── calib/
 │   ├── tags.py        AprilTag 36h11 + korekta półpiksela
 │   ├── handeye.py     solver wielu kamer ze wspólną kartą
@@ -627,18 +627,18 @@ src/lerobot_mp/twin/
     ├── strategy_tab.py zakładka Strategie: lista, formularz ustawień, Uruchom i Zatrzymaj
     └── watch.py       wykrywanie przestawionej kamery
 
-src/lerobot_mp/robot/
-└── base.py, factory.py   kontrakt backendu (re-eksport z `lerobot_mp_api`) i rejestr wtyczek
+src/machinekind_twin/backends/
+└── base.py, factory.py   kontrakt backendu (re-eksport z `machinekind_twin_api`) i rejestr wtyczek
 
-packages/lerobot_mp_api/      pakiet lerobot-mp-api: kontrakty wtyczek, tylko numpy
+packages/machinekind_twin_api/      pakiet machinekind-twin-api: kontrakty wtyczek, tylko numpy
 ├── strategy.py           `Observation`, `Action`, `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, protokół `Strategy`
 ├── backend.py            `BackendContext`, protokół `BackendPlugin`, `RobotBackend`, `RobotInfo`
 └── entry_points.py       grupy entry points: `ROBOTS`, `BACKENDS`, `STRATEGIES`
 ```
 
-**Kontrakty wtyczek.** Typy kontraktu leżą w pakiecie `lerobot-mp-api`
-(`packages/lerobot_mp_api/`), a nie w bliźniaku. Wtyczka — pakiet ramienia (folder z `robot.yaml`
-i backend) albo pakiet strategii — zależy od niego, nigdy od `lerobot-mp`
-(MuJoCo, viser, OpenCV). Bliźniak re-eksportuje te same klasy z `lerobot_mp.twin.strategy`
-i `lerobot_mp.robot.base`, więc dotychczasowe importy i sprawdzenia `isinstance` działają
+**Kontrakty wtyczek.** Typy kontraktu leżą w pakiecie `machinekind-twin-api`
+(`packages/machinekind_twin_api/`), a nie w bliźniaku. Wtyczka — pakiet ramienia (folder z `robot.yaml`
+i backend) albo pakiet strategii — zależy od niego, nigdy od `machinekind-twin`
+(MuJoCo, viser, OpenCV). Bliźniak re-eksportuje te same klasy z `machinekind_twin.strategy`
+i `machinekind_twin.backends.base`, więc dotychczasowe importy i sprawdzenia `isinstance` działają
 bez zmian. Gotowe wzory: `examples/robots/testbot` i `examples/strategies/swing`.

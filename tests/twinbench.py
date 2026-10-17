@@ -17,9 +17,9 @@ import threading
 import time
 from collections.abc import Callable
 
-from lerobot_mp.twin import runtime as rt
-from lerobot_mp.twin.clock import VirtualClock
-from lerobot_mp.twin.workspace import Workspace
+from machinekind_twin import runtime as rt
+from machinekind_twin.clock import VirtualClock
+from machinekind_twin.workspace import Workspace
 
 DT = 0.02                                      # twin loop period, 50 Hz
 

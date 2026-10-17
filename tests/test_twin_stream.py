@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("cv2")
 
-from lerobot_mp.twin.ui.stream import FrameServer  # noqa: E402
+from machinekind_twin.ui.stream import FrameServer  # noqa: E402
 
 
 def free_port() -> int:
