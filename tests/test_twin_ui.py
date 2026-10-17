@@ -19,7 +19,7 @@ pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
 
-from lerobot_mp.twin.ui import jobs  # noqa: E402
+from machinekind_twin.ui import jobs  # noqa: E402
 
 
 def free_port() -> int:
@@ -30,7 +30,7 @@ def free_port() -> int:
 
 def a_panel(path):
     """Panel na nowym stanowisku z robotem testowym (`path` - plik stanowiska)."""
-    from lerobot_mp.twin.ui.app import TwinApp
+    from machinekind_twin.ui.app import TwinApp
 
     path.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
     return TwinApp(path, host="127.0.0.1", port=free_port())
@@ -52,7 +52,7 @@ class _Event:
 
 
 def _look_at_pose(eye, target):
-    from lerobot_mp.twin.kinematics import pose
+    from machinekind_twin.kinematics import pose
     eye, target = np.asarray(eye, float), np.asarray(target, float)
     z = (target - eye) / np.linalg.norm(target - eye)
     x = np.cross(z, [0, 0, 1.0])
@@ -176,7 +176,7 @@ def test_reconnect_ends_a_running_wave_and_it_never_drives_the_new_arm(app):
 
 
 def test_card_wave_goes_home_only_while_it_still_owns_the_arm(app, monkeypatch):
-    import lerobot_mp.twin.calib.session as session_mod
+    import machinekind_twin.calib.session as session_mod
 
     home = dict(app.ws.spec().home)
     app.twin.connect("sim", threaded=False)
@@ -218,8 +218,8 @@ def test_card_wave_goes_home_only_while_it_still_owns_the_arm(app, monkeypatch):
 def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app, monkeypatch):
     import threading
 
-    from lerobot_mp.twin.calib import intrinsics
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.calib import intrinsics
+    from machinekind_twin.workspace import CameraRecord
 
     class Hub:
         def frame(self, name):
@@ -260,8 +260,8 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
 
 @pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
-    from lerobot_mp.twin.calib.handeye import CameraFit, Fit
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.calib.handeye import CameraFit, Fit
+    from machinekind_twin.workspace import CameraRecord
 
     app.ws.add_camera(CameraRecord("front", "sim"))
     try:
@@ -307,7 +307,7 @@ def test_stop_or_home_during_a_start_never_lets_the_task_take_the_arm(app, actio
 
 def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_panel(app, monkeypatch):
     """"Wlacz silniki A1X" tylko z polaczonym a1x, z potwierdzeniem i przy rozbrojonym panelu."""
-    from lerobot_mp.twin.runtime import RobotStatus
+    from machinekind_twin.runtime import RobotStatus
 
     app.twin.connect("sim", threaded=False)
     ev = _click(app, "Wlacz silniki A1X (FF 1-5-6)")
@@ -344,7 +344,7 @@ def test_a1x_enable_button_needs_a_connected_a1x_a_confirmation_and_a_disarmed_p
 
 def test_status_line_says_the_gripper_is_disabled_when_not_drivable(app, monkeypatch):
     """A1X przez XCAN: chwytak nie dostaje 0x051, a panel bez sprzezenia pokazuje rozkaz - linia stanu to mowi."""
-    from lerobot_mp.twin.runtime import RobotStatus
+    from machinekind_twin.runtime import RobotStatus
 
     class FakeA1X:
         drivable = False
@@ -368,7 +368,7 @@ def test_status_line_says_the_gripper_is_disabled_when_not_drivable(app, monkeyp
 
 def test_status_line_mentions_the_gripper_over_xcan(app, monkeypatch):
     """XCAN z proba chwytaka (a1x.gripper_over_xcan / A1X_GRIPPER_XCAN=1): zamiast odmowy "proba"."""
-    from lerobot_mp.twin.runtime import RobotStatus
+    from machinekind_twin.runtime import RobotStatus
 
     class FakeA1X:
         trial = True
@@ -396,7 +396,7 @@ def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
     assert not app.ws.cameras
     app._refresh_cameras()
     assert not app.cam_box.visible and "Brak kamer" in app.cams_html.content
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.workspace import CameraRecord
     app.ws.add_camera(CameraRecord("usb1", "5"))
     try:
         app._refresh_cameras(select="usb1")
@@ -413,7 +413,7 @@ def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
 
 
 def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
-    from lerobot_mp.twin.runtime import RobotStatus
+    from machinekind_twin.runtime import RobotStatus
 
     started = []
     monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam"])
@@ -435,7 +435,7 @@ def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(
 
 
 def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.workspace import CameraRecord
 
     rec = CameraRecord("kam1", "sim")
     rec.T_cam2base = np.eye(4).tolist()
@@ -460,7 +460,7 @@ def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
 
 def test_after_saving_one_lens_the_calibration_tab_moves_on_to_the_next_camera(app):
     """Po zapisie obiektywu kamery 1 przycisk mowil dalej "kamera 1", choc zostala kamera 2."""
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.workspace import CameraRecord
 
     class Res:
         K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
@@ -502,8 +502,8 @@ def test_fixed_texts_written_at_creation_reach_the_browser(app):
 @pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt",))
 def test_shipped_lens_files_parse(filename):
     """Pliki z obiektywami w assets/calib czyta ten sam parser, co przycisk w panelu."""
-    from lerobot_mp.twin.calib import intrinsics as intr
-    from lerobot_mp.twin.ui.app import LENS_DIR
+    from machinekind_twin.calib import intrinsics as intr
+    from machinekind_twin.ui.app import LENS_DIR
 
     res = intr.read_file(LENS_DIR / filename)
     assert res.K.shape == (3, 3) and res.K[0, 0] > 500 and res.dist.shape == (5,)
@@ -513,8 +513,8 @@ def test_shipped_lens_files_parse(filename):
 def test_lens_from_file_lands_on_the_chosen_camera_and_refuses_another_resolution(app, monkeypatch, tmp_path):
     """Krok 1 bez szachownicy: obiektyw z pliku .txt (K, dystorsja) wpisuje sie do wybranej kamery,
     plik z innej rozdzielczosci jest odrzucany, a poza ustalona ze starym K przestaje byc zaufana."""
-    from lerobot_mp.twin.ui import app as app_mod
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.ui import app as app_mod
+    from machinekind_twin.workspace import CameraRecord
 
     (tmp_path / "brio.txt").write_text(
         "# camera_matrix (3x3, row-major)\n937.5 0 628.3\n0 937.7 348.0\n0 0 1\n"
@@ -548,8 +548,8 @@ def test_lens_from_file_lands_on_the_chosen_camera_and_refuses_another_resolutio
 def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):
     """Brio i uEye przegrywaly wyscig z resetem USB przy starcie panelu i zostawaly BEZ OBRAZU,
     az ktos wylaczyl i wlaczyl kamere w panelu. Panel probuje sam, co HEAL_S, poki jest blad."""
-    from lerobot_mp.twin.ui import app as app_mod
-    from lerobot_mp.twin.workspace import CameraRecord
+    from machinekind_twin.ui import app as app_mod
+    from machinekind_twin.workspace import CameraRecord
 
     calls = []
     hub = app.twin.cameras
@@ -586,7 +586,7 @@ def test_home_works_straight_after_a_stop(app):
 
 
 def test_startup_flag_connects_the_arm(app):
-    """`lerobot-twin ui --arm`: ramie polaczone przy starcie - bez klikania."""
+    """`twin ui --arm`: ramie polaczone przy starcie - bez klikania."""
     app._startup(arm=True)
     assert app.twin.connected and app.twin.status.simulated
 
@@ -603,10 +603,10 @@ def choose_strategy(app, name: str, **values):
 
 
 def a_config_file(tmp_path, monkeypatch, text: str) -> None:
-    """`lerobot-twin --config` with this file."""
+    """`twin --config` with this file."""
     path = tmp_path / "local.yaml"
     path.write_text(text, encoding="utf-8")
-    monkeypatch.setenv("LEROBOT_MP_CONFIG", str(path))
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(path))
 
 
 def test_the_strategies_tab_draws_an_installed_strategys_settings(app, swing):
@@ -614,7 +614,7 @@ def test_the_strategies_tab_draws_an_installed_strategys_settings(app, swing):
 
     assert swing in tab.pick.options
     assert tab.plugin.name == "swing"
-    assert "lerobot-mp-swing 0.1.0" in tab.about_md.content
+    assert "machinekind-twin-swing 0.1.0" in tab.about_md.content
     assert list(tab._inputs) == ["joint", "amplitude", "period_s", "cycles", "wait_for_return"]
     assert type(tab._inputs["joint"]).__name__ == "GuiTextHandle"
     assert type(tab._inputs["amplitude"]).__name__ == "GuiNumberHandle"
@@ -636,7 +636,7 @@ def test_the_strategys_config_section_prefills_its_form(app, swing, tmp_path, mo
 
 
 def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runner(app, swing):
-    from lerobot_mp.twin.strategy import StrategyRunner
+    from machinekind_twin.strategy import StrategyRunner
 
     app.twin.connect("sim", threaded=False)
     tab = choose_strategy(app, swing, joint="j1", period_s=1.0)
@@ -743,7 +743,8 @@ class Strategy:
 
 
 def install_counter(install_dist) -> str:
-    install_dist("counter-strategy", {"lerobot_mp.strategies": {"counter": "counter_strategy:Strategy"}},
+    install_dist("counter-strategy",
+                 {"machinekind_twin.strategies": {"counter": "counter_strategy:Strategy"}},
                  {"counter_strategy": COUNTER})
     return "counter"
 

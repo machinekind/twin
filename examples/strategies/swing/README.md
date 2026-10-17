@@ -5,7 +5,7 @@ around where it starts, then waits for the joint to come back. `pyproject.toml` 
 through an entry point:
 
 ```toml
-[project.entry-points."lerobot_mp.strategies"]
+[project.entry-points."machinekind_twin.strategies"]
 swing = "swing:Swing"
 ```
 
@@ -22,12 +22,12 @@ swing:
   amplitude: 15.0
 ```
 
-The package depends on `lerobot-mp-api`, the contracts (`packages/lerobot_mp_api` in the twin's
+The package depends on `machinekind-twin-api`, the contracts (`packages/machinekind_twin_api` in the twin's
 repository), never on the twin. `Swing` subclasses the `Strategy` protocol, which supplies the
 members it leaves out (`stop`) and lets a type checker check `settings`, `start` and `act`:
 
 ```python
-from lerobot_mp_api import Strategy
+from machinekind_twin_api import Strategy
 
 
 class Swing(Strategy[SwingSettings]):
@@ -38,11 +38,11 @@ class Swing(Strategy[SwingSettings]):
 `act` reads an `Observation` and returns an `Action`; an object with `Action`'s attributes or a
 plain mapping of joint targets would do as well.
 
-Try it in the twin's environment, which already has `lerobot-mp-api`:
+Try it in the twin's environment, which already has `machinekind-twin-api`:
 
 ```bash
 pip install -e examples/strategies/swing
-lerobot-twin ui      # panel: Strategie (Strategies) > swing, joint: shoulder_pan, Uruchom (Run)
+twin ui      # panel: Strategie (Strategies) > swing, joint: shoulder_pan, Uruchom (Run)
 ```
 
 The twin's tests load it without `pip install` (`tests/conftest.py`, fixture `swing`).

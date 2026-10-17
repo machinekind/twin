@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import lerobot_mp_api.strategy as api_strategy
+import machinekind_twin_api.strategy as api_strategy
 import numpy as np
 import pytest
 
@@ -23,17 +23,17 @@ pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
 
-import lerobot_mp.twin.strategy as twin_strategy  # noqa: E402
-from lerobot_mp.twin.clock import VirtualClock  # noqa: E402
-from lerobot_mp.twin.runtime import Twin  # noqa: E402
-from lerobot_mp.twin.strategy import Action, ObjectPose, StrategyRunner  # noqa: E402
-from lerobot_mp.twin.waypoints import Waypoints  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+import machinekind_twin.strategy as twin_strategy  # noqa: E402
+from machinekind_twin.clock import VirtualClock  # noqa: E402
+from machinekind_twin.runtime import Twin  # noqa: E402
+from machinekind_twin.strategy import Action, ObjectPose, StrategyRunner  # noqa: E402
+from machinekind_twin.waypoints import Waypoints  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 from test_twin_runtime import FakeArm, connect_fake  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
-TWIN_SOURCES = REPO / "src" / "lerobot_mp" / "twin"
+TWIN_SOURCES = REPO / "src" / "machinekind_twin"
 
 #: The simulated clock's step, and the twin loop's period [s].
 CLOCK_STEP = 0.01
@@ -308,8 +308,9 @@ def test_the_runner_and_the_test_strategy_import_nothing_from_rl(source):
 
 
 @pytest.mark.parametrize("name", api_strategy.__all__)
-def test_the_contract_is_lerobot_mp_apis_own_not_a_copy(name):
-    """A plugin builds its `Action` from `lerobot_mp_api`; the runner's `isinstance` must recognise it."""
+def test_the_contract_is_machinekind_twin_apis_own_not_a_copy(name):
+    """A plugin builds its `Action` from `machinekind_twin_api`; the runner's `isinstance` must
+    recognise it."""
     assert getattr(twin_strategy, name) is getattr(api_strategy, name)
 
 
@@ -479,7 +480,7 @@ def test_the_arm_taken_during_a_tick_reports_the_preempt_not_a_crash(twin, monke
         raise RuntimeError("ramie odebrane (Dom)")
 
     monkeypatch.setattr(twin, "set_target", taken_while_sending)
-    with caplog.at_level(logging.ERROR, logger="lerobot_mp.twin.strategy"):
+    with caplog.at_level(logging.ERROR, logger="machinekind_twin.strategy"):
         assert not runner.step_once(0.0)
 
     assert runner.status.stopped_because == "przerwana: Dom"

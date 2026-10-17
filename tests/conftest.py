@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from lerobot_mp.twin.robots import reload_robots
+from machinekind_twin.robots import reload_robots
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 #: The test robot's package: a robot folder and a backend plugin.
@@ -48,7 +48,7 @@ def _project(folder: Path) -> dict:
 
 def _install_testbot_for_the_session() -> None:
     """`pip install examples/robots/testbot` for this test run, ahead of every other distribution."""
-    site = Path(tempfile.mkdtemp(prefix="lerobot-mp-testbot-"))
+    site = Path(tempfile.mkdtemp(prefix="machinekind-twin-testbot-"))
     atexit.register(shutil.rmtree, site, ignore_errors=True)
     project = _project(TESTBOT)
     write_dist(site, project["name"], project["entry-points"], version=project["version"])
@@ -61,11 +61,11 @@ _install_testbot_for_the_session()
 
 @pytest.fixture(autouse=True)
 def _no_config_from_env(monkeypatch):
-    """Testy licza na wartosciach domyslnych - plik z LEROBOT_MP_CONFIG w powloce by je zmienil."""
-    # setenv zapamietuje stan sprzed testu, wiec to, co ustawi `lerobot-twin --config`
+    """Testy licza na wartosciach domyslnych - plik z MACHINEKIND_TWIN_CONFIG w powloce by je zmienil."""
+    # setenv zapamietuje stan sprzed testu, wiec to, co ustawi `twin --config`
     # w os.environ, zniknie po tescie (samo delenv nieistniejacej zmiennej niczego nie zapamietuje).
-    monkeypatch.setenv("LEROBOT_MP_CONFIG", "")
-    monkeypatch.delenv("LEROBOT_MP_CONFIG")
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", "")
+    monkeypatch.delenv("MACHINEKIND_TWIN_CONFIG")
 
 
 @pytest.fixture

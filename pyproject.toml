@@ -3,59 +3,59 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lerobot-mp"
+name = "machinekind-twin"
 version = "0.1.0"
 description = "Cyfrowy blizniak stanowiska z ramieniem robota: symulacja MuJoCo, kalibracja kamer, strategie sterowania"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 # Wersje sprawdzone razem sa w constraints.txt:
-#   pip install -e packages/lerobot_mp_api -e ".[...]" -c constraints.txt
+#   pip install -e packages/machinekind_twin_api -e ".[...]" -c constraints.txt
 dependencies = [
     # contrib (a superset of opencv-python) keeps existing environments on one OpenCV package:
     # two OpenCV wheels write the same cv2/ directory and overwrite each other.
     "opencv-contrib-python>=4.8",
     "numpy>=1.24",
     "PyYAML>=6.0",
-    # The plugin contracts, packages/lerobot_mp_api in this repository; not on PyPI, so it is
-    # installed from the clone in the same command: pip install -e packages/lerobot_mp_api -e ".[...]"
-    "lerobot-mp-api>=0.1,<0.2",
+    # The plugin contracts, packages/machinekind_twin_api in this repository; not on PyPI, so it is
+    # installed from the clone in the same command: pip install -e packages/machinekind_twin_api -e ".[...]"
+    "machinekind-twin-api>=0.1,<0.2",
 ]
 
 [project.optional-dependencies]
 # Cyfrowy blizniak: symulacja, panel webowy, kalibracja kamer, identyfikacja dynamiki.
-# pyserial: `lerobot-twin check` wypisuje przejsciowki USB-serial.
+# pyserial: `twin check` wypisuje przejsciowki USB-serial.
 twin = ["mujoco>=3.14,<3.15", "viser>=1.1", "pyserial>=3.5"]
 # Skrypty z research/3d (otoczki wypukle, dobor chwytu).
 research = ["trimesh>=4,<6"]
 dev = ["pytest>=7.4", "pyright>=1.1"]
 
 [project.scripts]
-lerobot-twin = "lerobot_mp.twin.cli:main"
+twin = "machinekind_twin.cli:main"
 
 # uv (`uv run`, `uv sync`) takes the contracts from the clone, editable, like the pip line above.
 [tool.uv.sources]
-lerobot-mp-api = { path = "packages/lerobot_mp_api", editable = true }
+machinekind-twin-api = { path = "packages/machinekind_twin_api", editable = true }
 
 # The type checker runs on the contracts and on what implements them; the rest of the twin is not typed yet.
 [tool.pyright]
-extraPaths = ["packages/lerobot_mp_api"]
+extraPaths = ["packages/machinekind_twin_api"]
 include = [
-    "packages/lerobot_mp_api",
+    "packages/machinekind_twin_api",
     "examples/strategies",
-    "src/lerobot_mp/twin/strategy.py",
-    "src/lerobot_mp/twin/strategies.py",
-    "src/lerobot_mp/twin/waypoints.py",
+    "src/machinekind_twin/strategy.py",
+    "src/machinekind_twin/strategies.py",
+    "src/machinekind_twin/waypoints.py",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-lerobot_mp = ["py.typed"]
+machinekind_twin = ["py.typed"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages/lerobot_mp_api/tests"]
+testpaths = ["tests", "packages/machinekind_twin_api/tests"]
 pythonpath = ["src"]
 markers = [
     "render: test renderuje kadry przez MuJoCo/OpenGL (maszyna bez GPU: -m \"not render\")",

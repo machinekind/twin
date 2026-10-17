@@ -15,9 +15,9 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 
 from conftest import BOT  # noqa: E402
-from lerobot_mp.twin.robots import get_spec  # noqa: E402
-from lerobot_mp.twin.scene import CameraView, Headlight, Light, Look, SceneConfig, Table, build  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin.robots import get_spec  # noqa: E402
+from machinekind_twin.scene import CameraView, Headlight, Light, Look, SceneConfig, Table, build  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 #: The training scene's look (a directional light from straight above, a spot from the side).
 TRAINING_LOOK = Look(

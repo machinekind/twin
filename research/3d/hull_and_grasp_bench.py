@@ -20,9 +20,9 @@ import mujoco
 import numpy as np
 import trimesh
 
-from lerobot_mp.twin import scene as sc
-from lerobot_mp.twin.kinematics import RobotKinematics, inverse, pose
-from lerobot_mp.twin.robots import get_spec
+from machinekind_twin import scene as sc
+from machinekind_twin.kinematics import RobotKinematics, inverse, pose
+from machinekind_twin.robots import get_spec
 
 SO101 = get_spec("so101")
 

@@ -50,12 +50,12 @@ class _BlindCameras:
 
 def _session(spec_name: str, seed: int, cameras=("c0", "c1")):
     import numpy as np
-    from lerobot_mp.twin import scene as sc
-    from lerobot_mp.twin.calib.card import Card, pinch_point
-    from lerobot_mp.twin.calib.session import Session, WaveConfig
-    from lerobot_mp.twin.collision import CollisionChecker
-    from lerobot_mp.twin.kinematics import RobotKinematics
-    from lerobot_mp.twin.robots import get_spec
+    from machinekind_twin import scene as sc
+    from machinekind_twin.calib.card import Card, pinch_point
+    from machinekind_twin.calib.session import Session, WaveConfig
+    from machinekind_twin.collision import CollisionChecker
+    from machinekind_twin.kinematics import RobotKinematics
+    from machinekind_twin.robots import get_spec
 
     spec = get_spec(spec_name)
     card = Card(tag_size=0.037)
@@ -120,7 +120,7 @@ def test_wave_aims_at_a_camera_only_after_two_detections_and_never_goes_home_for
 # ----------------------------------------------------------- zestawy polozen
 def test_step2_results_are_kept_as_presets_and_newest_loads_by_default(tmp_path):
     """Kazdy zapis kroku 2 to nowy plik; `load` bierze najnowszy, wybrany starszy zostaje."""
-    from lerobot_mp.twin.workspace import CameraRecord, Workspace
+    from machinekind_twin.workspace import CameraRecord, Workspace
 
     def pose(x):
         return [[1, 0, 0, x], [0, 1, 0, 0], [0, 0, 1, 0.5], [0, 0, 0, 1]]
@@ -190,8 +190,8 @@ def test_solver_drops_outlier_frames_and_reports_them():
     Odstajace obserwacje (3 x mediana) odpadaja przed koncowym dopasowaniem, a werdykt mowi ile."""
     import cv2
     import numpy as np
-    from lerobot_mp.twin.calib.handeye import Observation, judge, solve
-    from lerobot_mp.twin.calib.tags import corners_in_tag
+    from machinekind_twin.calib.handeye import Observation, judge, solve
+    from machinekind_twin.calib.tags import corners_in_tag
 
     rng = np.random.default_rng(3)
     K = np.array([[900.0, 0, 640], [0, 900.0, 360], [0, 0, 1]])
@@ -228,7 +228,7 @@ def test_wave_uses_only_frames_captured_after_the_arm_stopped():
     Teraz kamera musi oddac kadr zlapany po zatrzymaniu (+ margines); bez niego jest pomijana."""
     import time
     import numpy as np
-    from lerobot_mp.twin.calib import session as sm
+    from machinekind_twin.calib import session as sm
 
     t0 = time.monotonic()
     img = np.zeros((8, 8, 3), np.uint8)

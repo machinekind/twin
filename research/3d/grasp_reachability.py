@@ -11,8 +11,8 @@ import time
 
 import numpy as np
 
-from lerobot_mp.twin.kinematics import RobotKinematics
-from lerobot_mp.twin.robots import get_spec
+from machinekind_twin.kinematics import RobotKinematics
+from machinekind_twin.robots import get_spec
 
 SO101 = get_spec("so101")
 

@@ -3,16 +3,16 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lerobot-mp-testbot"
+name = "machinekind-twin-testbot"
 version = "0.1.0"
 description = "The digital twin's test robot: a robot folder and a backend plugin"
 requires-python = ">=3.10"
-dependencies = ["lerobot-mp-api>=0.1,<0.2"]
+dependencies = ["machinekind-twin-api>=0.1,<0.2"]
 
-[project.entry-points."lerobot_mp.robots"]
+[project.entry-points."machinekind_twin.robots"]
 testbot = "testbot:ROBOT_DIR"
 
-[project.entry-points."lerobot_mp.backends"]
+[project.entry-points."machinekind_twin.backends"]
 testbot = "testbot.backend:create"
 
 [tool.setuptools.packages.find]

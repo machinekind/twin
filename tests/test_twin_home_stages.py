@@ -24,9 +24,9 @@ pytest.importorskip("mujoco")
 from conftest import TESTBOT  # noqa: E402
 from twinbench import Bench  # noqa: E402
 
-from lerobot_mp.twin.collision import CollisionChecker  # noqa: E402
-from lerobot_mp.twin.robots import get_spec  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin.collision import CollisionChecker  # noqa: E402
+from machinekind_twin.robots import get_spec  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 ROBOT = "stagebot"
 #: 10 cm from the j1 axis at -40 degrees, 20 cm tall. From the side with the arm raised (j1 -80,
@@ -68,7 +68,7 @@ def stagebot(install_dist, tmp_path):
     text = mjcf.read_text(encoding="utf-8")
     assert base in text
     mjcf.write_text(text.replace(base, f"{base}\n      {POST}"), encoding="utf-8")
-    install_dist("stagebot", {"lerobot_mp.robots": {ROBOT: "stagebot_dir:DIR"}},
+    install_dist("stagebot", {"machinekind_twin.robots": {ROBOT: "stagebot_dir:DIR"}},
                  {"stagebot_dir": f"DIR = {str(folder)!r}\n"})
     return ROBOT
 

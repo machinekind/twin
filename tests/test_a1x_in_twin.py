@@ -19,12 +19,12 @@ from galaxeo import protocol as P  # noqa: E402
 from galaxeo.arm.fake import FakeA1XBus  # noqa: E402
 from galaxeo.robot.backend import A1XArm  # noqa: E402
 
-from lerobot_mp.robot import backend_context, create_backend  # noqa: E402
-from lerobot_mp.robot.factory import PluginBackend  # noqa: E402
-from lerobot_mp.twin import runtime as rt  # noqa: E402
-from lerobot_mp.twin.config import TwinConfig  # noqa: E402
-from lerobot_mp.twin.robots import RobotSpec, get_spec, robot_config  # noqa: E402
-from lerobot_mp.twin.workspace import Workspace  # noqa: E402
+from machinekind_twin import runtime as rt  # noqa: E402
+from machinekind_twin.backends import backend_context, create_backend  # noqa: E402
+from machinekind_twin.backends.factory import PluginBackend  # noqa: E402
+from machinekind_twin.config import TwinConfig  # noqa: E402
+from machinekind_twin.robots import RobotSpec, get_spec, robot_config  # noqa: E402
+from machinekind_twin.workspace import Workspace  # noqa: E402
 
 ARM = tuple(f"arm_joint{i}" for i in range(1, 7))
 STEP = 0.005                                   # one stream tick of the backend and the fake bus (200 Hz)

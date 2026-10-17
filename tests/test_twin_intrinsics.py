@@ -7,7 +7,7 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from lerobot_mp.twin.calib.intrinsics import Board, Collector  # noqa: E402
+from machinekind_twin.calib.intrinsics import Board, Collector  # noqa: E402
 
 
 def _synthetic_session(max_tilt_deg: float, seed: int, n: int = 14) -> Collector:

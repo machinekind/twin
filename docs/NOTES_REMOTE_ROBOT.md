@@ -7,11 +7,11 @@ ROS 2 adapter for remote robots is meant to build on it.
 The last version of the code is in commit `86a9e2c`:
 
 ```
-git show 86a9e2c:src/lerobot_mp/twin/antmirror.py      # AntMirror, StandInServos
-git show 86a9e2c:src/lerobot_mp/twin/antwalk.py        # ZmqAnt, servo maps, DT
-git show 86a9e2c:src/lerobot_mp/twin/scene.py          # Scene.command_ant, ant_pose, set_ant_pose
-git show 86a9e2c:src/lerobot_mp/twin/ant.py            # Ant (tag mount), locate, snap_yaw
-git show 86a9e2c:src/lerobot_mp/twin/antdrive.py       # the stand-in ant in the demo
+git show 86a9e2c:src/machinekind_twin/antmirror.py      # AntMirror, StandInServos
+git show 86a9e2c:src/machinekind_twin/antwalk.py        # ZmqAnt, servo maps, DT
+git show 86a9e2c:src/machinekind_twin/scene.py          # Scene.command_ant, ant_pose, set_ant_pose
+git show 86a9e2c:src/machinekind_twin/ant.py            # Ant (tag mount), locate, snap_yaw
+git show 86a9e2c:src/machinekind_twin/antdrive.py       # the stand-in ant in the demo
 ```
 
 ## The pattern in short

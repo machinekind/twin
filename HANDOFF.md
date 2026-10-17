@@ -9,7 +9,7 @@ System jest gotowy do pierwszego testu na fizycznym stanowisku. Wszystko,
 co da się sprawdzić bez ramienia i kamer, jest sprawdzone na bliźniaku —
 tą samą ścieżką kodu, którą pójdzie sprzęt:
 
-- **panel webowy** (`lerobot-twin ui`) — ramię, kamery (także symulowane,
+- **panel webowy** (`twin ui`) — ramię, kamery (także symulowane,
   stawiane i przeciągane w 3D), kalibracja, mapa na żywo, trening, polityki,
   porównanie sim-real; przećwiczony cały scenariusz w przeglądarce;
 - **kalibracja**: intrynsyki z ChArUco, położenie wielu kamer z karty w
@@ -40,17 +40,17 @@ README, „Szybki start na nowym komputerze”.
 - **W repozytorium:** robot przykładowy (`examples/robots/testbot`),
   polityki bazowe (`assets/policies`),
   przykładowe stanowisko w symulacji (`examples/twin.sim.json`,
-  `lerobot-twin demo`), sprawdzone wersje pakietów (`constraints.txt`),
+  `twin demo`), sprawdzone wersje pakietów (`constraints.txt`),
   licencje plików osób trzecich (`NOTICE`).
 - **Poza repozytorium (per maszyna):** `workspace/` (stanowisko i własne
   polityki), `configs/local.yaml` (sekcje backendów, np. `a1x`, i reszta
-  konfiguracji ramienia, `lerobot-twin --config …`), pakiet `galaxeo` (ramię A1X, obok bliźniaka), `.claude/`, cache kerneli Warp.
+  konfiguracji ramienia, `twin --config …`), pakiet `galaxeo` (ramię A1X, obok bliźniaka), `.claude/`, cache kerneli Warp.
 - **Ramię SO-101** i jego backendy (`feetech`, `lerobot`, most COM<->TCP) to
   pakiet `soarm` (repozytorium so-arm101), instalowany obok bliźniaka.
 - Domyślne ścieżki (`workspace/…`) z klonu liczą się od katalogu
-  repozytorium (`src/lerobot_mp/paths.py`), więc katalog uruchomienia nie ma
+  repozytorium (`src/machinekind_twin/paths.py`), więc katalog uruchomienia nie ma
   znaczenia; bez klonu — od katalogu bieżącego.
-- `lerobot-twin check` mówi osobno, czy komputer nadaje się do treningu
+- `twin check` mówi osobno, czy komputer nadaje się do treningu
   (torch z CUDA, warp, mujoco_warp). Bez NVIDIA działa wszystko poza treningiem.
 
 ---
@@ -59,20 +59,20 @@ README, „Szybki start na nowym komputerze”.
 
 | moduł | co robi | dowód |
 |---|---|---|
-| `twin/scene.py` | + panele z obrazem, czujniki kontaktu szczęk; **punkt główny bez fałszywego półpiksela** | test na maskach segmentacji; kalibracja 4× dokładniejsza w obrocie |
-| `twin/calib/intrinsics.py` | ChArUco: arkusz, zbieranie ujęć z pilnowaniem różnorodności, K + dystorsja, bramki | K z renderu do ~1 px, rogi 0,002 px od rzutu |
-| `twin/perception.py` | mapa stołu na żywo, kostka z kamer, `CubeTracker` (w dłoni) | 1,2 mm / 0,6° z dwóch kamer |
-| `twin/rl/task.py` | obserwacja/akcja/nagroda — numpy i torch, te same wzory | test równości numpy/torch |
-| `twin/rl/env.py` | Gymnasium CPU, `check_env` | ekspert IK rozwiązuje `reach` 10/10 |
-| `twin/rl/batch.py` | MuJoCo Warp, randomizacja per świat + `set_const` | zgodność z CPU 1e-7 → 4e-3 po 60 krokach losowych |
-| `twin/rl/ppo.py`, `policy.py`, `evaluate.py` | PPO (także douczanie `--init` z zapisanym krytykiem), plik polityki z zadaniem, krytykiem i wynikami, ewaluacja na CPU | `reach-v3`, `lift-v3` w `assets/policies`; `tests/test_twin_policies.py` |
-| `twin/rl/sysid.py` | nagranie ruchu przez nadzór, dopasowanie tłumienia/armatury/opóźnienia (kp i tarcie suche z tego ruchu niewyznaczalne — zostają z modelu, trening losuje je szerzej) | ruch z panelu, 13 ramion spoza siatki startowej: tłumienie ≤ 10,5%, armatura ≤ 8,2%, opóźnienie ≤ 1,9 ms; przedział niepewności zawsze obejmował prawdziwy błąd |
-| `twin/rl/runner.py` | polityka na `Twin`, stop przy rozjeździe > 25° (w zmierzonej pozie), stop po wykonaniu zadania, czekanie na kostkę | test na bliźniaku; pełny łańcuch z kamerami w czasie symulowanym (`test_twin_lift_from_cameras`) |
-| `twin/ui/*` | panel (viser), zadania w tle, most sceny, strażnik kamer | test startu panelu + scenariusz w przeglądarce |
-| `twin/runtime.py` | pętla ramienia: jeden właściciel ruchu, STOP/Dom w zmierzonej pozie, reakcja na błędy serw i utratę łącza, render bez blokady pętli | `tests/test_twin_runtime.py` (czas symulowany) |
-| `twin/robots.py` (`RobotSpec`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_home_stages.py` (dom etapami na robocie testowym) |
+| `scene.py` | + panele z obrazem, czujniki kontaktu szczęk; **punkt główny bez fałszywego półpiksela** | test na maskach segmentacji; kalibracja 4× dokładniejsza w obrocie |
+| `calib/intrinsics.py` | ChArUco: arkusz, zbieranie ujęć z pilnowaniem różnorodności, K + dystorsja, bramki | K z renderu do ~1 px, rogi 0,002 px od rzutu |
+| `perception.py` | mapa stołu na żywo, kostka z kamer, `CubeTracker` (w dłoni) | 1,2 mm / 0,6° z dwóch kamer |
+| `rl/task.py` | obserwacja/akcja/nagroda — numpy i torch, te same wzory | test równości numpy/torch |
+| `rl/env.py` | Gymnasium CPU, `check_env` | ekspert IK rozwiązuje `reach` 10/10 |
+| `rl/batch.py` | MuJoCo Warp, randomizacja per świat + `set_const` | zgodność z CPU 1e-7 → 4e-3 po 60 krokach losowych |
+| `rl/ppo.py`, `policy.py`, `evaluate.py` | PPO (także douczanie `--init` z zapisanym krytykiem), plik polityki z zadaniem, krytykiem i wynikami, ewaluacja na CPU | `reach-v3`, `lift-v3` w `assets/policies`; `tests/test_twin_policies.py` |
+| `rl/sysid.py` | nagranie ruchu przez nadzór, dopasowanie tłumienia/armatury/opóźnienia (kp i tarcie suche z tego ruchu niewyznaczalne — zostają z modelu, trening losuje je szerzej) | ruch z panelu, 13 ramion spoza siatki startowej: tłumienie ≤ 10,5%, armatura ≤ 8,2%, opóźnienie ≤ 1,9 ms; przedział niepewności zawsze obejmował prawdziwy błąd |
+| `rl/runner.py` | polityka na `Twin`, stop przy rozjeździe > 25° (w zmierzonej pozie), stop po wykonaniu zadania, czekanie na kostkę | test na bliźniaku; pełny łańcuch z kamerami w czasie symulowanym (`test_twin_lift_from_cameras`) |
+| `ui/*` | panel (viser), zadania w tle, most sceny, strażnik kamer | test startu panelu + scenariusz w przeglądarce |
+| `runtime.py` | pętla ramienia: jeden właściciel ruchu, STOP/Dom w zmierzonej pozie, reakcja na błędy serw i utratę łącza, render bez blokady pętli | `tests/test_twin_runtime.py` (czas symulowany) |
+| `robots.py` (`RobotSpec`) | bliźniak niezależny od ramienia: stawy, limity, dom, progi szczęk, skala biurka, zakres chwytaka i szczęka lustrzana z opisu ramienia | SO-101 bit w bit bez zmian (łańcuch `lift` z kamer i hash epizodów środowiska przed i po); `tests/test_twin_home_stages.py` (dom etapami na robocie testowym) |
 | `galaxeo/robot/` w galaxeo-manipulators | pakiet A1X poza bliźniakiem: opis ramienia, model z URDF producenta, przykładowe stanowisko, backend `a1x` po CAN-FD (strumień od zmierzonej pozy z limitem 90°/s, nic przed pierwszym rozkazem, nigdy FF 2 ani `kp` 0, włączenie FF 1-5-6 tylko przyciskiem) | testy modelu i backendu w galaxeo; tu `tests/test_a1x_in_twin.py` (z galaxeo obok bliźniaka): `Twin` na udawanej magistrali; kalibracja w symulacji 6/6 zaufanych (0,24 mm / 0,017° mediany), IK 20/20 (0,33 mm) |
-| `twin/tagbody.py` | **bryła z kilkoma AprilTagami**: układ tagów uczony z kadrów kamer stanowiska (pary w jednym kadrze + wspólne dopasowanie wszystkich rogów), poza bryły z kamer z pozą. Dziś nic w panelu go nie używa | `tests/test_twin_tagbody.py` (układ 0,1 mm, poza 1 mm / 1° od prawdy w symulacji) |
+| `tagbody.py` | **bryła z kilkoma AprilTagami**: układ tagów uczony z kadrów kamer stanowiska (pary w jednym kadrze + wspólne dopasowanie wszystkich rogów), poza bryły z kamer z pozą. Dziś nic w panelu go nie używa | `tests/test_twin_tagbody.py` (układ 0,1 mm, poza 1 mm / 1° od prawdy w symulacji) |
 
 Testy: `pytest -q`. Zestaw to wyłącznie testy integracyjne (łańcuch przez kilka
 modułów tak, jak jedzie produkcja) zachowań groźnych dla sprzętu i człowieka,
@@ -154,7 +154,7 @@ psujących stanowisko albo przeniesienie sim-real.
    (test `test_gpu_pickplace_matches_the_cpu_env` usunięty przy odchudzaniu — odtworzyć
    z commitu `b2ba4bb` na maszynie z CUDA; miał tolerancję 5e-3 dobraną bez
    sprawdzenia; `mocap_pos` per świat przez `wp.to_torch` też nie był sprawdzony),
-   krótki przebieg `lerobot-twin train --task pickplace --envs 256 --iters 3
+   krótki przebieg `twin train --task pickplace --envs 256 --iters 3
    --eval-episodes 2` i dopiero pełny trening na SO-101 i A1X. Z polityką
    `pickplace-v1` w `assets/policies/` przestaje się pomijać
    `tests/test_twin_pickplace_from_cameras.py`.

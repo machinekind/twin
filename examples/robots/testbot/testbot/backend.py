@@ -1,7 +1,7 @@
 """An arm in memory: the test robot's backend.
 
 A perfect position servo: every command, clamped to the joint limits, is the new position at
-once. It never imports the twin, only the contracts (`lerobot-mp-api`); everything it knows comes
+once. It never imports the twin, only the contracts (`machinekind-twin-api`); everything it knows comes
 from the `BackendContext` the twin passes to `create`: joints, limits, port and the `testbot:`
 section of the twin's config.
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from lerobot_mp_api import BackendContext, RobotInfo
+from machinekind_twin_api import BackendContext, RobotInfo
 
 SETTINGS = ("start",)
 

@@ -1,4 +1,4 @@
-"""`twin.clock`: the wall clock of production and the virtual clock of the tests."""
+"""`clock`: the wall clock of production and the virtual clock of the tests."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from contextlib import nullcontext
 
 import pytest
 
-from lerobot_mp.twin.clock import VirtualClock, WallClock
+from machinekind_twin.clock import VirtualClock, WallClock
 
 
 def spawn(clock: VirtualClock, fn, *, member: bool = True) -> tuple[threading.Thread, list]:
