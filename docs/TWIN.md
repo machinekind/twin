@@ -41,43 +41,34 @@ Szczegóły, decyzje i pułapki: **[HANDOFF.md](../HANDOFF.md)**.
 Skrót dla każdej platformy jest w README, „Szybki start na nowym komputerze”.
 Najważniejsze zasady:
 
-- Wersje sprawdzone razem są w `constraints.txt` (`-c constraints.txt`).
-- Kontrakty wtyczek to osobny pakiet `machinekind-twin-api` w `packages/machinekind_twin_api`
-  (patrz [Jak to jest zbudowane](#jak-to-jest-zbudowane)). Nie ma go na PyPI, więc
-  instaluje się go z klonu w tym samym poleceniu co bliźniaka:
-  `pip install -e packages/machinekind_twin_api -e ".[…]"`; samo `pip install -e ".[…]"`
-  kończy się „No matching distribution found for machinekind-twin-api”. uv bierze tę
-  ścieżkę z `[tool.uv.sources]` w `pyproject.toml`.
+- `uv sync` installs the versions in `uv.lock`: the twin with its panel, the plugin contracts
+  `machinekind-twin-api` from `packages/machinekind_twin_api` (see
+  [Jak to jest zbudowane](#jak-to-jest-zbudowane)), the example robot and strategy from
+  `examples/` and the dev tools. The contracts are not on PyPI.
 
 ```bash
-# Windows (PowerShell); Linux i macOS: python3.12 i source .venv/bin/activate
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process Bypass   # świeży Windows blokuje Activate.ps1; cmd.exe: .venv\Scripts\activate.bat
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -e packages/machinekind_twin_api -e ".[twin,dev]" -c constraints.txt
-pip install soarm    # ramię SO-101; robot przykładowy: pip install -e examples/robots/testbot
-twin check
-twin demo    # przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem -> workspace/twin.json
+uv sync
+uv run twin check
+uv run twin ui    # the first start writes the example workstation with the first installed robot -> workspace/twin.json
 ```
 
 - Linux bez ekranu: `export MUJOCO_GL=egl` (NVIDIA) albo `osmesa` (CPU,
   `sudo apt install libosmesa6`).
-- Bliźniak nie ma własnego ramienia. Ramię SO-101 i jego backendy (`feetech`,
-  `lerobot`, most COM<->TCP) to pakiet `soarm` (repozytorium so-arm101),
-  instalowany obok bliźniaka.
+- The twin holds no robot of its own. The SO-101 and its backends (`feetech`, `lerobot`, the
+  COM<->TCP bridge) are the `soarm` package from so-arm101, installed next to the twin with
+  `uv pip install --no-sources` (README, section 5).
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
 wygląd sceny, dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
 liczy się od katalogu repozytorium, niezależnie od katalogu uruchomienia; inny
-plik: `--workspace <plik>`. Bez pliku bliźniak startuje z pustym stanowiskiem
-(pierwsze zainstalowane ramię, backend `sim`, bez kamer). `twin demo`
+plik: `--workspace <plik>`. Without the file, the first `twin ui` writes the example
+workstation, as `twin demo` does. `twin demo`
 kopiuje `examples/twin.sim.json` i wpisuje w kopię pierwsze zainstalowane ramię
 (inne: `--robot <nazwa>`) — dwie kamery symulowane, których kalibracja to ich
 prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
 Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`). Bez
 zainstalowanego ramienia `demo` kończy się błędem i podaje, co zainstalować
-(`pip install soarm` albo `pip install -e examples/robots/testbot`).
+(`uv sync` albo `uv pip install`).
 
 **Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
 wynik”) trafia do osobnego pliku `workspace/calib/<data-godzina>.json`
@@ -273,9 +264,9 @@ włączenia FF 1-5-6 i stan chwytaka po XCAN; do uogólnienia jako akcje
 backendu).
 
 ```bash
-pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
+uv pip install --no-sources "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
 # macOS z przejściówką XCAN: "galaxeo[xcan] @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
-twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
+uv run twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
 ```
 
 Sprzęt i łącze CAN, sekcję `a1x:` konfiguracji i bezpieczeństwo (A1X nie ma

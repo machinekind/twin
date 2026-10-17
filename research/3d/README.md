@@ -10,7 +10,7 @@ badawcze, nie kod aplikacji — działają na scenie bliźniaka z `machinekind_t
 | `jaw_geometry.py` | położenie czubków obu szczęk względem TCP przy różnym otwarciu |
 | `*_out.json` | wyniki z laptopa (i5-7200U, Intel HD 620) |
 
-Zależności: bliźniak plus `trimesh` (otoczki wypukłe) — `pip install -e packages/machinekind_twin_api -e ".[twin,research]" -c constraints.txt`.
+Zależności: bliźniak plus `trimesh` (otoczki wypukłe) — `uv sync --extra research`.
 
 Skrypty zapisują wyniki i rendery w **bieżącym katalogu** — uruchamiaj je
 z katalogu tymczasowego, a nie z korzenia repozytorium:

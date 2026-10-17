@@ -76,7 +76,7 @@ def create_backend(cfg: TwinConfig, spec: RobotSpec) -> RobotBackend:
         # Entry points live in the installed package's metadata: a checkout updated without
         # `pip install -e .` has no backends registered at all.
         known = (", ".join(sorted(registered))
-                 or "zadne - po aktualizacji repozytorium uruchom ponownie pip install -e .")
+                 or "zadne - po aktualizacji repozytorium uruchom ponownie uv sync")
         raise ValueError(f"Nieznany backend robota: {cfg.robot.backend!r}. Zainstalowane: {known} "
                          "(albo `sim` - symulacja w blizniaku)")
     factory = registered[name].load()

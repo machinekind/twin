@@ -181,7 +181,7 @@ def _entry_point(name: str) -> EntryPoint:
     except KeyError as exc:
         # Entry points live in the installed package's metadata: a package added to the
         # environment without `pip install` registers nothing.
-        known = ", ".join(sorted(registered)) or "zadne - zainstaluj pakiet ze strategia (pip install)"
+        known = ", ".join(sorted(registered)) or "zadne - zainstaluj pakiet ze strategia (uv pip install)"
         raise KeyError(f"Nieznana strategia {name!r}. Zainstalowane: {known}") from exc
 
 

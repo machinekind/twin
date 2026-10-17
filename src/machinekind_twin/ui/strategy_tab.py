@@ -39,7 +39,7 @@ BLANK = {str: "", int: 0, float: 0.0, bool: False}
 
 NOTHING_INSTALLED = (
     "Brak strategii. Pakiet rejestruje strategie w grupie entry points `machinekind_twin.strategies`; "
-    "przyklad: `pip install -e examples/strategies/swing`, potem **Odswiez liste**.")
+    "przykladowa `swing` instaluje `uv sync`, potem **Odswiez liste**.")
 
 CHOOSE = "Wybierz strategie z listy - jej pakiet laduje sie dopiero wtedy."
 

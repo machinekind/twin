@@ -146,8 +146,29 @@ def test_the_demo_station_takes_an_installed_robot_and_names_what_to_install_oth
     assert Workspace.load(station).robot == BOT
 
     assert main(["demo", "--path", str(tmp_path / "other.json"), "--robot", "no_such_robot"]) == 1
-    assert "pip install soarm" in capsys.readouterr().err
+    assert "uv sync" in capsys.readouterr().err
     assert not (tmp_path / "other.json").exists()
+
+
+def test_the_first_twin_ui_writes_the_example_workstation_and_keeps_an_existing_one(tmp_path, monkeypatch,
+                                                                                    capsys):
+    pytest.importorskip("viser")
+    from machinekind_twin.robots import default_robot
+    from machinekind_twin.ui import app
+
+    started = []
+    monkeypatch.setattr(app, "main", lambda argv: started.append(argv) or 0)
+    station = tmp_path / "twin.json"
+
+    assert main(["ui", "--workspace", str(station)]) == 0
+    ws = Workspace.load(station)
+    assert ws.robot == default_robot() and len(ws.cameras) == 2
+    assert "przykladowe stanowisko" in capsys.readouterr().out
+
+    station.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+    assert main(["ui", "--workspace", str(station)]) == 0
+    assert json.loads(station.read_text(encoding="utf-8")) == {"robot": BOT}
+    assert started == [["--host", "127.0.0.1", "--port", "8080", "--workspace", str(station)]] * 2
 
 
 def test_a_new_workspace_names_the_first_installed_robot():

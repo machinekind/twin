@@ -50,7 +50,7 @@ def _check(_: argparse.Namespace) -> int:
             m = __import__(mod)
             line(mod, getattr(m, "__version__", "?"))
         except ImportError as exc:
-            line(mod, f"brak ({exc}) - pip install -e \".[twin]\"", False)
+            line(mod, f"brak ({exc}) - uv sync", False)
     line("MUJOCO_GL", os.environ.get("MUJOCO_GL", "(domyslny: glfw; bez ekranu ustaw egl)"))
     from .paths import CONFIG_ENV, config_from_env
 
@@ -208,22 +208,32 @@ def _installed_robot(name: str | None) -> str | None:
     return robot
 
 
-def _demo(a: argparse.Namespace) -> int:
+def _copy_demo(robot: str, dst: Path) -> Path | None:
+    """Writes the example workstation with `robot` to `dst` and returns the file it copied: the robot
+    folder's own `DEMO_FILE`, else `DEMO_WORKSPACE` from the clone. None when neither exists."""
     import json
 
-    from .paths import data_path
     from .robots import DEMO_FILE, resolve_asset, robot_folders
+
+    src = robot_folders()[robot] / DEMO_FILE
+    if not src.is_file():
+        src = resolve_asset(DEMO_WORKSPACE)
+        if not src.is_file():
+            return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    data = json.loads(src.read_text(encoding="utf-8"))
+    data["robot"] = robot
+    dst.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return src
+
+
+def _demo(a: argparse.Namespace) -> int:
+    from .paths import data_path
+    from .robots import DEMO_FILE, robot_folders
 
     robot = _installed_robot(a.robot)
     if robot is None:
         return 1
-    src = robot_folders()[robot] / DEMO_FILE
-    own = src.is_file()
-    if not own:
-        src = resolve_asset(DEMO_WORKSPACE)
-        if not src.is_file():
-            print(f"Brak {DEMO_WORKSPACE} - to polecenie dziala z klonu repozytorium.", file=sys.stderr)
-            return 1
     # To samo co workspace.default_path(), ale bez importu `workspace` (ciagnie mujoco).
     dst = Path(a.path) if a.path else data_path(Path("workspace") / "twin.json")
     if dst.exists() and not a.force:
@@ -231,10 +241,11 @@ def _demo(a: argparse.Namespace) -> int:
               f"Nadpisz: twin demo --force   albo inny plik: twin demo --path <plik>",
               file=sys.stderr)
         return 1
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    data = json.loads(src.read_text(encoding="utf-8"))
-    data["robot"] = robot
-    dst.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    src = _copy_demo(robot, dst)
+    if src is None:
+        print(f"Brak {DEMO_WORKSPACE} - to polecenie dziala z klonu repozytorium.", file=sys.stderr)
+        return 1
+    own = src == robot_folders()[robot] / DEMO_FILE
     print(f"Skopiowano {src} -> {dst}")
     if own:
         print(f"Stanowisko w symulacji z pakietu ramienia {robot}.")
@@ -248,7 +259,7 @@ def _demo(a: argparse.Namespace) -> int:
     return 0
 
 
-def _ui_banner(workspace: str | None) -> str:
+def _ui_path(workspace: str | None) -> Path:
     """Ktory plik stanowiska wezmie panel - widac bez przegladarki.
 
     Ta sama regula co `Workspace.load`, ale bez jego importu (mujoco), zeby napis
@@ -256,8 +267,28 @@ def _ui_banner(workspace: str | None) -> str:
     """
     from .paths import data_path
 
-    ws = (Path(workspace) if workspace else data_path(Path("workspace") / "twin.json")).resolve()
-    state = "istnieje" if ws.is_file() else "nowe, puste - przyklad: twin demo"
+    return (Path(workspace) if workspace else data_path(Path("workspace") / "twin.json")).resolve()
+
+
+def _first_start(ws: Path) -> str | None:
+    """With no workstation file yet, writes the example workstation with the first installed robot,
+    as `twin demo` does. Returns that robot, or None when it wrote nothing."""
+    from .robots import default_robot, robot_folders
+
+    if ws.exists() or not robot_folders():
+        return None
+    robot = default_robot()
+    return robot if _copy_demo(robot, ws) is not None else None
+
+
+def _ui_banner(ws: Path, example: str | None = None) -> str:
+    """The workstation file the panel opens and its state; `example` is the robot `_first_start` wrote."""
+    if example:
+        state = f"nowe: przykladowe stanowisko w symulacji, ramie {example}"
+    elif ws.is_file():
+        state = "istnieje"
+    else:
+        state = "nowe, puste - przyklad: twin demo"
     return f"Stanowisko: {ws} ({state})"
 
 
@@ -268,7 +299,8 @@ def _ui_startup_line(a: argparse.Namespace) -> str:
 
 
 def _ui(a: argparse.Namespace) -> int:
-    print(_ui_banner(a.workspace), flush=True)
+    ws = _ui_path(a.workspace)
+    print(_ui_banner(ws, _first_start(ws)), flush=True)
     print(_ui_startup_line(a), flush=True)
     from .ui.app import main as ui_main
 

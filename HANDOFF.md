@@ -40,7 +40,7 @@ README, „Szybki start na nowym komputerze”.
 - **W repozytorium:** robot przykładowy (`examples/robots/testbot`),
   polityki bazowe (`assets/policies`),
   przykładowe stanowisko w symulacji (`examples/twin.sim.json`,
-  `twin demo`), sprawdzone wersje pakietów (`constraints.txt`),
+  `twin demo`), sprawdzone wersje pakietów (`uv.lock`),
   licencje plików osób trzecich (`NOTICE`).
 - **Poza repozytorium (per maszyna):** `workspace/` (stanowisko i własne
   polityki), `configs/local.yaml` (sekcje backendów, np. `a1x`, i reszta
