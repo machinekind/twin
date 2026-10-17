@@ -180,6 +180,10 @@ def _workspace(a: argparse.Namespace) -> int:
 def _export(a: argparse.Namespace) -> int:
     from .workspace import Workspace
 
+    missing = _missing_robot(_workspace_path(a.path))
+    if missing:
+        print(missing, file=sys.stderr)
+        return 1
     ws = Workspace.load(a.path)
     folder = ws.export(a.folder)
     print(f"Stanowisko -> {folder.resolve()}: scene.xml, assets/, station.json "
@@ -259,7 +263,7 @@ def _demo(a: argparse.Namespace) -> int:
     return 0
 
 
-def _ui_path(workspace: str | None) -> Path:
+def _workspace_path(workspace: str | None) -> Path:
     """Ktory plik stanowiska wezmie panel - widac bez przegladarki.
 
     Ta sama regula co `Workspace.load`, ale bez jego importu (mujoco), zeby napis
@@ -281,6 +285,26 @@ def _first_start(ws: Path) -> str | None:
     return robot if _copy_demo(robot, ws) is not None else None
 
 
+def _missing_robot(ws: Path) -> str | None:
+    """What to do when the workstation file names a robot no installed package registers; None when
+    it opens."""
+    import json
+
+    from .robots import INSTALL_HINT, robot_folders
+
+    try:
+        robot = json.loads(ws.read_text(encoding="utf-8")).get("robot")
+    except (OSError, ValueError, AttributeError):
+        return None
+    installed = robot_folders()
+    if not robot or str(robot).lower() in installed:
+        return None
+    known = ", ".join(installed) or "zadne"
+    return (f"Stanowisko {ws} ma ramie {robot!r}, ktorego nie ma w srodowisku (zainstalowane: {known}).\n"
+            f"Dalej: {INSTALL_HINT}.\n"
+            f"Albo stanowisko przykladowe w tym pliku: twin demo --force --path {ws}")
+
+
 def _ui_banner(ws: Path, example: str | None = None) -> str:
     """The workstation file the panel opens and its state; `example` is the robot `_first_start` wrote."""
     if example:
@@ -299,8 +323,12 @@ def _ui_startup_line(a: argparse.Namespace) -> str:
 
 
 def _ui(a: argparse.Namespace) -> int:
-    ws = _ui_path(a.workspace)
+    ws = _workspace_path(a.workspace)
     print(_ui_banner(ws, _first_start(ws)), flush=True)
+    missing = _missing_robot(ws)
+    if missing:
+        print(missing, file=sys.stderr)
+        return 1
     print(_ui_startup_line(a), flush=True)
     from .ui.app import main as ui_main
 

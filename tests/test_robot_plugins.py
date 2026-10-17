@@ -171,6 +171,24 @@ def test_the_first_twin_ui_writes_the_example_workstation_and_keeps_an_existing_
     assert started == [["--host", "127.0.0.1", "--port", "8080", "--workspace", str(station)]] * 2
 
 
+def test_ui_and_export_name_a_robot_that_is_not_installed_instead_of_a_traceback(tmp_path, monkeypatch,
+                                                                                  capsys):
+    pytest.importorskip("viser")
+    from machinekind_twin.ui import app
+
+    started = []
+    monkeypatch.setattr(app, "main", lambda argv: started.append(argv) or 0)
+    station = tmp_path / "twin.json"
+    station.write_text(json.dumps({"robot": "no_such_robot"}), encoding="utf-8")
+
+    assert main(["ui", "--workspace", str(station)]) == 1
+    err = capsys.readouterr().err
+    assert "'no_such_robot'" in err and f"twin demo --force --path {station.resolve()}" in err
+    assert not started
+    assert main(["export", str(tmp_path / "out"), "--path", str(station)]) == 1
+    assert "'no_such_robot'" in capsys.readouterr().err
+
+
 def test_a_new_workspace_names_the_first_installed_robot():
     from machinekind_twin.robots import default_robot
 
