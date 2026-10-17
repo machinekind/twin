@@ -316,6 +316,14 @@ file. The keys are described in [docs/TWIN.md](docs/TWIN.md), the paragraph
 
 ## Adding a robot
 
+Each robot is its own package, in its own repository. This repository holds only examples.
+The SO-101 package, [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm)
+in so-arm101, is the reference. It holds the robot folder, the backends and a README on using the
+arm with the twin. The Galaxea A1X package is `galaxeo`, in
+[galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators).
+[examples/robots/arm6](examples/robots/arm6) is a minimal example to copy. The tests use a smaller
+one, [examples/robots/testbot](examples/robots/testbot).
+
 A robot is a folder: `robot.yaml` and the MJCF model it names. `robot.yaml` holds
 what the model does not: the joints in app order, the gripper and its range in
 model units, the tool point, joint limits and speeds, the home pose, the desk the
@@ -327,13 +335,10 @@ in OpenCV axes, `fovy_deg`, size): a strategy gets their frames in
 workspace camera of the same name. The folder may also ship `demo.json`, an
 example workstation in simulation that `twin demo --robot NAME` copies.
 
-The twin holds no robot: it finds them only in installed packages. A robot's
-package registers its folder and its hardware backend through entry points and
-never imports the twin: the contract types live in `machinekind-twin-api`
-([packages/machinekind_twin_api](packages/machinekind_twin_api)), and a plugin depends on that,
-never on `machinekind-twin`. The SO-101 is such a package: `soarm`, from the
-so-arm101 repository; the Galaxea A1X is another: `galaxeo`, from the
-galaxeo-manipulators repository. A package registers both in its `pyproject.toml`:
+The twin finds robots only in installed packages. A robot's package registers its folder and its
+hardware backend through entry points. It never imports the twin. It depends on
+`machinekind-twin-api` ([packages/machinekind_twin_api](packages/machinekind_twin_api)), which
+holds the contract types. A package registers both in its `pyproject.toml`:
 
 ```toml
 [project.entry-points."machinekind_twin.robots"]
@@ -347,10 +352,8 @@ The backend is any object with `connect`, `disconnect`, `read_joints`,
 `send_joints` and `is_connected`; the optional methods are listed on
 `machinekind_twin_api.BackendPlugin`. `create` gets a `machinekind_twin_api.BackendContext`: the
 robot's joints and limits, the port and the backend's own config section.
-[examples/robots/arm6](examples/robots/arm6) is a complete example. The tests load
-[examples/robots/testbot](examples/robots/testbot), a smaller one. Entry points live in the installed package's metadata: after
-pulling a version that changes them, run
-`uv sync` again, or the panel finds stale backends.
+Entry points live in the installed package's metadata. After pulling a version of a robot
+package that changes them, install that package again, or the panel finds stale backends.
 
 ## How it is built
 
