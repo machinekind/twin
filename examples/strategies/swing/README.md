@@ -38,11 +38,11 @@ class Swing(Strategy[SwingSettings]):
 `act` reads an `Observation` and returns an `Action`; an object with `Action`'s attributes or a
 plain mapping of joint targets would do as well.
 
-Try it in the twin's environment, which already has `machinekind-twin-api`:
+`uv sync` in the twin's clone installs it, editable:
 
 ```bash
-uv pip install -e examples/strategies/swing
-twin ui      # panel: Strategie (Strategies) > swing, joint: shoulder_pan, Uruchom (Run)
+uv sync
+uv run twin ui      # panel: Strategie (Strategies) > swing, joint: shoulder_pan, Uruchom (Run)
 ```
 
 The twin's tests load it without `pip install` (`tests/conftest.py`, fixture `swing`).

@@ -28,12 +28,13 @@ twin = ["mujoco>=3.14,<3.15", "viser>=1.1", "pyserial>=3.5"]
 # Skrypty z research/3d (otoczki wypukle, dobor chwytu).
 research = ["trimesh>=4,<6"]
 
-# `uv sync`: the twin with its panel, the SO-101 from so-arm101 (soarm, soarm-lab) and the dev tools.
+# `uv sync`: the twin with its panel, the example robot and strategy, and the dev tools. Robots come
+# from their own packages, installed next to the twin.
 [dependency-groups]
 dev = [
     "machinekind-twin[twin]",
-    "soarm[feetech]",
-    "soarm-lab",
+    "machinekind-twin-testbot",
+    "machinekind-twin-swing",
     "pytest>=7.4",
     "pyright>=1.1",
     "ruff>=0.6",
@@ -42,17 +43,11 @@ dev = [
 [project.scripts]
 twin = "machinekind_twin.cli:main"
 
-# The contracts come from the clone, editable. soarm and soarm-lab come from so-arm101's main;
-# uv.lock pins the commit, and `uv lock --upgrade-package soarm --upgrade-package soarm-lab` moves it.
+# The contracts and the examples come from the clone, editable.
 [tool.uv.sources]
 machinekind-twin-api = { path = "packages/machinekind_twin_api", editable = true }
-soarm = { git = "https://github.com/machinekind/so-arm101.git", subdirectory = "packages/soarm", branch = "main" }
-soarm-lab = { git = "https://github.com/machinekind/so-arm101.git", subdirectory = "packages/soarm_lab", branch = "main" }
-
-# soarm brings its own source for the contracts, a git pin on this repository. The override makes
-# every requirement on them resolve to the clone's copy above. It can go once the contracts are on PyPI.
-[tool.uv]
-override-dependencies = ["machinekind-twin-api>=0.1,<0.2"]
+machinekind-twin-testbot = { path = "examples/robots/testbot", editable = true }
+machinekind-twin-swing = { path = "examples/strategies/swing", editable = true }
 
 # The type checker runs on the contracts and on what implements them; the rest of the twin is not typed yet.
 [tool.pyright]

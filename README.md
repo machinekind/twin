@@ -127,8 +127,8 @@ uv sync
 ```
 
 `uv sync` creates `.venv` with the twin and its panel, the plugin contracts from
-`packages/machinekind_twin_api`, the SO-101 packages `soarm` and `soarm-lab` from so-arm101, and
-pytest, pyright and ruff. `uv run <command>` runs a command in it, so nothing needs activating.
+`packages/machinekind_twin_api`, the example robot and strategy from `examples/`, and pytest,
+pyright and ruff. `uv run <command>` runs a command in it, so nothing needs activating.
 
 uv itself: `curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS and Linux,
 `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` on Windows.
@@ -145,9 +145,9 @@ Short on space on `C:`? Put uv's cache on another drive before `uv sync`:
 and strategy packages ([below](#control-strategies)). It is not on PyPI, so `uv sync` installs it
 from the clone.
 
-The twin holds no robot of its own; `uv sync` brings the SO-101. The example robot is
-`uv pip install -e examples/robots/testbot`. A later `uv sync` removes it again, and
-`uv sync --inexact` keeps it.
+The twin holds no robot of its own. Robots are packages installed next to it with
+`uv pip install` (sections 5 and 6). `uv run` keeps them, a plain `uv sync` removes them, and
+`uv sync --inexact` keeps them.
 
 ### 2. Check
 
@@ -166,7 +166,8 @@ uv run twin ui       # http://localhost:8080
 ```
 
 On the first start, with no `workspace/twin.json` yet, `twin ui` writes the example
-workstation: `examples/twin.sim.json` with the first installed robot and two simulated cameras
+workstation: `examples/twin.sim.json` with the first installed robot (after a bare `uv sync`, the
+example robot) and two simulated cameras
 with a trusted calibration. `twin demo` writes it again: `--force` overwrites your workstation,
 and `--robot NAME` picks another installed robot.
 
@@ -199,8 +200,15 @@ The tests of the A1X in the twin (`tests/test_a1x_in_twin.py`) skip themselves w
 ### 5. A real SO-101
 
 The SO-101 robot and its backends (`feetech`, `lerobot`, the COM<->TCP bridge)
-are the `soarm` package from the so-arm101 repository, and `uv sync` installs it with the
-`feetech` backend. Its `docs/first-contact.md` covers the port and the gripper ticks. In the
+are the `soarm` package from the so-arm101 repository. Install it next to the twin, with
+`soarm-lab` for the `policy` and `ik` strategies:
+
+```bash
+uv pip install "soarm[feetech] @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm" \
+               "soarm-lab @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm_lab"
+```
+
+Its `docs/first-contact.md` covers the port and the gripper ticks. In the
 panel, **Ramię** -> `SO-101 przez port (feetech)`: with one USB-serial device plugged in, the
 Port field fills itself. The `feetech` backend reads its `feetech:` section from your copy of
 the configuration:
@@ -212,9 +220,6 @@ uv run twin --config configs/local.yaml ui
 
 Next: [docs/TWIN.md](docs/TWIN.md), "Pierwszy test na prawdziwym stanowisku"
 (first test on a real workstation), from step 0.
-
-`uv.lock` pins so-arm101 at a commit of its `main`.
-`uv lock --upgrade-package soarm --upgrade-package soarm-lab` moves it to the latest one.
 
 ### 6. Galaxea A1X (CAN)
 
@@ -228,8 +233,6 @@ uv pip install "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulator
 # macOS (XCAN dongle): "galaxeo[xcan] @ git+..." and brew install libusb; Windows (PCAN): "galaxeo[pcan] @ git+..."
 uv run twin demo --robot a1x      # an A1X workstation in simulation (does not overwrite an existing one without --force)
 ```
-
-A later `uv sync` removes galaxeo again, and `uv sync --inexact` keeps it.
 
 The hardware, the `a1x` section of the configuration and the first session are
 in galaxeo's

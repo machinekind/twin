@@ -43,8 +43,8 @@ Najważniejsze zasady:
 
 - `uv sync` installs the versions in `uv.lock`: the twin with its panel, the plugin contracts
   `machinekind-twin-api` from `packages/machinekind_twin_api` (see
-  [Jak to jest zbudowane](#jak-to-jest-zbudowane)), the SO-101 (`soarm` and `soarm-lab` from
-  so-arm101) and the dev tools. The contracts are not on PyPI.
+  [Jak to jest zbudowane](#jak-to-jest-zbudowane)), the example robot and strategy from
+  `examples/` and the dev tools. The contracts are not on PyPI.
 
 ```bash
 uv sync
@@ -55,7 +55,8 @@ uv run twin ui    # the first start writes the example workstation with the firs
 - Linux bez ekranu: `export MUJOCO_GL=egl` (NVIDIA) albo `osmesa` (CPU,
   `sudo apt install libosmesa6`).
 - The twin holds no robot of its own. The SO-101 and its backends (`feetech`, `lerobot`, the
-  COM<->TCP bridge) are the `soarm` package from so-arm101, and `uv sync` installs it.
+  COM<->TCP bridge) are the `soarm` package from so-arm101, installed next to the twin with
+  `uv pip install` (README, section 5).
 
 **Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
 wygląd sceny, dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
@@ -67,7 +68,7 @@ kopiuje `examples/twin.sim.json` i wpisuje w kopię pierwsze zainstalowane rami�
 prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
 Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`). Bez
 zainstalowanego ramienia `demo` kończy się błędem i podaje, co zainstalować
-(`uv sync` albo `uv pip install -e examples/robots/testbot`).
+(`uv sync` albo `uv pip install`).
 
 **Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
 wynik”) trafia do osobnego pliku `workspace/calib/<data-godzina>.json`

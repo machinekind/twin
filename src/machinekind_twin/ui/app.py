@@ -122,7 +122,7 @@ TAB_HELP = {
         "2. Dynamika stanowiska idzie z `twin export` w station.json - z niej korzysta trening."),
     "Strategie": (
         "1. Strategie przychodza z zainstalowanych pakietow (entry points `machinekind_twin.strategies`), "
-        "np. `uv pip install -e examples/strategies/swing`; po instalacji **Odswiez liste**.\n"
+        "np. przykladowa `swing` z `uv sync`; po instalacji **Odswiez liste**.\n"
         "2. Wybierz strategie - formularz to jej ustawienia, wypelnione z sekcji pliku konfiguracji o tej samej "
         "nazwie. Nieznany klucz albo zly typ: Uruchom odmawia, zanim ramie drgnie.\n"
         "3. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"

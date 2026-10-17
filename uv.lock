@@ -7,9 +7,6 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
-[manifest]
-overrides = [{ name = "machinekind-twin-api", editable = "packages/machinekind_twin_api" }]
-
 [[package]]
 name = "absl-py"
 version = "2.5.1"
@@ -192,15 +189,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cloudpickle"
-version = "3.1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
-]
-
-[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -262,15 +250,6 @@ wheels = [
 ]
 
 [[package]]
-name = "farama-notifications"
-version = "0.0.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ec/91/14397890dde30adc4bee6462158933806207bc5dd10d7b4d09d5c33845cf/farama_notifications-0.0.6.tar.gz", hash = "sha256:b19acac4bb41d76e59e03394b5dd165f4761c86fa327f56307a35cbee3b60158", size = 2517, upload-time = "2026-04-24T08:43:57.603Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/f0/21f81892e4ed10f4ec3ef2e7cf8635fb76e7c0907c55d0da66be50094760/farama_notifications-0.0.6-py3-none-any.whl", hash = "sha256:f84839188efa1ce5bb361c2a84881b2dc2c0d0d7fb661ff00421820170930935", size = 2897, upload-time = "2026-04-24T08:43:56.785Z" },
-]
-
-[[package]]
 name = "fsspec"
 version = "2026.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -294,23 +273,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/be/b2/feb54341a0ad2c3a57ba462bcdef5543569a7d2a1b8751a9c46050c0e255/glfw-2.11.0-py2.py3-none-win32.whl", hash = "sha256:9aac61d97f71088b16322a4a75cdf72ac44ea3f1c4e7e326e5dd7c427e020903", size = 557704, upload-time = "2026-10-16T08:46:32.228Z" },
     { url = "https://files.pythonhosted.org/packages/78/d6/b0d9d83177397c018efa3579c54990f8d9b3af17fdcf97b0e549609a0571/glfw-2.11.0-py2.py3-none-win_amd64.whl", hash = "sha256:bd39c1adb57b7273813e33b9768bed88d1ea656abfc914b4a6424ec0c5d62674", size = 564482, upload-time = "2026-10-16T08:46:34.015Z" },
     { url = "https://files.pythonhosted.org/packages/03/29/5c890d0da8258c64ec7a2fb76eb4c9aebe89a38abf1aecd8683b0b4c40e6/glfw-2.11.0-py3-none-win_arm64.whl", hash = "sha256:b986dfb457d27852593686fd934c8808986ae2e4cae44ec1e8e89b1e46fc36ee", size = 174351, upload-time = "2026-10-16T08:46:35.244Z" },
-]
-
-[[package]]
-name = "gymnasium"
-version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cloudpickle" },
-    { name = "farama-notifications" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/3a/6713c8a92c259fd7619dc93ff19e6e435463f20d3d7b180b14ce99074c10/gymnasium-1.4.0.tar.gz", hash = "sha256:9754f630a32abfdbb76386abe1bc1e706c982db2d62dfa119c9952eb2de7697d", size = 350436, upload-time = "2026-10-05T11:02:16.217Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/4e/6a51be94ae8e9dc8eaddd6ea74a6dde754448c4c746b51a232681f81e41c/gymnasium-1.4.0-py3-none-any.whl", hash = "sha256:1cb947c59e7c72d8eabb2c2274c00cd20948e69f8452a9ef4092223be24fdf0e", size = 476306, upload-time = "2026-10-05T11:02:14.783Z" },
 ]
 
 [[package]]
@@ -400,11 +362,11 @@ twin = [
 [package.dev-dependencies]
 dev = [
     { name = "machinekind-twin", extra = ["twin"] },
+    { name = "machinekind-twin-swing" },
+    { name = "machinekind-twin-testbot" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
-    { name = "soarm", extra = ["feetech"] },
-    { name = "soarm-lab" },
 ]
 
 [package.metadata]
@@ -423,11 +385,11 @@ provides-extras = ["twin", "research"]
 [package.metadata.requires-dev]
 dev = [
     { name = "machinekind-twin", extras = ["twin"] },
+    { name = "machinekind-twin-swing", editable = "examples/strategies/swing" },
+    { name = "machinekind-twin-testbot", editable = "examples/robots/testbot" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=7.4" },
     { name = "ruff", specifier = ">=0.6" },
-    { name = "soarm", extras = ["feetech"], git = "https://github.com/machinekind/so-arm101.git?subdirectory=packages%2Fsoarm&branch=main" },
-    { name = "soarm-lab", git = "https://github.com/machinekind/so-arm101.git?subdirectory=packages%2Fsoarm_lab&branch=main" },
 ]
 
 [[package]]
@@ -446,6 +408,28 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "machinekind-twin-swing"
+version = "0.1.0"
+source = { editable = "examples/strategies/swing" }
+dependencies = [
+    { name = "machinekind-twin-api" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "machinekind-twin-api", specifier = ">=0.1,<0.2" }]
+
+[[package]]
+name = "machinekind-twin-testbot"
+version = "0.1.0"
+source = { editable = "examples/robots/testbot" }
+dependencies = [
+    { name = "machinekind-twin-api" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "machinekind-twin-api", specifier = ">=0.1,<0.2" }]
 
 [[package]]
 name = "markdown-it-py"
@@ -1243,34 +1227,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0a/e8/1e186578076aff7a80735f625005fde678412ab609cd323ed182eb7d6b87/ruff-0.17.1-py3-none-win32.whl", hash = "sha256:1de0030a8aa78c65c5fecb84b2e5c390ac684c0452875a02afc7c083d49a496a", size = 9895093, upload-time = "2026-10-15T15:23:10.582Z" },
     { url = "https://files.pythonhosted.org/packages/6a/2e/da3d9589bae8e8b58f3a48bd5bc0b980232fb14a83bf02c3be7660f87c1b/ruff-0.17.1-py3-none-win_amd64.whl", hash = "sha256:5df76f16580fab58d0f6c98a3ac254a4abceb7b2489b8b678335869cff77b3d7", size = 10097955, upload-time = "2026-10-15T15:23:13.309Z" },
     { url = "https://files.pythonhosted.org/packages/df/c9/0f2a4dea06a5e12c1191ee3d96b1e1233797d0d5e18f97a2b909a95a9836/ruff-0.17.1-py3-none-win_arm64.whl", hash = "sha256:42400b9a6ff8515ff27796f07f92e0195be011c86e81e381606f58ea5502fef4", size = 9853542, upload-time = "2026-10-15T15:23:16.05Z" },
-]
-
-[[package]]
-name = "soarm"
-version = "0.1.0"
-source = { git = "https://github.com/machinekind/so-arm101.git?subdirectory=packages%2Fsoarm&branch=main#16e4fddf6f295049fdc32e413dc5fc4d74614878" }
-dependencies = [
-    { name = "machinekind-twin-api" },
-]
-
-[package.optional-dependencies]
-feetech = [
-    { name = "pyserial" },
-]
-
-[[package]]
-name = "soarm-lab"
-version = "0.1.0"
-source = { git = "https://github.com/machinekind/so-arm101.git?subdirectory=packages%2Fsoarm_lab&branch=main#16e4fddf6f295049fdc32e413dc5fc4d74614878" }
-dependencies = [
-    { name = "gymnasium" },
-    { name = "machinekind-twin-api" },
-    { name = "mujoco" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pyyaml" },
-    { name = "soarm" },
 ]
 
 [[package]]
