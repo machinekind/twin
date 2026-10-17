@@ -123,7 +123,7 @@ class MemoryArm:
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
 `efforts`, ...); `RobotBackend` documents what each one means. Complete, tested examples live in
-the twin's repository: `examples/robots/testbot` and `examples/strategies/swing`.
+the twin's repository: `examples/robots/arm6`, `examples/robots/testbot` and `examples/strategies/swing`.
 
 ## Installing
 

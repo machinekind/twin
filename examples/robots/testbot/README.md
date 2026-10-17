@@ -19,11 +19,14 @@ repository), never on the twin. The backend is any object with `connect`, `disco
 optional methods); `create` receives a `machinekind_twin_api.BackendContext`: joints, limits, port and
 the backend's own config section.
 
-`uv sync` in the twin's clone installs it, editable:
+The twin's tests install it for their run. To try it in the twin's environment:
 
 ```bash
-uv sync
-uv run twin ui      # the first start opens the example scene with testbot; Ramie: "Robot testowy (w pamieci)"
+uv pip install -e examples/robots/testbot
+uv run twin demo --robot testbot --path workspace/testbot.json
+uv run twin ui --workspace workspace/testbot.json      # Ramie: "Robot testowy (w pamieci)"
 ```
+
+The example scene uses the example arm, `examples/robots/arm6`.
 
 The twin's tests load it without installing it (`tests/conftest.py`, fixture `testbot`).

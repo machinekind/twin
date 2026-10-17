@@ -1,0 +1,73 @@
+# The twin's example arm: six joints and a parallel gripper built from primitives, desk-sized.
+name: arm6
+title: Ramie przykladowe (6 osi)
+mjcf: arm6.xml
+
+joints: [base_yaw, shoulder, elbow, wrist_pitch, wrist_yaw, wrist_roll, gripper]
+gripper: gripper
+tcp_site: tcp
+hand_body: hand
+base_body: base
+tcp_approach: [1.0, 0.0, 0.0]
+tcp_closing: [0.0, 1.0, 0.0]
+fingertips: [tip1, tip2]
+roll_joint: wrist_roll
+jaw_bodies: [jaw1, jaw2]
+
+# The jaws point down 15 cm above the table, 19 cm in front of the base; gripper closed.
+home: {base_yaw: 0.0, shoulder: 15.0, elbow: -15.0, wrist_pitch: 90.0, wrist_yaw: 0.0, wrist_roll: 0.0,
+       gripper: 0.0}
+limits:
+  base_yaw: [-150.0, 150.0]
+  shoulder: [-100.0, 100.0]
+  elbow: [-130.0, 130.0]
+  wrist_pitch: [-110.0, 110.0]
+  wrist_yaw: [-110.0, 110.0]
+  wrist_roll: [-170.0, 170.0]
+  gripper: [0.0, 100.0]
+max_vel:
+  base_yaw: 120.0
+  shoulder: 100.0
+  elbow: 120.0
+  wrist_pitch: 160.0
+  wrist_yaw: 160.0
+  wrist_roll: 220.0
+  gripper: 300.0
+
+# Jaw travel [m]: 0..2.5 cm each.
+gripper_range_q: [0.0, 0.025]
+mirror_joints:
+  gripper_m: [gripper, -1.0]
+jaw: {still: 0.0005, margin: 0.001, creep: 0.001, open: 0.01}
+
+wave_ranges:
+  base_yaw: [-75.0, 75.0]
+  shoulder: [-20.0, 50.0]
+  elbow: [0.0, 110.0]
+  wrist_pitch: [-90.0, 60.0]
+
+joint_labels:
+  base_yaw: [Podstawa, Obrot podstawy]
+  shoulder: [Bark, Bark]
+  elbow: [Lokiec, Lokiec]
+  wrist_pitch: [Nadg. zgiecie, Nadgarstek - zgiecie]
+  wrist_yaw: [Nadg. skret, Nadgarstek - skret]
+  wrist_roll: [Nadg. obrot, Nadgarstek - obrot]
+  gripper: [Chwytak, Chwytak]
+
+connections:
+  - {label: "Ramie przykladowe (w pamieci)", backend: arm6}
+
+# A wrist camera on the hand, 3 cm above it, looking along the jaws: the camera's z (forward) is the
+# hand's x, its y (down) the hand's -z.
+cameras:
+  wrist:
+    body: hand
+    pose:
+      - [0.0, 0.0, 1.0, 0.0]
+      - [-1.0, 0.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0, 0.03]
+      - [0.0, 0.0, 0.0, 1.0]
+    fovy_deg: 60.0
+    width: 160
+    height: 120
