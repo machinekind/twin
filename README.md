@@ -212,7 +212,8 @@ uv pip install --no-sources "soarm[feetech] @ git+https://github.com/machinekind
 
 Its `docs/first-contact.md` covers the port and the gripper ticks. In the
 panel, **Ramię** -> `SO-101 przez port (feetech)`: with one USB-serial device plugged in, the
-Port field fills itself. The `feetech` backend reads its `feetech:` section from your copy of
+Port field fills itself, and Połącz takes that device even when the workstation remembers
+another arm's port. The `feetech` backend reads its `feetech:` section from your copy of
 the configuration:
 
 ```bash

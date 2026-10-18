@@ -223,14 +223,30 @@ def smear_mask(mask: np.ndarray, shifts: list[tuple[float, float]]) -> np.ndarra
     return out
 
 
-def usb_serial_port() -> str | None:
-    """The one USB-serial device plugged in; None when there is none, several, or no pyserial."""
+def usb_serial_ports() -> list[str]:
+    """The USB-serial devices plugged in, sorted; empty without pyserial."""
     try:
         from serial.tools.list_ports import comports
     except ImportError:
-        return None
-    devices = sorted(str(p.device) for p in comports() if p.vid is not None)
-    return devices[0] if len(devices) == 1 else None
+        return []
+    return sorted(str(p.device) for p in comports() if p.vid is not None)
+
+
+def find_port(saved: str | None) -> str:
+    """The serial port to use: `saved` while it is plugged in or is a bridge address, else the one
+    USB-serial device plugged in, else "".
+
+    A swapped arm comes with a new port name, so a saved port must not win over the device
+    that is there.
+    """
+    saved = (saved or "").strip()
+    if "://" in saved:
+        return saved
+
+    devices = usb_serial_ports()
+    if saved in devices:
+        return saved
+    return devices[0] if len(devices) == 1 else ""
 
 
 #: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
@@ -592,7 +608,7 @@ class TwinApp:
         if not arm:
             return
         try:
-            self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
+            self._connect(self._preset_backend(), self._port_from_field(), False)
             st = self.twin.status
             logger.info("Start: ramie %s (%s), %s", st.backend, "symulacja" if st.simulated else "prawdziwe",
                         st.state)
@@ -894,7 +910,8 @@ class TwinApp:
                                        else self.ws.port or preset_port,
                                        hint="feetech/lerobot: COMx, /dev/ttyACM0 albo socket://adres:5555 "
                                             "(`twin check` wypisuje porty; jedno podlaczone urzadzenie "
-                                            "USB-serial wpisuje sie samo). a1x: can0 (Linux), xcan "
+                                            "USB-serial wpisuje sie samo, takze przy Polacz po zamianie "
+                                            "ramienia). a1x: can0 (Linux), xcan "
                                             "albo xcan:6 (macOS), PCAN_USBBUS1 (Windows); pusty = domyslny. "
                                             "sim: nieuzywany.")
             connect = g.add_button("Polacz", icon=viser.Icon.PLUG_CONNECTED, color="green",
@@ -1042,7 +1059,7 @@ class TwinApp:
         @self._safe
         def _(event):
             try:
-                self._connect(self._preset_backend(), self.arm_port.value.strip() or None, False)
+                self._connect(self._preset_backend(), self._port_from_field(), False)
             finally:
                 show_a1x()
                 self._render_arm(force=True)
@@ -1182,12 +1199,18 @@ class TwinApp:
         return presets
 
     def _typed_port(self) -> str:
-        """The Port field for a preset that leaves the port to the field: the workstation's saved
-        port, else the one USB-serial device plugged in."""
-        return self.ws.port or usb_serial_port() or ""
+        """The Port field for a preset that leaves the port to the field (`find_port`)."""
+        return find_port(self.ws.port)
 
     def _preset_backend(self) -> str:
         return self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[0]
+
+    def _port_from_field(self) -> str | None:
+        """Polacz: the Port field, re-resolved when the preset leaves the port to the field. The arm
+        may have been swapped since the field was filled: the device plugged in now wins."""
+        if self._arm_presets().get(str(self.arm_backend.value), ("sim", None))[1] is None:
+            self.arm_port.value = find_port(self.arm_port.value) or self.arm_port.value.strip()
+        return self.arm_port.value.strip() or None
 
     def _go_home(self) -> None:
         """Pozycja domowa: odbiera ramie kazdemu (panel, strategia, fala) - takze startowi w toku.

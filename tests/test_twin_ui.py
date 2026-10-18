@@ -620,31 +620,75 @@ class _Port:
         self.device, self.vid = device, vid
 
 
-def test_usb_serial_port_is_the_one_device_with_a_usb_id(monkeypatch):
+def plugged(monkeypatch, *devices: str) -> None:
+    """These USB-serial devices are plugged in (a serial port without a USB id is not one)."""
     lp = pytest.importorskip("serial.tools.list_ports")
-    from machinekind_twin.ui.app import usb_serial_port
-
-    monkeypatch.setattr(lp, "comports", lambda: [_Port("/dev/ttyS0", None), _Port("/dev/ttyACM0", 0x1A86)])
-    assert usb_serial_port() == "/dev/ttyACM0"
-    monkeypatch.setattr(lp, "comports", lambda: [_Port("/dev/ttyACM0", 0x1A86), _Port("/dev/ttyACM1", 0x1A86)])
-    assert usb_serial_port() is None
+    ports = [_Port("/dev/ttyS0", None)] + [_Port(d, 0x1A86) for d in devices]
+    monkeypatch.setattr(lp, "comports", lambda: ports)
 
 
-def test_a_preset_without_a_port_fills_the_field_with_the_saved_port_or_the_one_usb_device(app, monkeypatch):
-    from machinekind_twin.ui import app as panel
+def test_the_port_is_the_saved_one_while_it_is_plugged_in(monkeypatch):
+    from machinekind_twin.ui.app import find_port
 
+    plugged(monkeypatch, "/dev/ttyACM0", "/dev/ttyACM1")
+    assert find_port("/dev/ttyACM1") == "/dev/ttyACM1"
+
+
+def test_the_port_is_the_one_device_plugged_in_when_the_saved_one_is_gone(monkeypatch):
+    """A swapped arm has a new port name: the saved one must not win over the device that is there."""
+    from machinekind_twin.ui.app import find_port
+
+    plugged(monkeypatch, "/dev/ttyACM0")
+    assert find_port("/dev/ttyUSB3") == "/dev/ttyACM0"
+    assert find_port(None) == "/dev/ttyACM0"
+
+
+def test_the_port_is_blank_when_several_devices_are_plugged_in_and_none_is_the_saved_one(monkeypatch):
+    from machinekind_twin.ui.app import find_port
+
+    plugged(monkeypatch, "/dev/ttyACM0", "/dev/ttyACM1")
+    assert find_port("/dev/ttyUSB3") == ""
+    plugged(monkeypatch)
+    assert find_port("/dev/ttyUSB3") == ""
+
+
+def test_a_bridge_address_is_kept_as_the_port(monkeypatch):
+    from machinekind_twin.ui.app import find_port
+
+    plugged(monkeypatch, "/dev/ttyACM0")
+    assert find_port("socket://10.0.0.5:5555") == "socket://10.0.0.5:5555"
+
+
+def test_a_preset_without_a_port_fills_the_field_with_the_port_plugged_in(app, monkeypatch):
     sim, typed = "symulacja (blizniak jest ramieniem)", "Robot testowy (w pamieci)"
     before = app.arm_backend.value
-    monkeypatch.setattr(panel, "usb_serial_port", lambda: "/dev/ttyACM0")
+    plugged(monkeypatch, "/dev/ttyACM0")
     try:
-        app.arm_backend.value = sim
-        app.arm_backend.value = typed
-        assert app.arm_port.value == "/dev/ttyACM0"
-
         monkeypatch.setattr(app.ws, "port", "/dev/ttyUSB3")
         app.arm_backend.value = sim
         app.arm_backend.value = typed
-        assert app.arm_port.value == "/dev/ttyUSB3"
+        assert app.arm_port.value == "/dev/ttyACM0"
+    finally:
+        app.arm_backend.value = before
+
+
+def test_connect_takes_the_port_plugged_in_over_a_stale_one_in_the_field(app, monkeypatch):
+    """The arm was swapped while the panel ran: Polacz goes to the device that is there."""
+    typed = "Robot testowy (w pamieci)"
+    before = app.arm_backend.value
+    seen = {}
+
+    def connect(backend, port=None, **kw):
+        seen["port"] = port
+
+    monkeypatch.setattr(app.twin, "connect", connect)
+    plugged(monkeypatch, "/dev/ttyACM7")
+    try:
+        app.arm_backend.value = typed
+        app.arm_port.value = "/dev/ttyUSB3"
+        app._connect(app._preset_backend(), app._port_from_field(), False)
+        assert seen["port"] == "/dev/ttyACM7"
+        assert app.arm_port.value == "/dev/ttyACM7"
     finally:
         app.arm_backend.value = before
 
