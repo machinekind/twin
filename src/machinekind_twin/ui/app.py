@@ -126,7 +126,8 @@ TAB_HELP = {
         "2. Wybierz strategie - formularz to jej ustawienia, wypelnione z sekcji pliku konfiguracji o tej samej "
         "nazwie. Nieznany klucz albo zly typ: Uruchom odmawia, zanim ramie drgnie.\n"
         "3. Najpierw na ramieniu sim: **Uruchom**. Prawdziwe ramie: potwierdzenie przed kazdym uruchomieniem.\n"
-        "4. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
+        "4. **Cel z uchwytu 3D**: uchwyt na koncowce podaje strategii cel; przeciagaj go, takze w trakcie biegu.\n"
+        "5. **Zatrzymaj** - ramie trzyma ostatni cel; **STOP** - zatrzymanie awaryjne."),
     "Sim-Real": (
         "1. **Kamera**: prawdziwa, z zaufana poza (Kalibracja).\n"
         "2. **Krawedzie symulacji**: zolte krawedzie renderu na kadrze i mediana rozjazdu - do 3 px dobrze.\n"

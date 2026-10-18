@@ -135,6 +135,7 @@ def app(shared_app):
     a.twin.disconnect()
     a.arm_engage.value = False
     a.tcp_gizmo_on.value = False
+    a.strategies.goal_on.value = False
     for owner in (a.twin.owner,):
         if owner is not None:
             a.twin.release(owner)
@@ -832,6 +833,55 @@ def test_a_float_setting_with_an_int_default_keeps_its_decimals(app, install_dis
     tab = choose_strategy(app, install_counter(install_dist), count=1, speed=1.5)
 
     assert tab._inputs["speed"].value == 1.5
+
+
+GOALS = '''
+class Strategy:
+    hz = 50.0
+    goals = []
+
+    def act(self, obs):
+        Strategy.goals.append(obs.goal)
+        return {}
+'''
+
+
+def next_goal(tab):
+    """The goal the running strategy sees two ticks from now: the tick under way may predate a change."""
+    goals = tab.runner.strategy.goals
+    seen = len(goals)
+    deadline = time.monotonic() + 5.0
+    while len(goals) < seen + 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return goals[-1]
+
+
+def test_the_3d_handle_starts_on_the_tcp(app):
+    tab = app.strategies
+
+    tab.goal_on.value = True
+
+    assert tab.goal_handle.visible
+    assert np.allclose(tab.goal_handle.position, app.twin.scene.data.site_xpos[app.twin.scene.kin.site_id])
+
+
+def test_the_3d_handle_gives_a_running_strategy_its_goal_in_the_base_frame(app, install_dist):
+    install_dist("goal-strategy", {"machinekind_twin.strategies": {"goals": "goal_strategy:Strategy"}},
+                 {"goal_strategy": GOALS})
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, "goals")
+    tab.start()
+
+    assert next_goal(tab) is None
+
+    tab.goal_on.value = True
+    tab.goal_handle.position = (app.T_b2w @ [0.20, 0.05, 0.10, 1.0])[:3]
+
+    assert np.allclose(next_goal(tab), [0.20, 0.05, 0.10])
+
+    tab.goal_on.value = False
+
+    assert next_goal(tab) is None
 
 
 def test_a_second_start_while_the_first_is_starting_is_refused(app, swing, monkeypatch):
