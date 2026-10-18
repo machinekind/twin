@@ -293,6 +293,10 @@ The panel's Strategies tab lists them and draws a form from the settings datacla
 field, a number or a switch per field, prefilled from the config file's section of the same
 name (`pi05:`). Start builds the dataclass strictly, so an unknown key, a missing one or a
 wrong type is refused before the arm moves, and creates the strategy as `Pi05(settings)`.
+The tab's "Cel z uchwytu 3D" switch puts a handle on the tip in the 3D view. While it is on,
+the handle's position in the base frame is `Observation.goal` every tick, also during a run, so
+dragging it moves the goal. The twin only reports where the handle is; the strategy decides
+how the arm gets there.
 The contract types live in `machinekind-twin-api`; a strategy package depends on that, never on
 `machinekind-twin` (MuJoCo, viser, OpenCV). A strategy subclasses `Strategy[S]`, `S` its settings
 dataclass, which gives it the defaults (no settings, no time limit, empty `start` and `stop`)

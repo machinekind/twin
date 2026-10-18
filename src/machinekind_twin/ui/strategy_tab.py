@@ -9,6 +9,10 @@ runner as the twin's test strategy.
 The arm rules are the Policies tab's: a fresh confirmation before every start on a real arm, no
 start under STOP or while something else drives, and STOP, Home or Connect pressed while the
 strategy is starting win over it.
+
+A handle in the 3D view gives the strategy its goal, `Observation.goal` in the base frame, every
+tick, also while it runs. The twin only reports where the handle is: what the goal means and how
+the arm gets there is the strategy's business.
 """
 
 from __future__ import annotations
@@ -17,8 +21,10 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import viser
 
+from ..kinematics import inverse
 from ..strategies import SettingField, StrategyPlugin, config_section, load_strategy, strategies
 from ..strategy import OWNER, Strategy, StrategyRunner
 
@@ -85,6 +91,11 @@ class StrategyTab:
             self.confirm = gui.add_checkbox(
                 "Prawdziwe ramie: rozumiem, ze sie ruszy", False,
                 hint="Prawdziwe ramie: potwierdzenie przed kazdym Uruchom (gasnie po starcie). W sim niepotrzebne.")
+            self.goal_on = gui.add_checkbox(
+                "Cel z uchwytu 3D", False,
+                hint="Uchwyt w widoku 3D, postawiony na koncowce, podaje strategii cel (obs.goal, uklad "
+                     "podstawy) w kazdym takcie, takze w trakcie biegu. Ramieniem prowadzi strategia, nie "
+                     "blizniak. Wylaczony: strategia nie dostaje celu.")
             start = gui.add_button(
                 "Uruchom", icon=viser.Icon.PLAYER_PLAY, color="green",
                 hint="Strategia jedzie na polaczonym ramieniu (przez nadzor) - RUSZA ramieniem. Odmowa przy "
@@ -94,6 +105,15 @@ class StrategyTab:
                 "Zatrzymaj", icon=viser.Icon.PLAYER_STOP,
                 hint="Zatrzymuje strategie - takze jeszcze startujaca; ramie trzyma ostatni cel.")
             self.run_md = gui.add_markdown("")
+
+        self.goal_handle = self.app.server.scene.add_transform_controls(
+            "/cel_strategii", scale=0.1, disable_rotations=True, visible=False)
+
+        @self.goal_on.on_update
+        def _(event):
+            if self.goal_on.value:
+                self.goal_handle.position = self._tcp_in_world()
+            self.goal_handle.visible = self.goal_on.value
 
         @refresh.on_click
         def _(event):
@@ -236,7 +256,7 @@ class StrategyTab:
         mark = app._motion_mark()
 
         self._check_arm()
-        runner = StrategyRunner(app.twin, self._create(), cameras=self._cameras())
+        runner = StrategyRunner(app.twin, self._create(), goal=self.goal, cameras=self._cameras())
 
         self.stop("nowa strategia")
         app._release_panel()
@@ -303,6 +323,19 @@ class StrategyTab:
 
         on_arm = [name for name in self.app.twin.spec.cameras if name not in fixed]
         return fixed + on_arm
+
+    def goal(self) -> np.ndarray | None:
+        """The handle's position in the base frame [m], or None while the handle is off."""
+        if not self.goal_on.value:
+            return None
+
+        world = np.r_[self.goal_handle.position, 1.0]
+        return (inverse(self.app.T_b2w) @ world)[:3]
+
+    def _tcp_in_world(self) -> np.ndarray:
+        twin = self.app.twin
+        with twin.lock:
+            return twin.scene.data.site_xpos[twin.scene.kin.site_id].copy()
 
     def halt(self) -> None:
         """Strategie > Zatrzymaj: also a strategy that is still starting never takes the arm."""

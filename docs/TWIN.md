@@ -165,7 +165,7 @@ stanu.
 | **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
 | **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru); *Tag na biurku*: poza taga z kamer i *Jedź nad tag* |
 | **Dynamika** | **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako dynamiki stanowiska (`twin export` niesie ją w `station.json`) |
-| **Strategie** | strategie z zainstalowanych pakietów (entry points `machinekind_twin.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
+| **Strategie** | strategie z zainstalowanych pakietów (entry points `machinekind_twin.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Cel z uchwytu 3D*: uchwyt w widoku 3D, postawiony na końcówce, podaje strategii cel (`Observation.goal`, układ podstawy) w każdym takcie, także w trakcie biegu; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
 | **Sim-Real** | kadr prawdziwej kamery z nałożonymi krawędziami renderu bliźniaka z tej samej pozy i K, mediana rozjazdu w pikselach |
 
 ---
@@ -243,7 +243,10 @@ panel pokazuje jako *Przerwane*, nie jako błąd. Nagranie
 z martwą pętlą albo nieświeżymi odczytami jest odrzucane.
 
 **Dalej: strategie.** Zakładka Strategie uruchamia strategie z zainstalowanych
-pakietów; wytrenowana polityka to strategia `policy` z `soarm-lab`.
+pakietów; wytrenowana polityka to strategia `policy` z `soarm-lab`. Strategia
+`ik` z `soarm-lab` prowadzi końcówkę do celu: z *Cel z uchwytu 3D* i wyłączonym
+`end_on_reach` ramię idzie za uchwytem przeciąganym w 3D. Bliźniak podaje tylko
+położenie uchwytu; kinematykę odwrotną liczy strategia.
 
 **Chwytak.** 0..100 w panelu to w bliźniaku położenie szczęki liniowo na
 zakresie `gripper_range_q` z `robot.yaml` ramienia. Backend podaje swój zakres;
@@ -615,7 +618,7 @@ src/machinekind_twin/
     ├── bridge.py      scena MuJoCo w przeglądarce (węzeł na ciało)
     ├── guide.py       przewodnik: kroki procedury i następna akcja ze stanu panelu
     ├── jobs.py        zadania w tle: kalibracje, identyfikacja
-    ├── strategy_tab.py zakładka Strategie: lista, formularz ustawień, Uruchom i Zatrzymaj
+    ├── strategy_tab.py zakładka Strategie: lista, formularz ustawień, uchwyt celu, Uruchom i Zatrzymaj
     └── watch.py       wykrywanie przestawionej kamery
 
 src/machinekind_twin/backends/
