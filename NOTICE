@@ -1,7 +1,5 @@
-machinekind-twin - cyfrowy bliźniak stanowiska z ramieniem robota
-Licencja projektu: Apache-2.0 (pyproject.toml).
+Machinekind Twin
+Copyright 2026 Machinekind and contributors.
 
-Repozytorium nie zawiera plików osób trzecich: modele i siatki ramion są w pakietach ramion
-(SO-101: soarm z repozytorium so-arm101, Galaxea A1X: galaxeo z repozytorium galaxeo-manipulators).
-
-Pełny tekst licencji Apache-2.0: https://www.apache.org/licenses/LICENSE-2.0
+This product includes software developed by Machinekind and its contributors.
+https://github.com/machinekind/twin

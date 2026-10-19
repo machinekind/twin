@@ -89,4 +89,14 @@ uv run pyright
 
 See [the workstation guide](docs/TWIN.md) for setup and hardware procedures.
 
-Licensed under Apache-2.0. See [NOTICE](NOTICE).
+## License
+
+Copyright 2026 Machinekind and contributors.
+
+Machinekind Twin, its plugin API and the example packages in this repository are
+licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE)
+for attribution. Redistributions must preserve the applicable copyright and
+attribution notices as required by the license.
+
+Third-party dependencies and separately installed robot or strategy packages are
+covered by their own licenses.

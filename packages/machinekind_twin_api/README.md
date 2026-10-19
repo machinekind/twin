@@ -145,4 +145,7 @@ Tests: `uv run pytest packages/machinekind_twin_api/tests` from the twin's root.
 
 ## Licence
 
-Apache-2.0, [LICENSE](LICENSE).
+Copyright 2026 Machinekind and contributors.
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+See [NOTICE](NOTICE) for attribution.
