@@ -1,452 +1,350 @@
-# Cyfrowy bliźniak stanowiska z ramieniem robota
+# Workstation guide
 
-Symulacja MuJoCo, która wie o biurku to samo, co prawdziwe stanowisko: gdzie
-stoi ramię, gdzie stoją kamery, jaką mają ogniskową i jak naprawdę odpowiadają
-serwa. Kamera skalibrowana na biurku trafia do symulacji **dokładnie w swojej
-pozie i ze swoją macierzą K**, a strategia sterowania jedzie w symulacji i na
-prawdziwym ramieniu tą samą ścieżką — przez nadzór bezpieczeństwa — i widzi
-kostkę tą samą percepcją. Bliźniak nie ma własnego ramienia: ramiona i ich
-backendy dają zainstalowane pakiety. Trening i polityki są w pakiecie `soarm-lab`
-(repozytorium so-arm101), a wytrenowana polityka jedzie jako strategia `policy`
-w zakładce Strategie.
+Machinekind Twin builds digital twins of physical workstations, starting with
+robot arms. This guide covers the currently implemented arm workflows: simulation,
+cameras, calibration, perception, dynamics identification and control strategies.
 
-```
-  prawdziwe stanowisko                        bliźniak (MuJoCo)
- ┌──────────────────────┐   kalibracja      ┌──────────────────────────┐
- │ ramię przez backend  │ ────────────────► │ ramię z robot.yaml       │
- │ kamery USB dookoła   │  karta w dłoni,   │ kamery w tych samych     │
- │ biurko, kostka       │  ChArUco, sysid   │ pozach, z tym samym K,   │
- └──────────▲───────────┘                   │ serwa jak zmierzone      │
-            │                               └────────────┬─────────────┘
-            │  strategia `policy` przez nadzór           │  twin export:
-            │  (ta sama ścieżka co w symulacji)          ▼  scene.xml + station.json
-            └────────────────────────────────── trening w soarm-lab
-```
+## Status and package boundaries
 
-## Stan
+The workflows are tested in simulation and with simulated hardware interfaces.
+End-to-end validation on physical SO-101 and Galaxea A1X arms is still pending.
+Simulation results are not hardware accuracy guarantees.
 
-| | |
+| Package | Responsibility |
 |---|---|
-| **Gotowe i przetestowane w symulacji** | model, kinematyka, scena z kamerami o pełnym K, kolizje, **kalibracja wielu kamer z karty w chwytaku**, **intrynsyki z ChArUco**, mapa stołu na żywo, **wykrywanie kostki z kamer**, **wykrywanie przestawionej kamery**, **identyfikacja dynamiki serw**, **strategie przez nadzór** (`StrategyRunner`), **eksport stanowiska**, **panel webowy** |
-| **Do sprawdzenia na sprzęcie** | wszystko, co dotyka prawdziwego ramienia i prawdziwych kamer — procedura krok po kroku niżej |
-| **Drugie ramię: Galaxea A1X** | z pakietu galaxeo, instalowanego obok bliźniaka: model, kinematyka i kalibracja kamer w symulacji; backend `a1x` po CAN-FD przetestowany na symulowanej magistrali — sekcja [Galaxea A1X](#galaxea-a1x) |
-| **Rozpoznanie** | rekonstrukcja 3D przedmiotów z biurka — [RESEARCH_3D.md](RESEARCH_3D.md) |
+| This repository (`machinekind-twin`) | Scene, calibration, perception, safety supervisor, strategy runner, UI and station export |
+| [`machinekind-twin-api`](../packages/machinekind_twin_api) | Plugin contracts; depends only on NumPy |
+| [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) | SO-101 model and hardware backends |
+| `soarm-lab` in [so-arm101](https://github.com/machinekind/so-arm101) | Training and policy/IK strategies |
+| [`galaxeo`](https://github.com/machinekind/galaxeo-manipulators) | A1X model, example workstation and CAN-FD backend |
 
-Szczegóły, decyzje i pułapki: **[HANDOFF.md](../HANDOFF.md)**.
+Training, policy checkpoints and robot-specific drivers are maintained in their
+respective packages. This repository does not provide a training CLI or bundle
+trained policies. It passes measured station data to external tools through
+`twin export`; installed strategies bring trained policies back to the panel.
 
----
+## Installation
 
-## Instalacja
-
-Skrót dla każdej platformy jest w README, „Szybki start na nowym komputerze”.
-Najważniejsze zasady:
-
-- `uv sync` installs the versions in `uv.lock`: the twin with its panel, the plugin contracts
-  `machinekind-twin-api` from `packages/machinekind_twin_api` (see
-  [Jak to jest zbudowane](#jak-to-jest-zbudowane)), the example arm and strategy from
-  `examples/` and the dev tools. The contracts are not on PyPI.
+Requires Git, [uv](https://docs.astral.sh/uv/) and OpenGL. The clone pins Python
+through `.python-version` and dependencies through `uv.lock`.
 
 ```bash
+git clone https://github.com/machinekind/twin.git
+cd twin
 uv sync
 uv run twin check
-uv run twin ui    # the first start writes the example workstation with the first installed robot -> workspace/twin.json
+uv run twin ui
 ```
 
-- Linux bez ekranu: `export MUJOCO_GL=egl` (NVIDIA) albo `osmesa` (CPU,
-  `sudo apt install libosmesa6`).
-- The twin holds no robot of its own. The SO-101 and its backends (`feetech`, `lerobot`, the
-  COM<->TCP bridge) are the `soarm` package from so-arm101, installed next to the twin with
-  `uv pip install --no-sources` (README, section 5).
+`uv sync` installs the twin, browser panel, local plugin API, example `arm6`
+robot, `swing` strategy and development tools. Open **http://localhost:8080**.
+`twin check` reports runtime dependencies, installed robot models and USB-serial
+ports; it does not check a training environment.
 
-**Pliki stanowiska.** `workspace/twin.json` (kamery, kalibracja, port, stół,
-wygląd sceny, dynamika) jest lokalny, poza repozytorium. Z klonu jego domyślna ścieżka
-liczy się od katalogu repozytorium, niezależnie od katalogu uruchomienia; inny
-plik: `--workspace <plik>`. Without the file, the first `twin ui` writes the example
-workstation, as `twin demo` does. `twin demo`
-kopiuje `examples/twin.sim.json` i wpisuje w kopię pierwsze zainstalowane ramię
-(inne: `--robot <nazwa>`) — dwie kamery symulowane, których kalibracja to ich
-prawdziwa poza w scenie (zaufane), więc „kostka z kamer” działa od razu.
-Istniejącego stanowiska nie nadpisze (`--force`, albo `--path <plik>`). Bez
-zainstalowanego ramienia `demo` kończy się błędem i podaje, co zainstalować
-(`uv sync` albo `uv pip install`).
-
-**Zapisane położenia kamer.** Każdy zapis kroku 2 (Kalibracja › „Zapisz
-wynik”) trafia do osobnego pliku `workspace/calib/<data-godzina>.json`
-z pozą i werdyktem wszystkich kamer, które ją mają; poprzednich zapisów nic
-nie nadpisuje. `twin.json` trzyma kopię roboczą wgranego zestawu
-(`calib_preset`); bez wskazania panel wgrywa najnowszy. Starszy zestaw
-wraca z listy „Zapisane położenia kamer” pod krokiem 2 (werdykt „zaufana”
-liczy się na nowo względem obecnego obiektywu). Stanowisko zapisane przed
-tą zmianą dostaje pierwszy zestaw ze swojej dotychczasowej pozy przy
-pierwszym zapisie.
-
-**Konfiguracja ramienia.** Bliźniak czyta plik konfiguracji tylko wtedy, gdy
-się go wskaże: `twin --config configs/local.yaml ui` (opcja ustawia
-zmienną `MACHINEKIND_TWIN_CONFIG`). Sekcje `safety:` i `robot:` (`backend`, `port`)
-czyta bliźniak; każda inna sekcja należy do backendu o tej nazwie i sprawdza ją
-sam backend. Klucze sekcji opisuje pakiet ramienia (SO-101: `feetech:` i
-`lerobot:` w pakiecie `soarm`); Galaxea A1X (pakiet `galaxeo`) ma sekcję `a1x:`,
-patrz [Galaxea A1X](#galaxea-a1x). Opis samego ramienia (stawy, limity, poza
-domowa, zakres szczęki) leży w `robot.yaml` w folderze ramienia, w pakiecie
-ramienia.
-
-## Panel
+On Linux, install the system OpenGL libraries if needed:
 
 ```bash
-twin ui                  # http://localhost:8080; zajęty port: --port 8765
-twin ui --host 0.0.0.0   # także z sieci — panel nie ma hasła, tylko w zaufanej sieci
-twin ui --stream-port 8766   # plus podgląd kamer na osobnym porcie (MJPEG, tylko odczyt)
+sudo apt install libgl1 libglib2.0-0 libegl1
 ```
 
-**Podgląd kamer** (`--stream-port`): kadry, które panel i tak pobiera, po HTTP na osobnym porcie —
-`/` strona ze wszystkimi kamerami, `/<kamera>.mjpg` strumień, `/<kamera>.jpg` ostatni kadr,
-`/cameras.json` lista. Nic tam nie steruje ramieniem, więc słucha domyślnie w całej sieci
-(`--stream-host` zmienia). Osobny proces nie może otworzyć tych samych kamer (V4L2) —
-dlatego podgląd siedzi w procesie panelu.
+On a Linux server without a display, use `MUJOCO_GL=egl` with a compatible GPU,
+or install `libosmesa6` and use `MUJOCO_GL=osmesa` for software rendering.
 
-Duży **STOP** przyklejony u góry panelu (nie odjeżdża przy przewijaniu), pod
-nim żółty **Skasuj STOP** (tylko przy aktywnym STOP-ie), plakietka stanu ramienia
-(ROZŁĄCZONE / ROZBROJONE / UZBROJONE / STERUJE: … / STOP AKTYWNY) i **Przewodnik**:
-zawsze widoczne jedno **Teraz:** („Krok N/5 (tytuł): zakładka > **przycisk**”,
-albo co właśnie jedzie i jak to przerwać; aktywny STOP z przyczyną), a pod nim
-zwinięty folder **Kroki 0–5** z uwagami, których Teraz nie mówi (ostrzeżenia,
-kamera bez kadru dłużej niż 3 s, przestawiona kamera; ich liczba w nazwie
-folderu) i listą kroków liczoną z bieżącego stanu — ramię, kamery, K, pozy,
-Sim-Real, dynamika. Na prawdziwym ramieniu dynamika zmierzona w sim nie zalicza
-kroku 5. W symulacji prowadzi przez te same kroki z kamerami symulowanymi. Każda
-kontrolka ma podpowiedź po najechaniu (co robi, czy rusza ramieniem, jednostki),
-a każda zakładka zwiniętą notkę **Jak używać**. Logika przewodnika:
-`ui/guide.py` (bez visera, `tests/test_twin_guide.py`). Każdy ruch — z suwaków, z uchwytu
-w 3D, ze strategii, z fali kalibracyjnej, z identyfikacji — idzie przez
-`runtime.Twin` i jego `SafetySupervisor`.
+### Install a hardware package
 
-**Ramię ma zawsze jednego właściciela**: panel (UZBRÓJ: suwaki i uchwyt 3D), strategia,
-fala kalibracyjna albo identyfikacja. Drugi nie ruszy, dopóki pierwszy nie
-skończy — panel mówi, kto ma ramię. **STOP**, **Dom**, **Połącz** i **Rozłącz**
-odbierają ramię każdemu, a ramię zostaje w **zmierzonej** pozie: nie dociska
-do przeszkody, nie wraca skokiem do starego celu i nie cofa się (przy szybkim
-ruchu staje między zmierzoną pozą a ostatnim rozkazem). **Chwytak, który
-ściska, dalej ściska** — STOP ani Dom nie upuszczają trzymanej kostki; otwiera
-się go ręcznie suwakiem. **Połącz / Rozłącz puszczają trzymany przedmiot** na
-backendzie `feetech` (przy połączeniu serwa dostają cel = bieżąca pozycja) —
-przed nimi odłóż kostkę albo przytrzymaj ją ręką; w `sim` chwyt przetrwa.
-Każde uruchomienie na prawdziwym ramieniu wymaga świeżego potwierdzenia.
-STOP albo Dom wciśnięte w chwili startu strategii, fali czy identyfikacji
-wygrywają: zadanie nie weźmie ramienia pod aktywnym STOP-em i nie ruszy po
-*Skasuj STOP*.
+Install hardware plugins into the same environment. For SO-101, with its policy
+and IK strategies:
 
-Pętla sama zatrzymuje ramię (STOP awaryjny, powód w pasku stanu), gdy:
-- serwo ramienia zgłosi błąd (przeciążenie, przegrzanie, napięcie, czujnik kąta);
-- staw ramienia jest ponad 25° od rozkazu dłużej niż 0,5 s — serwo, które
-  zwiotczało bez bitu błędu (każdy właściciel ruchu, nie tylko strategia);
-  jeśli prawdziwe serwa pod obciążeniem nie nadążą, podnieś
-  `Twin.track_err_deg` / `track_err_s`;
-- serwa nie odpowiadają przez 5 odczytów z rzędu, albo pętla stanie na > 0,5 s.
+```bash
+uv pip install --no-sources "soarm[feetech] @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm" \
+  "soarm-lab @ git+https://github.com/machinekind/so-arm101.git#subdirectory=packages/soarm_lab"
+```
 
-Krótsza przerwa łącza nie jest błędem: nadzór stoi, nic nie idzie do serw, a
-po pierwszym świeżym odczycie rusza od zmierzonej pozy (po 0,9 s przerwy
-największy krok celu 4,2° — wcześniej 16,7°). **Przeciążenie samego chwytaka**
-(mocny chwyt) nie zatrzymuje ramienia: docisk jest zmniejszany do 8 jednostek
-(~5°) ciaśniej niż zmierzona szczęka, w pasku stanu pojawia się ostrzeżenie;
-STOP dopiero, gdy błąd chwytaka trwa 2 s.
-
-Połączenie potrzebuje dwóch zgodnych odczytów (±2 jednostki) — przekłamana
-ramka nie zostaje pierwszym rozkazem. Ramię stojące po włączeniu poza limitami
-zostaje, gdzie jest; po UZBRÓJ wraca w zakres (najwyżej 90°/s).
-Limity z konfiguracji są zawężane do limitów zapisanych w EEPROM serw.
-Niefatalne zastrzeżenia (inne tiki chwytaka w backendzie, zero stawów w
-kalibracji LeRobota, zmniejszony docisk) panel pokazuje jako **Uwaga** w pasku
-stanu.
-
-| zakładka | co robi |
-|---|---|
-| **Ramię** | połączenie: `sim` (bliźniak jest ramieniem), backend z pakietu ramienia (SO-101 z `soarm`: `feetech`, `lerobot`), `a1x` (Galaxea A1X po CAN, z pakietem galaxeo: port `can0` / `xcan` / `PCAN_USBBUS1`, przycisk *Włącz silniki A1X*) — zestawy w liście *Ramię* wpisują port; po *Połącz*: duży **UZBRÓJ / UZBROJONE**, *Uchwyt 3D* (IK), *Dom*, *Ustaw dom = tu*, prędkość, suwaki stawów z nazwami po polsku, *Rozłącz*; *Stanowisko (stół)* zwinięte na dole |
-| **Kamery** | lista kamer z jedną plakietką stanu (SKALIBROWANA / DO KALIBRACJI / KALIBRACJA NIEPEWNA / PORUSZONA / BEZ OBRAZU / WYŁĄCZONA — kolory jak piramidy w 3D); wybrana kamera: podgląd, jedna linia „co dalej”, przycisk *Włączona / Wyłączona*, *Usuń kamerę* (drugie kliknięcie potwierdza); symulowana dodatkowo *Przesuwaj w 3D* (uchwyt) i *Postaw tu, skąd patrzysz w 3D*; liczby w zwiniętych *Szczegółach*; na dole *Dodaj symulowaną przed ramieniem* i *Szukaj kamer USB* (wybór i *Dodaj kamerę USB* pojawiają się po znalezieniu) |
-| **Kalibracja** | zdanie „po co to”, każda kamera z plakietkami **OBIEKTYW** i **POŁOŻENIE**, linia **Teraz**. **Krok 1 — obiektyw każdej kamery** (tylko przy prawdziwej kamerze; w kodzie: intrynsyki, K): ponumerowana instrukcja, szachownica do druku, *Zacznij: pokazuj szachownicę kamerze …*, w trakcie licznik zdjęć, *Gotowe — policz obiektyw* i *Anuluj*; po zapisie przechodzi sam do następnej kamery. **Krok 2 — gdzie stoją kamery** (w kodzie: fala): ramię samo pokazuje kamerom kartę z kodem w ok. 20 miejscach; instrukcja, karta do druku, *Start: ramię pokaże kartę kamerom (…)* — zablokowany z powodem, gdy nie może ruszyć (m.in. przed krokiem 1), na prawdziwym ramieniu drugie kliknięcie potwierdza; po pomiarze tabela „dobrze / źle” i *Zapisz wynik* / *Odrzuć*. Poruszona kamera: pomarańczowy przycisk *Kamera … została poruszona — pokaż jej kartę jeszcze raz*. Symulacja: skrót *Symulacja: pomiń — wpisz prawdziwe położenie kamer* |
-| **Mapa** | kadry wszystkich zaufanych kamer zszyte w mapę blatu (także na stole w 3D), wykrywanie kostki (kolor do wyboru); *Tag na biurku*: poza taga z kamer i *Jedź nad tag* |
-| **Dynamika** | **identyfikacja dynamiki serw** na połączonym ramieniu i zapis jako dynamiki stanowiska (`twin export` niesie ją w `station.json`) |
-| **Strategie** | strategie z zainstalowanych pakietów (entry points `machinekind_twin.strategies`); formularz ustawień wybranej strategii, wypełniony z sekcji pliku konfiguracji o jej nazwie; *Cel z uchwytu 3D*: uchwyt w widoku 3D, postawiony na końcówce, podaje strategii cel (`Observation.goal`, układ podstawy) w każdym takcie, także w trakcie biegu; *Uruchom* (odmawia przy nieznanym kluczu albo złym typie, zanim ramię drgnie) i *Zatrzymaj*; strategia jedzie przez `StrategyRunner`, tak jak strategia testowa |
-| **Sim-Real** | kadr prawdziwej kamery z nałożonymi krawędziami renderu bliźniaka z tej samej pozy i K, mediana rozjazdu w pikselach |
-
----
-
-## Pierwszy test na prawdziwym stanowisku — krok po kroku
-
-Wszystko poniżej jest przećwiczone na bliźniaku (`sim`) — ta sama ścieżka,
-te same przyciski. Przed każdym krokiem na sprzęcie: ramię na stole, wolne
-miejsce dookoła, zasilacz podłączony, ręka przy STOP.
-
-**0. Ramię do komputera z bliźniakiem.** Połączenie zależy od ramienia
-i opisuje je jego pakiet: SO-101 (port szeregowy, most COM<->TCP) — pakiet
-`soarm` (repozytorium so-arm101, `docs/first-contact.md`); Galaxea A1X (CAN) —
-rozdział [Galaxea A1X](#galaxea-a1x). Sekcję backendu wpisz w
-`configs/local.yaml`; panel uruchamiaj wtedy z `--config configs/local.yaml`.
-
-W zakładce Ramię: backend ramienia, port, **Połącz** (bez jazdy do domu).
-Suwaki mają pokazywać to, co ramię. UZBRÓJ + mały ruch jednym suwakiem.
-
-**1. Kamery.** Na maszynie wirtualnej/zdalnej najpierw przepuść
-kamery USB w kliencie. W panelu *Szukaj kamer USB* → *Dodaj kamerę USB*. Kamera, która się otwiera, ale nie daje klatek, to prawie
-zawsze brak przepuszczenia (patrz README).
-
-**2. Obiektyw każdej kamery** (w kodzie: intrynsyki). Kalibracja, krok 1:
-*Pobierz szachownicę do druku*, wydrukuj w skali 100%, **zmierz bok kwadratu
-linijką**, wpisz. *Zacznij: pokazuj szachownicę kamerze …* i pokazuj ją w
-rogach obrazu, bliżej i dalej, pochyloną — 12 zdjęć, pokrycie 55%. *Gotowe —
-policz obiektyw*; panel sam przechodzi do następnej kamery. Szachownica
-trzymana równolegle do obiektywu nie wyznacza ogniskowej — sesja bez pochyleń
-(rozrzut < 35°) albo z ogniskową nie do wiary wychodzi jako **niepewna**, a
-kamera z takim obiektywem nie przejdzie kroku 3. *Anuluj* niczego nie liczy
-ani nie zapisuje.
-Obiektyw zmierzony gdzie indziej (eksport K i dystorsji do pliku tekstowego,
-jak `assets/calib/logitech_brio_4k_calib.txt`) wczytuje
-*Gotowy obiektyw z pliku* → *Wczytaj obiektyw z pliku* — do wybranej kamery,
-tylko z tej samej rozdzielczości; plik trafia do `assets/calib/`.
-
-**3. Położenie kamer** (w kodzie: fala). Kalibracja, krok 2: *Pobierz kartę do
-druku*, wydrukuj, zmierz bok kodu, zegnij kartę, włóż wolny koniec w szczęki
-(ok. 7 cm ma wystawać). *Start: ramię pokaże kartę kamerom (…)*; przycisk
-pyta, czy karta jest w chwytaku, a stół pusty — drugie kliknięcie w ciągu 8 s
-rusza. Przycisk jest zablokowany, dopóki któraś prawdziwa kamera nie ma
-zmierzonego obiektywu. Ramię zbiera ~20 póz: dopóki kamera nie zobaczy karty
-co najmniej dwa razy, fala zamiata stawem podstawy sektorami po obu stronach
-stołu (nie błądzi losowo); potem co druga poza celuje w kamerę, której najbardziej
-brakuje. Kamera, której się nie udało, dostaje „źle” z powodem. *Zapisz wynik* (zapisuje też użyty bok kodu —
-zmieniony po pomiarze blokuje zapis z powodem) albo *Odrzuć*. Wyjmij kartę.
-
-**4. Sprawdzenie Sim-Real.** Zakładka Sim-Real, każda kamera: krawędzie renderu
-mają leżeć na krawędziach ramienia i stołu. Mediana > 3 px = coś jest źle
-(zmierzony tag? stół w bliźniaku nie na wysokości podstawy?).
-
-**5. Dynamika serw.** Zakładka Dynamika → *Identyfikuj na połączonym ramieniu*
-(~20 s ruchu po 12°; do pozy startowej ramię jedzie 30°/s) → *Zapisz jako
-dynamikę stanowiska*. `twin export` niesie ją w `station.json`, więc
-trening randomizuje wokół zmierzonego ramienia, nie katalogu. Z tego ruchu
-wyznaczalne są **tłumienie, armatura i opóźnienie** — na ruchu z panelu (5 stawów, 20 s), dla 13 syntetycznych ramion spoza siatki
-startowej i szumu 0,05°: tłumienie do 10,5%, armatura do 8,2%, opóźnienie do
-1,9 ms; podawany przedział niepewności zawsze obejmował prawdziwy błąd. Przy
-czasach jak na prawdziwym ramieniu (30 Hz z jitterem, odczyt co drugi takt)
-nagranie idzie z taktów pętli (`Twin.add_tick_listener`), więc wynik zostaje
-w tych granicach: tłumienie do 5%, armatura do 8%, opóźnienie do 1,3 ms
-(wcześniejsze znakowanie zegarem nagrywającego dawało do 38% i 4,4 ms). Wynik
-panel pokazuje z przedziałem przy każdej wartości i z backendem, na którym
-nagrano. Dopasowanie, które niczego nie wyjaśnia (błąd niewiele mniejszy od
-modelu nominalnego albo przedział > 30% / nieskończony), ma wyłączone *Zapisz*
-— zapis tylko po zaznaczeniu *Zapisz mimo to*, i taki wynik nie zalicza kroku 5.
-Wzmocnienia serw i tarcia suchego ten ruch nie rozróżnia (kp 0,63 dopasowuje
-się tak samo dobrze jak 1,0) — zostają z modelu, panel pisze przy nich
-„z modelu”, a opis wyniku podaje dla nich szerokie zakresy treningu: kp
-×0,6–1,5, tarcie ×0,5–2,0 (`dynamics.UNFITTED_RANGES`). Dopasowanie trwa
-7–11 s; STOP, *Połącz* i *Rozłącz* przerywają tylko nagrywanie — gotowe
-nagranie dopasowuje się do końca; przerwane świadomie (STOP, Dom, Połącz)
-panel pokazuje jako *Przerwane*, nie jako błąd. Nagranie
-z martwą pętlą albo nieświeżymi odczytami jest odrzucane.
-
-**Dalej: strategie.** Zakładka Strategie uruchamia strategie z zainstalowanych
-pakietów; wytrenowana polityka to strategia `policy` z `soarm-lab`. Strategia
-`ik` z `soarm-lab` prowadzi końcówkę do celu: z *Cel z uchwytu 3D* i wyłączonym
-`end_on_reach` ramię idzie za uchwytem przeciąganym w 3D. Bliźniak podaje tylko
-położenie uchwytu; kinematykę odwrotną liczy strategia.
-
-**Chwytak.** 0..100 w panelu to w bliźniaku położenie szczęki liniowo na
-zakresie `gripper_range_q` z `robot.yaml` ramienia. Backend podaje swój zakres;
-panel ostrzega po połączeniu, gdy oba się rozjeżdżają. Sprawdź na ramieniu, że
-przy 0 szczęki się stykają. Tiki chwytaka SO-101 ustawia sekcja `feetech:`
-backendu z pakietu `soarm`.
-
----
-
-## Galaxea A1X
-
-Galaxea A1X (opis ramienia, model MuJoCo, przykładowe stanowisko w symulacji
-i backend `a1x` po CAN-FD) jest w pakiecie `galaxeo` z repozytorium
-[galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators).
-Bliźniak znajduje ramię i backend przez entry points pakietu, który instaluje
-się obok bliźniaka. Z nazwy zna go jeszcze panel (folder „Silniki A1X” z przyciskiem
-włączenia FF 1-5-6 i stan chwytaka po XCAN; do uogólnienia jako akcje
-backendu).
+For A1X:
 
 ```bash
 uv pip install --no-sources "galaxeo @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
-# macOS z przejściówką XCAN: "galaxeo[xcan] @ git+https://github.com/machinekind/galaxeo-manipulators.git@main"
-uv run twin demo --robot a1x      # stanowisko A1X w symulacji -> workspace/twin.json
 ```
 
-Sprzęt i łącze CAN, sekcję `a1x:` konfiguracji i bezpieczeństwo (A1X nie ma
-hamulców) opisuje
-[galaxeo/robot/README.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
-Pierwszą sesję przez panel bliźniaka opisuje podrozdział niżej.
+`--no-sources` avoids applying a plugin repository's development source overrides
+and keeps the API package installed from this clone. `uv run` retains these extra
+packages; use `uv sync --inexact` when syncing to keep them. A plain `uv sync`
+removes packages outside the project's dependency set. Reinstall a plugin after
+changing its entry points so its installed metadata is refreshed.
 
-### Pierwsza sesja krok po kroku
+Read the robot package's hardware instructions before connecting it. For A1X,
+see [the first-session procedure](#galaxea-a1x-first-session) below.
 
-Przed sesją: ramię złożone i oparte, miejsce pod nim wolne, pod ręką wyłącznik
-awaryjny zasilacza i STOP panelu, na magistrali nic innego nie nadaje. Łącze
-sprawdzone: na Linuksie `ip -det -s link show can0`, na macOS
-`python -m galaxeo.xcan_usb --normal`, potem je zamknij. Sekcja `a1x:` jest
-w `configs/local.yaml`. Jej klucze i pole Port dla każdego systemu opisuje
-[galaxeo/robot/README.md](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md).
+## Workstation and configuration
 
-**0. Połączenie.** `twin --config configs/local.yaml ui`, zakładka
-Ramię: zestaw *Galaxea A1X* dla tego systemu, *Połącz* — nigdy nie jedzie do
-domu. Nic nie idzie na magistralę, dopóki czegoś nie ruszysz. Suwaki pokazują
-zmierzoną pozę, a przewodnik podpowiada ten sam krok. *Połącz* kończy się
-błędem, gdy:
-
-- przez 3 s nie przyjdzie żadna ramka `0x052` — łącze nie wstało albo ramię
-  nie ma zasilania;
-- telemetria jest zamrożona — ramię zostało zwolnione (FF 2). Podeprzyj je,
-  wyłącz i włącz zasilanie. FF 1-5-6 tego nie naprawia, bo pozy zwolnionego
-  ramienia nie da się odczytać.
-
-Złożone ramię stoi zwykle **poza limitami bliźniaka** (J2 ok. −0,2°, J3 ok.
-+1,5° przy limitach 3…177° i −187…−3°). To normalne: nadzór zostawia staw tam,
-gdzie stoi (miękkie limity, jak ramię nr 2 SO-101). Pierwszy ruch suwakiem J2
-albo J3 wyprowadza staw w zakres z prędkością 15°/s.
-
-**1. Mały ruch.** UZBRÓJ, potem jeden suwak (np. J1 Podstawa) o kilka stopni.
-Strumień `p_des` startuje od **zmierzonej** pozy. Jedzie najwyżej 90°/s
-(backend) i nie szybciej niż pozwala nadzór. Sprawdź kierunki i to, że suwaki
-idą za ramieniem. Ramię zgłasza się, ale nie jedzie? Po ok. 1 s pojawia się
-błąd „… st. od rozkazu przez … s i stoi — ramię głuche na 0x050 … albo
-zablokowane” i STOP. Dopiero wtedy (albo po zwolnieniu FF 2 i ponownym
-zasileniu) użyj **Włącz silniki A1X (FF 1-5-6)**. Przycisk jest widoczny tylko
-przy połączonym `a1x`, wymaga zaznaczenia potwierdzenia i odmawia przy
-uzbrojonym panelu albo gdy ramię zajmuje strategia, fala lub identyfikacja.
-W trakcie sekwencji backend strumieniuje `p_des` = zmierzona poza. Świeżo
-zasilone ramię słucha od razu i przycisku nie potrzebuje.
-
-**2. Dom i wyłączenie.** *Dom* A1X to uniesiona poza z modelu (J2 57°, J3 −92°,
-J4 34°, szczęki zamknięte). Pierwszy Dom to więc duży ruch w górę.
-*Ustaw dom = tu* zapisuje zmierzoną pozę ramienia i **zawsze chwytak 0
-(zamknięty)**: to umowa stanowiska, dom = szczęki zamknięte. Najpierw zamknij
-puste szczęki naprawdę. Dopóki chwytak nie był w tym połączeniu sterowany
-(grupa 7 w spoczynku jest niepewna, patrz pomiar chwytaka w
-[docs/HARDWARE.md w galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/blob/main/docs/HARDWARE.md))
-albo jest bez sprzężenia (`gripper_fb_*` = `null`), bliźniak przyjmuje od tej
-chwili, że szczęki są zamknięte (panel, szczęki w 3D, następne „otwórz” jako
-rampa od 0). Jeśli chwytak był już sterowany w tej sesji, przycisk tylko
-zapisuje dom, a stan chwytaka (wtedy już zmierzony) zostaje (ostrzeżenie w logu
-„chwytak juz sterowany”): zamknij go suwakiem i kliknij jeszcze raz. W `sim`
-chwytak sceny zamyka się od razu.
-**Przed wyłączeniem zasilania złóż ramię** suwakami (J2 → 3°, J3 → −3°, reszta
-→ 0) i podeprzyj je, bo A1X nie ma hamulców. Ostatnie 3° do ogranicznika to
-zapas limitów bliźniaka. *Rozłącz* nic nie zwalnia: ramię trzyma pozę, w której
-stoi.
-
-**Dalej: kamery, intrynsyki, położenie kamer, Sim-Real, dynamika** — jak kroki
-1–5 procedury [Pierwszy test na prawdziwym stanowisku](#pierwszy-test-na-prawdziwym-stanowisku--krok-po-kroku)
-wyżej, z tymi samymi potwierdzeniami. Na A1X karta w szczękach wystaje tak samo
-(ok. 70 mm), a fala losuje pozy z `wave_ranges` w `robot.yaml` ramienia.
-
----
-
-## Polecenia
-
-| | |
+| Path | Contents |
 |---|---|
-| `twin check` | czy środowisko jest gotowe (bez renderu) |
-| `twin demo` | przykładowe stanowisko w symulacji z pierwszym zainstalowanym ramieniem → `workspace/twin.json` (`--robot`, `--force`, `--path`) |
-| `twin demo --robot NAZWA` | to samo z innym zainstalowanym ramieniem; pakiet ramienia może mieć własne stanowisko w folderze ramienia (`demo.json`), np. `a1x` z galaxeo |
-| `twin ui` | panel w przeglądarce |
-| `twin --config configs/local.yaml <polecenie>` | konfiguracja ramienia z pliku (sekcje backendów, np. `a1x:`) |
-| `twin card --tag-mm 50` | arkusz karty kalibracyjnej (PNG, A4) |
-| `twin board --square-mm 28` | tablica ChArUco do intrynsyk (PNG, A4) |
-| `twin calib-sim --n 5 --cameras 2` | kalibracja w symulacji, oceniana względem prawdy, na pierwszym zainstalowanym ramieniu; `--robot NAZWA` na innym zainstalowanym ramieniu |
-| `twin workspace` | co wiadomo o stanowisku |
-| `twin export <folder>` | stanowisko jako dane: `scene.xml` + `assets/` + `station.json` — dla pakietów, które jadą na zmierzonym stanowisku bez importu bliźniaka (trening) |
+| `workspace/twin.json` | Your local robot selection, backend/port, table, scene look, cameras, calibration and measured dynamics; ignored by Git |
+| `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
+| `configs/local.yaml` | Your backend, strategy and safety settings; ignored by Git |
+| `examples/twin.sim.json` | Example workstation with two calibrated simulated cameras |
+| `assets/calib/` | Example lens intrinsics and distortion files |
+
+On first launch, if `workspace/twin.json` does not exist, the panel creates an
+example using the first installed robot. A robot package can supply its own
+`demo.json`; otherwise the clone's example is used.
 
 ```bash
-pytest -q                                          # całość, z renderem
-pytest -q -m "not render"                          # maszyna bez OpenGL
-pytest -q -m "not cli"                             # bez testów CLI w podprocesie (kilka sekund)
-pytest -q -n auto --dist loadfile                  # równolegle, plik na jednym procesie (pytest-xdist)
+uv run twin demo --robot arm6 --path workspace/arm6.json
+uv run twin ui --workspace workspace/arm6.json
 ```
 
-Testy domu etapami i `Twin.move` jadą na zegarze wirtualnym
-(`clock.py`): bliźniak bez wątku pętli (`connect(threaded=False)`),
-`VirtualClock` przesuwa `step(dt)`, a `move` czyta ten sam zegar
-(`Twin.clock`). Rampy i dojazd liczą się w sekundach symulowanych: dziesięć
-sekund ruchu to ułamek sekundy procesora, a czasy powtarzają się co do taktu.
-Stanowisko testowe: `tests/twinbench.py`
-(`Bench.pump(until=..., sim_s=..., max_sim_s=10.0, dt=0.02)`). W aplikacji
-wszystko jedzie na `WallClock` jak dotąd.
+An existing workstation is preserved unless `twin demo --force` is explicitly
+used. Back up your workstation before replacing it. In a source checkout, default
+`workspace/` paths resolve from the repository root even when launched elsewhere.
+Explicit relative paths in flags resolve from the current directory.
 
-Najwięcej czasu zjada planowanie fali kalibracyjnej w `tests/test_twin_calib.py`
-(ok. 35 s procesora, nie czekania). `--dist loadfile` trzyma plik na jednym
-procesie, więc bliźniak o zasięgu modułu powstaje raz na plik; xdist nie jest
-w `addopts` — podaj go, gdy chcesz.
+Copy [configs/default.yaml](../configs/default.yaml) to `configs/local.yaml` and
+launch with:
 
----
+```bash
+uv run twin --config configs/local.yaml ui
+```
 
-## Liczby orientacyjne
+The twin reads `safety`, `robot` and optional `joints` overrides. Robot descriptions
+supply the joints, limits, gripper range and home pose. Other YAML sections belong
+to the backend or strategy with that name (`feetech:`, `a1x:`, `swing:`, etc.).
+Backends validate their settings; strategy sections prefill the panel's settings
+form and are validated before a run. The panel selects the connection backend
+and port; `--arm` reconnects using the workstation's saved selection at startup.
+With one USB-serial adapter plugged in, its current port takes precedence over
+a saved port. With multiple adapters, choose the correct one explicitly.
 
-| | RTX A4500 (4 rdzenie CPU) | laptop bez GPU (Intel HD 620) |
-|---|---|---|
-| budowa sceny | 111 ms | 293 ms |
-| 1 s fizyki (CPU) | 2,6 ms | 6,9 ms |
-| render 640×480 (cienie, MSAA) | **2,1 ms** | 164 ms |
-| render 640×480 bez cieni i MSAA | 1,25 ms | 70 ms |
-| render 224×224 / 128×128 | 0,8 / 0,7 ms | – |
-| pętla sterowania | 48–50 Hz | 28 Hz |
+Saving camera positions creates a new preset in `workspace/calib/`. The panel
+loads the selected preset, or the newest when none is selected. Trust is
+reassessed against the current lens calibration. Older presets remain available
+in the panel.
 
----
+## Browser panel
 
-## Kalibracja kamer
+The UI currently uses Polish labels. Keep the browser tab visible: viser renders
+through the browser's animation loop, which can pause in a background tab.
 
-Metoda z [galaxeo-manipulators](https://github.com/machinekind/galaxeo-manipulators/pull/3):
-**jedna karta z dwoma AprilTagami, ściśnięta w chwytaku**. Ramię nią macha,
-kamery patrzą, a solver wyznacza *jednocześnie* pozę każdej kamery względem
-podstawy i pozę karty w dłoni — więc nie trzeba wiedzieć, jak krzywo ktoś ją
-włożył. Karta jest wspólna dla wszystkich kamer.
+| Tab | Purpose |
+|---|---|
+| **Ramię** (Arm) | Backend/port, **Połącz** (Connect), **UZBRÓJ** (Arm manual controls), joint sliders, 3D IK handle, **Dom** (Home), **Ustaw dom = tu** (Set home here) and **Rozłącz** (Disconnect) |
+| **Kamery** (Cameras) | Add USB or simulated cameras, preview streams, enable/remove cameras, move simulated cameras in 3D and inspect their status |
+| **Kalibracja** (Calibration) | Step 1: lens intrinsics; step 2: camera poses from a tagged card in the gripper; save/discard results and relocalize moved cameras |
+| **Mapa** (Map) | Stitched tabletop view, colored cube detection and a tag-on-table reach action |
+| **Dynamika** (Dynamics) | Record supervised excitation, fit servo dynamics and save the result to the workstation |
+| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run |
+| **Sim-Real** | Real image with simulated edges overlaid using the same camera pose and intrinsics |
 
-Przed kalibracją położenia każda prawdziwa kamera dostaje **intrynsyki z
-tablicy ChArUco** (`calib/intrinsics.py`) — inaczej poza jest dopasowywana do
-nominalnego K z 65° pola widzenia i wychodzi pewna siebie i przesunięta.
-Tablica to ArUco 5×5, inny słownik niż tagi karty (36h11).
+The guide (**Przewodnik**, **Teraz**) reports the next action from the current
+state. Tooltips explain units and whether a control moves the arm.
 
-### Wynik w symulacji (`twin calib-sim --n 5 --cameras 2`)
+### Motion ownership and stopping
 
-| | przed poprawką półpiksela | **po** |
-|---|---|---|
-| zaufane kamery | 10/10 | 10/10 |
-| błąd położenia kamery (mediana) | 0,345 mm | **0,161 mm** |
-| błąd obrotu kamery (mediana) | 0,053° | **0,013°** |
-| residuum (mediana) | 0,22 px | 0,21 px |
+All arm motion passes through `runtime.Twin` and `SafetySupervisor`. Only one
+owner can drive it at a time: manual panel controls, a strategy, calibration or
+dynamics recording. STOP, Home, Connect and Disconnect preempt the current owner.
+A task interrupted during startup cannot resume simply by clearing STOP.
+Hardware tasks require a fresh confirmation for each run.
 
-Z panelu, na żywym bliźniaku, dwie kamery: 0,19 mm / 0,009° i 0,31 mm / 0,005°
-względem prawdy. Intrynsyki z symulowanej tablicy: ogniskowe z dokładnością
-~0,1–1 px, residuum 0,1 px.
+STOP holds the measured pose, accounting for recent motion so a moving joint
+does not reverse toward an old measurement. A blocked joint is not driven further
+toward its old target. A gripper already squeezing an object retains its grip on
+STOP or Home; a gripper fault can release that pressure. Open the gripper manually
+when appropriate. Reconnecting or disconnecting a hardware backend can release a
+held object (notably `feetech`); put the object down or support it first.
 
-### Przestawiona kamera
+The runtime stops on arm servo faults, sustained loss of feedback or a stalled
+control loop. Its tracking guard detects an arm joint more than 25 degrees from
+its command for over 0.5 s **without sufficient progress toward the command**.
+A gripper-only fault first eases grip pressure; a persistent fault triggers STOP
+after 2 s. These are current defaults in `runtime.py`, not evidence of physical
+hardware validation.
 
-Po zapisaniu kalibracji panel zapamiętuje kadr odniesienia każdej kamery
-i co 2 s porównuje z nim bieżący — korelacją fazową, z **ramieniem wyciętym
-maską z bliźniaka** (ruch ramienia daje 0,4 px „przesunięcia”, obrót kamery
-o 1° — 9,8 px). Oprócz przesunięcia łapie **obrót wokół osi kamery i zmianę
-skali** (dopasowanie podobieństwa na piramidzie ¼–½ kadru); miarą jest
-największe przesunięcie narożnika kadru, a dopasowanie jest odporne (wagi
-Tukeya): ręka albo tułów w kadrze nie udają ruchu kamery (ręka na 10–20 %
-kadru: ≤ 0,6 px; wcześniej do 59 px). Ruch ramienia daje ≤ 0,1 px (wcześniej
-do ok. 1,3 px), przybliżenie o 1% — 3,9–4,5 px (prawda 4), obrót o 1° —
-6,7–6,9 px (prawda 7). Alarm „przestawiona” wymaga **dwóch kolejnych
-zgodnych** sprawdzeń. Sprawdzenie kosztuje ok. 15 ms na kamerę. Powyżej 3 px piramida robi się czerwona, a w zakładce
-Kalibracja pojawia się pomarańczowy przycisk *Kamera … została poruszona* (krótki
-pomiar tylko dla tej kamery). Klatka
-starsza niż 1 s nie jest kadrem — zamrożony albo martwy strumień panel pokazuje
-jako błąd kamery i otwiera go na nowo.
+Connection starts from confirmed measurements without an automatic Home move.
+A joint initially outside configured limits is left in place and brought back
+under supervision when commanded. Hardware-reported limits constrain configured
+limits where the backend provides them.
 
-## Dokładność symulowanej kamery
+### Remote access and camera streams
 
-Symulowana kamera dostaje pełną macierz K — ogniskowe w pikselach i punkt
-główny. Test renderuje kulki w znanych punktach stołu i porównuje środki ich
-**masek segmentacji** z rzutem przez K: przesunięcie systematyczne poniżej
-0,15 px, dla trzech różnych K.
+```bash
+uv run twin ui --port 8765
+uv run twin ui --host 0.0.0.0
+uv run twin ui --stream-port 8766 --stream-host 127.0.0.1
+```
 
-| | objaw | poprawka |
-|---|---|---|
-| znak punktu głównego w MuJoCo | cały kadr przesunięty o 62 px | „środek minus K” w obu osiach |
-| ~~półpiksel w pionie~~ | render 0,5 px **niżej** niż rzut K | dawna „kompensacja” była błędem pomiaru: środki czerwonych plam podnosił cień dolnej połowy kulki; maski segmentacji (czysta geometria) pokazały, że to ona przesuwała kadr. Po usunięciu błąd obrotu w kalibracji spadł 4× |
-| półpiksel w detektorze AprilTag | rogi o 0,5 px dalej niż w konwencji `projectPoints` | korekta w `tags.detect` |
+The control panel defaults to localhost and has no authentication. Binding it
+to the network lets reachable clients operate the same controls; use a trusted
+network. The optional stream server is read-only and defaults to `0.0.0.0`
+unless `--stream-host` is supplied. It serves `/`, `/cameras.json`,
+`/<camera>.jpg` and `/<camera>.mjpg` from frames already opened by the panel.
+
+For a VM, WSL or remote desktop, explicitly forward physical USB cameras and
+adapters to the machine running the twin. Device visibility and frame delivery
+are separate checks; an opened camera with no frames can indicate a forwarding
+problem. Check the host's device permissions and camera access too.
+
+## First hardware session
+
+Rehearse in `sim` first. Keep the arm secured, its workspace clear and STOP
+within reach. The robot package's connection and power instructions take
+precedence for that hardware.
+
+1. **Connect the arm.** Install its package, configure its backend section in
+   `configs/local.yaml`, then select the backend/port in **Ramię** and press
+   **Połącz**. Check that measured joints match the real pose. Enable manual
+   controls with **UZBRÓJ** and try a small motion of one joint. Check gripper
+   zero and range: the panel's 0–100 maps linearly to `gripper_range_q` from
+   `robot.yaml`; 0 should close empty jaws. SO-101 tick calibration belongs in
+   the `soarm` backend's `feetech:` section.
+2. **Add cameras.** Use **Szukaj kamer USB** (Find USB cameras) and **Dodaj kamerę
+   USB** (Add USB camera). Confirm each camera delivers live, unmirrored frames.
+3. **Calibrate each lens.** In **Kalibracja**, step 1, download the ChArUco board,
+   print at 100%, measure the square size and enter it. Show the board across the
+   image, at different distances and tilts. The session requires coverage and
+   rotation diversity; a parallel board alone cannot determine focal length
+   reliably. Compute/save the result, then repeat for the next camera. A saved
+   lens file can be loaded only at its matching resolution. Untrusted intrinsics
+   block camera-pose calibration.
+4. **Locate the fixed cameras.** Print the tagged card, measure the **black tag
+   square** (excluding its white border), fold it and hold the free end in the
+   gripper with about 70 mm protruding. In calibration step 2, start the wave and
+   confirm the card is in place and the table clear. A second click within the
+   confirmation window starts hardware motion. The arm searches both sides of
+   the table, then targets cameras needing more observations. Review each
+   camera's trust verdict and reason before saving. Changing tag size after the
+   measurement prevents saving that result. Remove the card afterwards.
+5. **Check Sim-Real alignment.** For every fixed camera, compare rendered arm and
+   table edges with the real image. A median mismatch above about 3 px is a cue
+   to recheck tag size, lens calibration, table geometry and camera poses.
+6. **Identify dynamics.** In **Dynamika**, record the excitation on the connected
+   arm (about 20 s of motion), inspect fit quality and uncertainty, then save as
+   workstation dynamics. STOP, Home or reconnect interrupts recording. A
+   completed recording can continue fitting after motion stops. Stale feedback
+   or a dead control loop invalidates the recording.
+7. **Run a strategy.** In **Strategie**, choose an installed strategy and check
+   its settings. **Cel z uchwytu 3D** supplies `Observation.goal` in the robot's
+   base frame, including while the run is active; only the strategy determines
+   what that goal means. Confirm hardware motion, then **Uruchom** (Run).
+   **Zatrzymaj** stops the strategy; STOP preempts all motion owners.
+
+### Dynamics and training export
+
+The excitation identifies damping, armature and command delay. Servo gain (`kp`)
+and dry friction remain from the model because this motion does not distinguish
+them reliably. The result records that distinction and uncertainty; do not treat
+all model parameters as measured. The panel blocks saving an unhelpful fit unless
+explicitly overridden, and such a fit does not complete the guide's dynamics step.
+Dynamics measured in simulation do not count as a hardware measurement.
+
+```bash
+uv run twin export workspace/export
+```
+
+The export contains `scene.xml`, `assets/` and `station.json`, including camera
+calibration and dynamics. External training tools can read those files without
+importing the twin. Training commands, randomization and policy evaluation belong
+to the training package; use its documentation for those workflows.
+
+## Galaxea A1X first session
+
+The A1X integration is provided by `galaxeo`. Read its
+[robot guide](https://github.com/machinekind/galaxeo-manipulators/blob/main/galaxeo/robot/README.md)
+for the CAN adapter, platform extras, `a1x:` configuration and current device
+procedures. **A1X has no brakes:** support it before removing power or releasing
+motors. Backend behavior has been exercised on simulated interfaces; the physical
+procedure remains to be validated.
+
+To create a separate simulated A1X workstation after installing the package:
+
+```bash
+uv run twin demo --robot a1x --path workspace/a1x.json
+uv run twin ui --workspace workspace/a1x.json
+```
+
+For hardware:
+
+1. Start with the arm folded and supported, space below it clear, power cutoff
+   and panel STOP accessible, and no competing CAN controller. Configure the
+   adapter/port using the robot package's instructions.
+2. Connect through **Ramię** without Home. Verify telemetry and pose before
+   requesting motion. The backend rejects missing or frozen telemetry; a released
+   arm may need supported power cycling. FF 1-5-6 does not restore trustworthy
+   pose feedback after FF 2.
+3. Check offsets and gripper feedback calibration from the robot package. A folded
+   arm can sit outside the twin's configured joint limits; connection must not
+   jump it into range. Enable manual controls and try one small joint motion.
+   The backend starts commands from the measured pose and limits their speed.
+4. If motor enabling is required, **Włącz silniki A1X (FF 1-5-6)** is available
+   only for a connected A1X, with confirmation, manual controls disarmed and no
+   task owning the arm. It holds the measured pose during the sequence. Consult
+   the hardware guide before using it; a freshly powered arm may not need it.
+5. Treat the first **Dom** as a substantial move: the model's default Home is
+   raised, not folded. **Ustaw dom = tu** records the current pose with the home
+   gripper set to 0 (closed). Close the empty jaws physically first. If gripper
+   feedback has not become trustworthy, this action seeds an assumed closed
+   state; it is not a measurement. If the gripper was already commanded in this
+   connection, close it with the slider and record Home again.
+6. Before power-off, fold and support the arm using the robot package's procedure.
+   The panel's disconnect action does not release motors or fold the arm.
+   Continue with cameras, calibration and dynamics only after these checks.
+
+## Commands and development checks
+
+| Command (prefix with `uv run`) | Purpose |
+|---|---|
+| `twin check` | Runtime dependencies, robot models and USB-serial ports; no rendering |
+| `twin demo` | Example workstation; supports `--robot`, `--path` and explicit `--force` |
+| `twin ui` | Browser panel; supports `--workspace`, `--port` and `--arm` |
+| `twin card --tag-mm 50` | Printable calibration card |
+| `twin board --square-mm 28` | Printable ChArUco board |
+| `twin calib-sim --n 5 --cameras 2` | Calibration against simulated ground truth; optional `--robot` |
+| `twin workspace` | Inspect workstation state; optional `--path` |
+| `twin export workspace/export` | Export scene, assets and station data; optional `--path` |
+
+```bash
+uv run pytest -q
+uv run pytest -q -m "not cli"
+uv run pyright
+```
+
+`-m "not render"` excludes tests explicitly marked `render`, but some camera and
+UI tests also create renderers without that marker. It is not currently a
+complete way to run the suite without OpenGL. UI and stream tests also need
+permission to bind localhost sockets. A1X-specific tests skip when `galaxeo`
+is not installed. `pytest-xdist` is not part of the default dependencies.
+
+Control-loop tests use [VirtualClock](../src/machinekind_twin/clock.py) and
+[the test bench](../tests/twinbench.py) to advance simulation deterministically.
+Tests can connect with `threaded=False`, advance `Twin.step(dt)` and call
+`StrategyRunner.step_once` directly. The application uses `WallClock`.
+
+## Calibration and perception notes
+
+Fixed-camera calibration jointly estimates camera poses relative to the robot
+base and the card's mount in the gripper. Each real camera needs trusted
+intrinsics first. The card uses AprilTag 36h11; the ChArUco board uses ArUco 5x5.
+The solver rejects outlier observations and refits while retaining enough
+observations per camera. See [the calibration tests](../tests/test_twin_calib.py).
+
+After calibration, the camera watcher compares live frames with references,
+masking the moving arm. It detects translation, rotation and scale changes and
+requires consecutive agreeing checks before declaring a moved camera. Relocalize
+that camera from the calibration tab. Old frames do not count as live input.
+
+Camera rendering uses the full intrinsic matrix, including the principal point.
+The AprilTag detector corrects its half-pixel corner convention before solving
+poses. Use segmentation geometry to check projection accuracy; colored blob
+centres can be biased by lighting and shadows.
+
+The tabletop map warps frames from trusted cameras onto the table plane. Cube
+perception fits a tabletop cube's silhouette across camera views, masks arm
+occlusions as unknown and rejects poor fits. Near the gripper, a single view can
+confuse a held cube with one lying on the table; the tracker applies additional
+checks. When grasp evidence is present, the tracker follows the cube with the TCP
+using its last relative pose. Detections retain their capture timestamps, and
+stale or repeated frames do not extend tracking lifetime. This is a cube-specific
+perception workflow, not general object reconstruction.
 
 ## Cameras on the arm
 
@@ -497,8 +395,9 @@ In both, the physical wrist camera always shows its own stream. The scene
 leaves it out. The camera rides on the arm and is not fixed to the base. Its
 `T_cam2base` therefore means nothing, and the scene ignores it. That holds
 whether the pose came from a wave or from a saved preset of that name.
-Calibrating its pose is pointless. Calibrating its intrinsics in step 1 still
-makes sense.
+The fixed-camera calibration procedure does not estimate its body-relative
+mount. That transform comes from `robot.yaml`; calibrating its intrinsics in
+step 1 still makes sense.
 
 A simulated workspace camera may not take the name of a camera on the arm,
 because the scene renders both by name. Adding such a camera fails. Building
@@ -533,9 +432,9 @@ Otherwise the light is a spot light. `pos` and `dir` are required. The other
 keys default to `diffuse` 0.7, `directional` false and `castshadow` true. An
 unknown key fails the load. The table's colour is in `table.rgba`.
 
-Use another look for a policy trained on another scene. In simulation the grasp
-student grasped 46 cubes of 50 under its training look and 34 under the twin's
-look. This is its look. Its table has `"rgba": [0.55, 0.45, 0.35, 1.0]`.
+Match the scene look to the conditions used by an external policy when comparing
+results. For example, the following lighting can be combined with
+`"rgba": [0.55, 0.45, 0.35, 1.0]` in the table settings.
 
 ```json
 "look": {
@@ -547,92 +446,7 @@ look. This is its look. Its table has `"rgba": [0.55, 0.45, 0.35, 1.0]`.
 }
 ```
 
----
+## Historical notes
 
-## Mapa stołu i kostka
-
-Każdy kadr przerysowany na płaszczyznę blatu, mapy zszyte z wagami — do
-oglądania stanowiska (także na blacie w 3D).
-
-Kostka (`perception.CubeDetector.detect_frames`):
-
-1. **start** — część wspólna masek koloru z kamer na wysokości górnej ściany
-   (ściana leży w tym samym miejscu dla każdej kamery, boki rozjeżdżają się);
-2. **dopasowanie sylwetki** — (x, y, obrót), przy których rzut bryły kostki
-   najlepiej pokrywa maski wszystkich kamer; działa z jedną kamerą i z wieloma,
-   liczone w wycinku kadru (~17 ms);
-3. **ramię to „nie wiem”** — piksele zasłonięte ramieniem (segmentacja z
-   bliźniaka, w pozie z serw) nie głosują;
-4. **bramka IoU ≥ 0,75** — model zakłada kostkę leżącą; kostkę w powietrzu da
-   się „wcisnąć” w jakąś pozę na blacie z IoU 0,36–0,64 i błędem do 1 m;
-5. **jedna kamera przy dłoni to za mało** — wykrycie potwierdzone przez jedną
-   kamerę (`n_cameras`) blisko chwytaka albo przy kostce w dłoni jest pomijane:
-   jedna kamera potrafi „położyć” na blacie kostkę uniesioną w szczękach.
-   `n_cameras = -1` (z mapy) i `0` (ramię zasłania kostkę wszystkim) też są
-   jednym świadkiem. Jeden świadek przy dłoni jest przyjmowany tylko przy
-   pustej szczęce, gdy 3 wykrycia zgadzają się co do 1 cm, a TCP przesunął się
-   o ≥ 1,5 cm (kostka potrącona) — albo gdy dłoń stoi, ale szczęka jest otwarta
-   szerzej niż 0,40 rad (47 mm; kostka trzymana w szczękach to ok. 0,20 rad,
-   więc duch kostki z dłoni tak nie przejdzie). Gdy kostka nie jest przyjęta,
-   źródło w panelu mówi dlaczego i co zrobić („brak (…)”). Na prawdziwym ramieniu
-   sprawdź, że kostka trzymana w szczękach daje kąt poniżej 0,40 rad. Kostka,
-   która wypadła z dłoni, opada na blat
-   („upuszczona”). Wykrycie ma czas kadru (`t`); stare i powtórzone nie
-   przedłużają życia kostki.
-
-Na blacie w symulacji: **1–3 mm, ~1°**. `CubeTracker` przejmuje kostkę, gdy
-kamery jej nie widzą: szczęka **zablokowana** (nie dojeżdża do rozkazu i stoi)
-→ kostka jedzie z TCP w pozie zapisanej w chwili chwytu.
-
-## Jak to jest zbudowane
-
-```
-src/machinekind_twin/
-├── robots.py        opisy ramion z folderów (`robot.yaml`, z kamerami na ramieniu), tylko z wtyczek `machinekind_twin.robots`
-├── config.py        konfiguracja z YAML: safety, robot, stawy; sekcje backendów i strategii surowe (`TwinConfig`)
-├── kinematics.py    FK/IK przez MuJoCo; IK z priorytetem pozycji (5 osi SO-101)
-├── scene.py         scena z MjSpec: stół, ramię, kamery z pełnym K i na ramieniu, karta, obiekty, panele, czujniki chwytu, wygląd; eksport do MJCF
-├── collision.py     kolizje pozy i drogi do niej
-├── workspace.py     stanowisko w JSON: ramię, port, stół, wygląd sceny, karta, kamery (+ prawda symulowanych), dynamika
-├── cameras.py       wykrywanie kamer, strumienie bez lustra, kamery symulowane i na ramieniu
-├── camera_stream.py wątek kamery: zawsze najnowsza klatka, bez kolejki
-├── runtime.py       pętla sterowania w wątku, nadzór, wątek renderujący
-├── safety.py        nadzór: limity pozycji i prędkości, STOP, powrót do domu (`SafetySupervisor`)
-├── strategy.py      `StrategyRunner`; kontrakt strategii (`Observation`, `Strategy`, `Action`) re-eksportowany z `machinekind_twin_api`
-├── waypoints.py     strategia testowa: przejazd przez zadane pozy
-├── strategies.py    strategie z wtyczek `machinekind_twin.strategies` i ich ustawienia (dataclass, budowana ściśle)
-├── perception.py    mapa stołu na żywo, kostka z kamer, śledzenie kostki w dłoni
-├── sysid.py         identyfikacja dynamiki serw
-├── dynamics.py      dynamika zmierzona (`Dynamics`, zapis w stanowisku)
-├── cli.py           twin
-├── calib/
-│   ├── tags.py        AprilTag 36h11 + korekta półpiksela
-│   ├── handeye.py     solver wielu kamer ze wspólną kartą
-│   ├── card.py        karta: geometria, poza w szczękach, arkusz
-│   ├── intrinsics.py  ChArUco: arkusz, zbieranie ujęć, K i dystorsja, sesja w symulacji
-│   ├── session.py     fala: szukanie, celowanie, kadr, rozrzut, bramki
-│   ├── simulate.py    sesja w symulacji względem prawdy
-│   └── topdown.py     rzut kadru na blat
-└── ui/
-    ├── app.py         panel (viser)
-    ├── bridge.py      scena MuJoCo w przeglądarce (węzeł na ciało)
-    ├── guide.py       przewodnik: kroki procedury i następna akcja ze stanu panelu
-    ├── jobs.py        zadania w tle: kalibracje, identyfikacja
-    ├── strategy_tab.py zakładka Strategie: lista, formularz ustawień, uchwyt celu, Uruchom i Zatrzymaj
-    └── watch.py       wykrywanie przestawionej kamery
-
-src/machinekind_twin/backends/
-└── base.py, factory.py   kontrakt backendu (re-eksport z `machinekind_twin_api`) i rejestr wtyczek
-
-packages/machinekind_twin_api/      pakiet machinekind-twin-api: kontrakty wtyczek, tylko numpy
-├── strategy.py           `Observation`, `Action`, `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, protokół `Strategy`
-├── backend.py            `BackendContext`, protokół `BackendPlugin`, `RobotBackend`, `RobotInfo`
-└── entry_points.py       grupy entry points: `ROBOTS`, `BACKENDS`, `STRATEGIES`
-```
-
-**Kontrakty wtyczek.** Typy kontraktu leżą w pakiecie `machinekind-twin-api`
-(`packages/machinekind_twin_api/`), a nie w bliźniaku. Wtyczka — pakiet ramienia (folder z `robot.yaml`
-i backend) albo pakiet strategii — zależy od niego, nigdy od `machinekind-twin`
-(MuJoCo, viser, OpenCV). Bliźniak re-eksportuje te same klasy z `machinekind_twin.strategy`
-i `machinekind_twin.backends.base`, więc dotychczasowe importy i sprawdzenia `isinstance` działają
-bez zmian. Gotowe wzory: `examples/robots/arm6`, `examples/robots/testbot` i `examples/strategies/swing`.
+Earlier research and removed prototypes are kept in [docs/archive](archive/README.md).
+They describe past experiments and possible directions, not supported workflows.

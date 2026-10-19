@@ -92,7 +92,6 @@ simulation (camera calibration 6/6 trusted, IK, wave); its CAN backend is
 tested on a simulated bus. **The whole thing has not yet been tested on a real
 arm (neither the SO-101 nor the A1X)**: that is the next step, with a
 step-by-step procedure in [docs/TWIN.md](docs/TWIN.md).
-Decisions and pitfalls: [HANDOFF.md](HANDOFF.md).
 
 ---
 
