@@ -83,11 +83,11 @@ validation on physical SO-101 and A1X arms is still pending.
 
 ```bash
 uv run pytest -q
-uv run pytest -q -m "not render" # Without OpenGL
+uv run pytest -q -m "not render" # Skip tests explicitly marked render
 uv run pyright
 ```
 
 See [the workstation guide](docs/TWIN.md) for setup and hardware procedures, and
-[HANDOFF.md](HANDOFF.md) for technical notes. Both are primarily in Polish.
+[HANDOFF.md](HANDOFF.md) for technical notes.
 
 Licensed under Apache-2.0. See [NOTICE](NOTICE).
