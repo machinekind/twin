@@ -1,17 +1,21 @@
-# Remote robot in the twin: the RealAnt copy pattern
+# Historical remote-robot prototype: the RealAnt copy pattern
 
 The twin used to carry a copy of the RealAnt ant (8 AX-12A servos). The ant code is deleted, and this note records
-the pattern that stays: **a remote robot streams its joint angles, and a copy in the twin follows them**. The
-ROS 2 adapter for remote robots is meant to build on it.
+the pattern that stays: **a remote robot streams its joint angles, and a copy in the twin follows them**.
+A ROS 2 adapter could build on this pattern, but is not implemented in the current
+repository. Module paths, APIs, dependencies and test results below refer to that
+removed prototype, not to the current plugin API. For current integration points,
+see [the plugin API](../packages/machinekind_twin_api) and
+[the maintainer handoff](../HANDOFF.md).
 
-The last version of the code is in commit `86a9e2c`:
+A historical snapshot is in commit `86a9e2c`, before the package was renamed:
 
 ```
-git show 86a9e2c:src/machinekind_twin/antmirror.py      # AntMirror, StandInServos
-git show 86a9e2c:src/machinekind_twin/antwalk.py        # ZmqAnt, servo maps, DT
-git show 86a9e2c:src/machinekind_twin/scene.py          # Scene.command_ant, ant_pose, set_ant_pose
-git show 86a9e2c:src/machinekind_twin/ant.py            # Ant (tag mount), locate, snap_yaw
-git show 86a9e2c:src/machinekind_twin/antdrive.py       # the stand-in ant in the demo
+git show 86a9e2c:src/lerobot_mp/twin/antmirror.py      # AntMirror, StandInServos
+git show 86a9e2c:src/lerobot_mp/twin/antwalk.py        # ZmqAnt, servo maps, DT
+git show 86a9e2c:src/lerobot_mp/twin/scene.py          # Scene.command_ant, ant_pose, set_ant_pose
+git show 86a9e2c:src/lerobot_mp/twin/ant.py            # Ant (tag mount), locate, snap_yaw
+git show 86a9e2c:src/lerobot_mp/twin/antdrive.py       # the stand-in ant in the demo
 ```
 
 ## The pattern in short

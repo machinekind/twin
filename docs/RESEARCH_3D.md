@@ -1,4 +1,20 @@
-# Rozpoznanie: modele 3D przedmiotów z biurka i dobór chwytu
+# Historical 3D reconstruction study
+
+This is the original Polish research note from **2026-09-23**, preserved below.
+It describes experiments and possible future integrations, not implemented panel
+workflows or a current model recommendation. Its external model capabilities,
+licenses, availability and performance estimates have not been reverified for
+this documentation cleanup. Consult the original projects before adopting them.
+
+The application currently provides tabletop cube detection and tracking; it does
+not automatically reconstruct arbitrary objects. Prototype code and recorded
+outputs remain in [research/3d](../research/3d/). The SO-101 model now comes from
+the external `soarm` package; see [prototype setup](../research/3d/README.md).
+For supported workflows, use [the workstation guide](TWIN.md).
+
+---
+
+## Original study: modele 3D przedmiotów z biurka i dobór chwytu
 
 Stan na 2026-09-23. Cel: bliźniak sam uzupełnia scenę o przedmioty leżące na
 biurku, a ramię wie, jak je najlepiej chwycić szczęką SO-101.
