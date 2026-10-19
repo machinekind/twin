@@ -1,6 +1,6 @@
 # 3D reconstruction and SO-101 grasp prototypes
 
-Research scripts and recorded results for [the historical 3D study](../../docs/RESEARCH_3D.md).
+Research scripts and recorded results for [the historical 3D study](../../docs/archive/RESEARCH_3D.md).
 These are standalone experiments, not features exposed by the current panel.
 They use the twin's scene and kinematics and specifically request the `so101`
 robot; the bundled `arm6` and `testbot` models do not replace it.

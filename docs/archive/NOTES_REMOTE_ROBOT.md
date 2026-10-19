@@ -5,8 +5,8 @@ the pattern that stays: **a remote robot streams its joint angles, and a copy in
 A ROS 2 adapter could build on this pattern, but is not implemented in the current
 repository. Module paths, APIs, dependencies and test results below refer to that
 removed prototype, not to the current plugin API. For current integration points,
-see [the plugin API](../packages/machinekind_twin_api) and
-[the maintainer handoff](../HANDOFF.md).
+see [the plugin API](../../packages/machinekind_twin_api) and
+[the workstation guide](../TWIN.md).
 
 A historical snapshot is in commit `86a9e2c`, before the package was renamed:
 

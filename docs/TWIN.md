@@ -3,7 +3,6 @@
 Machinekind Twin builds digital twins of physical workstations, starting with
 robot arms. This guide covers the currently implemented arm workflows: simulation,
 cameras, calibration, perception, dynamics identification and control strategies.
-See [HANDOFF.md](../HANDOFF.md) for maintenance notes and implementation pitfalls.
 
 ## Status and package boundaries
 
@@ -446,3 +445,8 @@ results. For example, the following lighting can be combined with
   "headlight": {"ambient": 0.3, "diffuse": 0.6, "specular": 0.0}
 }
 ```
+
+## Historical notes
+
+Earlier research and removed prototypes are kept in [docs/archive](archive/README.md).
+They describe past experiments and possible directions, not supported workflows.

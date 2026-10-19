@@ -8,9 +8,9 @@ this documentation cleanup. Consult the original projects before adopting them.
 
 The application currently provides tabletop cube detection and tracking; it does
 not automatically reconstruct arbitrary objects. Prototype code and recorded
-outputs remain in [research/3d](../research/3d/). The SO-101 model now comes from
-the external `soarm` package; see [prototype setup](../research/3d/README.md).
-For supported workflows, use [the workstation guide](TWIN.md).
+outputs remain in [research/3d](../../research/3d/). The SO-101 model now comes from
+the external `soarm` package; see [prototype setup](../../research/3d/README.md).
+For supported workflows, use [the workstation guide](../TWIN.md).
 
 ---
 
@@ -23,7 +23,7 @@ biurku, a ramię wie, jak je najlepiej chwycić szczęką SO-101.
 więc strony nie otwierały się bezpośrednio — fakty o modelach pochodzą ze
 streszczeń wyszukiwarki. **Licencje przed decyzją potwierdzić w plikach
 LICENSE.** Liczby oznaczone jako *zmierzone* to wyniki prototypów z
-[`research/3d/`](../research/3d/) na laptopie z i5-7200U i Intel HD 620
+[`research/3d/`](../../research/3d/) na laptopie z i5-7200U i Intel HD 620
 (4 kamery 640×480 wokół pola roboczego, scena bliźniaka z MuJoCo 3.14).
 
 ## W skrócie
@@ -86,7 +86,7 @@ mają licencje niekomercyjne.
    (0,13–0,27 s), ale ma zgłoszone błędy w 3.14
    ([mujoco#3585](https://github.com/google-deepmind/mujoco/issues/3585)).
 6. **Chwyt liczony analitycznie w tym, co SO-101 faktycznie osiągnie**
-   (*zmierzone* IK projektu, [`grasp_reachability.py`](../research/3d/grasp_reachability.py)):
+   (*zmierzone* IK projektu, [`grasp_reachability.py`](../../research/3d/grasp_reachability.py)):
    - przy 5 osiach kierunek podejścia musi leżeć w **pionowej płaszczyźnie
      przez oś podstawy** — podejście z boku daje błąd orientacji 83–92°;
    - chwyt z góry działa dla r = 15–30 cm przy TCP 2–5 cm nad blatem, przy
@@ -96,7 +96,7 @@ mają licencje niekomercyjne.
      SE(3); kandydaci antypodalnie na siatce, jak w ACRONYM;
    - **szczęka jest na zawiasie**: stała 20 mm od TCP, ruchoma przy pełnym
      otwarciu cofa się o 76 mm wzdłuż podejścia
-     ([`jaw_geometry.py`](../research/3d/jaw_geometry.py));
+     ([`jaw_geometry.py`](../../research/3d/jaw_geometry.py));
    - walidacja w MuJoCo z losowaniem pozy (±3–5 mm) i tarcia. Próbne chwyty:
 
      | obiekt | ustawienie | wynik |
