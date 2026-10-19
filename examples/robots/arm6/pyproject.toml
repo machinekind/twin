@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "machinekind-twin-arm6"
 version = "0.1.0"
 description = "The digital twin's example arm: six joints and a parallel gripper from primitives, and an arm in memory"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = ["machinekind-twin-api>=0.1,<0.2"]
 
 [project.entry-points."machinekind_twin.robots"]
