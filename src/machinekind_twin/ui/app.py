@@ -38,14 +38,14 @@ from ..calib import intrinsics as intr
 from ..calib.intrinsics import Board
 from ..detection import Perception
 from ..kinematics import inverse, pose
-from ..perception import CubeDetector, TableMapper
+from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
-from .detector_tab import DetectorTab
+from .detector_tab import NOTHING_RUNNING, DetectorTab
 from .strategy_tab import StrategyTab
 from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
@@ -104,10 +104,6 @@ def _skip_unchanged_markdown() -> None:
 _skip_unchanged_markdown()
 
 GREEN, ORANGE, GREY, BLUE, RED = (40, 190, 90), (240, 160, 30), (150, 150, 150), (60, 140, 255), (230, 50, 50)
-CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 255, 255)),
-               "zielona": ((40, 80, 60), (85, 255, 255), (40, 80, 60), (85, 255, 255)),
-               "niebieska": ((95, 100, 60), (130, 255, 255), (95, 100, 60), (130, 255, 255)),
-               "zolta": ((20, 100, 90), (35, 255, 255), (20, 100, 90), (35, 255, 255))}
 
 
 #: "Jak uzywac" na gorze zakladek Mapa, Dynamika, Detektory, Strategie i Sim-Real (Ramie, Kamery
@@ -116,7 +112,8 @@ TAB_HELP = {
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
         "1. Sprawdz pokrycie blatu pod mapa.\n"
-        "2. Wybierz **Kolor kostki**, poloz kostke 3 cm przed ramieniem - ma sie pojawic ramka i polozenie.\n"
+        "2. Kostka i inne obiekty: uruchom detektor w zakladce **Detektory** (np. `cube`), poloz kostke 3 cm "
+        "przed ramieniem - ponizej mapy pojawia sie jej polozenie, a w 3D ramka.\n"
         "3. **Tag na biurku**: **Znajdz tag w kamerach**, potem **Jedz nad tag** (rusza ramieniem)."),
     "Dynamika": (
         "1. Polacz ramie (zakladka Ramie), **Identyfikuj** (~20 s ruchu), potem **Zapisz jako dynamike "
@@ -504,7 +501,7 @@ class TwinApp:
         self.twin = Twin(self.ws)
         self.watch = CameraWatch()
         self.frames: dict[str, np.ndarray] = {}
-        #: Chwila wykonania kazdego kadru z `frames` (time.monotonic) - wiek detekcji kostki.
+        #: Capture time of each frame in `frames` (time.monotonic): the frame age detectors see.
         self.frame_times: dict[str, float] = {}
         self._t_grab = 0.0
         self.frame_lock = threading.Lock()
@@ -514,7 +511,6 @@ class TwinApp:
         #: fali i identyfikacji zapamietuje go na poczatku i bierze ramie tylko, gdy sie nie zmienil
         #: (`_motion_mark`, `_take_arm`) - STOP wcisniety w trakcie startu ginal.
         self._motion_gen = 0
-        self.cube_det = CubeDetector()
         from ..kinematics import RobotKinematics
         # Punkty ramienia do przesuniecia maski w kadrze - wlasna kinematyka (maski licza
         # petla panelu i przyciski visera).
@@ -534,8 +530,6 @@ class TwinApp:
         self._map_pose_key = None
         self._intr_solve = threading.Event()
         self._dirty_rebuild = 0.0                       # kamera spoza modelu przeciagana - przebudowa po chwili
-        self.mapper: TableMapper | None = None
-        self._mapper_key = None
         self._stop = threading.Event()
         self.frustums: dict[str, Any] = {}
         self._frustum_key: dict[str, Any] = {}
@@ -1820,7 +1814,6 @@ class TwinApp:
             self._update_frustum(c)
         self._select_camera()
         self._render_cameras()
-        self._mapper_key = None
 
     def _update_frustum(self, c: CameraRecord) -> None:
         with self.scene_lock:
@@ -2540,14 +2533,8 @@ class TwinApp:
                                      hint="Kladzie mape na blacie w widoku 3D - tylko widok.")
         self.map_img = g.add_image(np.zeros((224, 224, 3), np.uint8), label="Mapa blatu", format="jpeg",
                                    jpeg_quality=80)
-        self.cube_on = g.add_checkbox("Szukaj kostki", True,
-                                      hint="Wykrywa kostke 3 cm w kolorze ponizej (piksele ramienia nie glosuja).")
-        self.cube_color = g.add_dropdown("Kolor kostki", tuple(CUBE_COLORS), initial_value="czerwona",
-                                         hint="Kolor kostki dla detektora (progi HSV); dziala od razu.")
         self.map_md = g.add_markdown("")
         self.map_node = None
-        self.cube_node = self.server.scene.add_box("/percepcja/kostka", color=(255, 80, 200), dimensions=(0.03,) * 3,
-                                                   opacity=0.5, wireframe=True, visible=False)
         with g.add_folder("Tag na biurku"):
             self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
                                        hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
@@ -2568,11 +2555,6 @@ class TwinApp:
             self.tag_md = g.add_markdown("")
         self._tag_fix = None
 
-        @self.cube_color.on_update
-        def _(event):
-            lo, hi, lo2, hi2 = CUBE_COLORS[self.cube_color.value]
-            self.cube_det.hsv_lo, self.cube_det.hsv_hi, self.cube_det.hsv_lo2, self.cube_det.hsv_hi2 = lo, hi, lo2, hi2
-
         @find_tag.on_click
         @self._safe
         def _(event):
@@ -2583,23 +2565,26 @@ class TwinApp:
         def _(event):
             self._goto_tag()
 
-    def _mapper_now(self) -> TableMapper | None:
-        key = tuple((c.name, c.enabled, c.trusted, str(c.T_cam2base), str(c.K)) for c in self.ws.cameras)
-        if key != self._mapper_key:
-            self._mapper_key = key
-            m = TableMapper.from_workspace(self.ws, only_trusted=True)
-            self.mapper = m if m.cameras else None
-        return self.mapper
+    @property
+    def mapper(self) -> TableMapper | None:
+        """The table map over the perception cameras, shared with the detectors; None without cameras.
+
+        The Map tab builds no mapper of its own: `Perception` rebuilds this one when the cameras change.
+        """
+        return self.perception.mapper()
 
     def _tick_map(self, frames: dict[str, np.ndarray]) -> None:
-        """Mapa blatu i detekcja kostki - do ogladania: mapa, ramka kostki w 3D, jej polozenie."""
-        mapper = self._mapper_now() if self.map_on.value else None
+        """The table map, to look at: the map image, its 3D copy, and one line per tracked object.
+
+        The objects come from the detectors (Detektory tab), as of the last tracking step; the
+        Map tab runs no detection of its own.
+        """
+        mapper = self.mapper if self.map_on.value else None
         if mapper is None:
             self.map_md.content = "Brak zaufanej, skalibrowanej kamery - najpierw kalibracja." if self.map_on.value \
                 else ""
             if self.map_node is not None:
                 self.map_node.visible = False
-            self.cube_node.visible = False
             return
         table, wsum = mapper.fuse(frames)
         self._img(self.map_img, "mapa", table)
@@ -2625,35 +2610,24 @@ class TwinApp:
                 self.map_node.visible = True
         elif self.map_node is not None:
             self.map_node.visible = False
-        det = None
-        if self.cube_on.value:
-            names = [n for n in mapper.cameras if n in frames]
-            now = time.monotonic()
-            with self.frame_lock:
-                times = dict(self.frame_times)
-            # Chwila detekcji = chwila NAJSTARSZEGO uzytego kadru (konsument ocenia jej wiek).
-            t_cams = {n: times.get(n, now) for n in names}
-            t_frames = min(t_cams.values(), default=now)
-            # Piksele zasloniete ramieniem (maska z blizniaka, w pozie z chwili kadru KAZDEJ kamery) nie glosuja.
-            occ = self._arm_masks(names, t_cams, dilate=5) if names else None
-            if names:
-                det = self.cube_det.detect_frames({n: frames[n] for n in names}, mapper, occ, t=t_frames)
-            if det is not None:
-                Tw = self.T_b2w @ pose(det.rot, det.pos)
-                self.cube_node.position, self.cube_node.wxyz = Tw[:3, 3], mat_to_wxyz(Tw[:3, :3])
-                self.cube_node.visible = True
-                yaw = np.degrees(np.arctan2(det.rot[1, 0], det.rot[0, 0]))
-                # n_cameras -1 = detekcja z samej mapy (nie wiadomo, ile kamer ja widzialo)
-                cams = f"{det.n_cameras} kam." if det.n_cameras >= 0 else "z mapy"
-                txt += (f"  \nkostka: x {det.pos[0] * 100:.1f} cm, y {det.pos[1] * 100:.1f} cm, obrot {yaw:.0f} st., "
-                        f"pewnosc {det.confidence:.2f}, {cams}, "
-                        f"kadr sprzed {1000 * (time.monotonic() - det.t):.0f} ms")
-            else:
-                self.cube_node.visible = False
-                txt += "  \nkostka: nie widac"
-        else:
-            self.cube_node.visible = False
+        txt += self._objects_text()
         self.map_md.content = txt
+
+    def _objects_text(self) -> str:
+        """The Map tab's object lines: what the detectors track, in the old cube line's format."""
+        views = self.perception.snapshot()
+        if not views:
+            return ("  \nobiekty: nie widac" if self.perception.running()
+                    else f"  \nobiekty: {NOTHING_RUNNING} (zakladka Detektory)")
+        txt = ""
+        for v in views:
+            txt += f"  \n{v.label}: x {v.pos[0] * 100:.1f} cm, y {v.pos[1] * 100:.1f} cm"
+            if v.method == "sylwetka":
+                yaw = np.degrees(np.arctan2(v.rot[1, 0], v.rot[0, 0]))
+                txt += f", obrot {yaw:.0f} st."
+            txt += (f", pewnosc {v.confidence:.2f}, {v.n_cameras} kam., {v.source}, "
+                    f"kadr sprzed {1000 * v.age_s:.0f} ms")
+        return txt
 
     # ============================================================== dynamika
     def _build_dynamics(self) -> None:

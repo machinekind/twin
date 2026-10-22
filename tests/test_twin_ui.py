@@ -1140,6 +1140,31 @@ def test_the_detectors_tab_lists_the_tracked_objects_and_draws_them_in_3d(app):
     assert not tab._markers[0].frame.visible
 
 
+def test_the_map_tab_lists_what_the_detectors_track_and_runs_no_detection_of_its_own(app, monkeypatch):
+    from machinekind_twin.objects import Located
+
+    for gone in ("cube_det", "cube_on", "cube_color", "cube_node", "_mapper_now"):
+        assert not hasattr(app, gone)
+    assert app.mapper is app.perception.mapper()
+    assert app._objects_text() == "  \nobiekty: zaden detektor nie dziala (zakladka Detektory)"
+
+    monkeypatch.setattr(app.perception, "running", lambda: {"cube": None})
+    assert app._objects_text() == "  \nobiekty: nie widac"
+
+    loc = Located("cube", np.array([0.231, -0.04, 0.015]), np.eye(3), 0.93, 2, time.monotonic(),
+                  (0.03, 0.03, 0.03), "sylwetka")
+    app.perception.tracks.observe("cube", [loc], latency_s=0.05, interval_s=0.33)
+    # A step within 10 ms of an earlier one returns the cached result: step until the cube shows.
+    deadline = time.monotonic() + 2.0
+    while "cube" not in app.perception.objects() and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    text = app._objects_text()
+    assert text.startswith("  \ncube: x 23.1 cm, y -4.0 cm, obrot 0 st., pewnosc 0.93, 2 kam., kamery, kadr sprzed ")
+    assert text.endswith(" ms")
+    app.perception.stop_all("koniec testu")
+
+
 def test_closing_the_panel_stops_its_detectors(tmp_path, cube_example):
     app = a_panel(tmp_path / "twin.json")
     try:

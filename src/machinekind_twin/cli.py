@@ -191,10 +191,11 @@ def _export(a: argparse.Namespace) -> int:
     return 0
 
 
-#: Przykladowe stanowisko w symulacji - dwie kamery, ktorych skalibrowana poza jest ich
-#: prawdziwa poza w scenie (zaufane), wiec "kostka z kamer" dziala od razu. `demo` wpisuje
-#: w nie wybrane ramie; ramie z wlasnym przykladem (stol i kamery na jego zasieg) bierze swoj:
-#: `robots.DEMO_FILE` z folderu ramienia, ktory daje jego pakiet.
+#: The example station in simulation: two cameras whose calibrated pose is their true pose in
+#: the scene (trusted), so the cube detector (Detektory tab, or `twin ui --detector cube`) sees
+#: the cube at once. `demo` writes the chosen arm into it; an arm with its own example (a table
+#: and cameras for its reach) takes that one: `robots.DEMO_FILE` from the arm's folder, which its
+#: package provides.
 DEMO_WORKSPACE = Path("examples") / "twin.sim.json"
 
 
