@@ -36,6 +36,7 @@ from .. import scene as sc
 from ..calib.card import Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import Board
+from ..detection import Perception
 from ..kinematics import inverse, pose
 from ..perception import CubeDetector, TableMapper
 from ..runtime import Twin
@@ -44,6 +45,7 @@ from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
+from .detector_tab import DetectorTab
 from .strategy_tab import StrategyTab
 from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
@@ -108,8 +110,8 @@ CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 
                "zolta": ((20, 100, 90), (35, 255, 255), (20, 100, 90), (35, 255, 255))}
 
 
-#: "Jak uzywac" na gorze zakladek Mapa, Dynamika, Strategie i Sim-Real (Ramie, Kamery i Kalibracja
-#: prowadza same).
+#: "Jak uzywac" na gorze zakladek Mapa, Dynamika, Detektory, Strategie i Sim-Real (Ramie, Kamery
+#: i Kalibracja prowadza same).
 TAB_HELP = {
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
@@ -120,6 +122,17 @@ TAB_HELP = {
         "1. Polacz ramie (zakladka Ramie), **Identyfikuj** (~20 s ruchu), potem **Zapisz jako dynamike "
         "stanowiska**.\n"
         "2. Dynamika stanowiska idzie z `twin export` w station.json - z niej korzysta trening."),
+    "Detektory": (
+        "1. Detektory przychodza z zainstalowanych pakietow (entry points `machinekind_twin.detectors`), "
+        "np. przykladowy `cube` z `uv sync`; po instalacji **Odswiez liste**.\n"
+        "2. Detektor dostaje kadry kamer z zaufana poza (Kalibracja); polozenie w ukladzie podstawy liczy "
+        "blizniak - z dwoch kamer albo z jednej i wysokosci nad blatem.\n"
+        "3. Wybierz detektor - formularz to jego ustawienia, wypelnione z sekcji pliku konfiguracji o tej samej "
+        "nazwie. Nieznany klucz albo zly typ: Uruchom odmawia.\n"
+        "4. **Uruchom detektor**: obiekty pojawiaja sie ponizej i w 3D, a strategie dostaja je w `obs.objects` "
+        "z wiekiem pomiaru. Kilka detektorow moze dzialac naraz.\n"
+        "5. Wolny detektor (model jezykowy) odpowiada co kilka-kilkanascie sekund: strategia nie czeka, widzi "
+        "wiek pomiaru, a obiekt ma zrodlo \"ostatnie widziane\"."),
     "Strategie": (
         "1. Strategie przychodza z zainstalowanych pakietow (entry points `machinekind_twin.strategies`), "
         "np. przykladowa `swing` z `uv sync`; po instalacji **Odswiez liste**.\n"
@@ -516,6 +529,8 @@ class TwinApp:
         self._engage_t = 0.0
         #: (t, katy) z ostatnich ~3 s - maska ramienia w pozie z chwili kadru, nie renderu.
         self._joint_hist: deque[tuple[float, dict[str, float]]] = deque(maxlen=120)
+        # The panel loop appends to the history while detector threads read it (arm masks).
+        self._hist_lock = threading.Lock()
         self._map_pose_key = None
         self._intr_solve = threading.Event()
         self._dirty_rebuild = 0.0                       # kamera spoza modelu przeciagana - przebudowa po chwili
@@ -563,6 +578,9 @@ class TwinApp:
         s.initial_camera.position = tuple(T[:3, 3] + np.array([0.75, -0.65, 0.55]))
         s.initial_camera.look_at = tuple(T[:3, 3] + np.array([0.18, 0.0, 0.05]))
 
+        # Detector threads read the cached frames (`_grab`), never render a sim camera themselves.
+        self.perception = Perception(self.twin, self.ws, frame=self._cached_frame_t, occluders=self._occluders)
+
         self._build_header()
         tabs = s.gui.add_tab_group()
         with tabs.add_tab("Ramie", icon=viser.Icon.ROBOT):
@@ -575,6 +593,8 @@ class TwinApp:
             self._build_map()
         with tabs.add_tab("Dynamika", icon=viser.Icon.ACTIVITY):
             self._build_dynamics()
+        with tabs.add_tab("Detektory", icon=viser.Icon.EYE):
+            self.detectors = DetectorTab(self)
         with tabs.add_tab("Strategie", icon=viser.Icon.ROUTE):
             self.strategies = StrategyTab(self)
         with tabs.add_tab("Sim-Real", icon=viser.Icon.ARROWS_DIFF):
@@ -805,6 +825,9 @@ class TwinApp:
             parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
         if self.strategies.running:
             parts.append(f"Strategia: jedzie ({self.strategies.runner.status.step} krokow)")
+        running = sorted(self.perception.running())
+        if running:
+            parts.append(f"detektory: {', '.join(running)}")
         # Trwale ostrzezenia ramienia (kalibracja chwytaka niezgodna z blizniakiem, chwytak
         # poluzowany po przeciazeniu) - `RobotStatus.warnings`; starszy status ich nie ma.
         warns = [str(w) for w in (getattr(st, "warnings", None) or [])]
@@ -1592,13 +1615,18 @@ class TwinApp:
     # ------------------------------------------------------ maska ramienia
     def _joints_at(self, t: float | None) -> dict[str, float] | None:
         """Katy ramienia z chwili `t` (historia z petli panelu); None = brak historii / teraz."""
-        if t is None or not self._joint_hist:
+        hist = self._hist()
+        if t is None or not hist:
             return None
-        hist = list(self._joint_hist)
         if t - hist[-1][0] > 0.3:
             return None                                     # historia urwana (rozlaczone) - poza z teraz
         before = [j for (ti, j) in hist if ti <= t]
         return before[-1] if before else hist[0][1]
+
+    def _hist(self) -> list[tuple[float, dict[str, float]]]:
+        """A copy of the joint history, taken under its lock: detector threads read it too."""
+        with self._hist_lock:
+            return list(self._joint_hist)
 
     def _arm_points(self, joints: dict[str, float]) -> np.ndarray:
         """Punkty ramienia (srodki bryl, poczatki ogniw, TCP) w ukladzie podstawy, (N, 3)."""
@@ -1622,7 +1650,7 @@ class TwinApp:
         juz na limicie 40 px, maska rosla o ~22 px na kazda strone i chowala kostke
         przy szczekach we wszystkich kamerach naraz, dokladnie w chwili chwytu.
         """
-        near = [(ti, j) for (ti, j) in list(self._joint_hist) if t + MASK_WINDOW[0] <= ti <= t + MASK_WINDOW[1]]
+        near = [(ti, j) for (ti, j) in self._hist() if t + MASK_WINDOW[0] <= ti <= t + MASK_WINDOW[1]]
         T = rec.true_pose()
         if len(near) < 2 or T is None:
             return []
@@ -2952,6 +2980,16 @@ class TwinApp:
         with self.frame_lock:
             return {n: (img, self.frame_times.get(n, 0.0)) for n, img in self.frames.items()}
 
+    def _cached_frame_t(self, name: str) -> tuple[np.ndarray | None, float]:
+        """The frame source of `perception`: camera `name`'s frame from the last `_grab` and its
+        capture time (time.monotonic), or (None, 0.0). Any thread; never renders."""
+        with self.frame_lock:
+            return self.frames.get(name), self.frame_times.get(name, 0.0)
+
+    def _occluders(self, t_cams: dict[str, float]) -> dict[str, np.ndarray] | None:
+        """Arm masks for the detectors' silhouette fit, each camera in the pose of its frame's time."""
+        return self._arm_masks(list(t_cams), t_cams, dilate=5)
+
     def _fresh_frames(self, max_age: float) -> dict[str, np.ndarray]:
         """Kadry z ostatniego `_grab`, jesli sa mlodsze niz `max_age` [s], inaczej nowe."""
         with self.frame_lock:
@@ -3004,10 +3042,16 @@ class TwinApp:
                     self._img(h, f"piramida/{name}/{id(h)}", thumb(img, 160))
         self._tick_calibration()
         self._tick_dynamics()
+        # Tracking moves while no strategy reads the objects; then the tab shows them.
+        self._guard("detektory", self._tick_detectors)
         self.strategies.tick()
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
         return frames
+
+    def _tick_detectors(self) -> None:
+        self.perception.tick()
+        self.detectors.tick()
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
         changed = False
@@ -3060,7 +3104,8 @@ class TwinApp:
         """Historia katow do masek ramienia w chwili kadru (`_arm_masks`)."""
         st = self.twin.status
         if st.connected and st.measured:
-            self._joint_hist.append((now, dict(st.measured)))
+            with self._hist_lock:
+                self._joint_hist.append((now, dict(st.measured)))
 
     def run(self) -> None:
         port = self.server.get_port()
@@ -3106,6 +3151,7 @@ class TwinApp:
         """Najpierw ramie (strategia, zadania, rozlaczenie), dopiero potem serwer."""
         self._stop.set()
         try:
+            self.perception.stop_all("zamkniecie panelu")
             self.strategies.stop("zamkniecie panelu")
             for job in (self.calib_job, self.sysid_job, self.intr_job):
                 job.stop()

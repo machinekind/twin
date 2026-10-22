@@ -66,6 +66,8 @@ include = [
     "src/machinekind_twin/strategy.py",
     "src/machinekind_twin/strategies.py",
     "src/machinekind_twin/tracks.py",
+    "src/machinekind_twin/ui/detector_tab.py",
+    "src/machinekind_twin/ui/plugin_form.py",
     "src/machinekind_twin/waypoints.py",
 ]
 
