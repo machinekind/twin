@@ -318,9 +318,12 @@ def _ui_banner(ws: Path, example: str | None = None) -> str:
 
 
 def _ui_startup_line(a: argparse.Namespace) -> str:
-    """Co panel zrobi sam przy starcie (--arm) - jedna linia przed wolnym importem."""
+    """What the panel does by itself at start (--arm, --detector): one line before the slow import."""
     arm = "polacz (backend i port stanowiska, bez domu)" if a.arm else "nie"
-    return f"Start panelu: ramie {arm}"
+    line = f"Start panelu: ramie {arm}"
+    if a.detector:
+        line += f", detektory {', '.join(a.detector)}"
+    return line
 
 
 def _ui(a: argparse.Namespace) -> int:
@@ -340,6 +343,8 @@ def _ui(a: argparse.Namespace) -> int:
         argv += ["--stream-port", str(a.stream_port), "--stream-host", a.stream_host]
     if a.arm:
         argv.append("--arm")
+    for name in a.detector or []:
+        argv += ["--detector", name]
     return ui_main(argv)
 
 
@@ -441,6 +446,9 @@ def parser() -> argparse.ArgumentParser:
                    help="adres nasluchu podgladu kamer (domyslnie cala siec - obraz, bez sterowania)")
     p.add_argument("--arm", action="store_true",
                    help="polacz ramie przy starcie: backend i port ze stanowiska, bez jazdy do domu")
+    p.add_argument("--detector", action="append", metavar="NAME",
+                   help="uruchom detektor przy starcie (np. cube), z ustawieniami z jego sekcji "
+                        "konfiguracji; mozna kilka razy")
     p.set_defaults(fn=lambda a: _ui(a))
     return ap
 

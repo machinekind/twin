@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -615,22 +616,25 @@ class TwinApp:
             self.stream.start()
         self._startup(**(startup or {}))
 
-    def _startup(self, arm: bool = False) -> None:
-        """Flaga `twin ui --arm`: to samo, co "Polacz" w panelu (backend i port stanowiska, bez domu).
+    def _startup(self, arm: bool = False, detectors: Sequence[str] = ()) -> None:
+        """What `twin ui` flags do at panel start; an error is logged and the panel runs on.
 
-        Blad trafia do logu, panel dziala dalej.
+        `--arm` does what "Polacz" does (the workstation's backend and port, no homing).
+        `--detector NAME` does what "Uruchom detektor" does, with the config section's settings.
         """
-        if not arm:
-            return
-        try:
-            self._connect(self._preset_backend(), self._port_from_field(), False)
-            st = self.twin.status
-            logger.info("Start: ramie %s (%s), %s", st.backend, "symulacja" if st.simulated else "prawdziwe",
-                        st.state)
-        except Exception:
-            logger.exception("Start: nie polaczono z ramieniem")
-        finally:
-            self._guard("ramie", self._render_arm, True)
+        if arm:
+            try:
+                self._connect(self._preset_backend(), self._port_from_field(), False)
+                st = self.twin.status
+                logger.info("Start: ramie %s (%s), %s", st.backend,
+                            "symulacja" if st.simulated else "prawdziwe", st.state)
+            except Exception:
+                logger.exception("Start: nie polaczono z ramieniem")
+            finally:
+                self._guard("ramie", self._render_arm, True)
+
+        for name in detectors:
+            self.detectors.start_named(name)
 
     # ================================================================ narzedzia
     def _safe(self, fn):
@@ -3148,12 +3152,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stream-port", type=int, default=None)
     ap.add_argument("--stream-host", default="0.0.0.0")
     ap.add_argument("--arm", action="store_true", help="polacz ramie przy starcie (backend i port stanowiska)")
+    ap.add_argument("--detector", action="append", metavar="NAME",
+                    help="uruchom detektor przy starcie, z ustawieniami z jego sekcji konfiguracji (mozna kilka razy)")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Sondy HTTP (HEAD, niedokonczone polaczenia) nie sa bledami panelu - websockets
     # drukuje po kilkadziesiat linii stosu na kazda, zasypujac to, co wazne.
     logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-    startup = dict(arm=a.arm)
+    startup = dict(arm=a.arm, detectors=a.detector or [])
     TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host,
             startup=startup).run()
     return 0

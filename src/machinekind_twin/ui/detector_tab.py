@@ -5,7 +5,8 @@ a form from its settings dataclass, prefilled from the config file's section of 
 same way as the Strategies tab. Start refuses a broken section, then starts the detector on a
 short-lived thread (`detektor-start:<name>`), because a detector's `start` may take seconds (a
 language model's login check). Several detectors may run at once; starting one whose name is
-running restarts it with the new settings.
+running restarts it with the new settings. `twin ui --detector NAME` starts one at panel start,
+with its config section's settings (`start_named`).
 
 A detector never moves the arm: Start needs no arm, no confirmation, and STOP does not stop it.
 The objects the detectors see go to strategies through `Perception.objects` and are listed in the
@@ -244,19 +245,45 @@ class DetectorTab:
                 plugin.check(config_section(plugin.name))
                 values = self.form.values(plugin)
 
-            with self._lock:
-                self._failed.pop(plugin.name, None)
-                self._launching.add(plugin.name)
-
-            thread = threading.Thread(target=self._start, args=(plugin, values, event),
-                                      name=f"detektor-start:{plugin.name}", daemon=True)
-            self.start_thread = thread
-            thread.start()
+            self._launch(plugin, values, event, release=True)
         except BaseException:
             self._starting.release()
             raise
 
-    def _start(self, plugin: DetectorPlugin, values: dict[str, Any], event: Any) -> None:
+    def start_named(self, name: str) -> threading.Thread | None:
+        """`twin ui --detector NAME`: what Start does, for a detector named at panel start.
+
+        The settings are its config section's, since there is no form to read. Nothing raises: a
+        detector that does not load or whose section is refused is logged, notified and shown in
+        its row, and the panel starts anyway. Returns the start thread, None when it did not start.
+        """
+        try:
+            plugin = load_detector(name)
+            values = plugin.check(config_section(plugin.name))
+        except Exception as exc:
+            logger.exception("Detektor %s nie ruszyl przy starcie panelu", name)
+            with self._lock:
+                self._failed[name.lower()] = f"{type(exc).__name__}: {exc}"
+            self.app._notify(None, "Detektor nie ruszyl", f"{name}: {type(exc).__name__}: {exc}", error=True)
+            return None
+
+        # Not under `_starting`: several detectors may be named, and Start stays free meanwhile.
+        return self._launch(plugin, values, None, release=False)
+
+    def _launch(self, plugin: DetectorPlugin, values: dict[str, Any], event: Any, *,
+                release: bool) -> threading.Thread:
+        """Starts the start thread for `plugin`; with `release` it releases `_starting` when done."""
+        with self._lock:
+            self._failed.pop(plugin.name, None)
+            self._launching.add(plugin.name)
+
+        thread = threading.Thread(target=self._start, args=(plugin, values, event, release),
+                                  name=f"detektor-start:{plugin.name}", daemon=True)
+        self.start_thread = thread
+        thread.start()
+        return thread
+
+    def _start(self, plugin: DetectorPlugin, values: dict[str, Any], event: Any, release: bool) -> None:
         """The start thread: the detector's `create` and `start`, which may take seconds."""
         name = plugin.name
         try:
@@ -271,7 +298,8 @@ class DetectorTab:
         finally:
             with self._lock:
                 self._launching.discard(name)
-            self._starting.release()
+            if release:
+                self._starting.release()
 
     def stop(self, name: str, reason: str = STOPPED_HERE) -> None:
         """Stops the detector `name` and forgets its objects; its row says why until the next refresh."""

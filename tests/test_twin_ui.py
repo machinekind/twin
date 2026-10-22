@@ -1176,3 +1176,69 @@ def test_closing_the_panel_stops_its_detectors(tmp_path, cube_example):
     assert app.perception.running() == {}
     assert not runner.status.running
     assert runner.status.stopped_because == "zamkniecie panelu"
+
+
+def test_the_detector_flag_starts_its_detector_at_panel_start(tmp_path, monkeypatch, cube_example):
+    """`twin ui --detector cube`: the detector runs without a click, with its config section's settings."""
+    from machinekind_twin.ui.app import TwinApp
+
+    a_config_file(tmp_path, monkeypatch, "cube:\n  color: green\n")
+    path = tmp_path / "twin.json"
+    path.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+    app = TwinApp(path, host="127.0.0.1", port=free_port(), startup={"detectors": [cube_example]})
+    try:
+        thread = app.detectors.start_thread
+        assert thread is not None and thread.name == "detektor-start:cube"
+        thread.join(10.0)
+        assert not thread.is_alive()
+
+        runner = app.perception.running()["cube"]
+        assert runner.status.running
+        assert runner.detector.config.color == "green"
+    finally:
+        app.close()
+
+
+def test_a_detector_that_cannot_start_at_panel_start_shows_why_and_the_panel_runs_on(app, cube_example,
+                                                                                     tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "cube:\n  colour: green\n")
+    tab = app.detectors
+
+    app._startup(detectors=["no_such_detector", cube_example])   # never raises
+
+    assert app.perception.running() == {}
+    tab.tick()
+    assert tab._rows["no_such_detector"].md.content.startswith("**nie ruszyl:** KeyError: \"Nieznany detektor")
+    assert tab._rows["cube"].md.content.startswith("**nie ruszyl:** ValueError: Nieznane klucze w sekcji cube")
+    tab.refresh()
+
+
+def test_the_detector_flag_reaches_the_panel_from_twin_ui(tmp_path, monkeypatch, capsys):
+    """`twin ui --detector NAME` forwards each name to the panel, which hands them to its startup."""
+    from machinekind_twin.cli import main as twin
+    from machinekind_twin.ui import app as ui_app
+
+    panel_main = ui_app.main
+    started: list[list[str]] = []
+    monkeypatch.setattr(ui_app, "main", lambda argv: started.append(argv) or 0)
+    station = tmp_path / "twin.json"
+    station.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+
+    assert twin(["ui", "--workspace", str(station), "--detector", "cube", "--detector", "llm"]) == 0
+    assert started == [["--host", "127.0.0.1", "--port", "8080", "--workspace", str(station),
+                        "--detector", "cube", "--detector", "llm"]]
+    assert "Start panelu: ramie nie, detektory cube, llm" in capsys.readouterr().out
+
+    made: list[dict] = []
+
+    class Panel:
+        def __init__(self, *args, startup=None, **kw):
+            made.append(startup)
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(ui_app, "TwinApp", Panel)
+    assert panel_main(started[0]) == 0
+    assert panel_main(["--workspace", str(station)]) == 0
+    assert made == [{"arm": False, "detectors": ["cube", "llm"]}, {"arm": False, "detectors": []}]
