@@ -12,11 +12,14 @@ registers (the twin compares names in lower case and refuses two packages regist
     [project.entry-points."machinekind_twin.strategies"]
     pi05 = "vla_strategies.pi05:Pi05"
 
+    [project.entry-points."machinekind_twin.detectors"]
+    cube = "cube_detector:ColourCube"
+
 Entry points live in the installed package's metadata: a package registers nothing until it is
 installed (`pip install`), and a change to them needs a reinstall.
 """
 
-__all__ = ["BACKENDS", "ROBOTS", "STRATEGIES"]
+__all__ = ["BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES"]
 
 #: A robot: the entry point resolves to the path (`str` or `os.PathLike`) of the robot's folder,
 #: which holds `robot.yaml` and the model it names. `robot.yaml`'s `name` equals the entry's name.
@@ -31,3 +34,8 @@ BACKENDS = "machinekind_twin.backends"
 #: `settings` dataclass from the panel's form, which the config section named like the strategy
 #: prefills, and creates the strategy as `cls(settings)`, or `cls()` when the class has no `settings`.
 STRATEGIES = "machinekind_twin.strategies"
+
+#: A detector: the entry point resolves to a class following `Detector`. The twin builds its
+#: `settings` dataclass like a strategy's, from the panel's form, which the config section named
+#: like the detector prefills, and creates the detector as `cls(settings)`, or `cls()` without `settings`.
+DETECTORS = "machinekind_twin.detectors"

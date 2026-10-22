@@ -394,7 +394,7 @@ dev = [
 
 [[package]]
 name = "machinekind-twin-api"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/machinekind_twin_api" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

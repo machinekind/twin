@@ -38,12 +38,15 @@ class ObjectPose:
 
     #: Position [m], shape (3,).
     position: np.ndarray
-    #: Rotation matrix, shape (3, 3).
+    #: Rotation matrix, shape (3, 3). Identity when the perception knows no orientation.
     rotation: np.ndarray
     #: Where the pose comes from, as the twin labels it (in Polish): e.g. "kamery" (the cameras),
     #: "w dloni" (in the gripper), "ostatnie widziane" (last seen), "symulacja" (the simulation).
+    #: A detector's object is "kamery" while the cameras saw it within the last fraction of a
+    #: second, "ostatnie widziane" when the pose is older, "w dloni" while the gripper holds it.
     source: str = ""
-    #: Seconds since the pose was measured; 0 = this tick.
+    #: Seconds since the frames the pose was measured from were captured, at the moment the
+    #: observation was built; 0 for a pose that follows the jaws.
     age_s: float = 0.0
 
 
@@ -90,7 +93,8 @@ class Observation:
     command: Mapping[str, float]
     #: The task's goal point, shape (3,); None = no goal.
     goal: np.ndarray | None = None
-    #: Objects the perception knows about, by name (e.g. "cube").
+    #: Objects the perception knows about, by a detector's label, e.g. "cube" or "red pen"; empty
+    #: when no detector runs.
     objects: Mapping[str, ObjectPose] = field(default_factory=dict)
     #: Camera frames by camera name, fetched only when read: a strategy without vision pays nothing.
     #: A camera without a frame (not open yet, stream broken) is missing.

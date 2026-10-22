@@ -9,7 +9,8 @@ needs only numpy: no MuJoCo, viser, torch or OpenCV.
 |---|---|
 | `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
 | `machinekind_twin_api.backend` | `BackendContext` (what a backend factory gets), the `BackendPlugin` protocol, the `RobotBackend` base class, `RobotInfo` |
-| `machinekind_twin_api.entry_points` | `ROBOTS`, `BACKENDS`, `STRATEGIES`: the entry point groups the twin reads |
+| `machinekind_twin_api.detector` | `DetectRequest` (one call's frames), `Detection` (one object seen in one frame, in pixels), `DetectorInfo`, the `Detector` protocol |
+| `machinekind_twin_api.entry_points` | `ROBOTS`, `BACKENDS`, `STRATEGIES`, `DETECTORS`: the entry point groups the twin reads |
 
 Everything is also importable from `machinekind_twin_api` itself.
 
@@ -124,6 +125,15 @@ class MemoryArm:
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
 `efforts`, ...); `RobotBackend` documents what each one means. Complete, tested examples live in
 the twin's repository: `examples/robots/arm6`, `examples/robots/testbot` and `examples/strategies/swing`.
+
+## Evolving the contract
+
+Plugins pin `machinekind-twin-api>=0.1,<0.2`. Four rules keep every 0.1.x release working for them:
+
+* A new field goes at the end of a frozen dataclass, with a default.
+* Everything `detect` gets lives in `DetectRequest`, so its signature never changes.
+* What a detector learns once, at start, lives in `DetectorInfo`.
+* Nothing is removed or renamed within 0.x.
 
 ## Installing
 

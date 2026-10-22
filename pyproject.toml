@@ -19,7 +19,7 @@ dependencies = [
     "PyYAML>=6.0",
     # The plugin contracts, packages/machinekind_twin_api in this repository. They are not on PyPI;
     # `uv sync` installs them from the clone ([tool.uv.sources]).
-    "machinekind-twin-api>=0.1,<0.2",
+    "machinekind-twin-api>=0.1.2,<0.2",
 ]
 
 [project.optional-dependencies]
