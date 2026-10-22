@@ -14,6 +14,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from machinekind_twin_api.entry_points import DETECTORS
 
 from machinekind_twin.robots import reload_robots
 
@@ -94,6 +95,16 @@ def install_example(install_dist, monkeypatch, folder: Path) -> None:
     project = _project(folder)
     monkeypatch.syspath_prepend(str(folder))
     install_dist(project["name"], project["entry-points"], version=project["version"])
+
+
+def install_detector(install_dist, dist: str, source: str) -> str:
+    """Another installed package: a module named like it, whose `Detector` it registers under that name.
+
+    Every test needs its own `dist`: a module once imported stays in `sys.modules`.
+    """
+    module = dist.replace("-", "_")
+    install_dist(dist, {DETECTORS: {module: f"{module}:Detector"}}, {module: source})
+    return module
 
 
 @pytest.fixture
