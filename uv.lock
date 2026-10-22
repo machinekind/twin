@@ -364,6 +364,7 @@ dev = [
     { name = "machinekind-twin", extra = ["twin"] },
     { name = "machinekind-twin-arm6" },
     { name = "machinekind-twin-cube" },
+    { name = "machinekind-twin-llm" },
     { name = "machinekind-twin-swing" },
     { name = "pyright" },
     { name = "pytest" },
@@ -388,6 +389,7 @@ dev = [
     { name = "machinekind-twin", extras = ["twin"] },
     { name = "machinekind-twin-arm6", editable = "examples/robots/arm6" },
     { name = "machinekind-twin-cube", editable = "examples/detectors/cube" },
+    { name = "machinekind-twin-llm", editable = "packages/machinekind_twin_llm" },
     { name = "machinekind-twin-swing", editable = "examples/strategies/swing" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=7.4" },
@@ -440,6 +442,27 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencv-contrib-python", specifier = ">=4.8" },
 ]
+
+[[package]]
+name = "machinekind-twin-llm"
+version = "0.1.0"
+source = { editable = "packages/machinekind_twin_llm" }
+dependencies = [
+    { name = "machinekind-twin-api" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opencv-contrib-python" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "machinekind-twin-api", specifier = ">=0.1.2,<0.2" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "opencv-contrib-python", specifier = ">=4.8" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "machinekind-twin-swing"
