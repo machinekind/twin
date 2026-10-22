@@ -57,6 +57,7 @@ include = [
     "packages/machinekind_twin_api",
     "examples/strategies",
     "src/machinekind_twin/detectors.py",
+    "src/machinekind_twin/objects.py",
     "src/machinekind_twin/plugin_settings.py",
     "src/machinekind_twin/strategy.py",
     "src/machinekind_twin/strategies.py",
