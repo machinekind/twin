@@ -26,6 +26,8 @@ TESTBOT = EXAMPLES / "robots" / "testbot"
 BOT = "testbot"
 #: The test strategy's package: a strategy with its settings dataclass.
 SWING = EXAMPLES / "strategies" / "swing"
+#: The example detector's package: a colour cube, settings in a dataclass.
+CUBE = EXAMPLES / "detectors" / "cube"
 
 
 def write_dist(site: Path, name: str, entry_points: dict[str, dict[str, str]],
@@ -119,6 +121,13 @@ def swing(install_dist, monkeypatch):
     """The test strategy (`examples/strategies/swing`), installed."""
     install_example(install_dist, monkeypatch, SWING)
     return "swing"
+
+
+@pytest.fixture
+def cube_example(install_dist, monkeypatch):
+    """The example detector (`examples/detectors/cube`), installed."""
+    install_example(install_dist, monkeypatch, CUBE)
+    return "cube"
 
 
 class CubeScene:

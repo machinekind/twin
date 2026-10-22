@@ -35,6 +35,7 @@ research = ["trimesh>=4,<6"]
 dev = [
     "machinekind-twin[twin]",
     "machinekind-twin-arm6",
+    "machinekind-twin-cube",
     "machinekind-twin-swing",
     "pytest>=7.4",
     "pyright>=1.1",
@@ -48,6 +49,7 @@ twin = "machinekind_twin.cli:main"
 [tool.uv.sources]
 machinekind-twin-api = { path = "packages/machinekind_twin_api", editable = true }
 machinekind-twin-arm6 = { path = "examples/robots/arm6", editable = true }
+machinekind-twin-cube = { path = "examples/detectors/cube", editable = true }
 machinekind-twin-swing = { path = "examples/strategies/swing", editable = true }
 
 # The type checker runs on the contracts and on what implements them; the rest of the twin is not typed yet.
@@ -55,6 +57,7 @@ machinekind-twin-swing = { path = "examples/strategies/swing", editable = true }
 extraPaths = ["packages/machinekind_twin_api"]
 include = [
     "packages/machinekind_twin_api",
+    "examples/detectors",
     "examples/strategies",
     "src/machinekind_twin/detection.py",
     "src/machinekind_twin/detectors.py",

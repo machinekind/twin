@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "machinekind-twin-cube"
+version = "0.1.0"
+description = "The digital twin's example detector from outside the twin: a coloured cube found by colour"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = [
+    "machinekind-twin-api>=0.1.2,<0.2",
+    "numpy>=1.24",
+    # contrib (a superset of opencv-python) keeps existing environments on one OpenCV package:
+    # two OpenCV wheels write the same cv2/ directory and overwrite each other.
+    "opencv-contrib-python>=4.8",
+]
+
+[project.entry-points."machinekind_twin.detectors"]
+cube = "cube_detector:ColourCube"
+
+[tool.setuptools.packages.find]
+include = ["cube_detector*"]

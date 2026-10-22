@@ -1,14 +1,19 @@
 """Detectors from installed packages: found through entry points, built strictly from their settings.
 
-The detectors here are inline fakes that `install_detector` installs the way pip would. Their
+Most detectors here are inline fakes that `install_detector` installs the way pip would. Their
 dist names start apart from the strategy tests' ones: a module once imported stays in
-`sys.modules` for the whole run. The example cube detector (`examples/detectors/cube`) gets its own cases once it exists.
+`sys.modules` for the whole run. The example cube detector (`examples/detectors/cube`) is
+installed by the `cube_example` fixture.
 """
 
 from __future__ import annotations
 
+import ast
+import subprocess
+import sys
+
 import pytest
-from conftest import BOT, install_detector
+from conftest import BOT, CUBE, install_detector
 from machinekind_twin_api.entry_points import DETECTORS
 
 from machinekind_twin.detectors import (
@@ -260,3 +265,88 @@ def test_a_backend_with_the_detector_s_name_shares_its_section(install_dist):
                  {"testbot_detector": BASE_FREE})
 
     assert shared_section(BOT) == "backend"
+
+
+# --------------------------------------------------------------------------- the example cube detector
+
+
+def test_the_example_cube_is_found_through_its_entry_point(cube_example):
+    assert detectors()[cube_example].value == "cube_detector:ColourCube"
+
+    plugin = load_detector(cube_example)
+
+    assert plugin.name == "cube"
+    assert plugin.cls.__name__ == "ColourCube"
+    assert plugin.cls.__module__ == "cube_detector"
+    assert plugin.source == "machinekind-twin-cube 0.1.0 (cube_detector:ColourCube)"
+    assert [field.name for field in plugin.fields] == ["color", "size_m", "label", "min_area_px", "interval_s"]
+
+
+def test_the_example_cube_is_created_with_its_settings(cube_example):
+    from cube_detector import ColourCube, CubeSettings
+
+    detector = load_detector(cube_example).create({"color": "green", "size_m": 0.04, "interval_s": 0.5})
+
+    assert type(detector) is ColourCube
+    assert detector.config == CubeSettings(color="green", size_m=0.04, interval_s=0.5)
+    assert detector.interval_s == 0.5
+    assert detector.pixel_error_px == 4.0
+
+
+def test_the_example_cube_refuses_an_unknown_key(cube_example):
+    with pytest.raises(ValueError, match=r"Nieznane klucze w sekcji cube: \['colour'\]"):
+        load_detector(cube_example).create({"colour": "green"})
+
+
+@pytest.mark.parametrize("raw, problem", [
+    ({"color": "purple"}, "unknown color 'purple'"),
+    ({"size_m": 0.0}, "size_m must be in"),
+    ({"size_m": 0.5}, "size_m must be in"),
+    ({"interval_s": 0.01}, "interval_s must be at least"),
+])
+def test_the_example_cube_refuses_settings_it_cannot_work_with(cube_example, raw, problem):
+    with pytest.raises(ValueError, match=problem):
+        load_detector(cube_example).create(raw)
+
+
+def test_the_cube_config_section_prefills_the_example(tmp_path, monkeypatch, cube_example):
+    config = tmp_path / "local.yaml"
+    config.write_text("cube:\n  color: green\n  size_m: 0.04\n", encoding="utf-8")
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(config))
+
+    raw = config_section(cube_example)
+
+    assert raw == {"color": "green", "size_m": 0.04}
+    assert load_detector(cube_example).create(raw).config.color == "green"
+
+
+def test_the_example_cube_package_lives_outside_the_twin():
+    assert "src" not in CUBE.parts
+    assert (CUBE / "cube_detector" / "__init__.py").is_file()
+
+
+def test_the_example_cube_imports_nothing_from_the_twin_at_runtime():
+    script = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(CUBE)!r})\n"
+        "import cube_detector\n"
+        "print(sorted(m for m in sys.modules if m.split('.')[0] == 'machinekind_twin'))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == "[]"
+
+
+def test_the_example_cube_package_never_imports_the_twin():
+    """Only the contracts (`machinekind_twin_api`), anywhere in the package, also inside a function."""
+    for path in (CUBE / "cube_detector").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                modules = [node.module or ""]
+            else:
+                continue
+
+            for module in modules:
+                assert module.split(".")[0] != "machinekind_twin", f"{path}: {module}"
