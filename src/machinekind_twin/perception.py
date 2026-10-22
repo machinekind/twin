@@ -145,8 +145,8 @@ class CubeDetection:
     #: 0 to NIE "nie wiadomo": dopasowanie sylwetki daje 0, gdy ramie zaslania kostke kazdej
     #: kamerze w ponad polowie - czyli wlasnie przy kostce w szczekach.
     n_cameras: int = -1
-    #: Chwila wykonania kadrow (time.monotonic), z ktorych jest detekcja; 0 = nie podano.
-    t: float = 0.0
+    #: Capture time of the frames this detection comes from (time.monotonic); None = not given.
+    t: float | None = None
 
 
 class ObjectTracker:
@@ -338,7 +338,7 @@ class ObjectTracker:
             self._witness.clear()
         if det is not None and not (holding and self.in_hand is not None):
             self.last, self.t_last, self.source = (det.pos, det.rot), now, "kamery"
-            self.t_seen = det.t if det.t else now
+            self.t_seen = det.t if det.t is not None else now
             self._rest_z, self._note, self._carried = float(det.pos[2]), "", False
             self._rejected = None
             if not holding:
@@ -460,7 +460,8 @@ class CubeDetector:
         return cv2.morphologyEx(top.astype(np.uint8) * 255, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
     def detect_frames(self, frames: dict[str, np.ndarray], mapper: TableMapper,
-                      occluders: dict[str, np.ndarray] | None = None, t: float = 0.0) -> CubeDetection | None:
+                      occluders: dict[str, np.ndarray] | None = None,
+                      t: float | None = None) -> CubeDetection | None:
         """Kostka z kadrow kamer: start z czesci wspolnej masek, potem dopasowanie sylwetki.
 
         Czesc wspolna na plaszczyznie gornej sciany potrzebuje dwoch kamer, ktore
@@ -477,7 +478,8 @@ class CubeDetector:
         return self._fit(self.top_mask(frames, top, occluders), top, masks, mapper, occluders, t)
 
     def fit_masks(self, masks: dict[str, np.ndarray], mapper: TableMapper,
-                  occluders: dict[str, np.ndarray] | None = None, t: float = 0.0) -> CubeDetection | None:
+                  occluders: dict[str, np.ndarray] | None = None,
+                  t: float | None = None) -> CubeDetection | None:
         """`detect_frames` for masks someone else made: the same top-face start and silhouette fit.
 
         `masks[camera]` is a bool image of that camera's raw frame, True on the cube. Each one is
@@ -500,7 +502,7 @@ class CubeDetector:
         return mapper if abs(mapper.table_z - z) < 1e-6 else mapper.at_height(z)
 
     def _fit(self, top_face: np.ndarray, top: TableMapper, masks: dict[str, np.ndarray], mapper: TableMapper,
-             occluders: dict[str, np.ndarray] | None, t: float) -> CubeDetection | None:
+             occluders: dict[str, np.ndarray] | None, t: float | None) -> CubeDetection | None:
         """From the top face on the map to the silhouette fit on the raw masks (`detect_frames`' tail)."""
         init = self._from_mask(top_face, top)
         start = None if init is None else (init.pos[0], init.pos[1], np.arctan2(init.rot[1, 0], init.rot[0, 0]))
@@ -509,7 +511,7 @@ class CubeDetector:
         if start is None:
             return None
         det = self.fit_silhouette(masks, mapper.cameras, start, occluders)
-        if det is not None:
+        if det is not None and t is not None:
             det.t = float(t)
         return det
 

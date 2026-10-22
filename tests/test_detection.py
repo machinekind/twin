@@ -341,6 +341,35 @@ def test_stop_while_starting_gets_the_detector_its_one_stop(perception: Percepti
     assert det.requests == []
 
 
+def test_a_stop_while_the_old_detector_stops_cancels_its_replacement(perception: Perception):
+    old = Scripted()
+    perception.start_detector(plugin(old), {}, threaded=False)
+    in_stop, release = threading.Event(), threading.Event()
+    old.stop = lambda reason: (in_stop.set(), release.wait(5.0))
+    new = Scripted(seen())
+    errors = []
+
+    def restart():
+        try:
+            perception.start_detector(plugin(new), {})
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    thread = threading.Thread(target=restart, name="detektor-start:fake")
+    thread.start()
+    assert in_stop.wait(5.0)                 # the replacement is registered, the old one stops
+    replacement = perception.running()["fake"]
+    perception.stop_detector("fake", "operator")
+    release.set()
+    thread.join(5.0)
+
+    assert errors == ["detector runner 'fake' was already started or stopped"]
+    assert perception.running() == {}
+    assert new.info is None and new.requests == [] and new.stops == []
+    assert replacement._thread is None
+    assert not replacement.status.running and replacement.status.stopped_because == "operator"
+
+
 def test_a_nan_interval_raises_before_the_detector_starts(clock: Clock, frames: Frames):
     det = Scripted(interval_s=math.nan)
     runner = runner_for(det, clock, frames)

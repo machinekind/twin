@@ -256,6 +256,26 @@ def _drop(reason: str, det: Detection) -> None:
                    reason, det.label, det.camera)
 
 
+_warned_size: set[str] = set()
+
+
+def _full_size(dets: list[Detection], cameras: Mapping[str, CameraModel],
+               frames: Mapping[str, tuple[tuple[int, int], float]]) -> bool:
+    """True when every camera's frame has its record's size. Logs a camera that differs once, as
+    the cube then loses its yaw to triangulation (a webcam negotiating another resolution)."""
+    full = True
+    for d in dets:
+        got, want = frames[d.camera][0], cameras[d.camera].size
+        if got == want:
+            continue
+        full = False
+        if d.camera not in _warned_size:
+            _warned_size.add(d.camera)
+            logger.warning("camera %r delivers %dx%d frames, its record says %dx%d: no silhouette fit "
+                           "(no yaw) from it until the sizes match", d.camera, *got, *want)
+    return full
+
+
 # ------------------------------------------------------------------ locate
 def _is_cube(size: tuple[float, float, float] | None) -> bool:
     return size is not None and max(size) <= CUBE_TOLERANCE * min(size)
@@ -326,7 +346,7 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
 
     # The silhouette fit runs on raw masks with each camera's K, so every frame must be full size.
     if (mapper is not None and _is_cube(size3) and size3 is not None
-            and all(d.mask is not None and frames[d.camera][0] == cameras[d.camera].size for d in dets)):
+            and all(d.mask is not None for d in dets) and _full_size(dets, cameras, frames)):
         masks = {d.camera: d.mask for d in dets if d.mask is not None}
         occ = occluders(dict(times)) if occluders is not None else None
         fit = cube(float(np.mean(size3))).fit_masks(masks, mapper, occ, t=min(times.values()))
@@ -351,8 +371,8 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
             depths = [float((p - o) @ d) for _, (o, d), _ in rays]
             # Two rays: the point sits halfway between them, so `gap` under the mean tolerance is
             # the rays passing within the sum of both cameras' tolerances. More rays: the same rule.
-            tol =float(np.mean([ray_tolerance_m(cam, depth, err)
-                                 for (cam, _, err), depth in zip(rays, depths, strict=True)]))
+            tol = float(np.mean([ray_tolerance_m(cam, depth, err)
+                                  for (cam, _, err), depth in zip(rays, depths, strict=True)]))
             if gap <= tol and min(depths) >= MIN_RANGE_M and Z_RANGE_M[0] <= p[2] <= Z_RANGE_M[1]:
                 return Located(label, p, np.eye(3), float(np.mean([_conf(d) for d in dets])), len(dets),
                                min(times.values()), size3, "triangulacja")

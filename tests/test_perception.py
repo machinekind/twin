@@ -119,6 +119,11 @@ def test_t_seen_is_the_capture_time_of_the_last_accepted_measurement():
     tr.update(undated, far, 0.0, 0.0, 0.0, now=7.0)
     assert tr.t_seen == 7.0
 
+    # A capture time of 0 is a time (a virtual clock starting at 0), not "none given".
+    at_zero = CubeDetection(np.array([0.21, 0.0, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=2, t=0.0)
+    tr.update(at_zero, far, 0.0, 0.0, 0.0, now=8.0)
+    assert tr.t_seen == 0.0
+
 
 # ------------------------------------------------------------------ fit_masks against detect_frames
 @pytest.mark.render

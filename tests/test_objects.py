@@ -12,6 +12,7 @@ import pytest
 from conftest import BOT
 from machinekind_twin_api.detector import Detection
 
+from machinekind_twin import objects
 from machinekind_twin.objects import (
     MIN_RAY_GAP_M,
     Z_RANGE_M,
@@ -393,3 +394,19 @@ def test_without_everything_the_fit_needs_the_point_paths_place_the_object(why):
         fr = {"a": ((W, H), 1.0), "b": ((W // 2, H // 2), 2.0)}
     (obj,), _ = run(dets, mapper=mapper, fr=fr)
     assert obj.method in ("triangulacja", "promien")
+
+
+def test_a_resized_frame_is_logged_once_per_camera(caplog, monkeypatch):
+    monkeypatch.setattr(objects, "_warned_size", set())
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    dets = _masks()
+    dets[1] = Detection("cube", "b", ((dets[1].pixel[0] + 0.5) / 2 - 0.5, (dets[1].pixel[1] + 0.5) / 2 - 0.5),
+                        size_m=(0.03, 0.03, 0.03), mask=np.zeros((H // 2, W // 2), bool))
+    fr = {"a": ((W, H), 1.0), "b": ((W // 2, H // 2), 2.0)}
+    with caplog.at_level("WARNING", logger="machinekind_twin.objects"):
+        for _ in range(3):
+            (obj,), _ = run(dets, mapper=mapper, fr=fr)
+            assert obj.method == "triangulacja"
+    warned = [r.getMessage() for r in caplog.records if "its record says" in r.getMessage()]
+    assert warned == [f"camera 'b' delivers {W // 2}x{H // 2} frames, its record says {W}x{H}: "
+                      "no silhouette fit (no yaw) from it until the sizes match"]

@@ -1109,7 +1109,7 @@ def test_a_detector_refusing_its_settings_shows_why_in_its_row(app, cube_example
     assert tab._rows["cube"].md.content.startswith("**nie ruszyl:** ValueError: cube: unknown color 'purple'")
 
 
-def test_the_detectors_tab_lists_the_tracked_objects_and_draws_them_in_3d(app):
+def test_the_detectors_tab_lists_the_tracked_objects_and_draws_them_in_3d(app, monkeypatch):
     from machinekind_twin.objects import Located
 
     loc = Located("cube", np.array([0.231, -0.04, 0.015]), np.eye(3), 0.93, 2, time.monotonic(),
@@ -1117,11 +1117,11 @@ def test_the_detectors_tab_lists_the_tracked_objects_and_draws_them_in_3d(app):
     app.perception.tracks.observe("cube", [loc], latency_s=0.05, interval_s=0.33)
     tab = app.detectors
 
-    # The panel steps the tracks only when nobody did for 0.15 s; an earlier test may have just now.
-    deadline = time.monotonic() + 2.0
-    while tab.objects_md.content == "brak obiektow" and time.monotonic() < deadline:
-        app._tick_detectors()
-        time.sleep(0.02)
+    # A step within 10 ms of an earlier one returns the cached result; an earlier test may have
+    # just stepped, so lift the rate limit and step once.
+    monkeypatch.setattr(app.perception.tracks, "MIN_STEP_S", 0.0)
+    app.perception.objects()
+    tab.tick()
 
     line = tab.objects_md.content
     assert line.startswith("- **cube**: x 23.1 cm, y -4.0 cm, z 1.5 cm, obrot 0 st., kamery, 2 kam. (sylwetka), "
@@ -1154,10 +1154,9 @@ def test_the_map_tab_lists_what_the_detectors_track_and_runs_no_detection_of_its
     loc = Located("cube", np.array([0.231, -0.04, 0.015]), np.eye(3), 0.93, 2, time.monotonic(),
                   (0.03, 0.03, 0.03), "sylwetka")
     app.perception.tracks.observe("cube", [loc], latency_s=0.05, interval_s=0.33)
-    # A step within 10 ms of an earlier one returns the cached result: step until the cube shows.
-    deadline = time.monotonic() + 2.0
-    while "cube" not in app.perception.objects() and time.monotonic() < deadline:
-        time.sleep(0.02)
+    # A step within 10 ms of an earlier one returns the cached result: lift the rate limit.
+    monkeypatch.setattr(app.perception.tracks, "MIN_STEP_S", 0.0)
+    assert "cube" in app.perception.objects()
 
     text = app._objects_text()
     assert text.startswith("  \ncube: x 23.1 cm, y -4.0 cm, obrot 0 st., pewnosc 0.93, 2 kam., kamery, kadr sprzed ")

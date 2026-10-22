@@ -194,22 +194,23 @@ class DetectorRunner:
     # ------------------------------------------------------------------ start and stop
     def start(self, *, threaded: bool = True) -> None:
         """Starts the detector on the calling thread (`detector.start(info)`, which may raise to
-        refuse), then its thread. A runner starts once. A bad `interval_s` or `pixel_error_px`
-        is a ValueError, before the detector starts."""
-        if self._used:
-            raise RuntimeError(f"detector runner {self.name!r} was already started")
-        self._used = True
-        for attr, default in (("interval_s", 1.0), ("pixel_error_px", 3.0)):
-            value = getattr(self.detector, attr, default)
-            if not _finite_non_negative(value):
-                self.status.stopped_because = f"zle ustawienia: {attr} = {value!r}"
-                raise ValueError(f"{attr} must be a finite non-negative number, got {value!r}")
-
+        refuse), then its thread. A runner starts once, and not after a `stop`. A bad `interval_s`
+        or `pixel_error_px` is a ValueError, before the detector starts."""
         run = _Run()
         with self._lock:
+            # One lock section from the check to the run token: a `stop` lands either before it
+            # (and this start refuses) or after it (and the token cancels the run).
+            if self._used:
+                raise RuntimeError(f"detector runner {self.name!r} was already started or stopped")
+            self._used = True
+            for attr, default in (("interval_s", 1.0), ("pixel_error_px", 3.0)):
+                value = getattr(self.detector, attr, default)
+                if not _finite_non_negative(value):
+                    self.status.stopped_because = f"zle ustawienia: {attr} = {value!r}"
+                    raise ValueError(f"{attr} must be a finite non-negative number, got {value!r}")
+            self._stop.clear()
             self._run = run
             self.status = DetectorStatus(starting=True)
-        self._stop.clear()
 
         try:
             start = getattr(self.detector, "start", None)
@@ -242,11 +243,15 @@ class DetectorRunner:
 
     def stop(self, reason: str, *, wait: bool = True) -> None:
         """Ends the run: no answer is fed from now on. Calls `detector.stop(reason)` once, on this
-        thread, and with `wait` joins the detector thread for up to `join_timeout_s`."""
+        thread, and with `wait` joins the detector thread for up to `join_timeout_s`. A stop
+        before `start` is kept: that start then refuses."""
         self._stop.set()
         with self._lock:
             run, self._run = self._run, None
             if run is None:
+                if not self._used:
+                    self._used = True
+                    self.status.stopped_because = reason
                 return
             began = run.began
             self.status.running = False
