@@ -17,6 +17,7 @@ miala na biurku, a nie na pozycji kostki wzietej z fizyki.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 import cv2
@@ -24,7 +25,7 @@ import numpy as np
 
 from .calib import topdown
 from .robots import RobotSpec
-from .workspace import Workspace
+from .workspace import CameraRecord, Workspace
 
 
 def _nelder_mead3(f, x0: np.ndarray, step: np.ndarray, iters: int = 90, tol: float = 1e-4):
@@ -57,6 +58,12 @@ def _nelder_mead3(f, x0: np.ndarray, step: np.ndarray, iters: int = 90, tol: flo
     return pts[i], vals[i]
 
 
+def perception_cameras(ws: Workspace, *, only_trusted: bool = True) -> list[CameraRecord]:
+    """Enabled cameras with a calibrated pose; with `only_trusted`, a real one also needs a trusted pose."""
+    return [c for c in ws.cameras
+            if c.enabled and c.calibrated and (not only_trusted or c.trusted or c.source == "sim")]
+
+
 class TableMapper:
     """Zszywanie kadrow w mape blatu; siatki rzutu liczone raz na poze kamery."""
 
@@ -66,6 +73,8 @@ class TableMapper:
         self.centre, self.side, self.n, self.table_z = tuple(centre_xy), float(side), int(n), float(table_z)
         self._maps: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self._heights: dict[float, TableMapper] = {}
+        # The panel and the detector threads share one mapper: one builder per height.
+        self._heights_lock = threading.Lock()
         pts = topdown.grid(self.centre, self.side, self.n, self.table_z)
         for name, (K, dist, T) in self.cameras.items():
             self._maps[name] = topdown.warp_maps(K, dist, T, pts)
@@ -73,9 +82,7 @@ class TableMapper:
     @staticmethod
     def from_workspace(ws: Workspace, *, only_trusted: bool = True, **kw) -> TableMapper:
         cams = {}
-        for c in ws.cameras:
-            if not (c.enabled and c.calibrated) or (only_trusted and not c.trusted and c.source != "sim"):
-                continue
+        for c in perception_cameras(ws, only_trusted=only_trusted):
             K, dist = c.intrinsics()
             cams[c.name] = (K, dist, np.asarray(c.T_cam2base, float))
         # Mapa w skali stolu ramienia stanowiska (dla SO-101 = domyslne konstruktora).
@@ -87,9 +94,10 @@ class TableMapper:
     def at_height(self, z: float) -> TableMapper:
         """Ta sama mapa na innej wysokosci - siatki rzutu liczone raz (kilkanascie ms na kamere)."""
         key = round(float(z), 6)
-        m = self._heights.get(key)
-        if m is None:
-            m = self._heights[key] = TableMapper(self.cameras, self.centre, self.side, self.n, z)
+        with self._heights_lock:
+            m = self._heights.get(key)
+            if m is None:
+                m = self._heights[key] = TableMapper(self.cameras, self.centre, self.side, self.n, z)
         return m
 
     def warp(self, frames: dict[str, np.ndarray]) -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -141,7 +149,7 @@ class CubeDetection:
     t: float = 0.0
 
 
-class CubeTracker:
+class ObjectTracker:
     """Kostka dla polityki - takze wtedy, gdy kamery jej nie widza.
 
     Przy chwytaniu szczeki zaslaniaja gorna sciane, a podniesiona kostka
@@ -225,6 +233,10 @@ class CubeTracker:
         self.still = still
         self.last: tuple[np.ndarray, np.ndarray] | None = None
         self.t_last = -np.inf
+        #: Capture time of the frames of the last accepted measurement (its `t`, or the update's
+        #: `now` when it has none); -inf before the first. `t_last` also moves on confirmations
+        #: and drops, so the age of what the cameras saw is `now - t_seen`.
+        self.t_seen = -np.inf
         self.in_hand: np.ndarray | None = None          # poza kostki w ukladzie TCP
         self.source = "brak"
         self._grip_prev: float | None = None
@@ -240,7 +252,7 @@ class CubeTracker:
         self._rejected: tuple[float, str] | None = None
 
     @classmethod
-    def for_spec(cls, spec: RobotSpec, **kw) -> CubeTracker:
+    def for_spec(cls, spec: RobotSpec, **kw) -> ObjectTracker:
         """Tracker z progami szczeki ramienia (`spec.jaw`, jednostki MJCF chwytaka); SO-101 = domyslne."""
         jaw = spec.jaw
         kw = dict(grip_margin=jaw.margin, block_margin=jaw.margin, open_q=jaw.open, still=jaw.still) | kw
@@ -326,6 +338,7 @@ class CubeTracker:
             self._witness.clear()
         if det is not None and not (holding and self.in_hand is not None):
             self.last, self.t_last, self.source = (det.pos, det.rot), now, "kamery"
+            self.t_seen = det.t if det.t else now
             self._rest_z, self._note, self._carried = float(det.pos[2]), "", False
             self._rejected = None
             if not holding:
@@ -386,6 +399,10 @@ class CubeTracker:
                 "otworz chwytak, odsun ramie (Dom) albo dodaj druga kamere")
 
 
+#: The tracker's old name, kept for code that imports it (so-arm101's lift test).
+CubeTracker = ObjectTracker
+
+
 @dataclass
 class CubeDetector:
     """Kostka po kolorze na mapie blatu. Progi HSV w konwencji OpenCV (H 0..180)."""
@@ -422,15 +439,23 @@ class CubeDetector:
         Tam kamera nie glosuje: ramie przed kostka to "nie wiem", nie "tu nie ma kostki".
         Bez tego ramie zaslaniajace kostke jednej kamerze gasilo ja w czesci wspolnej.
         """
+        votes = {name: (self.mask(warped) > 0, w) for name, (warped, w) in mapper.warp(frames).items()}
+        return self._top_from_votes(votes, mapper, occluders)
+
+    @staticmethod
+    def _top_from_votes(votes: dict[str, tuple[np.ndarray, np.ndarray]], mapper: TableMapper,
+                        occluders: dict[str, np.ndarray] | None = None) -> np.ndarray:
+        """The voting half of `top_mask`: {camera: (bool mask on the map, its weight)} in, the
+        points every camera that sees them marks as the object out (uint8, 255 = the top face)."""
         seen = np.zeros((mapper.n, mapper.n), np.int32)
         red = np.zeros((mapper.n, mapper.n), np.int32)
-        for name, (warped, w) in mapper.warp(frames).items():
+        for name, (on_map, w) in votes.items():
             valid = w > 1e-6
             if occluders and name in occluders:
                 occ = mapper.warp({name: occluders[name].astype(np.uint8) * 255})[name][0]
                 valid &= (occ[..., 0] if occ.ndim == 3 else occ) < 128
             seen += valid
-            red += valid & (self.mask(warped) > 0)
+            red += valid & on_map
         top = (seen > 0) & (red == seen)
         return cv2.morphologyEx(top.astype(np.uint8) * 255, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
@@ -447,9 +472,37 @@ class CubeDetector:
         `t` - chwila wykonania kadrow; trafia do detekcji, zeby konsument wiedzial,
         jak stara jest (dopasowanie trwa, a kadry bywaja sprzed kilku taktow).
         """
-        top = mapper if abs(mapper.table_z - 2 * self.cube_half) < 1e-6 else mapper.at_height(2 * self.cube_half)
-        init = self._from_mask(self.top_mask(frames, top, occluders), top)
+        top = self._top_mapper(mapper)
         masks = {n: self.mask(img) > 0 for n, img in frames.items() if n in mapper.cameras}
+        return self._fit(self.top_mask(frames, top, occluders), top, masks, mapper, occluders, t)
+
+    def fit_masks(self, masks: dict[str, np.ndarray], mapper: TableMapper,
+                  occluders: dict[str, np.ndarray] | None = None, t: float = 0.0) -> CubeDetection | None:
+        """`detect_frames` for masks someone else made: the same top-face start and silhouette fit.
+
+        `masks[camera]` is a bool image of that camera's raw frame, True on the cube. Each one is
+        warped onto the plane of the top face the way `top_mask` warps occluders, so only the
+        start differs from `detect_frames` (a warped mask instead of a mask of the warped colours).
+        """
+        top = self._top_mapper(mapper)
+        masks = {n: np.asarray(m, bool) for n, m in masks.items() if n in mapper.cameras}
+        votes = {}
+        for name, m in masks.items():
+            warped = top.warp({name: m.astype(np.uint8) * 255}).get(name)
+            if warped is not None:
+                on_map, w = warped
+                votes[name] = ((on_map[..., 0] if on_map.ndim == 3 else on_map) >= 128, w)
+        return self._fit(self._top_from_votes(votes, top, occluders), top, masks, mapper, occluders, t)
+
+    def _top_mapper(self, mapper: TableMapper) -> TableMapper:
+        """The map on the plane of the top face."""
+        z = 2 * self.cube_half
+        return mapper if abs(mapper.table_z - z) < 1e-6 else mapper.at_height(z)
+
+    def _fit(self, top_face: np.ndarray, top: TableMapper, masks: dict[str, np.ndarray], mapper: TableMapper,
+             occluders: dict[str, np.ndarray] | None, t: float) -> CubeDetection | None:
+        """From the top face on the map to the silhouette fit on the raw masks (`detect_frames`' tail)."""
+        init = self._from_mask(top_face, top)
         start = None if init is None else (init.pos[0], init.pos[1], np.arctan2(init.rot[1, 0], init.rot[0, 0]))
         if start is None:
             start = self._ray_guess(masks, mapper.cameras, occluders)

@@ -13,6 +13,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+import numpy as np
 import pytest
 from machinekind_twin_api.entry_points import DETECTORS
 
@@ -118,3 +119,93 @@ def swing(install_dist, monkeypatch):
     """The test strategy (`examples/strategies/swing`), installed."""
     install_example(install_dist, monkeypatch, SWING)
     return "swing"
+
+
+class CubeScene:
+    """A demo-like stand in the twin: two trusted sim cameras, a 3 cm cube free on the table, the arm.
+
+    The cameras' calibrated pose is their true pose (`T_cam2base = sim_pose`), so the perception
+    is judged against the physics. Built like so-arm101's `test_lift_from_cameras.py`.
+    """
+
+    #: Half the cube's edge [m].
+    HALF = 0.015
+    #: Camera names, intrinsics and eyes; both look at (0.2, 0, 0) on the table.
+    K = ((560.0, 0.0, 322.0), (0.0, 560.0, 236.0), (0.0, 0.0, 1.0))
+    EYES = (("a", (0.55, -0.45, 0.45)), ("b", (0.5, 0.5, 0.5)))
+
+    def __init__(self):
+        from machinekind_twin import scene as sc
+        from machinekind_twin.calib.simulate import look_at
+        from machinekind_twin.clock import VirtualClock
+        from machinekind_twin.runtime import Twin
+        from machinekind_twin.workspace import CameraRecord, Workspace
+
+        self.ws = Workspace(robot=BOT)
+        for name, eye in self.EYES:
+            T = look_at(eye, (0.2, 0.0, 0.0)).tolist()
+            self.ws.add_camera(CameraRecord(name, "sim", 640, 480, K=[list(r) for r in self.K], sim_pose=T,
+                                            T_cam2base=T, intrinsics_from="symulacja",
+                                            calibration={"trusted": True}))
+        self.cameras = tuple(name for name, _ in self.EYES)
+        self.twin = Twin(self.ws, clock=VirtualClock(t0=0.0))
+        h = self.HALF
+        self.twin.configure(objects=[sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0))],
+                            grasp_sensors=["cube"])
+        self.twin.connect("sim", threaded=False)
+
+    def place(self, x: float, y: float, yaw_deg: float = 0.0) -> None:
+        """The cube resting on the table at (x, y) in the base frame, turned by `yaw_deg` about z."""
+        import mujoco
+
+        with self.twin.lock:
+            s = self.twin.scene
+            m, d = s.model, s.data
+            b = m.body("cube").id
+            a = m.jnt_qposadr[m.body_jntadr[b]]
+            T = s.T_base2world
+            half = np.radians(yaw_deg) / 2
+            q_base = np.array([np.cos(half), 0.0, 0.0, np.sin(half)])
+            qb, qw = np.zeros(4), np.zeros(4)
+            mujoco.mju_mat2Quat(qb, T[:3, :3].ravel())
+            mujoco.mju_mulQuat(qw, qb, q_base)
+            d.qpos[a:a + 3] = T[:3, :3] @ np.array([x, y, self.HALF]) + T[:3, 3]
+            d.qpos[a + 3:a + 7] = qw
+            v = m.jnt_dofadr[m.body_jntadr[b]]
+            d.qvel[v:v + 6] = 0.0
+            mujoco.mj_forward(m, d)
+
+    def truth(self) -> tuple[np.ndarray, np.ndarray]:
+        """The cube's centre and rotation in the base frame, from the physics."""
+        from machinekind_twin.kinematics import inverse
+
+        with self.twin.lock:
+            s = self.twin.scene
+            b = s.model.body("cube").id
+            Ti = inverse(s.T_base2world)
+            return (Ti[:3, :3] @ s.data.xpos[b] + Ti[:3, 3],
+                    Ti[:3, :3] @ s.data.xmat[b].reshape(3, 3))
+
+    def frames(self) -> dict[str, np.ndarray]:
+        return {c: self.twin.render(c) for c in self.cameras}
+
+    def occluders(self) -> dict[str, np.ndarray]:
+        """The arm's pixels in each camera, widened by 5 px, as the panel computes them."""
+        from machinekind_twin.ui.watch import arm_mask
+
+        cams = self.cameras
+        return self.twin.render_with(lambda s: {c: arm_mask(s, c, dilate=5) for c in cams})
+
+    def close(self) -> None:
+        self.twin.close()
+
+
+@pytest.fixture
+def cube_scene():
+    """The `CubeScene` stand (render tests only: it needs MuJoCo and OpenGL)."""
+    pytest.importorskip("mujoco")
+    scene = CubeScene()
+    try:
+        yield scene
+    finally:
+        scene.close()
