@@ -1,9 +1,10 @@
 # machinekind-twin-api
 
 The contracts between the digital twin (`machinekind-twin`) and the packages that plug into it: a
-robot's own repository (its robot folder and hardware backend) and a control strategy (an RL
-policy, a planner, a VLA model). A plugin package depends on this package, never on the twin. It
-needs only numpy: no MuJoCo, viser, torch or OpenCV.
+robot's own repository (its robot folder and hardware backend), a control strategy (an RL
+policy, a planner, a VLA model) and an object detector (a colour threshold, a neural network, a
+vision-language model). A plugin package depends on this package, never on the twin. It needs
+only numpy: no MuJoCo, viser, torch or OpenCV.
 
 | Module | What is in it |
 |---|---|
@@ -28,6 +29,9 @@ myarm = "myarm.backend:create"                   # create(ctx: BackendContext) -
 
 [project.entry-points."machinekind_twin.strategies"]   # machinekind_twin_api.STRATEGIES
 swing = "swing:Swing"                            # a class following Strategy, built as cls(settings)
+
+[project.entry-points."machinekind_twin.detectors"]    # machinekind_twin_api.DETECTORS
+cube = "cube_detector:ColourCube"                # a class following Detector, built as cls(settings)
 ```
 
 * **Robot**: the entry point resolves to the path of a folder holding `robot.yaml` and the MJCF
@@ -41,9 +45,13 @@ swing = "swing:Swing"                            # a class following Strategy, b
   fields), creates the strategy as `cls(settings)`, or `cls()` without `settings`, and runs it:
   an `Observation` in every tick at `hz`, an `Action` (or any object with its attributes, or a
   plain mapping of joint targets) out, every target through the twin's safety supervisor.
+* **Detector**: settings as for a strategy, from the config section named like the detector. The
+  twin calls `detect` with a `DetectRequest` (frames by camera name) on a thread of its own and
+  gets `Detection`s back: what is seen where in each image, in pixels. The twin does the geometry
+  and the tracking, and strategies read the result as `Observation.objects[label]`.
 
-The twin re-exports the same classes (`machinekind_twin.strategy`, `machinekind_twin.backends.base`), so
-`machinekind_twin.strategy.Action is machinekind_twin_api.Action`.
+The twin re-exports the same classes (`machinekind_twin.strategy`, `machinekind_twin.backends.base`,
+`machinekind_twin.detection`), so `machinekind_twin.strategy.Action is machinekind_twin_api.Action`.
 
 ## A strategy
 
@@ -124,7 +132,71 @@ class MemoryArm:
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
 `efforts`, ...); `RobotBackend` documents what each one means. Complete, tested examples live in
-the twin's repository: `examples/robots/arm6`, `examples/robots/testbot` and `examples/strategies/swing`.
+the twin's repository: `examples/robots/arm6`, `examples/robots/testbot`, `examples/strategies/swing`
+and `examples/detectors/cube`.
+
+## A detector
+
+```python
+from dataclasses import dataclass
+
+import numpy as np
+
+from machinekind_twin_api import DetectRequest, Detection, Detector
+
+
+@dataclass
+class RedSettings:
+    #: How high above the table the red thing's centre is [m].
+    height_m: float = 0.0
+
+
+class Red(Detector[RedSettings]):
+    """Finds the red pixels in each frame and reports their centre as one object, "red"."""
+
+    settings = RedSettings
+    interval_s = 0.5
+
+    def __init__(self, settings: RedSettings):
+        self.height_m = settings.height_m
+
+    def detect(self, request: DetectRequest) -> list[Detection]:
+        found: list[Detection] = []
+        for name in request.frames:
+            frame = request.frames.get(name)
+            if frame is None:
+                continue
+            rgb = frame.image.astype(np.int16)
+            red = (rgb[..., 0] > 150) & (rgb[..., 1] < 80) & (rgb[..., 2] < 80)
+            if red.sum() < 20:
+                continue
+            v, u = np.nonzero(red)
+            found.append(Detection("red", name, (float(u.mean()), float(v.mean())),
+                                   height_m=self.height_m))
+        return found
+```
+
+A detector says what it sees and where in the image, nothing more: a label, the camera, a pixel
+and, when it can, a box, a silhouette `mask`, the object's `height_m` above the table or its
+`size_m`. It knows no intrinsics, no camera poses and no clock. The twin turns each pixel into a
+ray through the calibrated camera and places the object one of three ways: a box of `size_m`
+fitted to the masks of every camera, the point nearest to two or more cameras' rays, or one ray
+meeting the plane at the object's height. It then tracks each label and publishes it with `age_s`,
+the seconds since the frames were captured.
+
+`request.frames` lists the cameras offered in this call. Their frames are fetched only when read:
+`frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second,
+and `frames[name]` raises `KeyError` when it has none. Pixels follow OpenCV, in the frame's own
+resolution. Labels are compared stripped and lower-cased, one object per label.
+
+`Detector` supplies the defaults: `settings` None, `interval_s` 1.0 (the shortest time between the
+starts of two calls), `pixel_error_px` 3.0 (how far off the pixels may be; two cameras' rays of one
+label are paired only when they pass this close) and `start` and `stop` doing nothing. The twin
+reads `interval_s` and `pixel_error_px` from the instance, so a detector may set them from its
+settings. `start(info)` may raise to refuse; `stop(reason)` may come from another thread while
+`detect` runs, and a detector that blocks on a subprocess should then make `detect` return soon.
+A `detect` that raises is shown in the panel and called again later, after a longer wait each time.
+At runtime the twin does not need the base class: it requires `detect`.
 
 ## Evolving the contract
 

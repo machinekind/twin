@@ -22,8 +22,8 @@ devices and tasks.
   multiple cameras using a tagged card held in the gripper. Identify servo
   dynamics from recorded motion.
 - **Inspect perception and alignment.** View camera streams, a stitched tabletop
-  map and cube tracking. Compare real images with simulated overlays and detect
-  moved cameras.
+  map and the objects that detector plugins find and the twin tracks. Compare
+  real images with simulated overlays and detect moved cameras.
 - **Export for training.** Export the MuJoCo scene, assets, camera calibration and
   identified dynamics for external training tools. Training lives outside this
   repository; `soarm-lab` provides training and policy strategies for the SO-101.
@@ -63,17 +63,20 @@ settings, copy `configs/default.yaml` to `configs/local.yaml`, then launch with:
 uv run twin --config configs/local.yaml ui
 ```
 
-## Hardware and strategies
+## Hardware, strategies and detectors
 
-Hardware models, backends and control strategies are installed as separate Python
-packages and discovered through entry points.
+Hardware models, backends, control strategies and object detectors are installed
+as separate Python packages and discovered through entry points. A detector says
+what it sees where in each camera image; the twin places it in the robot's base
+frame, tracks it and hands it to strategies as `Observation.objects`.
 
 Existing robot integrations include the **SO-101** through
 [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) and the
 **Galaxea A1X** through
 [`galaxeo`](https://github.com/machinekind/galaxeo-manipulators).
 To add your own, start with the [example robot](examples/robots/arm6),
-[example strategy](examples/strategies/swing) and
+[example strategy](examples/strategies/swing),
+[example detector](examples/detectors/cube) and
 [plugin API](packages/machinekind_twin_api).
 
 ## Status and development

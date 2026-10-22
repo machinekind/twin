@@ -2,8 +2,10 @@
 
 `TwinConfig` holds what the twin itself reads: safety, which backend and port to use, and the
 joint table of the robot it runs. Every other top-level mapping in the file belongs to a backend
-plugin or a strategy of that name and is kept raw in `TwinConfig.sections`, keyed by the section
-name: a backend validates its own section, and `strategies` builds a strategy's settings from its.
+plugin, a strategy or a detector of that name and is kept raw in `TwinConfig.sections`, keyed by
+the section name: a backend validates its own section, and `strategies` and `detectors` build a
+strategy's or a detector's settings from the section of its name. The namespace is flat: a
+backend, a strategy and a detector of one name share one section.
 `from_mapping` is the strict dataclass builder the twin uses for its sections, and the backends
 still in this repository use it for theirs.
 """
@@ -94,7 +96,8 @@ class TwinConfig:
     robot: RobotConfig = field(default_factory=RobotConfig)
     #: The joint table of the robot the twin runs; `robots.robot_config` fills it from the description.
     joints: dict[str, JointConfig] = field(default_factory=dict)
-    #: Every other top-level mapping of the file, by name, unvalidated: a backend plugin or a strategy reads its own.
+    #: Every other top-level mapping of the file, by name, unvalidated: a backend plugin, a strategy
+    #: or a detector reads its own.
     sections: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def joint(self, name: str) -> JointConfig:

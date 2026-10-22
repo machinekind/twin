@@ -2,7 +2,8 @@
 
 Machinekind Twin builds digital twins of physical workstations, starting with
 robot arms. This guide covers the currently implemented arm workflows: simulation,
-cameras, calibration, perception, dynamics identification and control strategies.
+cameras, calibration, perception, object detectors, dynamics identification and
+control strategies.
 
 ## Status and package boundaries
 
@@ -12,8 +13,8 @@ Simulation results are not hardware accuracy guarantees.
 
 | Package | Responsibility |
 |---|---|
-| This repository (`machinekind-twin`) | Scene, calibration, perception, safety supervisor, strategy runner, UI and station export |
-| [`machinekind-twin-api`](../packages/machinekind_twin_api) | Plugin contracts; depends only on NumPy |
+| This repository (`machinekind-twin`) | Scene, calibration, perception, object tracking, safety supervisor, strategy and detector runners, UI and station export |
+| [`machinekind-twin-api`](../packages/machinekind_twin_api) | Plugin contracts for robots, backends, strategies and detectors; depends only on NumPy |
 | [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) | SO-101 model and hardware backends |
 | `soarm-lab` in [so-arm101](https://github.com/machinekind/so-arm101) | Training and policy/IK strategies |
 | [`galaxeo`](https://github.com/machinekind/galaxeo-manipulators) | A1X model, example workstation and CAN-FD backend |
@@ -37,7 +38,8 @@ uv run twin ui
 ```
 
 `uv sync` installs the twin, browser panel, local plugin API, example `arm6`
-robot, `swing` strategy and development tools. Open **http://localhost:8080**.
+robot, `swing` strategy, `cube` detector and development tools. Open
+**http://localhost:8080**.
 `twin check` reports runtime dependencies, installed robot models and USB-serial
 ports; it does not check a training environment.
 
@@ -81,7 +83,7 @@ see [the first-session procedure](#galaxea-a1x-first-session) below.
 |---|---|
 | `workspace/twin.json` | Your local robot selection, backend/port, table, scene look, cameras, calibration and measured dynamics; ignored by Git |
 | `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
-| `configs/local.yaml` | Your backend, strategy and safety settings; ignored by Git |
+| `configs/local.yaml` | Your backend, strategy, detector and safety settings; ignored by Git |
 | `examples/twin.sim.json` | Example workstation with two calibrated simulated cameras |
 | `assets/calib/` | Example lens intrinsics and distortion files |
 
@@ -108,9 +110,11 @@ uv run twin --config configs/local.yaml ui
 
 The twin reads `safety`, `robot` and optional `joints` overrides. Robot descriptions
 supply the joints, limits, gripper range and home pose. Other YAML sections belong
-to the backend or strategy with that name (`feetech:`, `a1x:`, `swing:`, etc.).
-Backends validate their settings; strategy sections prefill the panel's settings
-form and are validated before a run. The panel selects the connection backend
+to the backend, strategy or detector with that name (`feetech:`, `a1x:`, `swing:`,
+`cube:`, etc.). The namespace is flat, so a strategy and a detector of one name
+share a section; the panel warns about it. Backends validate their settings;
+strategy and detector sections prefill the panel's settings form and are
+validated before a start. The panel selects the connection backend
 and port; `--arm` reconnects using the workstation's saved selection at startup.
 With one USB-serial adapter plugged in, its current port takes precedence over
 a saved port. With multiple adapters, choose the correct one explicitly.
@@ -130,9 +134,10 @@ through the browser's animation loop, which can pause in a background tab.
 | **Ramię** (Arm) | Backend/port, **Połącz** (Connect), **UZBRÓJ** (Arm manual controls), joint sliders, 3D IK handle, **Dom** (Home), **Ustaw dom = tu** (Set home here) and **Rozłącz** (Disconnect) |
 | **Kamery** (Cameras) | Add USB or simulated cameras, preview streams, enable/remove cameras, move simulated cameras in 3D and inspect their status |
 | **Kalibracja** (Calibration) | Step 1: lens intrinsics; step 2: camera poses from a tagged card in the gripper; save/discard results and relocalize moved cameras |
-| **Mapa** (Map) | Stitched tabletop view, colored cube detection and a tag-on-table reach action |
+| **Mapa** (Map) | Stitched tabletop view, the objects tracked from running detectors and a tag-on-table reach action |
 | **Dynamika** (Dynamics) | Record supervised excitation, fit servo dynamics and save the result to the workstation |
-| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run |
+| **Detektory** (Detectors) | Choose an installed detector, edit settings, start it, stop each running one, see the tracked objects in text and 3D |
+| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run; the strategy gets the tracked objects in `Observation.objects` |
 | **Sim-Real** | Real image with simulated edges overlaid using the same camera pose and intrinsics |
 
 The guide (**Przewodnik**, **Teraz**) reports the next action from the current
@@ -295,7 +300,7 @@ For hardware:
 |---|---|
 | `twin check` | Runtime dependencies, robot models and USB-serial ports; no rendering |
 | `twin demo` | Example workstation; supports `--robot`, `--path` and explicit `--force` |
-| `twin ui` | Browser panel; supports `--workspace`, `--port` and `--arm` |
+| `twin ui` | Browser panel; supports `--workspace`, `--port`, `--arm` and `--detector NAME` |
 | `twin card --tag-mm 50` | Printable calibration card |
 | `twin board --square-mm 28` | Printable ChArUco board |
 | `twin calib-sim --n 5 --cameras 2` | Calibration against simulated ground truth; optional `--robot` |
@@ -337,14 +342,157 @@ The AprilTag detector corrects its half-pixel corner convention before solving
 poses. Use segmentation geometry to check projection accuracy; colored blob
 centres can be biased by lighting and shadows.
 
-The tabletop map warps frames from trusted cameras onto the table plane. Cube
-perception fits a tabletop cube's silhouette across camera views, masks arm
+The tabletop map warps frames from trusted cameras onto the table plane. It
+does not search for objects itself; it draws what the running detectors find
+(see [Detectors and objects](#detectors-and-objects)). For a detector that
+reports cube silhouettes, the twin fits the cube across camera views, masks arm
 occlusions as unknown and rejects poor fits. Near the gripper, a single view can
-confuse a held cube with one lying on the table; the tracker applies additional
-checks. When grasp evidence is present, the tracker follows the cube with the TCP
-using its last relative pose. Detections retain their capture timestamps, and
-stale or repeated frames do not extend tracking lifetime. This is a cube-specific
-perception workflow, not general object reconstruction.
+confuse a held object with one lying on the table; the tracker applies additional
+checks. When grasp evidence is present, the tracker follows the object with the
+TCP using its last relative pose. Detections retain their capture timestamps, and
+stale or repeated frames do not extend tracking lifetime.
+
+## Detectors and objects
+
+A detector is the fourth plugin kind, next to robots, backends and strategies.
+It is a class from an installed package, registered under the
+`machinekind_twin.detectors` entry point group. It looks at camera frames and
+says what it sees where **in the image**. The twin does the geometry and the
+tracking, and strategies read the result as `Observation.objects[label]`: an
+`ObjectPose` in the robot's base frame, with `source` and `age_s`. The contract
+lives in [`machinekind_twin_api.detector`](../packages/machinekind_twin_api);
+its README has a minimal detector.
+
+### The contract
+
+The twin calls `detect(request)` on a thread of its own, one call at a time,
+starting a call no sooner than `interval_s` after the previous one started.
+Nothing waits for a detector: a slow one only makes the poses older.
+
+`request.frames` maps camera names to frames. It offers the cameras the twin can
+place detections from now: enabled, with a calibrated pose that is trusted (or
+simulated), and fixed to the base. The set is read again for every call, so a
+camera calibrated during a run is offered from the next call. Frames are
+fetched only when read. Iterating and `len` list the offered cameras;
+`name in frames` and `frames.get(name)` fetch the frame and tell whether the
+camera has one younger than a second; `frames[name]` raises `KeyError` when it
+has none. Images are raw RGB, never undistorted.
+
+Each `Detection` carries a label, a camera and a pixel (OpenCV convention, in
+the frame's own resolution), and optionally a box, a confidence, a bool
+silhouette `mask`, the height above the table of the point the pixel marks
+(`height_m`), the object's size (`size_m`) and the pixel error of that one
+detection. Labels are compared stripped and lower-cased. The twin drops and
+counts malformed detections (unknown camera, a pixel outside the frame, a mask
+of the wrong shape); the Detektory tab shows the count.
+
+`start(info)` runs once before the first call and may raise to refuse.
+`stop(reason)` runs once after a successful start, possibly while `detect` runs
+on the detector thread; the twin discards a late answer. A `detect` that raises
+is shown in the panel and retried after a wait that doubles with each
+consecutive failure, up to 300 s.
+
+### Where an object is
+
+Per label, the twin keeps the surest detection from each camera and places the
+object one of three ways. The Detektory tab names the path in Polish:
+
+| Path | When | Result |
+|---|---|---|
+| silhouette (`sylwetka`) | every camera gave a mask of a full-size frame and `size_m` is a cube | the cube silhouette fit across all masks: position, yaw and the fit's IoU as confidence |
+| triangulation (`triangulacja`) | two or more cameras, rays that pass within the detectors' pixel error scaled by depth | the point nearest to all rays, in front of every camera and between 3 cm below and 60 cm above the table |
+| one ray (`promien`) | one camera, or rays that disagree | the surest detection's ray meeting the plane at `height_m`, else half of `size_m`, else the table top |
+
+The geometry uses the calibrated camera poses with lens distortion, never the
+simulator's ground-truth poses, so simulated perception tests the calibration.
+A detection's `t` is the capture time of the oldest frame it used.
+
+### The example cube detector
+
+`examples/detectors/cube` (`machinekind-twin-cube`, installed by `uv sync`)
+replaces the Map tab's old built-in cube search. It thresholds one colour in
+HSV with the same ranges and opening the old `CubeDetector.mask` used, and
+answers per camera with the largest blob's centroid, box and mask and the
+cube's size. The twin then runs the old multi-view silhouette fit on those
+masks. The only difference from the old pipeline is the start of the fit: the
+mask is computed on the raw frame and then warped to the table, instead of
+thresholding the warped colour map. In simulation both land within 2 mm and
+7 degrees of the true pose. Settings: `color` (red, green, blue or yellow),
+`size_m`, `label` (default `cube`, the key soarm-lab's policy reads),
+`min_area_px` and `interval_s` (default 0.33 s, the old Map tab rate).
+
+### Tracking, `source` and `age_s`
+
+Each label gets the twin's cube tracker (`perception.ObjectTracker`), which also
+follows an object held in the gripper. A measurement is fed to it once, and
+only when its confidence is above 0.4. A track with no measurement for
+`hold_s` is dropped: 6 s, or three times the detector's interval plus its
+latency when that is longer, so a slow detector's object survives between
+answers.
+
+`age_s` is the time since the frames the pose was measured from were captured,
+and 0 while the object follows the jaws. `source` says what the pose rests on:
+
+- `kamery`: the cameras saw it recently. It holds while the detector's latest
+  answer contains the label and `age_s <= fresh_s`, where `fresh_s` is twice
+  the detector's interval, kept within 0.5 to 1.0 s. The cube detector at
+  0.33 s keeps `kamery` within 0.66 s of capture.
+- `ostatnie widziane`: the last known pose, older than `fresh_s`, or the label
+  is missing from the latest answer. A measurement that is already older than
+  `fresh_s` when it arrives is published like this at once. A detector that
+  answers in tens of seconds, such as a language model, therefore never
+  publishes `kamery`, and a strategy never mistakes its pose for a live one.
+  Read `age_s` to decide how old is too old.
+- `w dloni`: the gripper holds it and the pose follows the TCP. The closed jaw
+  is the hardware's limit on a connected arm, so an empty closed gripper is
+  not taken for a grasp.
+- Annotated variants such as `ostatnie widziane (upuszczona)` come from the
+  tracker unchanged.
+
+The tracker's thresholds on the jaw (its `still` test, 0.02 rad) are per
+update, not per second. They therefore depend on who steps the tracks and how
+often, as they depended on the policy's rate before.
+
+### Threads and who steps the tracks
+
+| Thread | Rate | Does |
+|---|---|---|
+| `detektor:<name>`, one per running detector | `interval_s`, longer after failures | reads frames, calls `detect`, places the answer, hands it to the tracks |
+| `detektor-start:<name>`, short-lived | once per start | creates the detector, calls its `start`, starts its thread |
+| strategy runner | the strategy's `hz` | reads `Observation.objects`, which steps the tracks |
+| panel loop | 5 Hz | steps the tracks when nobody did for 0.15 s, then draws them |
+
+There is no tracker thread. Whoever reads the objects steps the tracks, at
+most once per 10 ms. With a strategy running, the tracks move at its `hz`;
+without one, the panel steps them at 5 Hz, so the Detektory tab, the 3D
+markers and `w dloni` keep working while the operator drives the arm from the
+panel. Reading objects never waits for a detector.
+
+### Running detectors
+
+Start a detector in the **Detektory** tab. Its form is prefilled from the
+config section of its name. Starting a running detector again restarts it with
+the new settings. Several detectors may run at once; when two of them report
+the same label, the measurement with the newer capture time wins. STOP does not
+stop detectors, because they never move the arm; closing the panel does.
+
+`twin ui --detector cube` starts the named detector at panel start with its
+config section's settings, as **Uruchom detektor** would. The flag repeats for
+several detectors. A detector that fails to start is logged and shown in its
+row; the panel runs on.
+
+Loader messages and panel labels are Polish, like the rest of the panel. A
+plugin's own exception texts are English, as the plugin wrote them, and reach
+the panel verbatim after a Polish label such as `blad:`. This mix is
+intentional.
+
+### Limits
+
+- Only cameras fixed to the base are used. A camera on the arm is never
+  offered to a detector.
+- A point detection (triangulation or one ray) has no orientation; its
+  rotation is the identity. Only the cube silhouette fit gives yaw.
+- One object per label. Two red pens need two labels.
 
 ## Cameras on the arm
 
