@@ -4,6 +4,9 @@ Each question runs the CLI headless as a subprocess, on the subscription it is l
 package never talks to a model API itself and holds no API key.
 
 * `cli`: running the CLIs, the login check, one question per CLI;
+* `images`: the JPEGs a question sends and whether the scene moved since the last one;
+* `prompt`: the answer schema and the prompt;
+* `answer`: the model's answer checked and scaled back to Detections in frame pixels;
 * `smoke`: one real question per CLI, by hand (`python -m machinekind_twin_llm.smoke`).
 """
 

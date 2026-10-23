@@ -31,21 +31,10 @@ import numpy as np
 
 from . import cli
 from .images import SentImage
+from .prompt import SCHEMA
 
-_NUM = {"type": "number"}
-#: The detector's answer shape, strict enough for codex's structured output.
-SMOKE_SCHEMA: dict[str, Any] = {
-    "type": "object", "additionalProperties": False, "required": ["objects"],
-    "properties": {"objects": {"type": "array", "items": {
-        "type": "object", "additionalProperties": False,
-        "required": ["label", "camera", "u", "v", "box", "confidence"],
-        "properties": {
-            "label": {"type": "string"}, "camera": {"type": "string"}, "u": _NUM, "v": _NUM,
-            "box": {"anyOf": [{"type": "object", "additionalProperties": False,
-                               "required": ["u0", "v0", "u1", "v1"],
-                               "properties": {"u0": _NUM, "v0": _NUM, "u1": _NUM, "v1": _NUM}},
-                              {"type": "null"}]},
-            "confidence": _NUM}}}}}
+#: The detector's answer shape (strict, so codex accepts it too).
+SMOKE_SCHEMA: dict[str, Any] = SCHEMA
 
 #: Synthetic photos: (camera, drawing, expected centre (u, v)).
 _SIZE = (640, 480)
