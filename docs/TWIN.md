@@ -15,6 +15,7 @@ Simulation results are not hardware accuracy guarantees.
 |---|---|
 | This repository (`machinekind-twin`) | Scene, calibration, perception, object tracking, safety supervisor, strategy and detector runners, UI and station export |
 | [`machinekind-twin-api`](../packages/machinekind_twin_api) | Plugin contracts for robots, backends, strategies and detectors; depends only on NumPy |
+| [`machinekind-twin-llm`](../packages/machinekind_twin_llm) | Detector that asks a vision model through the `claude` or `codex` CLI; depends on the API package, NumPy and OpenCV |
 | [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) | SO-101 model and hardware backends |
 | `soarm-lab` in [so-arm101](https://github.com/machinekind/so-arm101) | Training and policy/IK strategies |
 | [`galaxeo`](https://github.com/machinekind/galaxeo-manipulators) | A1X model, example workstation and CAN-FD backend |
@@ -452,7 +453,9 @@ and it takes these Polish values:
   latest answer lacks the label. A measurement that is already older than
   `fresh_s` when it arrives gets this value at once. A detector that answers in
   tens of seconds, such as a language model, therefore never publishes
-  `kamery`. A strategy reads `age_s` to decide whether a pose is too old.
+  `kamery`. The one exception is the LLM detector with `reuse_if_still` on,
+  which is off by default (see "LLM detector"). A strategy reads `age_s` to
+  decide whether a pose is too old.
 - `w dloni` (in hand) means the gripper holds the object and the pose follows
   the TCP. On a connected arm, the closed jaw position comes from the
   hardware's limit, so an empty closed gripper does not count as a grasp.
@@ -503,6 +506,130 @@ panel shows a plugin's exception text verbatim after a Polish label such as
 - An object placed by triangulation or by one ray has no orientation, so its
   rotation is the identity. Only the cube silhouette fit gives yaw.
 - Each label holds one object. Two red pens need two labels.
+
+## LLM detector
+
+[`machinekind-twin-llm`](../packages/machinekind_twin_llm), installed by
+`uv sync`, registers the detector `llm`. Each call sends the cameras' frames to
+a vision model and reads back what is where in each frame. The model sits
+behind a CLI installed on the machine, `codex` (Codex CLI) or `claude` (Claude
+Code), and answers on the subscription that CLI is logged in with. The package
+holds no API key, uses no model SDK and opens no network connection itself:
+every question is one headless run of the CLI as a subprocess. Its README has
+the exact command lines and a smoke check to run after a CLI update.
+
+The panel never starts it by itself. Start it in the **Detektory** tab or with
+`twin ui --detector llm`, after filling an `llm:` section in the config
+(`configs/default.yaml` has a commented example).
+
+### Subscription and login check
+
+`start` finds the CLI (`executable`, else `cli` on PATH) and asks it how it is
+logged in (`claude auth status`, `codex login status`), with a 15 s timeout. It
+refuses a CLI that is not logged in and one that uses an API key. Any other
+login passes and is named in the log: a claude.ai login, a `claude setup-token`
+token (`CLAUDE_CODE_OAUTH_TOKEN`), a ChatGPT login for codex. The refusal shows
+in the detector's row and the detector does not start. The check runs on the
+start thread, so the panel never waits for it.
+
+Every question runs the CLI with API keys, base-URL overrides and the variables
+of a calling Claude Code or cmux session removed from its environment, so it
+cannot fall back to a key or route through a proxy. When `cli` on PATH is a
+terminal wrapper (a cmux shim), point `executable` at the real binary, e.g.
+`~/.local/bin/codex`.
+
+### Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `cli` | `codex` | `codex` or `claude` |
+| `model` | `gpt-6-astra` | the model as the CLI names it (`sonnet`, `claude-opus-5-5`, ...); `""` = the CLI's default. A `gpt-` model needs codex, a Claude model needs claude |
+| `effort` | `low` | `low`, `medium`, `high`, `xhigh` or `max`; `""` = the CLI's default |
+| `objects` | `""` | labels to look for, comma-separated (`red pen, cube`); `""` = every movable object, labelled by the model in short lowercase English |
+| `cameras` | `""` | cameras to send, comma-separated; `""` = every camera offered in each call |
+| `prompt` | `""` | extra instructions appended to the built-in prompt |
+| `interval_s` | 10 | shortest time between the starts of two questions [s], at least 2 |
+| `timeout_s` | 120 | the CLI's process group is killed after this [s], 5 to 900 |
+| `max_side_px` | 1280 | long edge of the images sent [px]; answers are scaled back to each frame |
+| `pixel_error_px` | 25 | how far off the model's pixels may be, in the sent image's pixels |
+| `reuse_if_still` | false | repeat the last answer while the whole-frame mean grey difference of each camera's 64x48 thumbnail stays under 3 levels; a small object moving on an otherwise still table may not trip it. Off by default, see "Freshness" |
+| `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
+| `min_confidence` | 0.3 | answers the model is less sure of are dropped |
+| `executable` | `""` | the CLI binary; `""` = `cli` on PATH |
+| `claude_images` | `stream` | claude only: `stream` sends images inline, `read` has the model open temp files with its Read tool (slower) |
+
+A value the detector cannot work with refuses it when it is created, with a
+message naming the setting. With `objects` set, an answer is kept only when its
+label is one of them or ends with one ("the red pen" counts as `red pen`), so
+label drift does not create stray tracks.
+
+### Cost and rate
+
+Every question counts against the CLI subscription's usage limits. At the
+default 10 s, a scene that keeps changing costs up to 360 questions an hour.
+Five things bound it:
+
+- one question in flight at a time;
+- `interval_s`, at least 2 s;
+- `reuse_if_still`, off by default: while the whole-frame mean grey difference
+  of each sent camera's 64x48 thumbnail stays under 3 levels and the last answer
+  is younger than 60 s, the detector repeats it without asking. A small object
+  moving on an otherwise still table may not trip it;
+- `max_calls_per_hour`: a call over the cap fails with "hourly cap of N
+  questions reached";
+- backoff: a failed question (a timeout, a non-zero exit, a subscription limit,
+  an answer that is not the JSON asked for) is retried after a wait that
+  doubles with each consecutive failure, up to 300 s.
+
+A subscription limit shows in the row as
+`blad: CliError: subscription limit: ...`, with the time of the next try.
+
+### Latency and accuracy
+
+In the smoke run (two 640x480 images, effort `low`) one question took 4 s with
+claude and 9 s with codex. More cameras, larger images and higher effort take
+longer. Strategies never wait for an answer; the poses only get older.
+
+The answer has a pixel and a box per camera, but no mask, size or height. The
+twin therefore places an object by triangulation when two cameras see it and
+on the table top otherwise, with no orientation. Each detection's pixel error
+is `pixel_error_px` scaled from the sent image to its frame, which is what lets
+two cameras' rays pair. Expect pixel errors of tens of pixels: at 0.5 m with a
+focal length of 600 to 900 px that is 1 to 3 cm. The positions are good for
+"which object and roughly where", not for grasping a pen.
+
+### Freshness: `ostatnie widziane`
+
+An answer arrives seconds after its frames were captured, more than the 1 s
+`fresh_s` allows. The LLM's objects therefore publish `ostatnie widziane`, not
+`kamery`, with `age_s` counting from the capture. A track survives between
+answers, because `hold_s` is three times the interval plus the latency: 57 s
+at a 10 s interval and a 9 s answer. soarm-lab's policy, which waits for
+`kamery`, never takes such a pose for a live one. A strategy that wants the
+LLM's objects reads `age_s` and decides how old is too old. `w dloni` still
+works: the tracker follows an object the gripper closes on.
+
+Known defect, and the reason `reuse_if_still` is off by default: an answer it
+repeats returns at once, and the twin stamps it with the capture time of the
+frames just read. It then publishes `kamery` for up to a second, at the
+position the model saw up to 60 s earlier. The thumbnail check can miss a
+small object, so a 3 cm cube that was moved or taken away still counts as
+unchanged and is published at its old place. Leave `reuse_if_still` off while
+a strategy acts on `kamery`.
+
+### Privacy
+
+The frames leave the machine. They go to OpenAI (codex) or Anthropic (claude)
+under the terms of the subscription the CLI is logged in with, as JPEGs of
+at most `max_side_px`. Each question's files live in a temporary directory
+that is removed afterwards. With `MACHINEKIND_TWIN_LLM_KEEP=<dir>` set, a copy
+of the images, the prompt and the CLI's output goes to `<dir>` first.
+
+The tests never ask a model. One real question runs only on request:
+
+```bash
+MACHINEKIND_TWIN_LLM=codex uv run pytest -q packages/machinekind_twin_llm/tests/test_llm_real.py
+```
 
 ## Cameras on the arm
 

@@ -52,8 +52,10 @@ class LlmSettings:
     max_side_px: int = 1280
     #: How far off the model's pixels may be, in the SENT image's pixels; scaled to each frame.
     pixel_error_px: float = 25.0
-    #: Skip the question and repeat the last answer while no camera's image changed noticeably.
-    reuse_if_still: bool = True
+    #: Skip the question and repeat the last answer while each camera's 64x48 grey thumbnail
+    #: differs from the last question's by under 3 levels on average. Off by default: a small
+    #: object moving on a still table may not trip it, and the repeat publishes "kamery".
+    reuse_if_still: bool = False
     #: Ask at most this many times per hour; 0 = no cap.
     max_calls_per_hour: int = 0
     #: Drop answers the model is less sure of than this.

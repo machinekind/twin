@@ -275,7 +275,7 @@ def test_no_frame_at_all_raises(fake: Fake):
 
 
 def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
-    det = started(fake)
+    det = started(fake, reuse_if_still=True)
 
     first = det.detect(request(0))
     again = det.detect(request(1))
@@ -290,7 +290,7 @@ def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
 
 
 def test_an_old_answer_is_not_repeated(fake: Fake):
-    det = started(fake)
+    det = started(fake, reuse_if_still=True)
     det.detect(request(0))
     det._last_t -= llm_detector.REUSE_MAX_AGE_S + 1.0
 
@@ -311,7 +311,7 @@ def test_without_reuse_every_call_asks(fake: Fake):
 
 
 def test_the_hourly_cap_refuses_the_next_question(fake: Fake):
-    det = started(fake, max_calls_per_hour=1)
+    det = started(fake, max_calls_per_hour=1, reuse_if_still=True)
     det.detect(request(0))
 
     with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):

@@ -70,6 +70,8 @@ as separate Python packages and discovered through entry points. A detector
 reports what it sees in each camera image and where. The twin places each object
 in the robot's base frame, tracks it and passes it to strategies in
 `Observation.objects`.
+The [LLM detector](packages/machinekind_twin_llm) asks a vision model through the
+`claude` or `codex` CLI, on the subscription that CLI is logged in with.
 
 Existing robot integrations include the **SO-101** through
 [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) and the
