@@ -19,6 +19,9 @@ dependencies = [
     "opencv-contrib-python>=4.8",
 ]
 
+[project.entry-points."machinekind_twin.detectors"]
+llm = "machinekind_twin_llm:LlmDetector"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
 
