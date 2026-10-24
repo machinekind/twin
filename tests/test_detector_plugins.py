@@ -3,7 +3,8 @@
 Most detectors here are inline fakes that `install_detector` installs the way pip would. Their
 dist names start apart from the strategy tests' ones: a module once imported stays in
 `sys.modules` for the whole run. The example cube detector (`examples/detectors/cube`) is
-installed by the `cube_example` fixture.
+installed by the `cube_example` fixture, the LLM detector (`packages/machinekind_twin_llm`) by
+the `llm_package` fixture.
 """
 
 from __future__ import annotations
@@ -350,3 +351,51 @@ def test_the_example_cube_package_never_imports_the_twin():
 
             for module in modules:
                 assert module.split(".")[0] != "machinekind_twin", f"{path}: {module}"
+
+
+# --------------------------------------------------------------------------- the LLM detector
+
+
+def test_the_llm_detector_is_listed_through_its_entry_point(llm_package):
+    assert llm_package in detectors()
+    assert detectors()[llm_package].value == "machinekind_twin_llm:LlmDetector"
+
+    plugin = load_detector(llm_package)
+
+    assert plugin.name == "llm"
+    assert plugin.cls.__name__ == "LlmDetector"
+    assert plugin.source == "machinekind-twin-llm 0.1.0 (machinekind_twin_llm:LlmDetector)"
+
+
+def test_the_llm_settings_draw_as_str_float_int_and_bool(llm_package):
+    fields = {field.name: field for field in load_detector(llm_package).fields}
+
+    assert {name: field.kind for name, field in fields.items()} == {
+        "cli": str, "model": str, "effort": str, "objects": str, "cameras": str, "prompt": str,
+        "interval_s": float, "timeout_s": float, "max_side_px": int, "pixel_error_px": float,
+        "reuse_if_still": bool, "max_calls_per_hour": int, "min_confidence": float, "executable": str,
+        "claude_images": str,
+    }
+    assert not any(field.required for field in fields.values())
+    assert fields["cli"].default == "codex"
+    assert fields["interval_s"].default == 10.0
+
+
+def test_the_llm_config_section_prefills_the_detector(tmp_path, monkeypatch, llm_package):
+    config = tmp_path / "local.yaml"
+    config.write_text("llm:\n  cli: claude\n  model: sonnet\n  objects: red pen, cube\n  interval_s: 20\n",
+                      encoding="utf-8")
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(config))
+
+    raw = config_section(llm_package)
+    detector = load_detector(llm_package).create(raw)
+
+    assert raw == {"cli": "claude", "model": "sonnet", "objects": "red pen, cube", "interval_s": 20}
+    assert detector.config.cli == "claude"
+    assert detector.config.model == "sonnet"
+    assert detector.interval_s == 20.0
+
+
+def test_the_llm_detector_refuses_settings_it_cannot_work_with(llm_package):
+    with pytest.raises(ValueError, match="is an OpenAI model and cli is claude"):
+        load_detector(llm_package).create({"cli": "claude"})

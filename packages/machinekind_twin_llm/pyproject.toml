@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "machinekind-twin-llm"
+version = "0.1.0"
+description = "The digital twin's LLM detector: a vision model behind the locally installed claude or codex CLI, on your subscription"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+# No HTTP client and no model SDK: every question goes through the CLI's own login.
+dependencies = [
+    "machinekind-twin-api>=0.1.2,<0.2",
+    "numpy>=1.24",
+    # contrib (a superset of opencv-python) keeps existing environments on one OpenCV package:
+    # two OpenCV wheels write the same cv2/ directory and overwrite each other.
+    "opencv-contrib-python>=4.8",
+]
+
+[project.entry-points."machinekind_twin.detectors"]
+llm = "machinekind_twin_llm:LlmDetector"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["machinekind_twin_llm*"]
+
+[tool.setuptools.package-data]
+machinekind_twin_llm = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["llm: asks a real model through the claude or codex CLI; skipped unless MACHINEKIND_TWIN_LLM is set"]

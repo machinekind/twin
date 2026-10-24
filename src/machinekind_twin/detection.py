@@ -77,6 +77,8 @@ class DetectorStatus:
     running: bool = False
     #: `detector.start(info)` is running (a login check may take seconds).
     starting: bool = False
+    #: Clock time the current call began; None when no call is in flight.
+    call_started: float | None = None
     #: `detect` calls since start, failed ones included.
     calls: int = 0
     #: Consecutive failed calls; 0 after a success.
@@ -248,6 +250,7 @@ class DetectorRunner:
         self._stop.set()
         with self._lock:
             run, self._run = self._run, None
+            self.status.call_started = None
             if run is None:
                 if not self._used:
                     self._used = True
@@ -295,18 +298,27 @@ class DetectorRunner:
     def _step(self, run: _Run) -> float | None:
         """One `detect` call and its feed. None when the run ended meanwhile."""
         clock = self._clock
-        t0 = clock()
+        with self._lock:
+            if run is not self._run:
+                return None
+            t0 = clock()
+            self.status.call_started = t0
+            step = self.status.calls
         try:
             names = tuple(self._cameras())
         except Exception:
             logger.exception("listing the cameras for detector %r failed", self.name)
             names = ()
         frames = _LazyRequestFrames(names, self._frame, self.MAX_FRAME_AGE_S, clock)
+        with self._lock:
+            if run is not self._run:
+                return None
+            self.status.cameras = names
         error = ""
         bad = 0
         dets: list[Detection] | None
         try:
-            answer = list(self.detector.detect(DetectRequest(frames=frames, step=self.status.calls)))
+            answer = list(self.detector.detect(DetectRequest(frames=frames, step=step)))
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:300]
             dets = None
@@ -322,8 +334,8 @@ class DetectorRunner:
             if run is not self._run:
                 return None                       # stopped meanwhile: the answer is discarded
             st = self.status
+            st.call_started = None
             st.calls += 1
-            st.cameras = names
             st.last_latency_s = latency
             st.last_done = clock()
             if dets is None:
