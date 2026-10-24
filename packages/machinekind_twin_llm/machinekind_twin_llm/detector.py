@@ -3,8 +3,9 @@ what is where, in each frame's pixels.
 
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory,
-unless the hourly cap is reached. `stop`
-cancels a running question: the CLI's process group is killed within 0.2 s.
+unless no camera's image changed since the last question (`reuse_if_still`: the last answer is
+repeated) or the hourly cap is reached. `stop` cancels a running question: the CLI's process group
+is killed within 0.2 s.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from machinekind_twin_api import Detection, Detector, DetectorInfo, DetectReques
 
 from . import cli
 from .answer import parse_answer
-from .images import encode
+from .images import encode, thumbnail, unchanged
 from .prompt import SCHEMA, build_prompt
 from .settings import LlmSettings, names, validate
 
@@ -53,6 +54,11 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
+        #: The still check's reference: thumbnails of the frames the last question was asked on,
+        #: that question's answer and when it was asked.
+        self._thumbs: dict[str, np.ndarray] = {}
+        self._last: list[Detection] = []
+        self._last_t = -float("inf")
 
     def start(self, info: DetectorInfo) -> None:
         config = self.config
@@ -77,6 +83,7 @@ class LlmDetector(Detector[LlmSettings]):
         self._work = Path(tempfile.mkdtemp(prefix="twin-llm-"))
         self._cancel = threading.Event()
         self._calls.clear()
+        self._thumbs, self._last, self._last_t = {}, [], -float("inf")
 
     def stop(self, reason: str) -> None:
         self._cancel.set()
@@ -99,6 +106,11 @@ class LlmDetector(Detector[LlmSettings]):
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
         now = time.monotonic()
+        thumbs = {name: thumbnail(image) for name, image in frames} if config.reuse_if_still else {}
+        if thumbs and now - self._last_t < config.reuse_max_age_s and unchanged(self._thumbs, thumbs):
+            logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", now - self._last_t)
+            return list(self._last)
+
         if config.max_calls_per_hour:
             while self._calls and now - self._calls[0] >= CALL_WINDOW_S:
                 self._calls.popleft()
@@ -128,4 +140,6 @@ class LlmDetector(Detector[LlmSettings]):
         if self._cancel.is_set():
             raise cli.CliCancelled("stopped")
 
-        return parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
+        dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
+        self._thumbs, self._last, self._last_t = thumbs, dets, now
+        return list(dets)

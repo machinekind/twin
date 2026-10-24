@@ -133,6 +133,8 @@ def test_the_defaults_are_valid_and_set_the_contract_attributes():
     ({"max_side_px": 255}, r"max_side_px must be in \[256, 4096\]"),
     ({"max_side_px": 4097}, r"max_side_px must be in \[256, 4096\]"),
     ({"pixel_error_px": -1.0}, r"pixel_error_px must be in \[0, 500\]"),
+    ({"reuse_max_age_s": -1.0}, r"reuse_max_age_s must be in \[0, 3600\]"),
+    ({"reuse_max_age_s": float("inf")}, r"reuse_max_age_s must be in \[0, 3600\]"),
     ({"pixel_error_px": 501.0}, r"pixel_error_px must be in \[0, 500\]"),
     ({"min_confidence": -0.1}, r"min_confidence must be in \[0, 1\]"),
     ({"min_confidence": 1.1}, r"min_confidence must be in \[0, 1\]"),
@@ -289,15 +291,48 @@ def test_no_frame_at_all_raises(fake: Fake):
     det.stop("test")
 
 
-def test_reuse_if_still_is_refused_before_start(fake: Fake, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(LlmDetector, "start", lambda *_: pytest.fail("must refuse before startup"))
-
-    with pytest.raises(NotImplementedError, match="reuse_if_still is not implemented"):
-        started(fake, reuse_if_still=True)
-
-
-def test_every_call_asks_even_with_identical_frames(fake: Fake):
+def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
     det = started(fake)
+
+    first = det.detect(request(0))
+    again = det.detect(request(1))
+
+    assert len(fake.runs()) == 1
+    assert again == first
+
+    det.detect(request(2, top=image(shade=20), side=image()))
+
+    assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_a_small_object_moving_in_one_camera_asks_again(fake: Fake):
+    det = started(fake)
+    before = image()
+    before[600:624, 100:124] = (40, 40, 40)
+    moved = image()
+    moved[600:624, 140:164] = (40, 40, 40)
+
+    det.detect(request(0, top=before, side=image()))
+    det.detect(request(1, top=moved, side=image()))
+
+    assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_an_answer_older_than_reuse_max_age_s_is_not_repeated(fake: Fake):
+    det = started(fake, reuse_max_age_s=30.0)
+    det.detect(request(0))
+    det._last_t -= 31.0
+
+    det.detect(request(1))
+
+    assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_without_reuse_every_call_asks(fake: Fake):
+    det = started(fake, reuse_if_still=False)
 
     det.detect(request(0))
     det.detect(request(1))
@@ -306,8 +341,19 @@ def test_every_call_asks_even_with_identical_frames(fake: Fake):
     det.stop("test")
 
 
-def test_the_hourly_cap_refuses_the_next_question(fake: Fake):
+def test_a_repeat_is_not_a_question_for_the_hourly_cap(fake: Fake):
     det = started(fake, max_calls_per_hour=1)
+    det.detect(request(0))
+
+    assert det.detect(request(1)) == det.detect(request(2))
+    with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):
+        det.detect(request(3, top=image(shade=20), side=image()))
+    assert len(fake.runs()) == 1
+    det.stop("test")
+
+
+def test_the_hourly_cap_refuses_the_next_question(fake: Fake):
+    det = started(fake, max_calls_per_hour=1, reuse_if_still=False)
     det.detect(request(0))
 
     with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):
