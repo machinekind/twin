@@ -66,7 +66,8 @@ class DetectRequest:
     #: Arm masks by camera name, made only when read: a bool image of that camera's frame shape,
     #: True where the robot arm hides the scene at the capture time of the frame in `frames`.
     #: Reading a camera's mask reads its frame first. `get(name)` is None when the twin has no mask
-    #: for that camera. Iteration may list cameras without one. Empty by default.
+    #: for that camera. Iteration and `len` may list cameras without one, and `[name]` raises
+    #: KeyError for those, so read masks with `get`. Empty by default.
     arm_masks: Mapping[str, np.ndarray] = field(default_factory=dict, compare=False)
 
 

@@ -8,9 +8,13 @@ The check compares grey thumbnails with their mean brightness matched, so auto e
 count. A pixel's change must also exceed a share of its contrast to the mean, so a gain change does
 not count on a high-contrast scene. What decides is the largest blob of changed pixels, not their
 total: an object moving changes one patch, while noise, banding and a flickering camera change
-isolated pixels or small groups. Pixels the arm hides in the newer frames are left out.
-`arm_thumbnail` shrinks the twin's arm mask to the thumbnail and widens it over the arm's edge and
-shadow.
+isolated pixels or small groups.
+
+The arm moving is no change either. `arm_thumbnail` shrinks the twin's arm mask to the thumbnail
+and widens it over the arm's edge and shadow. `known_scene` keeps, per pixel, the value of the last
+frame that showed it, so pixels the arm hides keep what lay there before. The place the arm leaves
+then counts as changed only when it no longer shows what it showed before the arm came, or when no
+frame showed it yet.
 """
 
 from __future__ import annotations
@@ -23,8 +27,8 @@ import cv2
 import numpy as np
 
 __all__ = ["ARM_DILATE_PX", "BLOB_JOIN_PX", "CHANGED_LEVELS", "GAIN_TOLERANCE", "JPEG_QUALITY",
-           "STILL_MAX_BLOB_PX", "THUMB_LONG_PX", "SentImage", "arm_thumbnail", "encode", "largest_change_px",
-           "thumbnail", "unchanged"]
+           "STILL_MAX_BLOB_PX", "THUMB_LONG_PX", "SentImage", "arm_thumbnail", "encode", "known_scene",
+           "largest_change_px", "thumbnail", "unchanged"]
 
 #: JPEG quality of the images sent.
 JPEG_QUALITY = 90
@@ -45,9 +49,10 @@ GAIN_TOLERANCE = 0.2
 BLOB_JOIN_PX = 5
 #: Largest blob of changed thumbnail pixels a camera may have while its image counts as unchanged.
 #: Measured at 320 to 1920 px wide frames on a 100..140 table: a 3 cm cube 80 levels darker at
-#: 1 m moving 1 cm makes at least 39, leaving at least 50; a blinking 2x2 thumbnail pixel LED makes
-#: at most 13; noise of +-20 levels per pixel, a +12 step and a 1.15 gain at most 5.
-#: A cube 55 levels or less from the table can move 1 cm along an axis unseen (14).
+#: 1 m moving 1 cm makes at least 39, leaving at least 49; a blinking 2x2 thumbnail pixel LED makes
+#: at most 14; noise of +-20 levels per pixel, a +12 step and a 1.15 gain make none. Every 1 cm
+#: move along an axis counts once the cube is 39 to 64 levels from the table, depending on the
+#: frame width and where its edges fall on the thumbnail pixels.
 STILL_MAX_BLOB_PX = 24
 #: The arm mask is widened by this much on the thumbnail [px], over the arm's edge and shadow:
 #: about 2.3 cm at 1 m.
@@ -128,25 +133,42 @@ def arm_thumbnail(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
     return cv2.dilate(small.astype(np.uint8), kernel) > 0
 
 
-def largest_change_px(before: np.ndarray, now: np.ndarray, ignore: np.ndarray | None = None) -> int:
-    """The area of the largest blob of changed pixels between two thumbnails of one camera, pixels
-    in `ignore` left out [thumbnail px].
+def known_scene(thumb: np.ndarray, arm: np.ndarray | None, previous: np.ndarray | None) -> np.ndarray:
+    """What one camera's frames have shown so far: `thumb` where the thumbnail-sized arm mask `arm`
+    leaves the scene visible, and the camera's `previous` known scene where the arm hides it.
 
-    The mean brightness of the pixels left in is matched first. A pixel counts as changed when it
-    moved by `CHANGED_LEVELS` plus `GAIN_TOLERANCE` of its smaller distance from the mean. Changed
-    pixels up to `BLOB_JOIN_PX` apart along both axes form one blob, and only changed pixels count
-    towards its area. Thumbnails of different shapes, and an image with nothing left in, count as
-    changed throughout.
+    NaN marks a pixel no frame showed yet: under the arm when `previous` is None or of another
+    shape. Without a mask the result is `thumb`.
+    """
+    if arm is None:
+        return thumb
+    behind = previous if previous is not None and previous.shape == thumb.shape else np.nan
+    return np.where(arm, behind, thumb).astype(np.float32)
+
+
+def largest_change_px(before: np.ndarray, now: np.ndarray) -> int:
+    """The area of the largest blob of changed pixels between two thumbnails of one camera
+    [thumbnail px].
+
+    A NaN pixel is one no frame showed yet (`known_scene`). One that is NaN in `now` is left out;
+    one that is NaN only in `before` counts as changed. The mean brightness of the pixels both show
+    is matched first. Such a pixel counts as changed when it moved by `CHANGED_LEVELS` plus
+    `GAIN_TOLERANCE` of its smaller distance from the mean. Changed pixels up to `BLOB_JOIN_PX` apart
+    along both axes form one blob, and only changed pixels count towards its area. Thumbnails of
+    different shapes, and an image with no pixel shown, count as changed throughout.
     """
     if before.shape != now.shape:
         return int(now.size)
-    keep = np.ones(now.shape, bool) if ignore is None else ~ignore
-    if not keep.any():
+    shown = ~np.isnan(now)
+    if not shown.any():
         return int(now.size)
-    db = before - float(before[keep].mean())
-    dn = now - float(now[keep].mean())
-    limit = CHANGED_LEVELS + GAIN_TOLERANCE * np.minimum(np.abs(db), np.abs(dn))
-    changed = keep & (np.abs(dn - db) >= limit)
+    both = shown & ~np.isnan(before)
+    changed = shown & ~both
+    if both.any():
+        db = np.where(both, before - float(before[both].mean()), 0.0)
+        dn = np.where(both, now - float(now[both].mean()), 0.0)
+        limit = CHANGED_LEVELS + GAIN_TOLERANCE * np.minimum(np.abs(db), np.abs(dn))
+        changed |= both & (np.abs(dn - db) >= limit)
     if not changed.any():
         return 0
     join = np.ones((BLOB_JOIN_PX, BLOB_JOIN_PX), np.uint8)
@@ -155,10 +177,9 @@ def largest_change_px(before: np.ndarray, now: np.ndarray, ignore: np.ndarray | 
 
 
 def unchanged(before: Mapping[str, np.ndarray], now: Mapping[str, np.ndarray],
-              ignore: Mapping[str, np.ndarray] | None = None, max_blob_px: int = STILL_MAX_BLOB_PX) -> bool:
+              max_blob_px: int = STILL_MAX_BLOB_PX) -> bool:
     """True when both hold thumbnails of the same cameras and no camera's largest blob of changed
-    pixels, those in its `ignore` mask left out, exceeds `max_blob_px`."""
+    pixels exceeds `max_blob_px`."""
     if not before or set(before) != set(now):
         return False
-    masks = ignore or {}
-    return all(largest_change_px(before[name], now[name], masks.get(name)) <= max_blob_px for name in now)
+    return all(largest_change_px(before[name], now[name]) <= max_blob_px for name in now)

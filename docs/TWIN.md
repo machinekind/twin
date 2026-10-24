@@ -385,9 +385,12 @@ raw RGB and never undistorted.
 A mask is a bool image of the frame's shape, True where the robot arm hides
 the scene. The twin makes a mask only when it is read, for the capture time of
 that camera's frame in the same request, so reading it reads the frame.
-`arm_masks.get(name)` is None when the twin has no mask for that camera. A
-request built without masks holds an empty mapping, so a detector that ignores
-the arm needs no change.
+`arm_masks.get(name)` is None when the twin has no mask for that camera.
+Iterating and `len` list the offered cameras, like `frames`, and
+`arm_masks[name]` raises `KeyError` for a camera without a mask. Read masks one
+camera at a time with `get`: `items()` or `dict(arm_masks)` fail when one
+camera has none, and render every camera's mask. A request built without masks
+holds an empty mapping, so a detector that ignores the arm needs no change.
 
 Each `Detection` carries a label, a camera and a pixel. The pixel follows the
 OpenCV convention in the frame's own resolution. A detection may also carry a
@@ -564,7 +567,7 @@ terminal wrapper (a cmux shim), point `executable` at the real binary, e.g.
 | `timeout_s` | 120 | the CLI's process group is killed after this [s], 5 to 900 |
 | `max_side_px` | 1280 | long edge of the images sent [px]; answers are scaled back to each frame |
 | `pixel_error_px` | 25 | how far off the model's pixels may be, in the sent image's pixels |
-| `reuse_if_still` | true | repeat the last answer without asking while no camera's image changed since the frames it was given, or for up to two calls while the scene still moves; pixels the arm hides in the new frames are left out, see "Cost and rate" |
+| `reuse_if_still` | true | repeat the last answer without asking while no camera's image changed since the frames it was given, or for up to two calls while the scene still moves; the arm moving over the table does not count, see "Cost and rate" |
 | `reuse_max_age_s` | 60 | ask again anyway once the last answer is this old [s], 0 to 3600 |
 | `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
 | `min_confidence` | 0.3 | answers the model is less sure of are dropped |
@@ -594,21 +597,24 @@ a still one 60. Five things bound it:
   at 1 m. The image counts as changed when its largest blob exceeds 24
   thumbnail pixels. Changed pixels more than 5 px from any other stay blobs of
   one. A 3 cm cube at 1 m through a 60 degree lens makes a blob of at least 39
-  when it moves by a centimetre and at least 50 when it leaves. A blinking 2x2
-  pixel LED makes at most 13. Sensor noise of ±20 levels, a +12 exposure step
-  and a 1.15 gain make at most 5. A cube 55 grey levels or less from the table
-  can move a centimetre unseen. Frames that changed since the last question and
-  also since the previous call show a scene that still moves. Such a call
-  repeats the answer too, for at most two calls in a row, and the detector asks
-  once two calls agree. A call that asks, even in vain, starts the count again.
-  Pixels the twin's arm masks hide in the new frames
-  (`DetectRequest.arm_masks`) do not count. Each mask is widened by 5 thumbnail
-  pixels, about 2.3 cm at 1 m, over the arm's edge and shadow. The arm reaching
-  further over the table therefore asks nothing. The place the arm leaves does
-  count: the earlier frames show the arm there, not what lies there now. The
-  arm moving away thus waits like any motion and is asked about once it stops.
-  Once the last answer is `reuse_max_age_s` old, the next call asks whatever the
-  frames show;
+  when it moves by a centimetre and at least 49 when it leaves. A blinking 2x2
+  pixel LED makes at most 14. Sensor noise of ±20 levels, a +12 exposure step
+  and a 1.15 gain make none. A cube needs 39 to 64 grey levels of contrast to
+  the table, depending on the frame width and on where its edges fall on the
+  thumbnail's pixels, before every centimetre it moves along an axis counts.
+  With less it can move a centimetre unseen. Frames that changed since the last
+  question and also since the previous call show a scene that still moves. Such
+  a call repeats the answer too, for at most two calls in a row, and the
+  detector asks once two calls agree. An answer starts the count again. A
+  failed question does not, so the backoff below still applies while the scene
+  moves. Where the twin's arm masks (`DetectRequest.arm_masks`) hide the scene,
+  each camera keeps what its earlier frames showed there. Each mask is widened
+  by 5 thumbnail pixels, about 2.3 cm at 1 m, over the arm's edge and shadow.
+  The arm moving over the table therefore asks nothing. The place the arm
+  leaves counts as changed when it no longer shows what it showed before the
+  arm came, such as an object put down, or when no frame showed it yet, as
+  after a start with the arm in view. Once the last answer is `reuse_max_age_s`
+  old, the next call asks whatever the frames show;
 - `max_calls_per_hour`: a call over the cap fails with "hourly cap of N
   questions reached";
 - backoff: a failed question (a timeout, a non-zero exit, a subscription limit,

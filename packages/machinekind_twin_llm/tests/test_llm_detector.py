@@ -437,20 +437,22 @@ def test_a_still_frame_restarts_the_count_of_repeats_for_motion(fake: Fake):
     det.stop("test")
 
 
-def test_a_failed_question_restarts_the_settle_wait(fake: Fake, monkeypatch: pytest.MonkeyPatch):
+def test_a_failed_question_while_the_scene_moves_is_asked_again_on_the_next_call(fake: Fake,
+                                                                                  monkeypatch: pytest.MonkeyPatch):
     det = started(fake)
-    first = det.detect(request(0, top=with_dark_box(100), side=image()))
+    det.detect(request(0, top=with_dark_box(100), side=image()))
     det.detect(request(1, top=with_dark_box(160), side=image()))
     det.detect(request(2, top=with_dark_box(220), side=image()))
     monkeypatch.setenv("FAKE_MODE", "exit1")
     with pytest.raises(Exception, match="boom"):
         det.detect(request(3, top=with_dark_box(280), side=image()))
+    with pytest.raises(Exception, match="boom"):
+        det.detect(request(4, top=with_dark_box(340), side=image()))
     monkeypatch.setenv("FAKE_MODE", "ok")
 
-    waiting = det.detect(request(4, top=with_dark_box(340), side=image()))
+    det.detect(request(5, top=with_dark_box(400), side=image()))
 
-    assert len(fake.runs()) == 2
-    assert waiting == first
+    assert len(fake.runs()) == 4
     det.stop("test")
 
 
@@ -472,32 +474,50 @@ def test_the_arm_reaching_further_under_its_mask_repeats_the_answer(fake: Fake):
     unmasked.stop("test")
 
 
-def test_the_place_the_arm_leaves_waits_like_any_motion_and_is_then_asked_about(fake: Fake):
-    det = started(fake)
+def arm_calls(fake: Fake, det: LlmDetector, columns: tuple[int, ...], start: int = 0) -> list[int]:
+    """Calls `det` with the arm at each of `columns` in turn, nothing else moving; the questions
+    asked so far after each call."""
     counts = []
-
-    for k, x in enumerate((100, 350, 600, 600)):
+    for k, x in enumerate(columns, start):
         img, mask = with_arm(x)
         det.detect(request(k, arms={"top": mask}, top=img, side=image()))
         counts.append(len(fake.runs()))
-
-    assert counts == [1, 1, 1, 2]
-    det.stop("test")
+    return counts
 
 
-def test_an_object_the_arm_uncovers_is_asked_about(fake: Fake):
+def test_the_arm_leaving_a_place_no_frame_showed_yet_is_asked_about_once_it_settles(fake: Fake):
     det = started(fake)
-    holding, arm = with_arm(200)
-    released = image()
-    released[400:440, 220:260] = (40, 40, 40)
-    no_arm = {"top": np.zeros((H, W), bool)}
 
-    det.detect(request(0, arms={"top": arm}, top=holding, side=image()))
-    det.detect(request(1, arms=no_arm, top=released, side=image()))
-    det.detect(request(2, arms=no_arm, top=released, side=image()))
-
-    assert len(fake.runs()) == 2
+    assert arm_calls(fake, det, (100, 600, 600)) == [1, 1, 2]
     det.stop("test")
+
+
+def test_the_arm_moving_over_places_seen_before_repeats_the_answer(fake: Fake):
+    det = started(fake)
+    asked = arm_calls(fake, det, (600, 100, 100))[-1]
+
+    assert arm_calls(fake, det, (350, 600, 600, 100, 350, 600), start=3) == [asked] * 6
+    det.stop("test")
+
+
+def test_an_object_the_arm_uncovers_is_asked_about_and_bare_table_is_not(fake: Fake):
+    counts = []
+    for left in (True, False):
+        det = started(fake)
+        holding, arm = with_arm(200)
+        released = image()
+        if left:
+            released[400:440, 220:260] = (40, 40, 40)
+        no_arm = {"top": np.zeros((H, W), bool)}
+        det.detect(request(0, arms=no_arm, top=image(), side=image()))
+        det.detect(request(1, arms={"top": arm}, top=holding, side=image()))
+        before = len(fake.runs())
+        det.detect(request(2, arms=no_arm, top=released, side=image()))
+        det.detect(request(3, arms=no_arm, top=released, side=image()))
+        counts.append(len(fake.runs()) - before)
+        det.stop("test")
+
+    assert counts == [1, 0]
 
 
 def test_a_mask_of_the_wrong_shape_is_ignored(fake: Fake):

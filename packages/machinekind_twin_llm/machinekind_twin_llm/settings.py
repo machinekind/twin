@@ -61,8 +61,8 @@ class LlmSettings:
     #: How far off the model's pixels may be, in the SENT image's pixels; scaled to each frame.
     pixel_error_px: float = 25.0
     #: Repeat the last answer, without asking, while no camera's image changed since the frames it
-    #: was given, and for up to two calls while the scene still moves; pixels the arm hides in the
-    #: new frames are left out (see `images`).
+    #: was given, and for up to two calls while the scene still moves; the arm moving over the table
+    #: is no change (see `images`).
     reuse_if_still: bool = True
     #: Ask again anyway once the last answer is this old [s], so a wrong answer does not stick.
     reuse_max_age_s: float = 60.0
