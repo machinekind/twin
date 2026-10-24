@@ -152,7 +152,8 @@ def plugin_values(plugin: PluginClass, section: Mapping[str, Any], assignments: 
     """A plugin's settings as the panel builds them: the config section, `KEY=VALUE` texts over it,
     every default the two leave out. A broken section fails even when an assignment would override it.
 
-    A missing required key fails only at `plugin.create`, as in the panel.
+    A required setting left blank counts as missing, and a missing one fails only at `plugin.create`,
+    as in the panel.
     """
     plugin.check(section)
     fields = {setting.name: setting for setting in plugin.fields}
@@ -165,7 +166,8 @@ def plugin_values(plugin: PluginClass, section: Mapping[str, Any], assignments: 
         setting = fields.get(key)
         overrides[key] = value if setting is None else setting_from_text(setting, value, plugin.name)
 
-    given = plugin.check({**section, **overrides})
+    given = {key: value for key, value in plugin.check({**section, **overrides}).items()
+             if not (fields[key].required and value == "")}
     return {setting.name: setting.default for setting in plugin.fields if not setting.required} | given
 
 

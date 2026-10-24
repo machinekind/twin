@@ -612,6 +612,7 @@ REFUSALS = {
                                        "swing.amplitude: potrzeba float"),
     "an unknown setting": (["swing", "--set", "joint=j1", "--set", "nope=1"], "Nieznane klucze w sekcji swing"),
     "a missing setting": (["swing"], "Brak kluczy w sekcji swing"),
+    "a blank required setting": (["swing", "--set", "joint="], "Brak kluczy w sekcji swing"),
     "a broken config section that --set overrides": (["swing", "--config", "{broken}", "--set", "amplitude=5"],
                                                      "swing.amplitude: potrzeba float"),
     "a setting without a value": (["swing", "--set", "joint=j1", "--set", "amplitude"], "KLUCZ=WARTOSC"),

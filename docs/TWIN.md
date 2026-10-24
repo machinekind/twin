@@ -596,8 +596,9 @@ The strategy's settings are built as in the Strategie tab. The config section
 named like the strategy comes first, then each `--set KEY=VALUE`, then the
 default of every field neither gives. A value given with `--set` is converted
 by its field's type, and a switch takes `true` or `false`. A broken section is
-refused even when `--set` would override the broken key. Every episode creates
-a new instance of the strategy.
+refused even when `--set` would override the broken key. A required setting
+left blank counts as missing, as in the panel. Every episode creates a new
+instance of the strategy.
 
 ### One episode
 
