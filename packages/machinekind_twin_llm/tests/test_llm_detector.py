@@ -93,8 +93,25 @@ def image(shade: int = 120) -> np.ndarray:
     return img
 
 
-def request(step: int = 0, **offered: np.ndarray | None) -> DetectRequest:
-    return DetectRequest(frames=Frames(offered or {"top": image(), "side": image()}), step=step)
+def request(step: int = 0, arms: Mapping[str, np.ndarray] | None = None, **offered: np.ndarray | None) -> DetectRequest:
+    return DetectRequest(frames=Frames(offered or {"top": image(), "side": image()}), step=step,
+                         arm_masks={} if arms is None else arms)
+
+
+def with_dark_box(x: int) -> np.ndarray:
+    """`image()` with a dark 40 px box at column `x`: frames that differ for each `x` 60 px apart."""
+    img = image()
+    img[600:640, x:x + 40] = (40, 40, 40)
+    return img
+
+
+def with_arm(x: int) -> tuple[np.ndarray, np.ndarray]:
+    """`image()` with a dark arm bar 80 px wide from the top edge at column `x`, and its bool mask."""
+    mask = np.zeros((H, W), bool)
+    mask[:500, x:x + 80] = True
+    img = image()
+    img[mask] = (30, 30, 30)
+    return img, mask
 
 
 def settings(fake: Fake, **kw: Any) -> LlmSettings:
@@ -301,12 +318,13 @@ def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
     assert again == first
 
     det.detect(request(2, top=image(shade=20), side=image()))
+    det.detect(request(3, top=image(shade=20), side=image()))
 
     assert len(fake.runs()) == 2
     det.stop("test")
 
 
-def test_a_small_object_moving_in_one_camera_asks_again(fake: Fake):
+def test_a_small_object_moving_in_one_camera_asks_again_once_it_settles(fake: Fake):
     det = started(fake)
     before = image()
     before[600:624, 100:124] = (40, 40, 40)
@@ -315,6 +333,7 @@ def test_a_small_object_moving_in_one_camera_asks_again(fake: Fake):
 
     det.detect(request(0, top=before, side=image()))
     det.detect(request(1, top=moved, side=image()))
+    det.detect(request(2, top=moved, side=image()))
 
     assert len(fake.runs()) == 2
     det.stop("test")
@@ -346,10 +365,134 @@ def test_a_repeat_is_not_a_question_for_the_hourly_cap(fake: Fake):
     det.detect(request(0))
 
     assert det.detect(request(1)) == det.detect(request(2))
+    det.detect(request(3, top=image(shade=20), side=image()))
     with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):
-        det.detect(request(3, top=image(shade=20), side=image()))
+        det.detect(request(4, top=image(shade=20), side=image()))
     assert len(fake.runs()) == 1
     det.stop("test")
+
+
+def test_a_change_waits_one_call_and_asks_once_two_calls_agree(fake: Fake):
+    det = started(fake)
+    first = det.detect(request(0, top=with_dark_box(100), side=image()))
+
+    waiting = det.detect(request(1, top=with_dark_box(400), side=image()))
+
+    assert len(fake.runs()) == 1
+    assert waiting == first
+
+    det.detect(request(2, top=with_dark_box(400), side=image()))
+
+    assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_a_scene_that_keeps_moving_is_asked_after_two_repeats(fake: Fake):
+    det = started(fake)
+    counts = []
+
+    for k in range(7):
+        det.detect(request(k, top=with_dark_box(100 + 60 * k), side=image()))
+        counts.append(len(fake.runs()))
+
+    assert counts == [1, 1, 1, 2, 2, 2, 3]
+    det.stop("test")
+
+
+def test_the_first_call_asks_while_the_scene_moves(fake: Fake):
+    det = started(fake)
+
+    found = det.detect(request(0, top=with_dark_box(100), side=image()))
+
+    assert len(fake.runs()) == 1
+    assert {d.label for d in found} == {"red pen"}
+    det.stop("test")
+
+
+def test_without_an_answer_yet_a_moving_scene_is_asked_about(fake: Fake, monkeypatch: pytest.MonkeyPatch):
+    det = started(fake)
+    monkeypatch.setenv("FAKE_MODE", "exit1")
+    with pytest.raises(Exception, match="boom"):
+        det.detect(request(0, top=with_dark_box(100), side=image()))
+    monkeypatch.setenv("FAKE_MODE", "ok")
+
+    found = det.detect(request(1, top=with_dark_box(400), side=image()))
+
+    assert len(fake.runs()) == 2
+    assert {d.label for d in found} == {"red pen"}
+    det.stop("test")
+
+
+def test_an_old_answer_is_asked_again_while_the_scene_moves(fake: Fake):
+    det = started(fake)
+    det.detect(request(0, top=with_dark_box(100), side=image()))
+    det._last_t -= det.config.reuse_max_age_s + 1
+
+    det.detect(request(1, top=with_dark_box(400), side=image()))
+
+    assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_the_arm_moving_under_its_mask_repeats_the_answer(fake: Fake):
+    places = [with_arm(x) for x in (200, 450, 700, 700)]
+    masked = started(fake)
+
+    for k, (img, mask) in enumerate(places):
+        masked.detect(request(k, arms={"top": mask}, top=img, side=image()))
+
+    assert len(fake.runs()) == 1
+    masked.stop("test")
+
+    unmasked = started(fake)
+    for k, (img, _) in enumerate(places):
+        unmasked.detect(request(k, top=img, side=image()))
+
+    assert len(fake.runs()) == 1 + 2
+    unmasked.stop("test")
+
+
+def test_a_mask_of_the_wrong_shape_is_ignored(fake: Fake):
+    det = started(fake)
+
+    for k, x in enumerate((200, 450, 450)):
+        img, mask = with_arm(x)
+        det.detect(request(k, arms={"top": np.pad(mask, ((0, 0), (0, 1)))}, top=img, side=image()))
+
+    assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+class RecordingMasks(Mapping[str, np.ndarray]):
+    """Arm masks for every camera that record which cameras were read and hold no mask."""
+
+    def __init__(self) -> None:
+        self.read: list[str] = []
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        self.read.append(name)
+        raise KeyError(name)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(("top", "side"))
+
+    def __len__(self) -> int:
+        return 2
+
+
+def test_arm_masks_are_read_only_for_the_cameras_sent_and_only_with_reuse(fake: Fake):
+    top_only = RecordingMasks()
+    det = started(fake, cameras="top")
+    det.detect(request(0, arms=top_only))
+    det.stop("test")
+
+    no_reuse = RecordingMasks()
+    det = started(fake, reuse_if_still=False)
+    det.detect(request(0, arms=no_reuse))
+    det.stop("test")
+
+    assert top_only.read == ["top"]
+    assert no_reuse.read == []
 
 
 def test_the_hourly_cap_refuses_the_next_question(fake: Fake):

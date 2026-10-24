@@ -216,6 +216,12 @@ captured.
 frame's own resolution. Labels are compared after stripping whitespace and lower-casing, and each
 label holds one object.
 
+`request.arm_masks` holds, per camera, a bool mask of the frame's shape, True where the robot arm
+hides the scene. The twin makes a mask only when it is read, for the capture time of that camera's
+frame in the same request; reading it reads the frame. `arm_masks.get(name)` is None when the twin
+has no mask for that camera. A detector that ignores the arm needs no change: the field defaults
+to an empty mapping. Added in 0.1.3.
+
 `Detector` supplies these defaults:
 
 * `settings` is None.

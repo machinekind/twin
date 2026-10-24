@@ -12,7 +12,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 # No HTTP client and no model SDK: every question goes through the CLI's own login.
 dependencies = [
-    "machinekind-twin-api>=0.1.2,<0.2",
+    "machinekind-twin-api>=0.1.3,<0.2",
     "numpy>=1.24",
     # contrib (a superset of opencv-python) keeps existing environments on one OpenCV package:
     # two OpenCV wheels write the same cv2/ directory and overwrite each other.

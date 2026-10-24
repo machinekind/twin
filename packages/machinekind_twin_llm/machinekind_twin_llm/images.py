@@ -1,8 +1,16 @@
 """The images a question sends, and the still check that spares a question.
 
-`encode` writes one JPEG per camera, scaled down from the camera's frame. `thumbnail`, `changed_pixels`
-and `unchanged` tell whether a camera's image changed since the frames the last question was asked
-on, so the detector can repeat that answer instead of asking again.
+`encode` writes one JPEG per camera, scaled down from the camera's frame. `thumbnail`,
+`largest_change_px` and `unchanged` tell whether a camera's image changed since other frames, so
+the detector can repeat an answer instead of asking again.
+
+The check compares grey thumbnails with their mean brightness matched, so auto exposure does not
+count. A pixel's change must also exceed a share of its contrast to the mean, so a gain change does
+not count on a high-contrast scene. What decides is the largest patch of changed pixels, not their
+total: an object moving makes one patch, while noise, banding and a flickering camera scatter
+single pixels. The arm moving is no change either. `arm_thumbnail` shrinks the twin's arm mask to
+the thumbnail and widens it over the arm's edge and shadow. `union_masks` joins the masks of both
+frames compared, so neither the place the arm left nor the one it entered counts.
 """
 
 from __future__ import annotations
@@ -14,8 +22,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-__all__ = ["CHANGED_LEVELS", "JPEG_QUALITY", "STILL_MAX_CHANGED_PX", "THUMB_LONG_PX", "SentImage",
-           "changed_pixels", "encode", "thumbnail", "unchanged"]
+__all__ = ["ARM_DILATE_PX", "BLOB_JOIN_PX", "CHANGED_LEVELS", "GAIN_TOLERANCE", "JPEG_QUALITY",
+           "STILL_MAX_BLOB_PX", "THUMB_LONG_PX", "SentImage", "arm_thumbnail", "encode", "largest_change_px",
+           "thumbnail", "unchanged", "union_masks"]
 
 #: JPEG quality of the images sent.
 JPEG_QUALITY = 90
@@ -26,9 +35,22 @@ THUMB_LONG_PX = 256
 #: image's mean shift (auto exposure) taken out [grey levels, 0..255]. Area downscaling and the
 #: 3x3 blur leave sensor noise at about one level, so 16 is far above it.
 CHANGED_LEVELS = 16.0
-#: Changed thumbnail pixels a camera may have while its image still counts as unchanged. A
-#: blinking LED or a flickering pixel stays under it; a 3 cm cube at 1 m moving or leaving is over.
-STILL_MAX_CHANGED_PX = 15
+#: Share of a pixel's distance from the mean that its change may add on top of `CHANGED_LEVELS`,
+#: so a gain change does not count. A 1.15 gain on a scene of a 160 table, dark cables and white
+#: paper makes blobs of 250 to 2200 thumbnail pixels without it and 0 with it.
+GAIN_TOLERANCE = 0.2
+#: Changed pixels this close to each other [thumbnail px] belong to one blob, so the leading and
+#: trailing edges of a moving object count together.
+BLOB_JOIN_PX = 2
+#: Largest blob of changed thumbnail pixels a camera may have while its image counts as unchanged.
+#: Measured at 320 to 1920 px wide frames on a 100..140 table: a 3 cm cube 80 levels darker at
+#: 1 m moving 1 cm makes at least 39, leaving at least 50; a blinking 2x2 thumbnail pixel LED makes
+#: at most 13; noise of +-20 levels per pixel, a +12 step and a 1.15 gain at most 5.
+#: A cube 55 levels or less from the table can move 1 cm along an axis unseen (14).
+STILL_MAX_BLOB_PX = 24
+#: The arm mask is widened by this much on the thumbnail [px], over the arm's edge and shadow:
+#: about 2.3 cm at 1 m.
+ARM_DILATE_PX = 5
 
 
 @dataclass(frozen=True)
@@ -76,31 +98,76 @@ def encode(call: Path, frames: Sequence[tuple[str, np.ndarray]], max_side_px: in
     return sent
 
 
+def _thumb_size(h: int, w: int) -> tuple[int, int]:
+    """(width, height) of the thumbnail of an h x w frame."""
+    scale = THUMB_LONG_PX / max(w, h)
+    if scale >= 1.0:
+        return w, h
+    return max(1, round(w * scale)), max(1, round(h * scale))
+
+
 def thumbnail(image: np.ndarray) -> np.ndarray:
-    """A small grey copy of an RGB frame for `changed_pixels`: long edge `THUMB_LONG_PX` (a smaller
-    frame keeps its size), blurred 3x3, float32."""
+    """A small grey copy of an RGB frame for `largest_change_px`: long edge `THUMB_LONG_PX` (a
+    smaller frame keeps its size), blurred 3x3, float32."""
     grey = cv2.cvtColor(_rgb(image), cv2.COLOR_RGB2GRAY)
     h, w = grey.shape
-    scale = THUMB_LONG_PX / max(w, h)
-    if scale < 1.0:
-        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    size = _thumb_size(h, w)
+    if size != (w, h):
         grey = cv2.resize(grey, size, interpolation=cv2.INTER_AREA)
     return cv2.GaussianBlur(grey.astype(np.float32), (3, 3), 0)
 
 
-def changed_pixels(before: np.ndarray, now: np.ndarray) -> int:
-    """How many pixels of one camera's thumbnail moved by `CHANGED_LEVELS` or more, after the two
-    images' mean brightness is matched. Thumbnails of different shapes count as changed throughout."""
+def arm_thumbnail(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
+    """A bool arm mask of a frame shrunk to the thumbnail `shape`, True wherever the arm covers part
+    of a thumbnail pixel, then widened by `ARM_DILATE_PX`."""
+    h, w = shape[:2]
+    small = cv2.resize(np.asarray(mask, bool).astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_AREA) > 0
+    side = 2 * ARM_DILATE_PX + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (side, side))
+    return cv2.dilate(small.astype(np.uint8), kernel) > 0
+
+
+def union_masks(a: Mapping[str, np.ndarray], b: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Per camera, the pixels either mapping masks. A camera in one mapping only keeps its mask;
+    masks of different shapes keep `b`'s."""
+    union = {**a, **b}
+    for name in set(a) & set(b):
+        if a[name].shape == b[name].shape:
+            union[name] = a[name] | b[name]
+    return union
+
+
+def largest_change_px(before: np.ndarray, now: np.ndarray, ignore: np.ndarray | None = None) -> int:
+    """The area of the largest blob of changed pixels between two thumbnails of one camera, pixels
+    in `ignore` left out [thumbnail px].
+
+    The mean brightness of the pixels left in is matched first. A pixel counts as changed when it
+    moved by `CHANGED_LEVELS` plus `GAIN_TOLERANCE` of its smaller distance from the mean. Changed
+    pixels within `BLOB_JOIN_PX` of each other form one blob, and only changed pixels count towards
+    its area. Thumbnails of different shapes, and an image with nothing left in, count as changed
+    throughout.
+    """
     if before.shape != now.shape:
         return int(now.size)
-    diff = np.abs((now - float(now.mean())) - (before - float(before.mean())))
-    return int(np.count_nonzero(diff >= CHANGED_LEVELS))
+    keep = np.ones(now.shape, bool) if ignore is None else ~ignore
+    if not keep.any():
+        return int(now.size)
+    db = before - float(before[keep].mean())
+    dn = now - float(now[keep].mean())
+    limit = CHANGED_LEVELS + GAIN_TOLERANCE * np.minimum(np.abs(db), np.abs(dn))
+    changed = keep & (np.abs(dn - db) >= limit)
+    if not changed.any():
+        return 0
+    join = np.ones((2 * BLOB_JOIN_PX + 1,) * 2, np.uint8)
+    labels = cv2.connectedComponents(cv2.dilate(changed.astype(np.uint8), join), connectivity=8)[1]
+    return int(np.bincount(labels[changed].astype(np.intp)).max())
 
 
 def unchanged(before: Mapping[str, np.ndarray], now: Mapping[str, np.ndarray],
-              max_changed_px: int = STILL_MAX_CHANGED_PX) -> bool:
-    """True when both hold thumbnails of the same cameras and no camera has more than
-    `max_changed_px` changed pixels."""
+              ignore: Mapping[str, np.ndarray] | None = None, max_blob_px: int = STILL_MAX_BLOB_PX) -> bool:
+    """True when both hold thumbnails of the same cameras and no camera's largest blob of changed
+    pixels, those in its `ignore` mask left out, exceeds `max_blob_px`."""
     if not before or set(before) != set(now):
         return False
-    return all(changed_pixels(before[name], now[name]) <= max_changed_px for name in now)
+    masks = ignore or {}
+    return all(largest_change_px(before[name], now[name], masks.get(name)) <= max_blob_px for name in now)

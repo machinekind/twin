@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "machinekind-twin-api"
-version = "0.1.2"
+version = "0.1.3"
 description = "The digital twin's plugin contracts: the types a robot, backend, strategy or detector package implements"
 readme = "README.md"
 requires-python = ">=3.10"

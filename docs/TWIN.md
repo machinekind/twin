@@ -381,6 +381,14 @@ read. Iterating and `len` list the offered cameras. `name in frames` and
 than a second. `frames[name]` raises `KeyError` when it has none. Images are
 raw RGB and never undistorted.
 
+`request.arm_masks` maps camera names to arm masks; it was added in API 0.1.3.
+A mask is a bool image of the frame's shape, True where the robot arm hides
+the scene. The twin makes a mask only when it is read, for the capture time of
+that camera's frame in the same request, so reading it reads the frame.
+`arm_masks.get(name)` is None when the twin has no mask for that camera. A
+request built without masks holds an empty mapping, so a detector that ignores
+the arm needs no change.
+
 Each `Detection` carries a label, a camera and a pixel. The pixel follows the
 OpenCV convention in the frame's own resolution. A detection may also carry a
 box, a confidence, a boolean silhouette `mask`, `height_m`, `size_m` and its own
@@ -556,7 +564,7 @@ terminal wrapper (a cmux shim), point `executable` at the real binary, e.g.
 | `timeout_s` | 120 | the CLI's process group is killed after this [s], 5 to 900 |
 | `max_side_px` | 1280 | long edge of the images sent [px]; answers are scaled back to each frame |
 | `pixel_error_px` | 25 | how far off the model's pixels may be, in the sent image's pixels |
-| `reuse_if_still` | true | repeat the last answer without asking while no camera's image changed since the frames it was given, see "Cost and rate" |
+| `reuse_if_still` | true | repeat the last answer without asking while no camera's image changed since the frames it was given, or for up to two calls while the scene still moves; pixels the arm hides are left out, see "Cost and rate" |
 | `reuse_max_age_s` | 60 | ask again anyway once the last answer is this old [s], 0 to 3600 |
 | `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
 | `min_confidence` | 0.3 | answers the model is less sure of are dropped |
@@ -578,15 +586,24 @@ a still one 60. Five things bound it:
 - `interval_s`, at least 2 s;
 - `reuse_if_still`, on by default: a call whose frames did not change since the
   last question repeats that question's answer instead of asking. Each camera's
-  frame is compared with the one sent, as a grey thumbnail 256 px long, blurred
-  3x3, with the mean brightness matched so auto exposure does not count. The
-  image counts as changed when more than 15 thumbnail pixels moved by 16 grey
-  levels or more. A 3 cm cube at 1 m through a 60 degree lens covers about 45
-  such pixels, so the cube leaving or moving by a centimetre trips the check,
-  while sensor noise, a blinking LED or an exposure step does not. A move
-  under a thumbnail pixel, 4.5 mm at 1 m, can pass; the model's own error is
-  larger. Once the last answer is `reuse_max_age_s` old, the next call asks
-  whatever the frames show;
+  frame is compared as a grey thumbnail 256 px long, blurred 3x3, with the mean
+  brightness matched so auto exposure does not count. A pixel counts as changed
+  when it moved by 16 grey levels plus a fifth of its distance from the mean,
+  so a gain change does not count. Changed pixels within 2 px of each other
+  form a blob, and the image counts as changed when its largest blob exceeds 24
+  thumbnail pixels. Scattered pixels never do. A 3 cm cube at 1 m through a 60
+  degree lens makes a blob of at least 39 when it moves by a centimetre and at
+  least 50 when it leaves. A blinking 2x2 pixel LED makes at most 13. Sensor
+  noise of ±20 levels, a +12 exposure step and a 1.15 gain make at most 5. A
+  cube 55 grey levels or less from the table can move a centimetre unseen.
+  Frames that changed since the last question and also since the previous call
+  show a scene that still moves. Such a call repeats the answer too, for at
+  most two calls in a row, and the detector asks once two calls agree. Pixels
+  the twin's arm masks hide (`DetectRequest.arm_masks`) do not count. Each mask
+  is widened by 5 thumbnail pixels, about 2.3 cm at 1 m, over the arm's edge
+  and shadow, and the masks of both frames compared are joined. The arm moving
+  therefore asks nothing. Once the last answer is `reuse_max_age_s` old, the
+  next call asks whatever the frames show;
 - `max_calls_per_hour`: a call over the cap fails with "hourly cap of N
   questions reached";
 - backoff: a failed question (a timeout, a non-zero exit, a subscription limit,
@@ -627,8 +644,9 @@ publishes `kamery` for `fresh_s` after each repeat. That is what the frames
 say: they match the ones the model answered on to within the check's limits
 above, so the object stands where the model saw it. The pose is as good as the
 model's answer was, no better; `reuse_max_age_s` bounds how long a wrong answer
-can be repeated. Turn `reuse_if_still` off when a strategy must only ever act
-on a pose the model has just confirmed.
+can be repeated. A repeat while the scene still moves is stamped the same way
+although its frames differ, for at most two calls. Turn `reuse_if_still` off
+when a strategy must only ever act on a pose the model has just confirmed.
 
 ### Privacy
 
