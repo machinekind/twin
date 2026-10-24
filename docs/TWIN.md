@@ -487,6 +487,10 @@ of them report the same label, the measurement with the newer capture time
 wins. Detectors never move the arm, so STOP leaves them running. Closing the
 panel stops them.
 
+Starting shows `Startuje...` immediately. During each detection call, the panel
+shows `Wywolanie w toku` with elapsed seconds beside Start and in the detector's
+row. Previous results stay visible while the next answer is pending.
+
 `twin ui --detector cube` starts the named detector when the panel starts. It
 uses the settings from the detector's config section, like the **Uruchom
 detektor** (Start detector) button. Repeat the flag to start several

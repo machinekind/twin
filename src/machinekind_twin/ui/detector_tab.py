@@ -129,6 +129,7 @@ class DetectorTab:
                 hint="Detektor patrzy na kamery z zaufana poza we wlasnym tempie; strategie dostaja obiekty "
                      "w obs.objects. Ramieniem nie rusza. Ten sam detektor uruchomiony ponownie bierze nowe "
                      "ustawienia.")
+            self.activity_md = gui.add_markdown("", visible=False)
 
         self.running_folder = gui.add_folder("Dzialajace")
         with self.running_folder:
@@ -277,6 +278,7 @@ class DetectorTab:
             self._failed.pop(plugin.name, None)
             self._launching.add(plugin.name)
 
+        self._tick_rows()
         thread = threading.Thread(target=self._start, args=(plugin, values, event, release),
                                   name=f"detektor-start:{plugin.name}", daemon=True)
         self.start_thread = thread
@@ -328,6 +330,16 @@ class DetectorTab:
             self._last.update(running)
             names = sorted(set(self._last) | self._launching | set(self._failed))
             lines = {name: self._run_line(name, running.get(name), now) for name in names}
+            chosen = self.pick.value
+            runner = running.get(chosen)
+            call_started = runner.status.call_started if runner is not None else None
+            if chosen in self._launching or (runner is not None and runner.status.starting):
+                activity = "⏳ **Startuje...**"
+            elif call_started is not None:
+                elapsed = max(0.0, now - call_started)
+                activity = f"⏳ **Wywolanie w toku** - {elapsed:.1f} s"
+            else:
+                activity = ""
 
         with self._rows_lock:
             if list(self._rows) != names:
@@ -335,6 +347,8 @@ class DetectorTab:
             for name in names:
                 self._rows[name].md.content = lines[name]
             self.none_md.visible = not names
+            self.activity_md.content = activity
+            self.activity_md.visible = bool(activity)
 
     def _rebuild_rows(self, names: list[str]) -> None:
         for row in self._rows.values():
@@ -409,15 +423,25 @@ class DetectorTab:
 
 def _running_line(runner: DetectorRunner, now: float) -> str:
     st = runner.status
-    line = f"**dziala** - wywolan {st.calls}"
+    call_started = st.call_started
+    line = "**dziala**"
+    if call_started is not None:
+        elapsed = max(0.0, now - call_started)
+        line += f" - ⏳ **wywolanie {st.calls + 1} w toku** ({elapsed:.1f} s)"
+    line += f" - ukonczonych wywolan {st.calls}"
     if st.calls:
         line += f", ostatnie {max(0.0, now - st.last_done):.1f} s temu (trwalo {st.last_latency_s:.1f} s)"
-    line += f", widzi: {', '.join(st.last_labels) or 'nic'}"
+        line += f", ostatni wynik: {', '.join(st.last_labels) or 'nic'}"
+    else:
+        line += ", oczekiwanie na pierwszy wynik"
     line += f", kamery: {', '.join(st.cameras) or 'brak'}"
     if st.dropped:
         line += f", odrzuconych wykryc {st.dropped}"
     if st.failures:
-        line += f"  \n**blad:** {st.last_error} - kolejna proba za {max(0.0, st.next_try - now):.0f} s"
+        if call_started is not None:
+            line += f"  \n**poprzedni blad:** {st.last_error}"
+        else:
+            line += f"  \n**blad:** {st.last_error} - kolejna proba za {max(0.0, st.next_try - now):.0f} s"
     return line
 
 
