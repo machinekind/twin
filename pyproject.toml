@@ -66,6 +66,7 @@ include = [
     "src/machinekind_twin/detectors.py",
     "src/machinekind_twin/episode.py",
     "src/machinekind_twin/episode_report.py",
+    "src/machinekind_twin/evaluation.py",
     "src/machinekind_twin/objects.py",
     "src/machinekind_twin/plugin_settings.py",
     "src/machinekind_twin/scene_truth.py",
