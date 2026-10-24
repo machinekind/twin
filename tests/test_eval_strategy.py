@@ -1,12 +1,16 @@
 """`twin eval-strategy`: many simulated runs of one strategy, each with a seeded object, judged by the scene.
 
 The physics tests run in-test strategies on the test robot, whose reach ends near r = 0.12 m, so the
-object lies at r = 0.10 m unless a test says otherwise.
+object lies at r = 0.10 m unless a test says otherwise. Every CLI call names its own workstation file
+and output folder, so nothing lands in the repository's `workspace/`.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -17,6 +21,7 @@ from conftest import BOT, CubeScene
 from test_strategy_plugins import install_strategy
 
 from machinekind_twin.calib.simulate import look_at
+from machinekind_twin.cli import main as twin_cli
 from machinekind_twin.detectors import load_detector
 from machinekind_twin.episode import EpisodeLog
 from machinekind_twin.evaluation import (
@@ -27,10 +32,15 @@ from machinekind_twin.evaluation import (
     totals,
     wilson,
 )
+from machinekind_twin.paths import CONFIG_ENV
 from machinekind_twin.plugin_settings import SettingField
+from machinekind_twin.robots import get_spec
 from machinekind_twin.scene_truth import Area, ObjectSpec
 from machinekind_twin.strategies import StrategyPlugin, load_strategy
 from machinekind_twin.workspace import CameraRecord, Workspace
+
+#: The object at r = 0.10 m straight ahead of the base, not turned.
+FIXED = ("--radius-m", "0.1", "0.1", "--bearing-deg", "0", "0", "--yaw-deg", "0", "0")
 
 PRESS = '''
 from machinekind_twin_api.strategy import Action
@@ -139,6 +149,34 @@ class Strategy:
         return Action(done=obs.step >= 5, success=True)
 '''
 
+LABELLED = '''
+from dataclasses import dataclass
+
+
+@dataclass
+class Settings:
+    label: str = "cube"
+
+
+class Strategy:
+    hz = 20.0
+    settings = Settings
+
+    def __init__(self, settings):
+        self.config = settings
+
+    def act(self, obs):
+        return {}
+'''
+
+ZERO_HZ = '''
+class Strategy:
+    hz = 0
+
+    def act(self, obs):
+        return {}
+'''
+
 SEES = '''
 from machinekind_twin_api.strategy import Action
 
@@ -173,6 +211,18 @@ def run(plugin: StrategyPlugin, folder, **options):
 
 def summary_of(folder) -> dict:
     return json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def station(tmp_path):
+    """A workstation file with the test robot and no cameras."""
+    path = tmp_path / "twin.json"
+    path.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+    return path
+
+
+def evaluate(station, out, *args: str) -> int:
+    return twin_cli(["eval-strategy", *FIXED, *args, "--path", str(station), "--out", str(out)])
 
 
 # --------------------------------------------------------------------------- settings and counts
@@ -300,7 +350,7 @@ def test_the_wall_limit_stops_a_slow_strategy_between_ticks(install_dist, tmp_pa
     assert EpisodeLog.summary(tmp_path / "out" / "000.jsonl").end.code == "stopped"
 
 
-def test_ctrl_c_leaves_a_partial_summary(install_dist, tmp_path):
+def test_ctrl_c_leaves_a_partial_summary(install_dist, station, tmp_path, capsys):
     plugin = installed(install_dist, "eval-interrupted", INTERRUPTED)
 
     result = run(plugin, tmp_path / "out", episodes=3)
@@ -311,6 +361,10 @@ def test_ctrl_c_leaves_a_partial_summary(install_dist, tmp_path):
     assert (summary["interrupted"], summary["finished"], len(summary["episodes"])) == (True, False, 1)
     assert (end.code, end.reason) == ("stopped", "przerwana przez operatora")
     assert not (tmp_path / "out" / "002.jsonl").exists()
+
+    plugin.cls.started = 0
+    assert evaluate(station, tmp_path / "again", plugin.name, "--episodes", "3") == 130
+    assert "Przerwano po 1 z 3 przebiegow" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------- poses from a detector
@@ -335,3 +389,136 @@ def test_the_cube_detector_feeds_the_strategy_through_perception(cube_example, i
     assert seen[-1]["source"] == "kamery"
     assert np.linalg.norm(np.asarray(seen[-1]["position"]) - [0.2, 0.0, 0.015]) < 0.005
     assert summary_of(tmp_path / "out")["conditions"]["poses"] == "detektor cube"
+
+
+
+# --------------------------------------------------------------------------- the command
+
+
+def test_swing_claims_success_and_the_scene_says_no(swing, station, tmp_path, capsys):
+    out = tmp_path / "out"
+
+    code = evaluate(station, out, "swing", "--set", "joint=j1", "--set", "period_s=1", "--set", "cycles=1",
+                    "--episodes", "2", "--seed", "7")
+    printed = capsys.readouterr().out
+    rows = [line for line in printed.splitlines() if line.startswith("  0")]
+
+    assert code == 0
+    assert sorted(path.name for path in out.iterdir()) == ["000.jsonl", "001.jsonl", "summary.json"]
+    assert len(rows) == 2
+    assert all("NIEZGODNE" in row for row in rows)
+    assert "Scena (touch): 0/2" in printed
+    assert "niezgodne ze scena: 2" in printed
+
+    assert twin_cli(["episode", str(out)]) == 0
+    listed = capsys.readouterr().out.splitlines()[1:]
+    assert len(listed) == 2
+    assert not any("nieczytelny" in line for line in listed)
+
+
+def test_each_log_carries_the_placement_and_every_step_the_true_pose(swing, station, tmp_path):
+    out = tmp_path / "out"
+    assert evaluate(station, out, "swing", "--set", "joint=j1", "--set", "period_s=1", "--set", "cycles=1",
+                    "--seed", "7", "--episodes", "1") == 0
+
+    log = EpisodeLog.load(out / "000.jsonl")
+    meta = log.header["meta"]
+
+    assert (meta["run"], meta["seed"], meta["strategy"]) == (0, 7, "swing")
+    assert meta["settings"]["period_s"] == 1.0
+    assert meta["evaluation"]["placement"] == summary_of(out)["episodes"][0]["placement"]
+    assert log.steps
+    for step in log.steps:
+        cube = step["objects"]["cube"]
+        assert cube["source"] == "symulacja"
+        assert cube["position"] == pytest.approx([0.1, 0.0, 0.015], abs=1e-3)
+
+
+def test_settings_come_from_the_config_section_and_set(swing, station, tmp_path):
+    config = tmp_path / "local.yaml"
+    config.write_text("swing:\n  joint: j1\n  period_s: 1.0\n", encoding="utf-8")
+    out = tmp_path / "out"
+
+    assert evaluate(station, out, "swing", "--config", str(config), "--set", "cycles=1", "--set", "amplitude=5",
+                    "--episodes", "1") == 0
+
+    settings = {"joint": "j1", "amplitude": 5.0, "period_s": 1.0, "cycles": 1, "wait_for_return": True}
+    conditions = summary_of(out)["conditions"]
+    assert conditions["strategy"]["settings"] == settings
+    assert conditions["config"] == str(config.resolve())
+    assert EpisodeLog.load(out / "000.jsonl").header["meta"]["settings"] == settings
+
+
+#: argv after `eval-strategy` and what stderr says; `{name}` fields are filled in by the test.
+REFUSALS = {
+    "an unknown strategy": (["nope"], "Nieznana strategia"),
+    "a setting that is not a number": (["swing", "--set", "joint=j1", "--set", "amplitude=abc"],
+                                       "swing.amplitude: potrzeba float"),
+    "an unknown setting": (["swing", "--set", "joint=j1", "--set", "nope=1"], "Nieznane klucze w sekcji swing"),
+    "a missing setting": (["swing"], "Brak kluczy w sekcji swing"),
+    "a broken config section that --set overrides": (["swing", "--config", "{broken}", "--set", "amplitude=5"],
+                                                     "swing.amplitude: potrzeba float"),
+    "a setting without a value": (["swing", "--set", "joint=j1", "--set", "amplitude"], "KLUCZ=WARTOSC"),
+    "an output folder in use": (["swing", "--set", "joint=j1"], "nie jest pustym folderem"),
+    "an inverted range": (["swing", "--set", "joint=j1", "--radius-m", "0.2", "0.1"], "poczatek wiekszy od konca"),
+    "two edges": (["swing", "--set", "joint=j1", "--size-mm", "30", "30"], "--size-mm"),
+    "no episodes": (["swing", "--set", "joint=j1", "--episodes", "0"], "przebiegow musi byc co najmniej 1"),
+    "an area off the table": (["swing", "--set", "joint=j1", "--radius-m", "0.8", "0.9"], "poza blat"),
+    "a label the strategy does not read": (["{labelled}", "--label", "pen"], "label = 'cube', a obiekt ma etykiete"),
+    "a strategy without a rate": (["{zero_hz}"], "hz musi byc dodatnie"),
+    "a detector without cameras": (["swing", "--set", "joint=j1", "--detector", "{cube}"], "kamery symulowanej"),
+}
+
+
+@pytest.mark.parametrize("case", list(REFUSALS))
+def test_refusals(case, swing, cube_example, install_dist, station, tmp_path, capsys):
+    args, expected = REFUSALS[case]
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("swing:\n  joint: j1\n  amplitude: duzo\n", encoding="utf-8")
+    names = {"broken": str(broken), "cube": cube_example,
+             "labelled": install_strategy(install_dist, "eval-labelled", LABELLED),
+             "zero_hz": install_strategy(install_dist, "eval-zero-hz", ZERO_HZ)}
+    out = tmp_path / "out"
+    if case == "an output folder in use":
+        out.mkdir()
+        (out / "notes.txt").write_text("moje", encoding="utf-8")
+
+    code = evaluate(station, out, *[arg.format(**names) for arg in args])
+    err = capsys.readouterr().err
+
+    assert code == 1
+    assert expected in err
+    assert "'Nieznana" not in err
+    if case == "an output folder in use":
+        assert [path.name for path in out.iterdir()] == ["notes.txt"]
+    else:
+        assert not out.exists()
+
+
+def test_without_a_workspace_file_the_campaign_lands_in_the_default_episodes_folder(swing, tmp_path):
+    code = twin_cli(["eval-strategy", *FIXED, "swing", "--robot", BOT, "--set", "joint=j1", "--set", "period_s=0.5",
+                     "--set", "cycles=1", "--episodes", "1"])
+    folders = list((tmp_path / "workspace" / "episodes").glob("eval-swing-*"))
+
+    assert code == 0
+    assert len(folders) == 1
+    assert sorted(path.name for path in folders[0].iterdir()) == ["000.jsonl", "summary.json"]
+
+
+@pytest.mark.cli
+def test_the_command_runs_from_installed_packages(tmp_path):
+    station = tmp_path / "station.json"
+    station.write_text(json.dumps({"robot": "arm6"}), encoding="utf-8")
+    joint = get_spec("arm6").joints[0]
+    environment = {key: value for key, value in os.environ.items() if key != CONFIG_ENV}
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "machinekind_twin.cli", "eval-strategy", "swing", "--path", str(station),
+         "--out", str(tmp_path / "out"), "--episodes", "1", "--set", f"joint={joint}", "--set", "period_s=0.5",
+         "--set", "cycles=1"],
+        cwd=tmp_path, env=environment, capture_output=True, text=True, check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (tmp_path / "out" / "000.jsonl").is_file()
+    assert (tmp_path / "out" / "summary.json").is_file()

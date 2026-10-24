@@ -12,6 +12,8 @@
     twin episode                     # raport ostatniego przebiegu strategii (opoznienia stawow, dryf chwytaka)
     twin episode <plik.jsonl>        # ... z tego zapisu
     twin episode <folder>            # lista przebiegow: koniec, sukces, blad zadania
+    twin eval-strategy NAZWA --episodes 50 --seed 50000   # ocena strategii w symulacji: obiekt losowany z ziarna, sukces wg sceny (touch/lift)
+    twin --config configs/local.yaml eval-strategy touch --robot so101 --rule lift   # ... ustawienia z sekcji pliku i --set KLUCZ=WARTOSC
     twin ui                          # panel w przegladarce: http://localhost:8080
     twin ui --host 0.0.0.0           # ... dostepny z sieci (bez hasla - tylko w zaufanej)
     twin ui --stream-port 8766       # ... plus podglad kamer (MJPEG, tylko odczyt): http://<maszyna>:8766
@@ -246,6 +248,82 @@ def _list_episodes(folder: Path, logs: list[Path]) -> None:
         length = "-" if end.t is None else f"{end.t:.2f}"
         print(f"  {path.stem:<24} {end.code:<13} sukces {success:<4} blad zadania {error:<9} "
               f"czas {length:>8} s  krokow {end.steps:<6} {end.reason}")
+
+
+def _eval_strategy(a: argparse.Namespace) -> int:
+    """Runs one strategy many times in simulation, each episode with an object drawn from the seed,
+    and counts what the scene judges a success. Refuses before writing anything when a check fails.
+    """
+    import math
+
+    from . import evaluation
+    from .detectors import config_section as detector_section
+    from .detectors import load_detector
+    from .scene_truth import Area, ObjectSpec
+    from .strategies import config_section, load_strategy
+    from .workspace import Workspace
+
+    def refuse(message: str) -> int:
+        print(f"twin eval-strategy: {message}", file=sys.stderr)
+        return 1
+
+    try:
+        plugin = load_strategy(a.name)
+    except KeyError as exc:
+        return refuse(exc.args[0])
+    except (TypeError, ValueError) as exc:
+        return refuse(str(exc))
+
+    if a.robot:
+        robot = _installed_robot(a.robot)
+        if robot is None:
+            return 1
+        workspace = Workspace(robot=robot)
+    else:
+        missing = _missing_robot(_workspace_path(a.path))
+        if missing:
+            print(missing, file=sys.stderr)
+            return 1
+        try:
+            workspace = Workspace.load(a.path)
+        except (OSError, TypeError, ValueError) as exc:
+            return refuse(f"stanowisko: {exc}")
+
+    try:
+        values = evaluation.plugin_values(plugin, config_section(plugin.name), a.assignments)
+        detector, detector_values = None, {}
+        if a.detector:
+            detector = load_detector(a.detector)
+            detector_values = evaluation.plugin_values(detector, detector_section(detector.name))
+
+        label = evaluation.object_label(a.label, plugin, values, detector, detector_values)
+        obj = ObjectSpec(label=label, shape=a.shape, size_m=evaluation.object_size_m(a.size_mm),
+                         mass_kg=a.mass_g / 1000.0)
+        desk = workspace.spec().desk
+        radius = (a.radius_m[0], a.radius_m[1]) if a.radius_m else desk.cube_radius
+        bearing = ((math.radians(a.bearing_deg[0]), math.radians(a.bearing_deg[1])) if a.bearing_deg
+                   else desk.cube_bearing)
+        area = Area(radius, bearing, (math.radians(a.yaw_deg[0]), math.radians(a.yaw_deg[1])))
+        campaign = evaluation.Campaign(
+            plugin=plugin, settings=values, rule=a.rule, label=label, obj=obj, area=area, seed=a.seed,
+            episodes=a.episodes, time_limit_s=a.time_limit_s, speed_deg_s=a.speed_deg_s,
+            wall_limit_s=a.wall_limit_s, detector=detector, detector_settings=detector_values,
+        )
+        facts = evaluation.preflight(workspace, campaign)
+        folder = evaluation.campaign_folder(Path(a.out) if a.out else None, workspace, plugin.name)
+    except KeyError as exc:
+        return refuse(exc.args[0])
+    except (OSError, TypeError, ValueError) as exc:
+        return refuse(str(exc))
+
+    print("\n".join(evaluation.header_lines(campaign, workspace, folder)), flush=True)
+    result = evaluation.run_campaign(workspace, campaign, folder, facts=facts,
+                                     on_episode=lambda row: print(evaluation.row_line(row), flush=True))
+    print("\n".join(evaluation.footer_lines(campaign, result)))
+
+    if result.aborted:
+        return refuse(f"przerwano: {result.aborted}")
+    return 130 if result.interrupted else 0
 
 
 def _natural(name: str) -> list[Any]:
@@ -503,6 +581,47 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--offset-mm", nargs=3, type=float, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"),
                    help="gdzie ten znacznik siedzi w ukladzie TCP [mm]")
     p.set_defaults(fn=_episode)
+
+    p = sub.add_parser("eval-strategy",
+                       help="ocena strategii w symulacji: wiele przebiegow z obiektem losowanym z ziarna, sukces wg sceny")
+    p.add_argument("name", metavar="NAZWA", help="strategia: nazwa punktu wejscia, jak w zakladce Strategie")
+    p.add_argument("--episodes", type=int, default=10, help="ile przebiegow (domyslnie 10)")
+    p.add_argument("--seed", type=int, default=0,
+                   help="ziarno: przebieg i losuje obiekt z ziarna S+i, wiec --seed S+i --episodes 1 go powtarza")
+    p.add_argument("--rule", choices=("touch", "lift"), default="touch",
+                   help="kiedy scena uznaje sukces: touch = szczeka dotyka obiektu, lift = obie szczeki "
+                        "i obiekt uniesiony o 4 cm (domyslnie touch)")
+    p.add_argument("--set", dest="assignments", action="append", default=[], metavar="KLUCZ=WARTOSC",
+                   help="ustawienie strategii ponad sekcje pliku konfiguracji; mozna kilka razy")
+    where = p.add_mutually_exclusive_group()
+    where.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
+    where.add_argument("--robot", default=None, metavar="NAZWA",
+                       help="ramie bez pliku stanowiska (bez kamer), np. w srodowisku innego pakietu")
+    p.add_argument("--out", default=None, metavar="FOLDER",
+                   help="nowy albo pusty folder na zapisy i summary.json "
+                        "(domyslnie episodes/eval-<strategia>-<czas> obok stanowiska)")
+    p.add_argument("--label", default=None, metavar="ETYKIETA",
+                   help="klucz obiektu w Observation.objects (domyslnie ustawienie label strategii albo cube)")
+    p.add_argument("--shape", choices=("box",), default="box", help="ksztalt obiektu (na razie tylko box)")
+    p.add_argument("--size-mm", nargs="+", type=float, default=[30.0], metavar="MM",
+                   help="krawedz szescianu albo trzy krawedzie pudelka [mm] (domyslnie 30)")
+    p.add_argument("--mass-g", type=float, default=30.0, help="masa obiektu [g] (domyslnie 30)")
+    p.add_argument("--radius-m", nargs=2, type=float, default=None, metavar=("OD", "DO"),
+                   help="odleglosc obiektu od podstawy [m] (domyslnie pierscien kostki z opisu ramienia)")
+    p.add_argument("--bearing-deg", nargs=2, type=float, default=None, metavar=("OD", "DO"),
+                   help="kierunek od osi x podstawy [st] (domyslnie z opisu ramienia)")
+    p.add_argument("--yaw-deg", nargs=2, type=float, default=(-180.0, 180.0), metavar=("OD", "DO"),
+                   help="obrot obiektu wokol pionu [st] (domyslnie -180 180)")
+    p.add_argument("--time-limit-s", type=float, default=120.0,
+                   help="najdluzszy przebieg w czasie symulacji [s]; krotszy limit strategii zostaje (domyslnie 120)")
+    p.add_argument("--speed-deg-s", type=float, default=None,
+                   help="granica predkosci stawow jak suwak w panelu [st./s] (domyslnie bez granicy)")
+    p.add_argument("--wall-limit-s", type=float, default=None,
+                   help="przerwij przebieg po tylu sekundach rzeczywistych (wynik zalezy wtedy od maszyny)")
+    p.add_argument("--detector", default=None, metavar="NAZWA",
+                   help="pozy obiektu z tego detektora przez zaufane kamery symulowane stanowiska "
+                        "(domyslnie prawda symulacji); ustawienia z jego sekcji konfiguracji")
+    p.set_defaults(fn=_eval_strategy)
 
     p = sub.add_parser("ui", help="panel blizniaka w przegladarce (viser)")
     # Panel rusza prawdziwym ramieniem i nie ma hasla, a viser dzieli stan GUI miedzy
