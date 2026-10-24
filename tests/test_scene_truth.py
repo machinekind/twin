@@ -9,14 +9,16 @@ import math
 import numpy as np
 import pytest
 
-pytest.importorskip("mujoco")
+mujoco = pytest.importorskip("mujoco")
 
 from conftest import BOT
 
 from machinekind_twin.clock import VirtualClock
+from machinekind_twin.evaluation import settle
 from machinekind_twin.robots import get_spec
 from machinekind_twin.runtime import Twin
 from machinekind_twin.scene_truth import (
+    OBJECT_BODY,
     SIM_SOURCE,
     Area,
     ObjectSpec,
@@ -53,6 +55,14 @@ def stand():
 
 def placed(x: float, y: float, yaw_deg: float = 0.0) -> Placement:
     return Placement(0, x, y, math.hypot(x, y), math.atan2(y, x), math.radians(yaw_deg))
+
+
+def raise_object(twin: Twin, height_m: float) -> None:
+    with twin.lock:
+        model, data = twin.scene.model, twin.scene.data
+        address = model.jnt_qposadr[model.body_jntadr[model.body(OBJECT_BODY).id]]
+        data.qpos[address + 2] += height_m
+        mujoco.mj_forward(model, data)
 
 
 def look(x: float = 0.1, z: float = 0.015, tilt_deg: float = 0.0, contacts: tuple[float, float] = (0.0, 0.0)
@@ -114,15 +124,31 @@ def test_an_area_off_the_table_is_refused(stand):
 def test_the_object_rests_where_placed_and_reads_back_in_the_base_frame(stand):
     place_object(stand, CUBE, placed(0.10, 0.02, yaw_deg=30.0))
     now = sample(stand)
+    clash = robot_contacts(stand)
+    pose = SimulationPoses(stand, "cube").objects()["cube"]
+    settled = settle(stand)
 
     assert now.position_m == pytest.approx([0.10, 0.02, 0.015], abs=1e-6)
     assert math.degrees(math.atan2(now.rotation[1, 0], now.rotation[0, 0])) == pytest.approx(30.0)
     assert now.contacts == (0.0, 0.0)
-    assert robot_contacts(stand) == 0
+    assert clash == 0
+    assert settled is not None
+    assert settled.position_m == pytest.approx(now.position_m, abs=2e-4)
+    assert settled.contacts == (0.0, 0.0)
 
-    pose = SimulationPoses(stand, "cube").objects()["cube"]
     assert (pose.source, pose.age_s) == (SIM_SOURCE, 0.0) == ("symulacja", 0.0)
     assert pose.position == pytest.approx(now.position_m)
+
+
+def test_settling_runs_the_physics_so_a_raised_object_falls_back_to_the_table(stand):
+    place_object(stand, CUBE, placed(0.10, 0.0))
+    raise_object(stand, 0.03)
+    raised = sample(stand)
+    settled = settle(stand)
+
+    assert raised.position_m[2] == pytest.approx(0.045, abs=1e-6)
+    assert settled is not None
+    assert settled.position_m[2] == pytest.approx(0.015, abs=1e-3)
 
 
 def test_an_object_placed_on_the_robot_base_is_a_clash(stand):
@@ -183,6 +209,8 @@ def test_lift_needs_both_jaws_and_four_centimetres_at_the_end_and_after_settling
         == "uniesiony o 3.9 cm na koncu (potrzeba 4 cm)"
     assert verdict("lift", look(z=0.071, contacts=(3.0, 0.0)), look(z=0.071, contacts=held)).reason \
         == "nie obie szczeki na koncu"
+    assert verdict("lift", look(z=0.071, contacts=held), look(z=0.071, contacts=(3.0, 0.0))).reason \
+        == "nie obie szczeki po 0.5 s"
     assert verdict("lift", look(z=0.071, contacts=held), look(z=0.015, contacts=held)).reason \
         == "uniesiony o 0.0 cm po 0.5 s (potrzeba 4 cm)"
     assert not verdict("lift", look(z=0.071, contacts=held), look(z=0.071, contacts=held), clash=True).ok
