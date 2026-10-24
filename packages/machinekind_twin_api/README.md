@@ -8,7 +8,7 @@ only numpy: no MuJoCo, viser, torch or OpenCV.
 
 | Module | What is in it |
 |---|---|
-| `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
+| `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `Decision` (a model's answer, for the run's log), `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
 | `machinekind_twin_api.backend` | `BackendContext` (what a backend factory gets), the `BackendPlugin` protocol, the `RobotBackend` base class, `RobotInfo` |
 | `machinekind_twin_api.detector` | `DetectRequest` (one call's frames), `Detection` (one object seen in one frame, in pixels), `DetectorInfo`, the `Detector` protocol |
 | `machinekind_twin_api.entry_points` | `ROBOTS`, `BACKENDS`, `STRATEGIES`, `DETECTORS`: the entry point groups the twin reads |
@@ -112,6 +112,61 @@ class Hold(Strategy[HoldSettings]):
 sets it as `Hold` does. Subclassing also lets a type checker (pyright, mypy) check `act`, `start`
 and `stop` against the contract. At runtime the twin does not need the base class: it requires
 `hz` and `act`, and checks `settings` when the class has one.
+
+### Model decisions in the run's log
+
+Every run leaves a log in the twin (its episode log). A strategy that asks a model can add its
+questions and answers to that log. It returns them as `Decision`s in `Action.decisions`, with the
+first `Action` after each answer came back. The twin writes them into the line of that tick and
+never acts on them.
+
+```python
+import threading
+import time
+
+from machinekind_twin_api import Action, Decision, Observation, Strategy
+
+
+class Asking(Strategy[None]):
+    """Asks a model for a target on its own thread and drives to the latest answer."""
+
+    hz = 10.0
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.target: dict[str, float] = {}
+        self.answered: list[Decision] = []
+        self.asking = False
+
+    def act(self, obs: Observation) -> Action:
+        with self.lock:
+            decisions, self.answered = tuple(self.answered), []
+            if not self.asking:
+                self.asking = True
+                threading.Thread(target=self.ask, args=(dict(obs.joints),), daemon=True).start()
+            return Action(target=dict(self.target), decisions=decisions)
+
+    def ask(self, joints: dict[str, float]) -> None:
+        question = "Which joint angles reach the cube?"
+        asked = time.monotonic()
+        target, confidence = my_model(question, joints)  # the model client of your choice
+        with self.lock:
+            self.target = target
+            self.answered.append(Decision(question=question, answer=str(target), state={"joints": joints},
+                                          confidence=confidence, response_s=time.monotonic() - asked))
+            self.asking = False
+```
+
+Each decision lands in the tick it is returned with, so two answers that came back between ticks
+arrive together. `state` holds JSON values; an array in it is logged by its shape, and the frames
+the strategy read in that tick are logged anyway. A strategy's own answer object can carry
+`decisions` too. Three limits apply:
+
+* A plain mapping answer carries no decisions.
+* A decision made in `start` goes with the first `Action`.
+* A decision that arrives in `stop` is lost: the log is closed by then.
+
+`Decision` arrived in 0.1.3, so a strategy that uses it pins `machinekind-twin-api>=0.1.3,<0.2`.
 
 ## A backend
 
@@ -233,9 +288,10 @@ subclassing `Detector` is optional.
 
 ## Evolving the contract
 
-Plugins pin `machinekind-twin-api>=0.1,<0.2`. Four rules keep every 0.1.x release working for them:
+Plugins pin `machinekind-twin-api>=0.1,<0.2`. Five rules keep every 0.1.x release working for them:
 
 * A new field goes at the end of a frozen dataclass, with a default.
+* What a strategy hands back each tick lives in `Action`, so `act`'s signature never changes.
 * Everything `detect` gets lives in `DetectRequest`, so its signature never changes.
 * What a detector learns once, at start, lives in `DetectorInfo`.
 * Nothing is removed or renamed within 0.x.

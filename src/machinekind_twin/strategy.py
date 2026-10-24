@@ -5,8 +5,8 @@ targets. It never touches the backend: `StrategyRunner` claims the arm, builds a
 every tick, calls the strategy, and sends its target through `Twin.set_target`, so every command
 passes the safety supervisor. Simulation and hardware run the same code path.
 
-The contract a strategy follows (`Observation`, `Action`, `ActionLike`, `RunInfo`, `ObjectPose`,
-`Frame` and the `Strategy` protocol) lives in the `machinekind-twin-api` package,
+The contract a strategy follows (`Observation`, `Action`, `ActionLike`, `Decision`, `RunInfo`,
+`ObjectPose`, `Frame` and the `Strategy` protocol) lives in the `machinekind-twin-api` package,
 `machinekind_twin_api.strategy`. A strategy from another package depends on that package, never on
 the twin. This module re-exports the same classes, so
 `machinekind_twin.strategy.Action is machinekind_twin_api.Action`. Such packages register their
@@ -44,6 +44,7 @@ import numpy as np
 from machinekind_twin_api.strategy import (
     Action,
     ActionLike,
+    Decision,
     Frame,
     ObjectPose,
     Observation,
@@ -53,8 +54,8 @@ from machinekind_twin_api.strategy import (
 )
 
 __all__ = [
-    "OWNER", "Action", "ActionLike", "Frame", "FrameSource", "ObjectPose", "Observation", "RunInfo",
-    "RunnerStatus", "S", "Strategy", "StrategyRunner",
+    "OWNER", "Action", "ActionLike", "Decision", "Frame", "FrameSource", "ObjectPose", "Observation",
+    "RunInfo", "RunnerStatus", "S", "Strategy", "StrategyRunner",
 ]
 
 logger = logging.getLogger(__name__)
@@ -471,4 +472,5 @@ def _as_action(answer: Any) -> Action:
         success=getattr(answer, "success", None),
         error=getattr(answer, "error", None),
         note=str(getattr(answer, "note", "") or ""),
+        decisions=tuple(getattr(answer, "decisions", ()) or ()),
     )
