@@ -85,6 +85,7 @@ see [the first-session procedure](#galaxea-a1x-first-session) below.
 | `workspace/twin.json` | Your local robot selection, backend/port, table, scene look, cameras, calibration and measured dynamics; ignored by Git |
 | `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
 | `workspace/episodes/*.jsonl` | One file per strategy run, plus `<name>.frames/` when frames are kept; ignored by Git |
+| `workspace/episodes/eval-<strategy>-<time>/` | One folder per evaluation, `NNN.jsonl` per episode and `summary.json`; ignored by Git |
 | `configs/local.yaml` | Your backend, strategy, detector and safety settings; ignored by Git |
 | `examples/twin.sim.json` | Example workstation with two calibrated simulated cameras |
 | `assets/calib/` | Example lens intrinsics and distortion files |
@@ -116,6 +117,7 @@ to the backend, strategy or detector with that name (`feetech:`, `a1x:`, `swing:
 `cube:`, etc.). A strategy and a detector with the same name share a section, and
 the panel warns about it. Backends validate their settings. Strategy and detector
 sections prefill the panel's settings form and are validated before a start.
+`twin eval-strategy` reads the same sections, and `--set KEY=VALUE` overrides one strategy key.
 The panel selects the connection backend
 and port; `--arm` reconnects using the workstation's saved selection at startup.
 With one USB-serial adapter plugged in, its current port takes precedence over
@@ -250,8 +252,10 @@ uv run twin export workspace/export
 
 The export contains `scene.xml`, `assets/` and `station.json`, including camera
 calibration and dynamics. External training tools can read those files without
-importing the twin. Training commands, randomization and policy evaluation belong
-to the training package; use its documentation for those workflows.
+importing the twin. Training commands and training randomization belong to the
+training package; use its documentation for those workflows. `twin eval-strategy`
+evaluates any installed strategy, a trained policy included, in the twin's own
+simulation (see [Strategy evaluation](#strategy-evaluation)).
 
 ## Galaxea A1X first session
 
@@ -311,6 +315,8 @@ For hardware:
 | `twin episode` | Report the newest strategy run's episode log next to the workstation; optional `--path` |
 | `twin episode <file.jsonl>` | Report one log: latency per joint, gripper drift with `--gripper LABEL` and `--offset-mm X Y Z` |
 | `twin episode <folder>` | One line per run, newest first: end code, success, task error, length, steps and reason |
+| `twin eval-strategy NAME --episodes 50 --seed 50000` | Run a strategy many times in simulation with a seeded object; the scene judges success with `--rule touch` or `lift`. Settings come from the config section and `--set KEY=VALUE`; the arm from `--robot` or `--path`; the area from `--radius-m`, `--bearing-deg` and `--yaw-deg` |
+| `twin eval-strategy NAME --seed S+i --episodes 1` | Replay episode i of a campaign with seed S |
 
 ```bash
 uv run pytest -q
@@ -554,6 +560,7 @@ After the run, `status.stopped_code`, `status.success`, `status.error` and
 `status.episode` say how it ended and where the file is. `EpisodeLog.summary`
 reads one file's header and end without the lines between them, and
 `twin episode <folder>` lists every run of a campaign.
+`twin eval-strategy` does this for a whole campaign; see [Strategy evaluation](#strategy-evaluation).
 
 ### Limits
 
@@ -564,6 +571,160 @@ reads one file's header and end without the lines between them, and
   plus about 0.6 ms per kept 640x480 JPEG.
 - A strategy package that returns `Decision`s pins
   `machinekind-twin-api>=0.1.3,<0.2`. Older strategies keep working unchanged.
+
+## Strategy evaluation
+
+`twin eval-strategy` runs one installed strategy many times in simulation,
+without the panel, and counts what the scene judges a success (#163). Each
+episode places an object on the table, drawn from the seed.
+
+```bash
+uv run twin eval-strategy swing --robot arm6 --set joint=base_yaw --episodes 2
+uv run twin --config configs/local.yaml eval-strategy touch --robot so101 --episodes 50 --seed 50000
+```
+
+The second line is the recipe for the `touch` strategy in so-arm101, run from
+that repository's environment. The command needs nothing from the twin's clone:
+it finds the strategy by its entry point, the config file through `--config`
+(or `MACHINEKIND_TWIN_CONFIG`) and the arm through `--robot` or a workstation
+file (`--path`, by default `workspace/twin.json`). `--robot` builds a
+workstation with no file and no cameras.
+
+### Settings
+
+The strategy's settings are built as in the Strategie tab. The config section
+named like the strategy comes first, then each `--set KEY=VALUE`, then the
+default of every field neither gives. A value given with `--set` is converted
+by its field's type, and a switch takes `true` or `false`. A broken section is
+refused even when `--set` would override the broken key. Every episode creates
+a new instance of the strategy.
+
+### One episode
+
+Each episode builds a fresh twin on a `VirtualClock`. The arm starts at the
+workstation's home pose. The twin connects to `sim` without a thread, so the
+`safety` section of the config applies and the episode gets a new
+`SafetySupervisor`. The strategy runs through the same `StrategyRunner` as in
+the panel. The twin's loop steps at 50 Hz and the strategy ticks at exactly its
+own rate on the same simulated clock. One 10 s episode on the test robot takes
+about 0.05 s, plus whatever the strategy computes.
+
+- `--time-limit-s` (120 s of simulated time by default) caps each run. A
+  strategy's own shorter limit stays.
+- `--speed-deg-s` sets the panel's joint speed cap. The panel starts at
+  20 deg/s, while the command has no cap by default.
+- `--wall-limit-s` stops a run after that many real seconds, checked between
+  ticks. It is off by default, because it makes results depend on the machine.
+
+### Placement
+
+The object is a box: `--size-mm` gives one edge for a cube or three edges,
+30 mm by default, and `--mass-g` its mass, 30 g by default. It is red, so the
+cube detector sees it. `--shape` takes only `box` for now. Episode i draws its
+pose from `np.random.default_rng(seed + i)`: the radius from the base, the
+bearing from the base's x axis and the yaw, in that order, each uniformly in
+`--radius-m`, `--bearing-deg` and `--yaw-deg`. This is the draw of soarm_lab's
+`sample_cubes`. The area defaults to the robot's `desk.cube_radius` and
+`desk.cube_bearing` with any yaw. Episode i's pose does not depend on
+`--episodes`, so `--seed S+i --episodes 1` replays it.
+
+An area that puts the object off the table top is refused before the first
+episode. Placements are never redrawn: an object placed against the robot fails
+the rule.
+
+### Object poses
+
+By default the strategy finds the true pose in `Observation.objects[label]`,
+with source `symulacja` (the simulation) and age 0. The label is `--label`,
+else the strategy's own `label` setting, else `cube`. A `--label` that differs
+from the strategy's own is refused.
+
+`--detector NAME` gives the strategy the poses a detector finds through
+`Perception`, as in the panel, with its settings from its config section. The
+frames are renders of the workstation's trusted simulated cameras, taken on
+the simulated clock. A workstation without such a camera is refused. Rendering
+needs OpenGL (`MUJOCO_GL=egl` without a display). A detector call on two
+640x480 cameras costs about 32 ms.
+
+### Rules
+
+The scene judges each run from the physics, never from the strategy's answer.
+Both rules read the object's true pose and MuJoCo contact sensors between the
+object and each of the robot's `jaw_bodies`. A robot without `jaw_bodies` is
+refused. The scene looks at the object as placed, after every physics step,
+right after the run ends and once more after 0.5 s with the arm holding.
+
+| Rule | Success when |
+|---|---|
+| `touch` | A jaw touches the object at the end and after settling, and the object moved less than 1 cm on the table and tilted less than 20 deg |
+| `lift` | Both jaws touch the object at the end and after settling, and its centre is at least 4 cm above where it was placed at both looks |
+
+Both fail when the object touches the robot as placed. The thresholds are fixed
+constants in [`scene_truth.py`](../src/machinekind_twin/scene_truth.py), so one
+rule name always means one judge, and `summary.json` repeats them. The first
+failing check gives the reason, for example `brak kontaktu na koncu` (no
+contact at the end).
+
+### The strategy's claim
+
+The strategy's own claim is kept next to the scene's verdict and never replaces
+it. The claim is true for end code `done`, false for `gave_up` and null for any
+other end. An episode agrees when a true claim meets a success of the scene, or
+anything else meets a failure. The totals count `both_success`,
+`both_failure`, `false_claim` (the strategy claims success and the scene says
+no) and `unclaimed_success`.
+
+### Output
+
+The campaign folder is `--out`, which must be new or empty. The default is
+`episodes/eval-<strategy>-<time>/` next to the workstation file.
+
+- `000.jsonl`, `001.jsonl`, ...: one episode log per run, as every runner
+  writes it. The header's `meta` holds the panel's keys (`strategy`, `source`,
+  `settings`), `run`, `seed` and `evaluation`: the rule, the label, the pose
+  source, the object and the placement. Every step holds the object as the
+  strategy saw it.
+- `summary.json`: `conditions` (the robot, workstation, config file, seed, rule
+  and its constants, object, area, pose source, limits, and the strategy with
+  its settings), `totals` and one entry per episode. An entry holds the
+  placement, the pose as placed, the strategy's end code, reason, claim, steps
+  and attempts, and the scene's verdict with every measure. The totals give
+  the scene's successes with a 95% Wilson interval, the claims, the agreement,
+  the end codes and medians. The file exists before the first episode and is
+  rewritten after each one.
+
+`twin episode <folder>` lists the runs. The terminal shows one row per episode
+and the totals, here for the first example above:
+
+```text
+  000 done          strategia tak scena nie x  +19.9 y   -7.7 cm  obrot -165 st  czas    8.04 s  krokow 162   prob -   zadanie wykonane  [scena: brak kontaktu na koncu]  NIEZGODNE
+  001 done          strategia tak scena nie x  +15.1 y  +13.3 cm  obrot -128 st  czas    8.04 s  krokow 162   prob -   zadanie wykonane  [scena: brak kontaktu na koncu]  NIEZGODNE
+Scena (touch): 0/2 (0%, 95%: 0-66%)
+Strategia: sukces 2, porazka 0, bez zdania 0; niezgodne ze scena: 2 (000, 001)
+Konce: done 2
+```
+
+The swing strategy never reaches for the object, so it claims success and the
+scene says no: `NIEZGODNE` (disagree).
+
+The command exits with 0 when the campaign ran, whatever the successes. It
+exits with 1 when a check refused the campaign, before anything is written, or
+when an episode's arm could not start. Ctrl-C ends the current run with code
+`stopped`, marks the summary `interrupted` and exits with 130.
+
+### Limits
+
+- Identified dynamics (`Workspace.dynamics`) are not applied to the simulated
+  scene; it runs the model's own.
+- On the SO-101, `jaw_bodies[0]` is the whole gripper body, so a contact of the
+  palm counts as a touch. On the test robot and arm6 only the jaw tips count.
+- Real time does not pass on the virtual clock. A strategy that asks a model on
+  its own thread is not measured faithfully.
+- The wall limit stops a run only between ticks, and its results depend on the
+  machine.
+- The default area is out of the test robot's reach.
+- Placements are not checked against the arm's path.
+- `attempts` is filled only for a strategy whose `status` has an `attempt`.
 
 ## Calibration and perception notes
 
