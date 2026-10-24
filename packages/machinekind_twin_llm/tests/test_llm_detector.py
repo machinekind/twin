@@ -485,18 +485,41 @@ def arm_calls(fake: Fake, det: LlmDetector, columns: tuple[int, ...], start: int
     return counts
 
 
-def test_the_arm_leaving_a_place_no_frame_showed_yet_is_asked_about_once_it_settles(fake: Fake):
+def test_the_arm_leaving_its_place_at_the_question_is_asked_about_once_it_settles(fake: Fake):
     det = started(fake)
 
     assert arm_calls(fake, det, (100, 600, 600)) == [1, 1, 2]
     det.stop("test")
 
 
-def test_the_arm_moving_over_places_seen_before_repeats_the_answer(fake: Fake):
+def test_the_arm_moving_over_the_table_after_a_question_without_it_repeats_the_answer(fake: Fake):
     det = started(fake)
-    asked = arm_calls(fake, det, (600, 100, 100))[-1]
+    det.detect(request(0, arms={"top": np.zeros((H, W), bool)}, top=image(), side=image()))
 
-    assert arm_calls(fake, det, (350, 600, 600, 100, 350, 600), start=3) == [asked] * 6
+    assert arm_calls(fake, det, (350, 600, 600, 100, 350, 600), start=1) == [1] * 6
+    det.stop("test")
+
+
+def test_a_place_the_arm_hid_at_the_question_is_asked_about_once_it_shows(fake: Fake):
+    """Whatever lay there before the arm came, the answer was given without seeing it."""
+    det = started(fake)
+    no_arm = np.zeros((H, W), bool)
+    arm = np.zeros((H, W), bool)
+    arm[:450, 380:520] = True
+    covered = with_dark_box(100)
+    covered[arm] = (30, 30, 30)
+    uncovered = with_dark_box(100)
+
+    det.detect(request(0, arms={"top": no_arm}, top=image(), side=image()))
+    det.detect(request(1, arms={"top": arm}, top=covered, side=image()))
+    det.detect(request(2, arms={"top": arm}, top=covered, side=image()))
+
+    assert len(fake.runs()) == 2
+
+    det.detect(request(3, arms={"top": no_arm}, top=uncovered, side=image()))
+    det.detect(request(4, arms={"top": no_arm}, top=uncovered, side=image()))
+
+    assert len(fake.runs()) == 3
     det.stop("test")
 
 

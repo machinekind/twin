@@ -19,7 +19,7 @@ from machinekind_twin_llm.images import (
     SentImage,
     arm_thumbnail,
     encode,
-    known_scene,
+    hide_arm,
     largest_change_px,
     thumbnail,
     unchanged,
@@ -417,24 +417,19 @@ def arm_at(img: np.ndarray, x: int, reach: int = 600) -> tuple[np.ndarray, np.nd
     return out, mask
 
 
-def test_the_pixels_the_arm_hides_keep_their_last_seen_value_or_none():
-    rng = np.random.default_rng(0)
-    seen = thumbnail(table(rng))
-    now = thumbnail(table(rng))
+def test_hide_arm_marks_the_pixels_under_the_mask_as_not_shown():
+    now = thumbnail(table(np.random.default_rng(0)))
     arm = np.zeros(now.shape, bool)
     arm[:100, 60:80] = True
 
-    known = known_scene(now, arm, seen)
-    np.testing.assert_array_equal(known[arm], seen[arm])
-    np.testing.assert_array_equal(known[~arm], now[~arm])
-    for previous in (None, seen[:, 1:]):
-        first = known_scene(now, arm, previous)
-        assert np.isnan(first[arm]).all()
-        np.testing.assert_array_equal(first[~arm], now[~arm])
-    np.testing.assert_array_equal(known_scene(now, None, seen), now)
+    hidden = hide_arm(now, arm)
+
+    assert np.isnan(hidden[arm]).all()
+    np.testing.assert_array_equal(hidden[~arm], now[~arm])
+    assert not np.isnan(now).any()
 
 
-def test_a_place_no_frame_showed_yet_counts_as_changed_once_seen():
+def test_a_place_hidden_before_counts_as_changed_once_shown_and_one_hidden_now_is_left_out():
     base = thumbnail(table(np.random.default_rng(0)))
     unseen = base.copy()
     unseen[:100, 60:80] = np.nan
@@ -449,8 +444,8 @@ def test_the_arm_reaching_further_under_its_mask_is_no_change():
     near_img, near_arm = arm_at(base, 300, reach=300)
     far_img, far_arm = arm_at(base, 300)
     near_thumb, far_thumb = thumbnail(near_img), thumbnail(far_img)
-    near = known_scene(near_thumb, arm_thumbnail(near_arm, near_thumb.shape), None)
-    far = known_scene(far_thumb, arm_thumbnail(far_arm, far_thumb.shape), near)
+    near = hide_arm(near_thumb, arm_thumbnail(near_arm, near_thumb.shape))
+    far = hide_arm(far_thumb, arm_thumbnail(far_arm, far_thumb.shape))
 
     assert largest_change_px(near_thumb, far_thumb) > STILL_MAX_BLOB_PX
     assert largest_change_px(near, far) == 0
@@ -461,7 +456,7 @@ def test_the_arm_reaching_further_under_its_mask_is_no_change():
     entering = thumbnail(entering_img)
 
     assert not unchanged({"top": cube_before},
-                         {"top": known_scene(entering, arm_thumbnail(entering_arm, entering.shape), cube_before)})
+                         {"top": hide_arm(entering, arm_thumbnail(entering_arm, entering.shape))})
 
 
 def test_the_mean_is_matched_over_the_pixels_both_frames_show():
@@ -471,8 +466,11 @@ def test_the_mean_is_matched_over_the_pixels_both_frames_show():
     hidden = base.copy()
     hidden[arm] = 0
     before, now = thumbnail(base), thumbnail(hidden)
+    mask = arm_thumbnail(arm, now.shape)
+    cube = thumbnail(with_box(hidden, 800, 400, CUBE_PX, 40))
 
-    assert largest_change_px(before, known_scene(now, arm_thumbnail(arm, now.shape), None)) == 0
+    assert largest_change_px(before, hide_arm(now, mask)) == 0
+    assert largest_change_px(before, hide_arm(cube, mask)) > STILL_MAX_BLOB_PX
 
 
 def test_the_arm_s_edge_and_shadow_beside_its_mask_do_not_count_but_a_cube_further_off_does():
@@ -485,13 +483,13 @@ def test_the_arm_s_edge_and_shadow_beside_its_mask_do_not_count_but_a_cube_furth
 
     assert mask.shape == now.shape and mask.dtype == bool
     assert largest_change_px(before, now) > STILL_MAX_BLOB_PX
-    assert largest_change_px(before, known_scene(now, mask, before)) == 0
-    assert largest_change_px(before, known_scene(cube, mask, before)) > STILL_MAX_BLOB_PX
+    assert largest_change_px(before, hide_arm(now, mask)) == 0
+    assert largest_change_px(before, hide_arm(cube, mask)) > STILL_MAX_BLOB_PX
 
 
-def test_an_image_no_frame_showed_yet_counts_as_changed():
+def test_an_image_wholly_hidden_counts_as_changed():
     frame = thumbnail(np.full((480, 640, 3), 120, np.uint8))
-    unseen = known_scene(frame, np.ones(frame.shape, bool), None)
+    unseen = hide_arm(frame, np.ones(frame.shape, bool))
 
     assert largest_change_px(frame, unseen) == frame.size
     assert largest_change_px(unseen, unseen) == frame.size

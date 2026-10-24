@@ -6,9 +6,9 @@ asks one question per call, in a call directory of its own under the detector's 
 With `reuse_if_still` it repeats the last answer instead while no camera's image changed since the
 frames of the last question. It also repeats it while the scene still moves: frames that changed
 since the last question and since the previous call wait, for up to `SETTLE_MAX_SKIPS` calls, so a
-hand passing through is not asked about mid-motion. Where the twin's arm masks hide the scene, each
-camera keeps what its earlier frames showed there (`images.known_scene`), so the arm moving over the
-table is no change while an object it leaves behind is. A question over the hourly cap fails. `stop`
+hand passing through is not asked about mid-motion. Pixels the twin's arm masks hide are left out,
+so the arm moving over a table the last question saw is no change, while a place the arm hid when
+that question was asked counts as changed once it shows. A question over the hourly cap fails. `stop`
 cancels a running question: the CLI's process group is killed within 0.2 s.
 """
 
@@ -28,7 +28,7 @@ from machinekind_twin_api import Detection, Detector, DetectorInfo, DetectReques
 
 from . import cli
 from .answer import parse_answer
-from .images import arm_thumbnail, encode, known_scene, thumbnail, unchanged
+from .images import arm_thumbnail, encode, hide_arm, thumbnail, unchanged
 from .prompt import SCHEMA, build_prompt
 from .settings import LlmSettings, names, validate
 
@@ -60,9 +60,9 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
-        #: The still check, by camera (`images.known_scene`): what the frames showed when the last
-        #: question was asked and at the previous call; then the calls repeated in a row while the
-        #: scene moved, and the last answer and when it was asked.
+        #: The still check, by camera: thumbnails of the frames of the last question and of the
+        #: previous call, NaN where the arm hid the scene (`images.hide_arm`); then the calls
+        #: repeated in a row while the scene moved, and the last answer and when it was asked.
         self._ref: dict[str, np.ndarray] = {}
         self._prev: dict[str, np.ndarray] = {}
         self._moving = 0
@@ -116,9 +116,9 @@ class LlmDetector(Detector[LlmSettings]):
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
         now = time.monotonic()
-        scene = self._scene(request, frames) if config.reuse_if_still else {}
-        reason = self._repeat_reason(scene, now)
-        self._prev = scene
+        views = self._views(request, frames) if config.reuse_if_still else {}
+        reason = self._repeat_reason(views, now)
+        self._prev = views
         if reason:
             logger.debug("llm: %s, repeating the answer from %.0f s ago", reason, now - self._last_t)
             return list(self._last)
@@ -153,31 +153,31 @@ class LlmDetector(Detector[LlmSettings]):
             raise cli.CliCancelled("stopped")
 
         dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
-        self._ref, self._last, self._last_t, self._moving = scene, dets, now, 0
+        self._ref, self._last, self._last_t, self._moving = views, dets, now, 0
         return list(dets)
 
-    def _scene(self, request: DetectRequest, frames: list[tuple[str, np.ndarray]]) -> dict[str, np.ndarray]:
-        """What each camera's frames have shown up to this call: the thumbnail of the frame sent,
-        with the pixels its arm mask hides kept from the previous call. A mask of another shape than
-        its frame is ignored."""
-        scene: dict[str, np.ndarray] = {}
+    def _views(self, request: DetectRequest, frames: list[tuple[str, np.ndarray]]) -> dict[str, np.ndarray]:
+        """The thumbnail of each camera's frame, NaN where its arm mask hides the scene. A mask of
+        another shape than its frame is ignored."""
+        views: dict[str, np.ndarray] = {}
         for name, image in frames:
             thumb = thumbnail(image)
             mask = request.arm_masks.get(name)
-            arm = arm_thumbnail(mask, thumb.shape) if mask is not None and mask.shape == image.shape[:2] else None
-            scene[name] = known_scene(thumb, arm, self._prev.get(name))
-        return scene
+            if mask is not None and mask.shape == image.shape[:2]:
+                thumb = hide_arm(thumb, arm_thumbnail(mask, thumb.shape))
+            views[name] = thumb
+        return views
 
-    def _repeat_reason(self, scene: dict[str, np.ndarray], now: float) -> str:
-        """Why this call repeats the last answer instead of asking; "" = ask. Only an answer
-        restarts the count of repeats for motion, so failed questions in a moving scene keep the
-        runner's backoff."""
-        if not scene or now - self._last_t >= self.config.reuse_max_age_s:
+    def _repeat_reason(self, views: dict[str, np.ndarray], now: float) -> str:
+        """Why this call repeats the last answer instead of asking; "" = ask. An answer, or frames
+        that match the last question's, restarts the count of repeats for motion; a failed question
+        does not, so the runner's backoff holds while the scene moves."""
+        if not views or now - self._last_t >= self.config.reuse_max_age_s:
             return ""
-        if unchanged(self._ref, scene):
+        if unchanged(self._ref, views):
             self._moving = 0
             return "no camera's image changed"
-        if self._moving < SETTLE_MAX_SKIPS and not unchanged(self._prev, scene):
+        if self._moving < SETTLE_MAX_SKIPS and not unchanged(self._prev, views):
             self._moving += 1
             return f"the scene still moves ({self._moving} of {SETTLE_MAX_SKIPS})"
         return ""

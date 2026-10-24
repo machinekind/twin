@@ -11,10 +11,9 @@ total: an object moving changes one patch, while noise, banding and a flickering
 isolated pixels or small groups.
 
 The arm moving is no change either. `arm_thumbnail` shrinks the twin's arm mask to the thumbnail
-and widens it over the arm's edge and shadow. `known_scene` keeps, per pixel, the value of the last
-frame that showed it, so pixels the arm hides keep what lay there before. The place the arm leaves
-then counts as changed only when it no longer shows what it showed before the arm came, or when no
-frame showed it yet.
+and widens it over the arm's edge and shadow, and `hide_arm` marks the pixels under it as not shown.
+A pixel hidden now is left out. A pixel hidden in the frames the last question was asked on counts
+as changed once it shows: the answer was given without seeing it, whatever lay there before.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ import cv2
 import numpy as np
 
 __all__ = ["ARM_DILATE_PX", "BLOB_JOIN_PX", "CHANGED_LEVELS", "GAIN_TOLERANCE", "JPEG_QUALITY",
-           "STILL_MAX_BLOB_PX", "THUMB_LONG_PX", "SentImage", "arm_thumbnail", "encode", "known_scene",
+           "STILL_MAX_BLOB_PX", "THUMB_LONG_PX", "SentImage", "arm_thumbnail", "encode", "hide_arm",
            "largest_change_px", "thumbnail", "unchanged"]
 
 #: JPEG quality of the images sent.
@@ -133,24 +132,19 @@ def arm_thumbnail(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
     return cv2.dilate(small.astype(np.uint8), kernel) > 0
 
 
-def known_scene(thumb: np.ndarray, arm: np.ndarray | None, previous: np.ndarray | None) -> np.ndarray:
-    """What one camera's frames have shown so far: `thumb` where the thumbnail-sized arm mask `arm`
-    leaves the scene visible, and the camera's `previous` known scene where the arm hides it.
-
-    NaN marks a pixel no frame showed yet: under the arm when `previous` is None or of another
-    shape. Without a mask the result is `thumb`.
-    """
-    if arm is None:
-        return thumb
-    behind = previous if previous is not None and previous.shape == thumb.shape else np.nan
-    return np.where(arm, behind, thumb).astype(np.float32)
+def hide_arm(thumb: np.ndarray, arm: np.ndarray) -> np.ndarray:
+    """A copy of `thumb` with NaN wherever the thumbnail-sized arm mask `arm` is True: pixels the
+    frame does not show."""
+    hidden = thumb.copy()
+    hidden[arm] = np.nan
+    return hidden
 
 
 def largest_change_px(before: np.ndarray, now: np.ndarray) -> int:
     """The area of the largest blob of changed pixels between two thumbnails of one camera
     [thumbnail px].
 
-    A NaN pixel is one no frame showed yet (`known_scene`). One that is NaN in `now` is left out;
+    A NaN pixel is one the frame does not show (`hide_arm`). One that is NaN in `now` is left out;
     one that is NaN only in `before` counts as changed. The mean brightness of the pixels both show
     is matched first. Such a pixel counts as changed when it moved by `CHANGED_LEVELS` plus
     `GAIN_TOLERANCE` of its smaller distance from the mean. Changed pixels up to `BLOB_JOIN_PX` apart
