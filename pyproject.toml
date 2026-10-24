@@ -19,7 +19,7 @@ dependencies = [
     "PyYAML>=6.0",
     # The plugin contracts, packages/machinekind_twin_api in this repository. They are not on PyPI;
     # `uv sync` installs them from the clone ([tool.uv.sources]).
-    "machinekind-twin-api>=0.1,<0.2",
+    "machinekind-twin-api>=0.1.2,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +35,7 @@ research = ["trimesh>=4,<6"]
 dev = [
     "machinekind-twin[twin]",
     "machinekind-twin-arm6",
+    "machinekind-twin-cube",
     "machinekind-twin-swing",
     "pytest>=7.4",
     "pyright>=1.1",
@@ -48,6 +49,7 @@ twin = "machinekind_twin.cli:main"
 [tool.uv.sources]
 machinekind-twin-api = { path = "packages/machinekind_twin_api", editable = true }
 machinekind-twin-arm6 = { path = "examples/robots/arm6", editable = true }
+machinekind-twin-cube = { path = "examples/detectors/cube", editable = true }
 machinekind-twin-swing = { path = "examples/strategies/swing", editable = true }
 
 # The type checker runs on the contracts and on what implements them; the rest of the twin is not typed yet.
@@ -55,9 +57,17 @@ machinekind-twin-swing = { path = "examples/strategies/swing", editable = true }
 extraPaths = ["packages/machinekind_twin_api"]
 include = [
     "packages/machinekind_twin_api",
+    "examples/detectors",
     "examples/strategies",
+    "src/machinekind_twin/detection.py",
+    "src/machinekind_twin/detectors.py",
+    "src/machinekind_twin/objects.py",
+    "src/machinekind_twin/plugin_settings.py",
     "src/machinekind_twin/strategy.py",
     "src/machinekind_twin/strategies.py",
+    "src/machinekind_twin/tracks.py",
+    "src/machinekind_twin/ui/detector_tab.py",
+    "src/machinekind_twin/ui/plugin_form.py",
     "src/machinekind_twin/waypoints.py",
 ]
 

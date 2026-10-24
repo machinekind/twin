@@ -127,6 +127,7 @@ def shared_app(tmp_path_factory):
 def app(shared_app):
     a = shared_app
     yield a
+    a.perception.stop_all("koniec testu")
     a.strategies.stop("koniec testu")
     for job in (a.calib_job, a.sysid_job, a.intr_job):
         job.stop()
@@ -966,3 +967,277 @@ def test_no_strategy_package_is_imported_until_one_is_chosen(app, swing):
     assert tab._inputs == {}
     assert "Wybierz strategie" in tab.about_md.content
 
+
+def test_the_strategies_tab_gives_its_runner_the_objects_the_detectors_see(app, swing):
+    app.twin.connect("sim", threaded=False)
+    tab = choose_strategy(app, swing, joint="j1")
+
+    tab.start()
+
+    assert tab.runner._objects == app.perception.objects
+
+
+# ------------------------------------------------------------------ detectors from installed packages
+def choose_detector(app, name: str, **values):
+    """Detektory: Odswiez liste, choose `name`, type `values` into its form."""
+    tab = app.detectors
+    tab.refresh()
+    tab.pick.value = name
+    for key, value in values.items():
+        tab.form.inputs[key].value = value
+    return tab
+
+
+def start_detector(tab) -> None:
+    """Uruchom detektor, and wait for its start thread."""
+    tab.start()
+    tab.start_thread.join(10.0)
+    assert not tab.start_thread.is_alive()
+
+
+def test_the_detectors_tab_draws_an_installed_detectors_settings(app, cube_example):
+    tab = choose_detector(app, cube_example)
+
+    assert cube_example in tab.pick.options
+    assert tab.plugin.name == "cube"
+    assert "machinekind-twin-cube 0.1.0" in tab.about_md.content
+    inputs = tab.form.inputs
+    assert list(inputs) == ["color", "size_m", "label", "min_area_px", "interval_s"]
+    assert type(inputs["color"]).__name__ == "GuiTextHandle"
+    assert type(inputs["label"]).__name__ == "GuiTextHandle"
+    assert type(inputs["size_m"]).__name__ == "GuiNumberHandle"
+    assert type(inputs["interval_s"]).__name__ == "GuiNumberHandle"
+    assert inputs["color"].value == "red"
+    assert inputs["size_m"].value == 0.03
+
+
+def test_the_detectors_config_section_prefills_its_form(app, cube_example, tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "cube:\n  color: green\n")
+
+    tab = choose_detector(app, cube_example)
+
+    assert tab.section_problem == ""
+    assert tab.form.inputs["color"].value == "green"
+
+
+def test_a_wrong_key_in_the_detectors_config_section_blocks_its_start(app, cube_example, tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "cube:\n  colour: green\n")
+
+    tab = choose_detector(app, cube_example)
+
+    assert "colour" in tab.section_problem
+    assert "Uruchom odmowi" in tab.about_md.content
+    with pytest.raises(ValueError, match=r"Nieznane klucze w sekcji cube: \['colour'\]"):
+        tab.start()
+    assert app.perception.running() == {}
+
+
+def test_start_runs_the_detector_and_stop_removes_it_and_its_objects(app, cube_example):
+    tab = choose_detector(app, cube_example, color="green")
+
+    start_detector(tab)
+
+    runner = app.perception.running()["cube"]
+    assert runner.status.running
+    assert runner.detector.config.color == "green"
+    assert "detektory: cube" in app._status_text()
+    tab.tick()
+    assert "**dziala**" in tab._rows["cube"].md.content
+    assert tab._rows["cube"].stop.label == "Zatrzymaj cube"
+    assert not tab.none_md.visible
+
+    tab.stop("cube")
+
+    assert app.perception.running() == {}
+    assert app.perception.objects() == {}
+    assert not runner.status.running
+    tab.tick()
+    assert tab._rows["cube"].md.content == "zatrzymany: zatrzymany z panelu"
+    tab.refresh()
+    assert tab._rows == {}
+    assert tab.none_md.visible
+
+
+def test_a_second_start_of_a_running_detector_replaces_it(app, cube_example):
+    tab = choose_detector(app, cube_example)
+    start_detector(tab)
+    first = app.perception.running()["cube"]
+
+    tab.form.inputs["color"].value = "blue"
+    start_detector(tab)
+
+    second = app.perception.running()["cube"]
+    assert second is not first and second.status.running
+    assert second.detector.config.color == "blue"
+    assert not first.status.running
+    assert first.status.stopped_because == "ponownie z nowymi ustawieniami"
+
+
+def test_a_second_start_while_the_first_is_starting_is_refused_and_the_panel_does_not_wait(
+        app, cube_example, monkeypatch):
+    tab = choose_detector(app, cube_example)
+    inside = threading.Event()
+    let_go = threading.Event()
+    start = app.perception.start_detector
+
+    def slow_start(plugin, raw):
+        inside.set()
+        let_go.wait(5.0)
+        return start(plugin, raw)
+
+    monkeypatch.setattr(app.perception, "start_detector", slow_start)
+    tab.start()                                                   # returns while the detector starts
+    assert inside.wait(5.0)
+    tab.tick()
+    assert tab._rows["cube"].md.content == "**startuje...**"
+
+    with pytest.raises(RuntimeError, match="start detektora juz trwa"):
+        tab.start()
+
+    let_go.set()
+    tab.start_thread.join(5.0)
+    assert "cube" in app.perception.running()
+
+
+def test_a_detector_refusing_its_settings_shows_why_in_its_row(app, cube_example):
+    tab = choose_detector(app, cube_example, color="purple")
+
+    start_detector(tab)
+
+    assert app.perception.running() == {}
+    tab.tick()
+    assert tab._rows["cube"].md.content.startswith("**nie ruszyl:** ValueError: cube: unknown color 'purple'")
+
+
+def test_the_detectors_tab_lists_the_tracked_objects_and_draws_them_in_3d(app, monkeypatch):
+    from machinekind_twin.objects import Located
+
+    loc = Located("cube", np.array([0.231, -0.04, 0.015]), np.eye(3), 0.93, 2, time.monotonic(),
+                  (0.03, 0.03, 0.03), "sylwetka")
+    app.perception.tracks.observe("cube", [loc], latency_s=0.05, interval_s=0.33)
+    tab = app.detectors
+
+    # A step within 10 ms of an earlier one returns the cached result; an earlier test may have
+    # just stepped, so lift the rate limit and step once.
+    monkeypatch.setattr(app.perception.tracks, "MIN_STEP_S", 0.0)
+    app.perception.objects()
+    tab.tick()
+
+    line = tab.objects_md.content
+    assert line.startswith("- **cube**: x 23.1 cm, y -4.0 cm, z 1.5 cm, obrot 0 st., kamery, 2 kam. (sylwetka), "
+                           "pewnosc 0.93, wiek ")
+    assert line.endswith(" s [cube]")
+    assert tab._markers[0].frame.visible and tab._markers[0].key == ("pudelko", (0.03, 0.03, 0.03))
+
+    tab.show_3d.value = False
+    tab.tick()
+    assert not tab._markers[0].frame.visible
+
+    tab.show_3d.value = True
+    app.perception.stop_all("koniec testu")
+    tab.tick()
+    assert tab.objects_md.content == "brak obiektow"
+    assert not tab._markers[0].frame.visible
+
+
+def test_the_map_tab_lists_what_the_detectors_track_and_runs_no_detection_of_its_own(app, monkeypatch):
+    from machinekind_twin.objects import Located
+
+    for gone in ("cube_det", "cube_on", "cube_color", "cube_node", "_mapper_now"):
+        assert not hasattr(app, gone)
+    assert app.mapper is app.perception.mapper()
+    assert app._objects_text() == "  \nobiekty: zaden detektor nie dziala (zakladka Detektory)"
+
+    monkeypatch.setattr(app.perception, "running", lambda: {"cube": None})
+    assert app._objects_text() == "  \nobiekty: nie widac"
+
+    loc = Located("cube", np.array([0.231, -0.04, 0.015]), np.eye(3), 0.93, 2, time.monotonic(),
+                  (0.03, 0.03, 0.03), "sylwetka")
+    app.perception.tracks.observe("cube", [loc], latency_s=0.05, interval_s=0.33)
+    # A step within 10 ms of an earlier one returns the cached result: lift the rate limit.
+    monkeypatch.setattr(app.perception.tracks, "MIN_STEP_S", 0.0)
+    assert "cube" in app.perception.objects()
+
+    text = app._objects_text()
+    assert text.startswith("  \ncube: x 23.1 cm, y -4.0 cm, obrot 0 st., pewnosc 0.93, 2 kam., kamery, kadr sprzed ")
+    assert text.endswith(" ms")
+    app.perception.stop_all("koniec testu")
+
+
+def test_closing_the_panel_stops_its_detectors(tmp_path, cube_example):
+    app = a_panel(tmp_path / "twin.json")
+    try:
+        start_detector(choose_detector(app, cube_example))
+        runner = app.perception.running()["cube"]
+    finally:
+        app.close()
+
+    assert app.perception.running() == {}
+    assert not runner.status.running
+    assert runner.status.stopped_because == "zamkniecie panelu"
+
+
+def test_the_detector_flag_starts_its_detector_at_panel_start(tmp_path, monkeypatch, cube_example):
+    """`twin ui --detector cube`: the detector runs without a click, with its config section's settings."""
+    from machinekind_twin.ui.app import TwinApp
+
+    a_config_file(tmp_path, monkeypatch, "cube:\n  color: green\n")
+    path = tmp_path / "twin.json"
+    path.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+    app = TwinApp(path, host="127.0.0.1", port=free_port(), startup={"detectors": [cube_example]})
+    try:
+        thread = app.detectors.start_thread
+        assert thread is not None and thread.name == "detektor-start:cube"
+        thread.join(10.0)
+        assert not thread.is_alive()
+
+        runner = app.perception.running()["cube"]
+        assert runner.status.running
+        assert runner.detector.config.color == "green"
+    finally:
+        app.close()
+
+
+def test_a_detector_that_cannot_start_at_panel_start_shows_why_and_the_panel_runs_on(app, cube_example,
+                                                                                     tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "cube:\n  colour: green\n")
+    tab = app.detectors
+
+    app._startup(detectors=["no_such_detector", cube_example])   # never raises
+
+    assert app.perception.running() == {}
+    tab.tick()
+    assert tab._rows["no_such_detector"].md.content.startswith("**nie ruszyl:** KeyError: \"Nieznany detektor")
+    assert tab._rows["cube"].md.content.startswith("**nie ruszyl:** ValueError: Nieznane klucze w sekcji cube")
+    tab.refresh()
+
+
+def test_the_detector_flag_reaches_the_panel_from_twin_ui(tmp_path, monkeypatch, capsys):
+    """`twin ui --detector NAME` forwards each name to the panel, which hands them to its startup."""
+    from machinekind_twin.cli import main as twin
+    from machinekind_twin.ui import app as ui_app
+
+    panel_main = ui_app.main
+    started: list[list[str]] = []
+    monkeypatch.setattr(ui_app, "main", lambda argv: started.append(argv) or 0)
+    station = tmp_path / "twin.json"
+    station.write_text(json.dumps({"robot": BOT}), encoding="utf-8")
+
+    assert twin(["ui", "--workspace", str(station), "--detector", "cube", "--detector", "llm"]) == 0
+    assert started == [["--host", "127.0.0.1", "--port", "8080", "--workspace", str(station),
+                        "--detector", "cube", "--detector", "llm"]]
+    assert "Start panelu: ramie nie, detektory cube, llm" in capsys.readouterr().out
+
+    made: list[dict] = []
+
+    class Panel:
+        def __init__(self, *args, startup=None, **kw):
+            made.append(startup)
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(ui_app, "TwinApp", Panel)
+    assert panel_main(started[0]) == 0
+    assert panel_main(["--workspace", str(station)]) == 0
+    assert made == [{"arm": False, "detectors": ["cube", "llm"]}, {"arm": False, "detectors": []}]

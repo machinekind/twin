@@ -25,23 +25,17 @@ import numpy as np
 import viser
 
 from ..kinematics import inverse
-from ..strategies import SettingField, StrategyPlugin, config_section, load_strategy, strategies
+from ..strategies import StrategyPlugin, config_section, load_strategy, strategies
 from ..strategy import OWNER, Strategy, StrategyRunner
+from .plugin_form import BLANK, FLOAT_STEP, NONE, SettingsForm
 
 if TYPE_CHECKING:
     from .app import TwinApp
 
 logger = logging.getLogger(__name__)
 
-#: The dropdown's first option, no strategy chosen. The panel starts on it, so no strategy package is
-#: imported (a VLA's may take seconds) until the operator chooses one.
-NONE = "-"
-
-#: The panel keeps as many decimals of a number as its step has, so floats get a fine step.
-FLOAT_STEP = 0.001
-
-#: What the form shows for a field without a default that the config section does not give.
-BLANK = {str: "", int: 0, float: 0.0, bool: False}
+# The form's constants live in `plugin_form`; they stay importable from here.
+__all__ = ["BLANK", "FLOAT_STEP", "NONE", "StrategyTab"]
 
 NOTHING_INSTALLED = (
     "Brak strategii. Pakiet rejestruje strategie w grupie entry points `machinekind_twin.strategies`; "
@@ -60,10 +54,7 @@ class StrategyTab:
         #: What is wrong with the chosen strategy's config section ("" = nothing): Start refuses it.
         self.section_problem = ""
 
-        self._inputs: dict[str, Any] = {}
-        #: Required fields the config section or the operator gave. A blank one nobody touched is missing.
-        self._given: set[str] = set()
-        # viser runs callbacks on several threads, and a form is filled inside its folder's context.
+        # viser runs callbacks on several threads: the chosen plugin and its form change together.
         self._form_lock = threading.Lock()
         # Two Start clicks run on two viser threads: the second would start another runner under the same owner.
         self._starting = threading.Lock()
@@ -85,7 +76,7 @@ class StrategyTab:
             hint="Szuka strategii w zainstalowanych pakietach od nowa i czyta na nowo sekcje "
                  "konfiguracji wybranej strategii.")
         self.about_md = gui.add_markdown("")
-        self.form = gui.add_folder("Ustawienia")
+        self.form = SettingsForm(gui, gui.add_folder("Ustawienia"))
 
         with gui.add_folder("Uruchom na blizniaku"):
             self.confirm = gui.add_checkbox(
@@ -152,7 +143,7 @@ class StrategyTab:
     def show(self) -> None:
         """Imports the chosen strategy and draws its settings form, prefilled from its config section."""
         with self._form_lock:
-            self._clear_form()
+            self.form.clear()
             self.plugin = None
             self.section_problem = ""
 
@@ -170,8 +161,13 @@ class StrategyTab:
                 return
 
             self.plugin = plugin
-            self._fill_form(plugin, section)
+            self.section_problem = self.form.fill(plugin, section)
             self.about_md.content = self._about(plugin)
+
+    @property
+    def _inputs(self) -> dict[str, Any]:
+        """The form's input handles by field name."""
+        return self.form.inputs
 
     def _nothing_chosen(self) -> str:
         if self.list_problem:
@@ -179,49 +175,6 @@ class StrategyTab:
         if len(self.pick.options) == 1:
             return NOTHING_INSTALLED
         return CHOOSE
-
-    def _clear_form(self) -> None:
-        for handle in self._inputs.values():
-            handle.remove()
-        self._inputs = {}
-        self._given = set()
-        self.form.visible = False
-
-    def _fill_form(self, plugin: StrategyPlugin, section: dict[str, Any]) -> None:
-        try:
-            prefill = plugin.check(section)
-        except ValueError as exc:
-            self.section_problem = str(exc)
-            prefill = {}
-
-        self._given = set(prefill)
-
-        with self.form:
-            for field in plugin.fields:
-                handle = self._add_input(field, prefill.get(field.name, _start_value(field)))
-                handle.on_update(self._given_by_operator(field.name))
-                self._inputs[field.name] = handle
-
-        self.form.visible = bool(plugin.fields)
-
-    def _add_input(self, field: SettingField, value: Any) -> Any:
-        gui = self.app.server.gui
-        kind = field.kind.__name__
-        hint = f"{kind}, wymagane" if field.required else f"{kind}, domyslnie {field.default!r}"
-
-        if field.kind is bool:
-            return gui.add_checkbox(field.name, value, hint=hint)
-        if field.kind is str:
-            return gui.add_text(field.name, value, hint=hint)
-        if field.kind is int:
-            return gui.add_number(field.name, value, step=1, hint=hint)
-        return gui.add_number(field.name, value, step=FLOAT_STEP, hint=hint)
-
-    def _given_by_operator(self, name: str):
-        def given(event) -> None:
-            self._given.add(name)
-
-        return given
 
     def _about(self, plugin: StrategyPlugin) -> str:
         lines = [f"**{plugin.name}**" + (f" - {plugin.summary}" if plugin.summary else "")]
@@ -256,7 +209,8 @@ class StrategyTab:
         mark = app._motion_mark()
 
         self._check_arm()
-        runner = StrategyRunner(app.twin, self._create(), goal=self.goal, cameras=self._cameras())
+        runner = StrategyRunner(app.twin, self._create(), goal=self.goal, cameras=self._cameras(),
+                                objects=app.perception.objects)
 
         self.stop("nowa strategia")
         app._release_panel()
@@ -293,22 +247,7 @@ class StrategyTab:
                 raise RuntimeError("wybierz strategie, ktora sie laduje")
 
             plugin.check(config_section(plugin.name))
-            return plugin.create(self._form_values(plugin))
-
-    def _form_values(self, plugin: StrategyPlugin) -> dict[str, Any]:
-        values = {}
-
-        for field in plugin.fields:
-            value = self._inputs[field.name].value
-            if field.required and not self._is_given(field.name, value):
-                continue
-            values[field.name] = value
-
-        return values
-
-    def _is_given(self, name: str, value: Any) -> bool:
-        # The form always holds a value; a blank required field (untouched, or an emptied text) is not given.
-        return name in self._given and value != ""
+            return plugin.create(self.form.values(plugin))
 
     def _cameras(self) -> list[str]:
         """Enabled workspace cameras, then the cameras on the arm, each name once.
@@ -369,9 +308,3 @@ class StrategyTab:
 
         self.run_md.content = line
 
-
-def _start_value(field: SettingField) -> Any:
-    if field.required:
-        return BLANK[field.kind]
-
-    return field.default

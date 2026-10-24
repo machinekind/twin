@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -36,14 +37,16 @@ from .. import scene as sc
 from ..calib.card import Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import Board
+from ..detection import Perception
 from ..kinematics import inverse, pose
-from ..perception import CubeDetector, TableMapper
+from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
 from ..workspace import CameraRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
+from .detector_tab import NOTHING_RUNNING, DetectorTab
 from .strategy_tab import StrategyTab
 from .stream import FrameServer
 from .watch import CameraWatch, arm_mask, distort_mask
@@ -102,24 +105,32 @@ def _skip_unchanged_markdown() -> None:
 _skip_unchanged_markdown()
 
 GREEN, ORANGE, GREY, BLUE, RED = (40, 190, 90), (240, 160, 30), (150, 150, 150), (60, 140, 255), (230, 50, 50)
-CUBE_COLORS = {"czerwona": ((0, 120, 70), (12, 255, 255), (170, 120, 70), (180, 255, 255)),
-               "zielona": ((40, 80, 60), (85, 255, 255), (40, 80, 60), (85, 255, 255)),
-               "niebieska": ((95, 100, 60), (130, 255, 255), (95, 100, 60), (130, 255, 255)),
-               "zolta": ((20, 100, 90), (35, 255, 255), (20, 100, 90), (35, 255, 255))}
 
 
-#: "Jak uzywac" na gorze zakladek Mapa, Dynamika, Strategie i Sim-Real (Ramie, Kamery i Kalibracja
-#: prowadza same).
+#: The "Jak uzywac" (How to use) note at the top of the Mapa, Dynamika, Detektory, Strategie and
+#: Sim-Real tabs. The Ramie, Kamery and Kalibracja tabs guide the operator themselves.
 TAB_HELP = {
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
         "1. Sprawdz pokrycie blatu pod mapa.\n"
-        "2. Wybierz **Kolor kostki**, poloz kostke 3 cm przed ramieniem - ma sie pojawic ramka i polozenie.\n"
+        "2. Kostka i inne obiekty: uruchom detektor w zakladce **Detektory** (np. `cube`), poloz kostke 3 cm "
+        "przed ramieniem - ponizej mapy pojawia sie jej polozenie, a w 3D ramka.\n"
         "3. **Tag na biurku**: **Znajdz tag w kamerach**, potem **Jedz nad tag** (rusza ramieniem)."),
     "Dynamika": (
         "1. Polacz ramie (zakladka Ramie), **Identyfikuj** (~20 s ruchu), potem **Zapisz jako dynamike "
         "stanowiska**.\n"
         "2. Dynamika stanowiska idzie z `twin export` w station.json - z niej korzysta trening."),
+    "Detektory": (
+        "1. Detektory przychodza z zainstalowanych pakietow (entry points `machinekind_twin.detectors`), "
+        "np. przykladowy `cube` z `uv sync`; po instalacji **Odswiez liste**.\n"
+        "2. Detektor dostaje kadry kamer z zaufana poza (Kalibracja); polozenie w ukladzie podstawy liczy "
+        "blizniak - z dwoch kamer albo z jednej i wysokosci nad blatem.\n"
+        "3. Wybierz detektor - formularz to jego ustawienia, wypelnione z sekcji pliku konfiguracji o tej samej "
+        "nazwie. Nieznany klucz albo zly typ: Uruchom odmawia.\n"
+        "4. **Uruchom detektor**: obiekty pojawiaja sie ponizej i w 3D, a strategie dostaja je w `obs.objects` "
+        "z wiekiem pomiaru. Kilka detektorow moze dzialac naraz.\n"
+        "5. Wolny detektor (model jezykowy) odpowiada co kilka-kilkanascie sekund: strategia nie czeka, widzi "
+        "wiek pomiaru, a obiekt ma zrodlo \"ostatnie widziane\"."),
     "Strategie": (
         "1. Strategie przychodza z zainstalowanych pakietow (entry points `machinekind_twin.strategies`), "
         "np. przykladowa `swing` z `uv sync`; po instalacji **Odswiez liste**.\n"
@@ -491,7 +502,7 @@ class TwinApp:
         self.twin = Twin(self.ws)
         self.watch = CameraWatch()
         self.frames: dict[str, np.ndarray] = {}
-        #: Chwila wykonania kazdego kadru z `frames` (time.monotonic) - wiek detekcji kostki.
+        #: Capture time of each frame in `frames` (time.monotonic): the frame age detectors see.
         self.frame_times: dict[str, float] = {}
         self._t_grab = 0.0
         self.frame_lock = threading.Lock()
@@ -501,7 +512,6 @@ class TwinApp:
         #: fali i identyfikacji zapamietuje go na poczatku i bierze ramie tylko, gdy sie nie zmienil
         #: (`_motion_mark`, `_take_arm`) - STOP wcisniety w trakcie startu ginal.
         self._motion_gen = 0
-        self.cube_det = CubeDetector()
         from ..kinematics import RobotKinematics
         # Punkty ramienia do przesuniecia maski w kadrze - wlasna kinematyka (maski licza
         # petla panelu i przyciski visera).
@@ -516,11 +526,11 @@ class TwinApp:
         self._engage_t = 0.0
         #: (t, katy) z ostatnich ~3 s - maska ramienia w pozie z chwili kadru, nie renderu.
         self._joint_hist: deque[tuple[float, dict[str, float]]] = deque(maxlen=120)
+        # The panel loop appends to the history while detector threads read it (arm masks).
+        self._hist_lock = threading.Lock()
         self._map_pose_key = None
         self._intr_solve = threading.Event()
         self._dirty_rebuild = 0.0                       # kamera spoza modelu przeciagana - przebudowa po chwili
-        self.mapper: TableMapper | None = None
-        self._mapper_key = None
         self._stop = threading.Event()
         self.frustums: dict[str, Any] = {}
         self._frustum_key: dict[str, Any] = {}
@@ -563,6 +573,9 @@ class TwinApp:
         s.initial_camera.position = tuple(T[:3, 3] + np.array([0.75, -0.65, 0.55]))
         s.initial_camera.look_at = tuple(T[:3, 3] + np.array([0.18, 0.0, 0.05]))
 
+        # Detector threads read the cached frames (`_grab`), never render a sim camera themselves.
+        self.perception = Perception(self.twin, self.ws, frame=self._cached_frame_t, occluders=self._occluders)
+
         self._build_header()
         tabs = s.gui.add_tab_group()
         with tabs.add_tab("Ramie", icon=viser.Icon.ROBOT):
@@ -575,6 +588,8 @@ class TwinApp:
             self._build_map()
         with tabs.add_tab("Dynamika", icon=viser.Icon.ACTIVITY):
             self._build_dynamics()
+        with tabs.add_tab("Detektory", icon=viser.Icon.EYE):
+            self.detectors = DetectorTab(self)
         with tabs.add_tab("Strategie", icon=viser.Icon.ROUTE):
             self.strategies = StrategyTab(self)
         with tabs.add_tab("Sim-Real", icon=viser.Icon.ARROWS_DIFF):
@@ -601,22 +616,25 @@ class TwinApp:
             self.stream.start()
         self._startup(**(startup or {}))
 
-    def _startup(self, arm: bool = False) -> None:
-        """Flaga `twin ui --arm`: to samo, co "Polacz" w panelu (backend i port stanowiska, bez domu).
+    def _startup(self, arm: bool = False, detectors: Sequence[str] = ()) -> None:
+        """What `twin ui` flags do at panel start; an error is logged and the panel runs on.
 
-        Blad trafia do logu, panel dziala dalej.
+        `--arm` does what "Polacz" does (the workstation's backend and port, no homing).
+        `--detector NAME` does what "Uruchom detektor" does, with the config section's settings.
         """
-        if not arm:
-            return
-        try:
-            self._connect(self._preset_backend(), self._port_from_field(), False)
-            st = self.twin.status
-            logger.info("Start: ramie %s (%s), %s", st.backend, "symulacja" if st.simulated else "prawdziwe",
-                        st.state)
-        except Exception:
-            logger.exception("Start: nie polaczono z ramieniem")
-        finally:
-            self._guard("ramie", self._render_arm, True)
+        if arm:
+            try:
+                self._connect(self._preset_backend(), self._port_from_field(), False)
+                st = self.twin.status
+                logger.info("Start: ramie %s (%s), %s", st.backend,
+                            "symulacja" if st.simulated else "prawdziwe", st.state)
+            except Exception:
+                logger.exception("Start: nie polaczono z ramieniem")
+            finally:
+                self._guard("ramie", self._render_arm, True)
+
+        for name in detectors:
+            self.detectors.start_named(name)
 
     # ================================================================ narzedzia
     def _safe(self, fn):
@@ -805,6 +823,9 @@ class TwinApp:
             parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
         if self.strategies.running:
             parts.append(f"Strategia: jedzie ({self.strategies.runner.status.step} krokow)")
+        running = sorted(self.perception.running())
+        if running:
+            parts.append(f"detektory: {', '.join(running)}")
         # Trwale ostrzezenia ramienia (kalibracja chwytaka niezgodna z blizniakiem, chwytak
         # poluzowany po przeciazeniu) - `RobotStatus.warnings`; starszy status ich nie ma.
         warns = [str(w) for w in (getattr(st, "warnings", None) or [])]
@@ -1592,13 +1613,18 @@ class TwinApp:
     # ------------------------------------------------------ maska ramienia
     def _joints_at(self, t: float | None) -> dict[str, float] | None:
         """Katy ramienia z chwili `t` (historia z petli panelu); None = brak historii / teraz."""
-        if t is None or not self._joint_hist:
+        hist = self._hist()
+        if t is None or not hist:
             return None
-        hist = list(self._joint_hist)
         if t - hist[-1][0] > 0.3:
             return None                                     # historia urwana (rozlaczone) - poza z teraz
         before = [j for (ti, j) in hist if ti <= t]
         return before[-1] if before else hist[0][1]
+
+    def _hist(self) -> list[tuple[float, dict[str, float]]]:
+        """A copy of the joint history, taken under its lock: detector threads read it too."""
+        with self._hist_lock:
+            return list(self._joint_hist)
 
     def _arm_points(self, joints: dict[str, float]) -> np.ndarray:
         """Punkty ramienia (srodki bryl, poczatki ogniw, TCP) w ukladzie podstawy, (N, 3)."""
@@ -1622,7 +1648,7 @@ class TwinApp:
         juz na limicie 40 px, maska rosla o ~22 px na kazda strone i chowala kostke
         przy szczekach we wszystkich kamerach naraz, dokladnie w chwili chwytu.
         """
-        near = [(ti, j) for (ti, j) in list(self._joint_hist) if t + MASK_WINDOW[0] <= ti <= t + MASK_WINDOW[1]]
+        near = [(ti, j) for (ti, j) in self._hist() if t + MASK_WINDOW[0] <= ti <= t + MASK_WINDOW[1]]
         T = rec.true_pose()
         if len(near) < 2 or T is None:
             return []
@@ -1792,7 +1818,6 @@ class TwinApp:
             self._update_frustum(c)
         self._select_camera()
         self._render_cameras()
-        self._mapper_key = None
 
     def _update_frustum(self, c: CameraRecord) -> None:
         with self.scene_lock:
@@ -2512,14 +2537,8 @@ class TwinApp:
                                      hint="Kladzie mape na blacie w widoku 3D - tylko widok.")
         self.map_img = g.add_image(np.zeros((224, 224, 3), np.uint8), label="Mapa blatu", format="jpeg",
                                    jpeg_quality=80)
-        self.cube_on = g.add_checkbox("Szukaj kostki", True,
-                                      hint="Wykrywa kostke 3 cm w kolorze ponizej (piksele ramienia nie glosuja).")
-        self.cube_color = g.add_dropdown("Kolor kostki", tuple(CUBE_COLORS), initial_value="czerwona",
-                                         hint="Kolor kostki dla detektora (progi HSV); dziala od razu.")
         self.map_md = g.add_markdown("")
         self.map_node = None
-        self.cube_node = self.server.scene.add_box("/percepcja/kostka", color=(255, 80, 200), dimensions=(0.03,) * 3,
-                                                   opacity=0.5, wireframe=True, visible=False)
         with g.add_folder("Tag na biurku"):
             self.tag_id = g.add_number("id taga (AprilTag 36h11)", 0, min=0, max=586, step=1,
                                        hint="Tag lezacy na blacie; bok czarnego kwadratu bierze sie z pola "
@@ -2540,11 +2559,6 @@ class TwinApp:
             self.tag_md = g.add_markdown("")
         self._tag_fix = None
 
-        @self.cube_color.on_update
-        def _(event):
-            lo, hi, lo2, hi2 = CUBE_COLORS[self.cube_color.value]
-            self.cube_det.hsv_lo, self.cube_det.hsv_hi, self.cube_det.hsv_lo2, self.cube_det.hsv_hi2 = lo, hi, lo2, hi2
-
         @find_tag.on_click
         @self._safe
         def _(event):
@@ -2555,23 +2569,26 @@ class TwinApp:
         def _(event):
             self._goto_tag()
 
-    def _mapper_now(self) -> TableMapper | None:
-        key = tuple((c.name, c.enabled, c.trusted, str(c.T_cam2base), str(c.K)) for c in self.ws.cameras)
-        if key != self._mapper_key:
-            self._mapper_key = key
-            m = TableMapper.from_workspace(self.ws, only_trusted=True)
-            self.mapper = m if m.cameras else None
-        return self.mapper
+    @property
+    def mapper(self) -> TableMapper | None:
+        """The table map over the perception cameras, shared with the detectors; None without cameras.
+
+        The Map tab builds no mapper of its own: `Perception` rebuilds this one when the cameras change.
+        """
+        return self.perception.mapper()
 
     def _tick_map(self, frames: dict[str, np.ndarray]) -> None:
-        """Mapa blatu i detekcja kostki - do ogladania: mapa, ramka kostki w 3D, jej polozenie."""
-        mapper = self._mapper_now() if self.map_on.value else None
+        """The table map, to look at: the map image, its 3D copy, and one line per tracked object.
+
+        The objects come from the detectors (Detektory tab), as of the last tracking step; the
+        Map tab runs no detection of its own.
+        """
+        mapper = self.mapper if self.map_on.value else None
         if mapper is None:
             self.map_md.content = "Brak zaufanej, skalibrowanej kamery - najpierw kalibracja." if self.map_on.value \
                 else ""
             if self.map_node is not None:
                 self.map_node.visible = False
-            self.cube_node.visible = False
             return
         table, wsum = mapper.fuse(frames)
         self._img(self.map_img, "mapa", table)
@@ -2597,35 +2614,24 @@ class TwinApp:
                 self.map_node.visible = True
         elif self.map_node is not None:
             self.map_node.visible = False
-        det = None
-        if self.cube_on.value:
-            names = [n for n in mapper.cameras if n in frames]
-            now = time.monotonic()
-            with self.frame_lock:
-                times = dict(self.frame_times)
-            # Chwila detekcji = chwila NAJSTARSZEGO uzytego kadru (konsument ocenia jej wiek).
-            t_cams = {n: times.get(n, now) for n in names}
-            t_frames = min(t_cams.values(), default=now)
-            # Piksele zasloniete ramieniem (maska z blizniaka, w pozie z chwili kadru KAZDEJ kamery) nie glosuja.
-            occ = self._arm_masks(names, t_cams, dilate=5) if names else None
-            if names:
-                det = self.cube_det.detect_frames({n: frames[n] for n in names}, mapper, occ, t=t_frames)
-            if det is not None:
-                Tw = self.T_b2w @ pose(det.rot, det.pos)
-                self.cube_node.position, self.cube_node.wxyz = Tw[:3, 3], mat_to_wxyz(Tw[:3, :3])
-                self.cube_node.visible = True
-                yaw = np.degrees(np.arctan2(det.rot[1, 0], det.rot[0, 0]))
-                # n_cameras -1 = detekcja z samej mapy (nie wiadomo, ile kamer ja widzialo)
-                cams = f"{det.n_cameras} kam." if det.n_cameras >= 0 else "z mapy"
-                txt += (f"  \nkostka: x {det.pos[0] * 100:.1f} cm, y {det.pos[1] * 100:.1f} cm, obrot {yaw:.0f} st., "
-                        f"pewnosc {det.confidence:.2f}, {cams}, "
-                        f"kadr sprzed {1000 * (time.monotonic() - det.t):.0f} ms")
-            else:
-                self.cube_node.visible = False
-                txt += "  \nkostka: nie widac"
-        else:
-            self.cube_node.visible = False
+        txt += self._objects_text()
         self.map_md.content = txt
+
+    def _objects_text(self) -> str:
+        """The Map tab's object lines: what the detectors track, in the old cube line's format."""
+        views = self.perception.snapshot()
+        if not views:
+            return ("  \nobiekty: nie widac" if self.perception.running()
+                    else f"  \nobiekty: {NOTHING_RUNNING} (zakladka Detektory)")
+        txt = ""
+        for v in views:
+            txt += f"  \n{v.label}: x {v.pos[0] * 100:.1f} cm, y {v.pos[1] * 100:.1f} cm"
+            if v.method == "sylwetka":
+                yaw = np.degrees(np.arctan2(v.rot[1, 0], v.rot[0, 0]))
+                txt += f", obrot {yaw:.0f} st."
+            txt += (f", pewnosc {v.confidence:.2f}, {v.n_cameras} kam., {v.source}, "
+                    f"kadr sprzed {1000 * v.age_s:.0f} ms")
+        return txt
 
     # ============================================================== dynamika
     def _build_dynamics(self) -> None:
@@ -2952,6 +2958,16 @@ class TwinApp:
         with self.frame_lock:
             return {n: (img, self.frame_times.get(n, 0.0)) for n, img in self.frames.items()}
 
+    def _cached_frame_t(self, name: str) -> tuple[np.ndarray | None, float]:
+        """The frame source of `perception`: camera `name`'s frame from the last `_grab` and its
+        capture time (time.monotonic), or (None, 0.0). Any thread; never renders."""
+        with self.frame_lock:
+            return self.frames.get(name), self.frame_times.get(name, 0.0)
+
+    def _occluders(self, t_cams: dict[str, float]) -> dict[str, np.ndarray] | None:
+        """Arm masks for the detectors' silhouette fit, each camera in the pose of its frame's time."""
+        return self._arm_masks(list(t_cams), t_cams, dilate=5)
+
     def _fresh_frames(self, max_age: float) -> dict[str, np.ndarray]:
         """Kadry z ostatniego `_grab`, jesli sa mlodsze niz `max_age` [s], inaczej nowe."""
         with self.frame_lock:
@@ -3004,10 +3020,16 @@ class TwinApp:
                     self._img(h, f"piramida/{name}/{id(h)}", thumb(img, 160))
         self._tick_calibration()
         self._tick_dynamics()
+        # Tracking moves while no strategy reads the objects; then the tab shows them.
+        self._guard("detektory", self._tick_detectors)
         self.strategies.tick()
         # Po zakladkach: wynik fali / identyfikacji do zapisu jest juz widoczny w tym takcie.
         self._guard("przewodnik", self._tick_guide)
         return frames
+
+    def _tick_detectors(self) -> None:
+        self.perception.tick()
+        self.detectors.tick()
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
         changed = False
@@ -3060,7 +3082,8 @@ class TwinApp:
         """Historia katow do masek ramienia w chwili kadru (`_arm_masks`)."""
         st = self.twin.status
         if st.connected and st.measured:
-            self._joint_hist.append((now, dict(st.measured)))
+            with self._hist_lock:
+                self._joint_hist.append((now, dict(st.measured)))
 
     def run(self) -> None:
         port = self.server.get_port()
@@ -3106,6 +3129,7 @@ class TwinApp:
         """Najpierw ramie (strategia, zadania, rozlaczenie), dopiero potem serwer."""
         self._stop.set()
         try:
+            self.perception.stop_all("zamkniecie panelu")
             self.strategies.stop("zamkniecie panelu")
             for job in (self.calib_job, self.sysid_job, self.intr_job):
                 job.stop()
@@ -3128,12 +3152,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stream-port", type=int, default=None)
     ap.add_argument("--stream-host", default="0.0.0.0")
     ap.add_argument("--arm", action="store_true", help="polacz ramie przy starcie (backend i port stanowiska)")
+    ap.add_argument("--detector", action="append", metavar="NAME",
+                    help="uruchom detektor przy starcie, z ustawieniami z jego sekcji konfiguracji (mozna kilka razy)")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Sondy HTTP (HEAD, niedokonczone polaczenia) nie sa bledami panelu - websockets
     # drukuje po kilkadziesiat linii stosu na kazda, zasypujac to, co wazne.
     logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-    startup = dict(arm=a.arm)
+    startup = dict(arm=a.arm, detectors=a.detector or [])
     TwinApp(a.workspace, a.host, a.port, stream_port=a.stream_port, stream_host=a.stream_host,
             startup=startup).run()
     return 0

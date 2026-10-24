@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,11 +15,16 @@ import numpy as np
 import pytest
 from machinekind_twin_api import (
     BACKENDS,
+    DETECTORS,
     ROBOTS,
     STRATEGIES,
     Action,
     BackendContext,
     BackendPlugin,
+    Detection,
+    Detector,
+    DetectorInfo,
+    DetectRequest,
     Frame,
     ObjectPose,
     Observation,
@@ -27,6 +33,7 @@ from machinekind_twin_api import (
     RunInfo,
     Strategy,
     backend,
+    detector,
     entry_points,
     strategy,
 )
@@ -52,7 +59,7 @@ def test_it_imports_nothing_but_numpy_and_the_standard_library():
 
 
 def test_it_exports_every_public_name_of_its_modules():
-    for module in (strategy, backend, entry_points):
+    for module in (strategy, backend, detector, entry_points):
         for name in module.__all__:
             assert getattr(machinekind_twin_api, name) is getattr(module, name)
             assert name in machinekind_twin_api.__all__
@@ -71,6 +78,7 @@ def test_the_entry_point_groups_are_the_ones_the_twin_reads():
     assert ROBOTS == "machinekind_twin.robots"
     assert BACKENDS == "machinekind_twin.backends"
     assert STRATEGIES == "machinekind_twin.strategies"
+    assert DETECTORS == "machinekind_twin.detectors"
 
 
 # --------------------------------------------------------------------------- strategy
@@ -110,7 +118,8 @@ def test_run_info_holds_the_robot_once():
     assert info.joints == ("j1", "gripper")
 
 
-@pytest.mark.parametrize("cls", [ObjectPose, Frame, RunInfo, Observation, Action, BackendContext])
+@pytest.mark.parametrize("cls", [ObjectPose, Frame, RunInfo, Observation, Action, BackendContext,
+                                 Detection, DetectRequest, DetectorInfo])
 def test_the_twins_data_is_frozen(cls):
     assert cls.__dataclass_params__.frozen
 
@@ -192,6 +201,96 @@ def test_the_strategy_protocol_is_not_checked_with_isinstance():
     """Not runtime-checkable: a strategy needs only `hz` and `act`, which the twin checks by attribute."""
     with pytest.raises(TypeError):
         isinstance(Swing(SwingSettings(joint="j1")), Strategy)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- detector
+
+
+class Seen(Detector[None]):
+    """A detector as a package writes it: the base class gives the defaults."""
+
+    def detect(self, request: DetectRequest) -> Sequence[Detection]:
+        return [Detection(label="cube", camera=name, pixel=(1.0, 2.0)) for name in request.frames]
+
+
+@dataclass
+class ColourSettings:
+    colour: str = "red"
+
+
+class Colour:
+    """A detector without the base class: the twin loads it by its attributes alone."""
+
+    settings = ColourSettings
+    interval_s = 0.2
+    pixel_error_px = 2.0
+
+    def __init__(self, settings: ColourSettings):
+        self.config = settings
+
+    def start(self, info: DetectorInfo) -> None:
+        self.cameras = info.cameras
+
+    def stop(self, reason: str) -> None:
+        self.reason = reason
+
+    def detect(self, request: DetectRequest) -> list[Detection]:
+        return [Detection(label=self.config.colour, camera=name, pixel=(0.0, 0.0)) for name in request.frames]
+
+
+def frame() -> Frame:
+    return Frame(image=np.zeros((4, 6, 3), np.uint8), age_s=0.0)
+
+
+def test_a_detector_subclass_gets_the_defaults():
+    seen = Seen()
+    info = DetectorInfo(cameras=("front",), robot="testbot", simulated=True)
+
+    assert Seen.settings is None
+    assert seen.interval_s == 1.0
+    assert seen.pixel_error_px == 3.0
+    assert seen.start(info) is None
+    assert [d.camera for d in seen.detect(DetectRequest(frames={"front": frame()}, step=0))] == ["front"]
+    assert seen.stop("done") is None
+
+
+def test_a_class_without_the_detector_base_class_works_by_its_attributes():
+    """The checks the twin's loader makes: `detect` callable, `settings` a dataclass or None."""
+    colour = Colour(ColourSettings(colour="blue"))
+    colour.start(DetectorInfo(cameras=("front", "side"), robot="testbot", simulated=False))
+    found = colour.detect(DetectRequest(frames={"front": frame(), "side": frame()}, step=3))
+    colour.stop("done")
+
+    assert callable(getattr(Colour, "detect", None))
+    assert Colour.settings is None or dataclasses.is_dataclass(Colour.settings)
+    assert colour.interval_s > 0 and colour.pixel_error_px > 0
+    assert [(d.label, d.camera) for d in found] == [("blue", "front"), ("blue", "side")]
+    assert colour.cameras == ("front", "side") and colour.reason == "done"
+
+
+def test_the_detector_protocol_is_not_checked_with_isinstance():
+    """Not runtime-checkable: the twin checks a detector by its attributes."""
+    with pytest.raises(TypeError):
+        isinstance(Colour(ColourSettings()), Detector)  # type: ignore[arg-type]
+
+
+def test_a_detection_has_only_pixels_by_default():
+    d = Detection(label="cube", camera="front", pixel=(320.0, 240.0))
+
+    assert d.box is None
+    assert d.mask is None
+    assert d.height_m is None
+    assert d.size_m is None
+    assert d.pixel_error_px is None
+    assert d.confidence == 1.0
+
+
+def test_a_detection_with_a_mask_compares_by_identity():
+    d = Detection(label="cube", camera="front", pixel=(1.0, 1.0), mask=np.ones((4, 6), bool))
+
+    assert d == d  # noqa: PLR0124 - the point: equal to itself even with an array inside
+    assert d != copy.copy(d)
+    assert hash(d) == hash(d)
 
 
 # --------------------------------------------------------------------------- backend

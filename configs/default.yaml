@@ -9,6 +9,9 @@
 #                - ustawia zmienna MACHINEKIND_TWIN_CONFIG. Mozna ja tez ustawic samemu.
 # Wlasne wartosci trzymaj w kopii: configs/local.yaml (jest w .gitignore) -
 # wystarczy w niej sekcja, ktora zmieniasz, np. tylko `robot:`.
+#
+# Every section other than `safety` and `robot` belongs to the backend, strategy or detector
+# with that name. A strategy and a detector with the same name share one section.
 
 safety:
   hold_timeout_s: 0.4       # brak dloni dluzej -> zamrozenie ruchu
@@ -31,3 +34,11 @@ robot:
 
 # <backend>:           # sekcja backendu z pakietu ramienia (np. `a1x:` z galaxeo) - klucze
 #                      # opisuje dokumentacja tego pakietu
+
+# A detector's section, such as `cube:`, prefills its settings form in the panel's Detektory
+# tab. An unknown key or a wrong type blocks the start. `twin ui --detector cube` starts the
+# detector with these settings when the panel starts. A section for the example `cube` detector:
+# cube:
+#   color: red           # red, green, blue or yellow
+#   size_m: 0.03         # edge length [m]
+#   interval_s: 0.33     # seconds between calls

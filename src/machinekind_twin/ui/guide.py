@@ -201,8 +201,9 @@ def _step_cameras(s: GuideSnapshot) -> Step:
     if s.simulated:
         act = "Kamery: **Dodaj symulowana przed ramieniem** (dwa razy - dwie kamery to lepsza mapa)"
         if not s.cameras:
-            # Gotowe stanowisko z pakietu (examples/twin.sim.json): dwie kamery z zaufana kalibracja,
-            # "kostka z kamer" od razu - bez przechodzenia fali w symulacji.
+            # The ready station from the package (examples/twin.sim.json): two cameras with a trusted
+            # calibration, so the cube detector (Detektory tab, or `twin ui --detector cube`) sees the
+            # cube at once, without the calibration wave in simulation.
             act += ("; albo gotowy przyklad: zamknij panel, w konsoli `twin demo` "
                     "(examples/twin.sim.json), uruchom panel ponownie")
     else:
