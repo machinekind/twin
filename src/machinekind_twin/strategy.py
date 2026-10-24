@@ -540,9 +540,11 @@ def _fetched_frames(obs: Observation) -> dict[str, Frame | None]:
 
 
 def _decisions(value: Any) -> tuple[Any, ...]:
-    """A strategy's decisions as a tuple. They only go to the log, so anything but a list or a tuple
-    is dropped rather than ending the run."""
-    return tuple(value) if isinstance(value, (list, tuple)) else ()
+    """A strategy's decisions as a tuple, from any sequence but text, a deque among them. They only
+    go to the log, so anything else is dropped rather than ending the run."""
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(value)
+    return ()
 
 
 def _as_action(answer: Any) -> Action:

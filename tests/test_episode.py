@@ -7,6 +7,7 @@ Everything in simulated time: the twin's loop without a thread (`connect(threade
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 import time
@@ -616,6 +617,8 @@ def test_a_decision_goes_into_the_log_of_its_tick(twin, tmp_path):
             return Move(target={"j1": 3.0}, decisions=(own,))
         if obs.step == 3:
             return Move(target={"j1": 3.0}, decisions=own)
+        if obs.step == 4:
+            return Action(target={"j1": 3.0}, decisions=collections.deque([own, asked]))
         return Action(target={"j1": 3.0}, done=True, success=True, error=math.nan, decisions=(last,))
 
     runner = StrategyRunner(twin, Plugin(thinking), episode=EpisodeOptions(folder=tmp_path))
@@ -631,10 +634,11 @@ def test_a_decision_goes_into_the_log_of_its_tick(twin, tmp_path):
                              "confidence": 0.8, "response_s": 1.25}]
     assert decisions[2][0]["question"] == "czy chwycic?"
     assert decisions[3] == []
-    assert decisions[4][0]["state"] == {"image": "<ndarray float64 (480, 640, 3)>", "gap": None}
-    assert log.steps[4]["done"]
+    assert [decision["question"] for decision in decisions[4]] == ["czy chwycic?", "gdzie jest kostka?"]
+    assert decisions[5][0]["state"] == {"image": "<ndarray float64 (480, 640, 3)>", "gap": None}
+    assert log.steps[5]["done"]
     assert log.end.code == "done"
-    assert report(log).decisions.count == 3
+    assert report(log).decisions.count == 5
 
 
 def test_the_log_is_strict_json(twin, tmp_path):
