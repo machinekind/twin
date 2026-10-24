@@ -235,10 +235,6 @@ class EpisodeWriter:
         """The log's clock: seconds on the twin's clock since the writer opened."""
         return self._clock.now() - self._t0
 
-    def since(self, t: float) -> float:
-        """A time on the twin's clock, on the log's clock."""
-        return t - self._t0
-
     def on_tick(self, sample: Any) -> None:
         """The tick listener: runs on the twin's loop thread, so it only appends."""
         self._ticks.append((sample.t, sample.sent, sample.measured if sample.fresh else None, sample.measured_t,
