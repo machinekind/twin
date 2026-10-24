@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from conftest import BOT
 
+from machinekind_twin.cli import main as twin_cli
 from machinekind_twin.episode import FORMAT, VERSION, EpisodeLog
 from machinekind_twin.episode_report import (
     FOLLOWS,
@@ -19,6 +20,7 @@ from machinekind_twin.episode_report import (
     NOTHING_SENT,
     ONLY_ACTUATOR,
     ONLY_TOTAL,
+    SPEED_HALF_S,
     DelayFit,
     delay_fit,
     report,
@@ -29,6 +31,10 @@ SPEC = get_spec(BOT)
 JOINTS = list(SPEC.joints)
 #: Where the cameras put the marker against the readings' TCP [m]: readings minus cameras.
 OFFSET = np.array([0.010, -0.005, 0.0])
+#: A marker 20 mm along the TCP's z axis [m], in the TCP frame.
+MARKER = np.array([0.0, 0.0, 0.020])
+#: When the hand-written arm stops [s].
+SWEEP_S = 1.0
 
 
 def held(ref_t: np.ndarray, ref_v: np.ndarray, prior: float, at: np.ndarray) -> np.ndarray:
@@ -152,7 +158,7 @@ def write_log(path: Path, loops: list[dict], steps: list[dict], **header) -> Pat
 
 def pose_at(t: float) -> dict[str, float]:
     """The arm in the hand-written logs: the first two joints sweep for a second, then stop."""
-    s = min(t, 1.0)
+    s = min(t, SWEEP_S)
     return dict(SPEC.home, **{JOINTS[0]: 30.0 * s, JOINTS[1]: SPEC.home[JOINTS[1]] - 20.0 * s})
 
 
@@ -198,12 +204,18 @@ def tcp():
     return lambda t: kinematics.tcp(pose_at(t))
 
 
-def camera_steps(tcp, label: str = "chwytak", sources=None, rotation: bool = True, age_s: float = 0.03) -> list[dict]:
+#: When the cameras saw the marker in the hand-written logs [s].
+SEEN_T = np.arange(0.1, 1.45, 0.05)
+
+
+def camera_steps(tcp, label: str = "chwytak", sources=None, rotation: bool = True, age_s: float = 0.03,
+                 marker=(0.0, 0.0, 0.0)) -> list[dict]:
+    """Steps whose camera pose of `label` is the marker on the readings' TCP minus `OFFSET`."""
     steps = []
-    for index, t in enumerate(np.arange(0.1, 1.45, 0.05)):
+    for index, t in enumerate(SEEN_T):
         T = tcp(t - age_s)
         source = "kamery" if sources is None else sources[index % len(sources)]
-        pose = {"position": (T[:3, 3] - OFFSET).tolist(),
+        pose = {"position": (T[:3, :3] @ np.asarray(marker) + T[:3, 3] - OFFSET).tolist(),
                 "rotation": T[:3, :3].tolist() if rotation else np.eye(3).tolist(),
                 "source": source, "age_s": age_s}
         steps.append({"step": index, "obs_t": float(t), "t": float(t), "objects": {label: pose}})
@@ -222,8 +234,38 @@ def test_drift_is_readings_minus_the_cameras(tmp_path, tcp):
     assert drift.rms_m == pytest.approx(np.linalg.norm(OFFSET), abs=1e-5)
     assert drift.median_age_s == pytest.approx(0.03)
     assert drift.angle_max_deg == pytest.approx(0.0, abs=0.01)
-    assert drift.at_rest_samples > 0
+    assert drift.at_rest_samples == np.sum(SEEN_T - 0.03 - SPEED_HALF_S >= SWEEP_S)
+    assert drift.at_rest_rms_m == pytest.approx(np.linalg.norm(OFFSET), abs=1e-5)
     assert any("odczyty - kamery" in line for line in result.lines())
+
+
+def test_the_marker_offset_is_in_the_tcp_frame(tmp_path, tcp):
+    assert not np.allclose(tcp(0.5)[:3, :3] @ MARKER, MARKER)
+    path = write_log(tmp_path / "marker.jsonl", readings_loops(), camera_steps(tcp, marker=MARKER),
+                     gripper_label="chwytak")
+    log = EpisodeLog.load(path)
+
+    at_marker = report(log, offset_m=MARKER).drift
+    at_tcp = report(log).drift
+
+    assert at_marker is not None and at_tcp is not None
+    assert at_marker.mean_m == pytest.approx(OFFSET, abs=1e-5)
+    assert np.linalg.norm(at_tcp.mean_m - OFFSET) > 0.015
+
+
+def test_twin_episode_takes_the_gripper_label_and_the_marker_offset(tmp_path, tcp, capsys):
+    path = write_log(tmp_path / "marker.jsonl", readings_loops(), camera_steps(tcp, marker=MARKER))
+
+    def drift_lines(*flags: str) -> list[str]:
+        assert twin_cli(["episode", str(path), *flags]) == 0
+        return [line for line in capsys.readouterr().out.splitlines() if "odczyty - kamery" in line]
+
+    named = drift_lines("--gripper", "chwytak", "--offset-mm", *(f"{value * 1000:g}" for value in MARKER))
+
+    assert drift_lines() == []
+    assert len(named) == 1
+    mean_mm = [float(value) for value in named[0].split("[")[1].split("]")[0].split(",")]
+    assert mean_mm == pytest.approx(OFFSET * 1000, abs=0.1)
 
 
 def test_drift_skips_poses_that_are_not_camera_evidence(tmp_path, tcp):

@@ -2,7 +2,8 @@
 
 Everything in simulated time: the twin's loop without a thread (`connect(threaded=False)` +
 `Twin.step`) and the runner without a thread (`start(threaded=False)` + `step_once`), as in
-`test_strategy`.
+`test_strategy`. The simulated clock starts far from 0, as `time.monotonic` does in the
+application, so every time in a log must count from the writer's start.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from machinekind_twin.episode import (
     episodes_dir,
     twin_header,
 )
-from machinekind_twin.episode_report import DelayFit, report
+from machinekind_twin.episode_report import AT_LIMIT_FLAG, NEITHER, DelayFit, report
 from machinekind_twin.kinematics import RobotKinematics
 from machinekind_twin.robots import get_spec
 from machinekind_twin.runtime import Twin
@@ -44,11 +45,13 @@ from machinekind_twin.waypoints import Waypoints
 from machinekind_twin.workspace import Workspace
 
 TWIN_PERIOD = 0.02
+#: Where the simulated clock starts [s].
+CLOCK_T0 = 12345.678
 
 
 @pytest.fixture
 def twin():
-    twin = Twin(Workspace(robot=BOT), clock=VirtualClock(t0=0.0))
+    twin = Twin(Workspace(robot=BOT), clock=VirtualClock(t0=CLOCK_T0))
     try:
         yield twin
     finally:
@@ -97,11 +100,16 @@ def test_a_log_round_trips_through_its_loader(twin, tmp_path):
     writer = observer(twin, tmp_path, name="run")
 
     run_ticks(twin, 5)
+    measured = [twin.status.measured[joint] for joint in joints]
+    command = [twin.status.command[joint] for joint in joints]
     cube = ObjectPose(np.array([0.2, 0.0, 0.015]), np.eye(3), "kamery", 0.1)
-    writer.step(record(writer, twin, 0, intent={"j1": 20.0}, goal=np.array([0.2, 0.0, 0.1]),
-                       objects={"cube": cube}, error=0.5, note="poza 1/1"))
+    writer.step(record(writer, twin, 0, run_t=0.05, obs_t=0.07, t=0.09, intent={"j1": 20.0},
+                       goal=np.array([0.2, 0.0, 0.1]), objects={"cube": cube},
+                       frames={"a": Frame(np.zeros((4, 6, 3), np.uint8), 0.02)}, success=False, error=0.5,
+                       note="poza 1/1"))
     run_ticks(twin, 3)
-    writer.close(end(steps=1, error=0.5, note="poza 1/1"))
+    assert writer.now() == pytest.approx(8 * TWIN_PERIOD)
+    writer.close(end(t=1.0, steps=1, success=True, error=0.5, note="poza 1/1"))
 
     log = EpisodeLog.load(writer.path)
 
@@ -111,29 +119,33 @@ def test_a_log_round_trips_through_its_loader(twin, tmp_path):
     assert log.header["mode"] == "observation"
     assert log.header["meta"] == {"seed": 3}
     assert log.header["clock"] == "virtual"
+    assert log.header["t0"] == pytest.approx(CLOCK_T0)
     assert log.joints == tuple(joints)
-    assert log.loop_t.shape == (8,)
+    assert log.loop_t == pytest.approx(TWIN_PERIOD * np.arange(1, 9))
     assert log.measured.shape == log.sent.shape == log.at_limit.shape == (8, len(joints))
-    assert np.all(np.diff(log.loop_t) > 0)
 
     t, readings = log.readings()
-    assert len(t) == 8
+    assert t == pytest.approx(TWIN_PERIOD * np.arange(1, 9))
     assert np.isfinite(readings).all()
 
     step = log.steps[0]
+    assert (step["run_t"], step["obs_t"], step["t"]) == (0.05, 0.07, 0.09)
+    assert step["joints"] == pytest.approx(measured, abs=1e-4)
+    assert step["command"] == pytest.approx(command, abs=1e-4)
     assert step["intent"] == {"j1": 20.0}
     assert step["goal"] == [0.2, 0.0, 0.1]
-    assert step["objects"]["cube"]["source"] == "kamery"
-    assert step["objects"]["cube"]["rotation"] == np.eye(3).tolist()
+    assert step["objects"] == {"cube": {"position": [0.2, 0.0, 0.015], "rotation": np.eye(3).tolist(),
+                                        "source": "kamery", "age_s": 0.1}}
+    assert step["frames"] == [{"camera": "a", "age_s": 0.02, "shape": [4, 6, 3], "file": None}]
+    assert (step["done"], step["success"], step["error"], step["note"]) == (False, False, 0.5, "poza 1/1")
 
     intent_t, intents = log.intents()
-    assert intent_t.tolist() == [step["t"]]
+    assert intent_t.tolist() == [0.09]
     assert intents[0, joints.index("j1")] == 20.0
     assert np.isnan(np.delete(intents[0], joints.index("j1"))).all()
 
-    assert log.end.code == "stopped"
-    assert log.end.steps == 1
-    assert log.end.error == 0.5
+    assert log.end == EpisodeEnd(code="stopped", reason="zatrzymana", t=1.0, done=False, success=True, error=0.5,
+                                 note="poza 1/1", steps=1, began=True)
 
 
 def test_every_line_is_strict_json_with_constant_keys(twin, tmp_path):
@@ -371,11 +383,15 @@ def test_a_run_of_the_test_strategy_leaves_a_log_whose_report_shows_latency_on_e
     assert log.end.code == "done"
     assert log.end.succeeded
     assert len(log.steps) == runner.status.step
+    assert log.header["t0"] == pytest.approx(CLOCK_T0)
+    assert 0.0 <= log.loop_t[0] < 0.1
     assert [joint.joint for joint in result.latency] == list(log.joints)
     for joint in result.latency:
-        for fit in (joint.total, joint.supervisor, joint.actuator):
-            assert isinstance(fit, DelayFit), (joint.joint, fit)
-            assert 0.0 < fit.lag_s < 1.0
+        total, supervisor, actuator = joint.total, joint.supervisor, joint.actuator
+        assert isinstance(total, DelayFit), (joint.joint, total)
+        assert isinstance(supervisor, DelayFit), (joint.joint, supervisor)
+        assert isinstance(actuator, DelayFit), (joint.joint, actuator)
+        assert 0.0 < actuator.lag_s < supervisor.lag_s < total.lag_s < 1.0, joint
 
     drift = result.drift
     assert drift is not None
@@ -390,7 +406,12 @@ def test_a_run_of_the_test_strategy_leaves_a_log_whose_report_shows_latency_on_e
 
 
 def test_a_fake_arms_delay_shows_as_servo_latency(twin, monkeypatch, tmp_path):
-    """A (fake) real arm whose readings show the pose from 60 ms ago: the servo column measures it."""
+    """A (fake) real arm whose readings show the pose from 60 ms ago: the servo column measures it.
+
+    The twin reads a real arm every 40 ms. On a simulated clock whose rounding puts each read one
+    loop tick late, it reads every 60 ms and this column gives 85 ms, so the test checks the read
+    period first.
+    """
     connect_fake(twin, monkeypatch, FakeArm(delay=0.06))
     runner = StrategyRunner(twin, Waypoints(tour(dict(twin.status.measured))),
                             episode=EpisodeOptions(folder=tmp_path))
@@ -399,11 +420,50 @@ def test_a_fake_arms_delay_shows_as_servo_latency(twin, monkeypatch, tmp_path):
 
     assert runner.status.stopped_code == "done"
     assert runner.status.episode is not None
-    result = report(EpisodeLog.load(runner.status.episode))
+    log = EpisodeLog.load(runner.status.episode)
+    result = report(log)
+
+    assert np.median(np.diff(log.readings()[0])) == pytest.approx(0.04)
 
     for joint in result.latency:
         assert isinstance(joint.actuator, DelayFit), (joint.joint, joint.actuator)
-        assert 0.05 <= joint.actuator.lag_s <= 0.09, joint.joint
+        assert 0.06 <= joint.actuator.lag_s <= 0.08, joint.joint
+
+
+def test_a_single_move_has_its_latency(twin, tmp_path):
+    """One waypoint: the intent never changes, and the move is from where the arm stood."""
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Waypoints([dict(twin.status.measured, j1=20.0)]),
+                            episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 3.0)
+
+    assert runner.status.stopped_code == "done"
+    assert runner.status.episode is not None
+    j1 = next(joint for joint in report(EpisodeLog.load(runner.status.episode)).latency if joint.joint == "j1")
+
+    assert isinstance(j1.total, DelayFit), j1.total
+    assert 0.0 < j1.total.lag_s < 1.0
+
+
+def test_readings_at_a_limit_are_logged_and_flagged(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Plugin(answer({"j1": 1000.0})), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 3.0)
+    runner.stop()
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    result = report(log)
+    column = log.joints.index("j1")
+    j1 = result.latency[column]
+
+    assert log.at_limit[:, column].any()
+    assert not np.delete(log.at_limit, column, axis=1).any()
+    assert isinstance(j1.actuator, DelayFit), j1.actuator
+    assert j1.actuator.at_limit_share > AT_LIMIT_FLAG
+    assert any(line.startswith("  j1 ") and "odczytow na limicie" in line for line in result.lines())
 
 
 def test_joints_whose_target_copies_the_readings_get_no_delay(twin, tmp_path):
@@ -464,7 +524,7 @@ def raising(obs):
     raise RuntimeError("zepsuta")
 
 
-def ends(code: str, twin: Twin, runner_for) -> StrategyRunner:
+def ends(code: str, twin: Twin, runner_for, monkeypatch) -> StrategyRunner:
     """Runs a strategy until it ends with `code`, the way that end happens."""
     if code == "refused":
         runner = runner_for(Refusing(answer({})))
@@ -487,6 +547,11 @@ def ends(code: str, twin: Twin, runner_for) -> StrategyRunner:
         runner.stop()
     elif code == "preempted":
         twin.estop()
+    elif code == "disconnected":
+        # The loop died on another thread, and its preempt has not reached the runner before its tick.
+        monkeypatch.setattr(Twin, "connected", property(lambda self: False))
+        runner.step_once(0.45)
+        monkeypatch.undo()
     return runner
 
 
@@ -494,19 +559,20 @@ def ends(code: str, twin: Twin, runner_for) -> StrategyRunner:
     ("done", "zadanie wykonane"),
     ("gave_up", "strategia skonczyla"),
     ("time_limit", "limit czasu"),
+    ("disconnected", "ramie rozlaczone"),
     ("stopped", "zatrzymana"),
     ("preempted", "przerwana: STOP awaryjny"),
     ("bad_target", "zly cel strategii"),
     ("error", "RuntimeError: zepsuta"),
     ("refused", "strategia odmowila: uczona na innym ramieniu"),
 ])
-def test_every_end_leaves_a_closed_log_with_its_code(twin, tmp_path, code, reason):
+def test_every_end_leaves_a_closed_log_with_its_code(twin, tmp_path, monkeypatch, code, reason):
     twin.connect("sim", threaded=False)
 
     def runner_for(strategy, **kw) -> StrategyRunner:
         return StrategyRunner(twin, strategy, episode=EpisodeOptions(folder=tmp_path), **kw)
 
-    runner = ends(code, twin, runner_for)
+    runner = ends(code, twin, runner_for, monkeypatch)
     status = runner.status
 
     assert not status.running
@@ -821,7 +887,7 @@ def test_observation_without_commands_does_not_count_latency(twin, monkeypatch, 
     assert np.isnan(log.sent).all()
     assert np.isfinite(log.readings()[1]).all()
     assert result.latency == ()
-    assert result.latency_note
+    assert result.latency_note == NEITHER
     assert result.latency_note in result.lines()
 
 
@@ -871,7 +937,7 @@ def test_twin_episode_reports_a_file(twin, tmp_path, capsys):
     assert "[done]" in out
     for joint in twin.workspace.spec().joints:
         assert f"\n  {joint} " in out
-    assert "chwytak" in out
+    assert "'chwytak'" in out
 
 
 def test_twin_episode_lists_a_folder_newest_first(twin, tmp_path, capsys):
