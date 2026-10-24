@@ -413,7 +413,8 @@ def _joint_notes(joint: JointLatency, said: str) -> list[str]:
             if fit != said:
                 notes.append(f"  {joint.joint} {pair}: {fit}")
             continue
-        if fit.error_rms > 0 and fit.residual_rms / fit.error_rms > RESIDUAL_FLAG:
+        # The supervisor ramps where the intent steps: no shift explains a ramp, so that pair is not flagged.
+        if pair != "zamiar->rozkaz" and fit.error_rms > 0 and fit.residual_rms / fit.error_rms > RESIDUAL_FLAG:
             notes.append(f"  {joint.joint} {pair}: przesuniecie tlumaczy mniej niz polowe bledu - serwo "
                          "wolniejsze niz rozkaz, przeszkoda albo chwytak na obiekcie")
         if fit.at_limit_share > AT_LIMIT_FLAG:

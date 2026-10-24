@@ -20,6 +20,9 @@ from conftest import BOT, SWING
 from test_strategy import drive
 
 from machinekind_twin.clock import VirtualClock
+from machinekind_twin.episode import EpisodeLog, EpisodeOptions
+from machinekind_twin.episode_report import NOT_NAMED, DelayFit, report
+from machinekind_twin.episode_report import STILL as STILL_JOINT
 from machinekind_twin.runtime import Twin
 from machinekind_twin.strategies import ENTRY_POINT_GROUP, config_section, load_strategy, strategies
 from machinekind_twin.strategy import StrategyRunner
@@ -329,6 +332,29 @@ def test_a_strategy_from_a_package_drives_the_twin_through_the_strategy_runner(s
     assert max(sent) == pytest.approx(centre + 8.0, abs=0.5)
     assert min(sent) == pytest.approx(centre - 8.0, abs=0.5)
     assert twin.status.measured["j1"] == pytest.approx(centre, abs=strategy.tolerance)
+
+
+def test_a_swing_run_leaves_a_log(swing, twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    strategy = load_strategy(swing).create({"joint": "j1", "amplitude": 8.0, "period_s": 2.0, "cycles": 1})
+    runner = StrategyRunner(twin, strategy, episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 6.0)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    result = report(log)
+    latency = {joint.joint: joint for joint in result.latency}
+    text = result.lines()
+
+    assert log.header["strategy"]["class"] == "swing:Swing"
+    assert log.end.code == "done"
+    assert isinstance(latency["j1"].total, DelayFit)
+    assert isinstance(latency["j1"].actuator, DelayFit)
+    for joint in ("j2", "gripper"):
+        assert latency[joint].total == NOT_NAMED
+        assert latency[joint].actuator == STILL_JOINT
+        assert f"  {joint} zamiar->odczyt: {NOT_NAMED}" in text
 
 
 def test_a_joint_the_robot_does_not_have_refuses_the_run(swing, twin):

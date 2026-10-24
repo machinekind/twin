@@ -28,6 +28,11 @@ The runner ends a run, for every strategy, when:
 A joint that cannot follow its command (a collision, a blocked or limp servo) is the twin's own
 tracking guard, for every owner: it triggers STOP, which takes the arm from the runner. What counts
 as success, and how far a goal may be, is the task's business inside the strategy.
+
+Every run writes an episode log (`episode`): the twin's loop ticks, every tick the runner accepted
+with the strategy's intent, the observation and its decisions, and how the run ended. The file is
+`status.episode`; a run whose log cannot be written goes on without it (`status.episode_error`).
+Every end has a stable code next to its Polish reason, `status.stopped_code` (`episode.EndCode`).
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -52,6 +58,8 @@ from machinekind_twin_api.strategy import (
     S,
     Strategy,
 )
+
+from .episode import EndCode, EpisodeEnd, EpisodeOptions, EpisodeWriter, StepRecord, episodes_dir, twin_header
 
 __all__ = [
     "OWNER", "Action", "ActionLike", "Decision", "Frame", "FrameSource", "ObjectPose", "Observation",
@@ -80,6 +88,12 @@ class RunnerStatus:
     success: bool | None = None
     error: float | None = None
     note: str = ""
+    #: Why the run ended, as a stable code (`episode.EndCode`); "" while it runs.
+    stopped_code: str = ""
+    #: The run's episode log; None when it could not be opened.
+    episode: Path | None = None
+    #: Why the run's log is missing or incomplete; "" when it is written.
+    episode_error: str = ""
 
 
 # --------------------------------------------------------------------------- the runner
@@ -95,6 +109,8 @@ class _Run:
     t_start: float | None = None
     rate_since: float = 0.0
     rate_ticks: int = 0
+    #: The run's log: it belongs to the run, so a stale loop thread never writes into a newer run's file.
+    log: EpisodeWriter | None = None
 
 
 class StrategyRunner:
@@ -114,6 +130,7 @@ class StrategyRunner:
         cameras: Sequence[str] = (),
         frame: FrameSource | None = None,
         time_limit_s: float | None = None,
+        episode: EpisodeOptions | None = None,
     ):
         _check_strategy(strategy)
 
@@ -130,6 +147,7 @@ class StrategyRunner:
         self._objects = objects
         self._cameras = tuple(cameras)
         self._frame = frame if frame is not None else twin.cameras.arm_frame_t
+        self._episode = episode or EpisodeOptions()
         self._joints: tuple[str, ...] = ()
 
         self._run: _Run | None = None
@@ -179,11 +197,12 @@ class StrategyRunner:
 
         try:
             info = self._run_info()
+            self._open_episode(run)
             start = getattr(self.strategy, "start", None)
             if start is not None:
                 start(info, self._observe(t=0.0, step=0))
         except Exception as exc:
-            self._finish(run, f"strategia odmowila: {exc}")
+            self._finish(run, f"strategia odmowila: {exc}", code="refused")
             raise
 
         run.began = True
@@ -202,6 +221,38 @@ class StrategyRunner:
             simulated=bool(self.twin.status.simulated),
         )
 
+    def _open_episode(self, run: _Run) -> None:
+        """Opens the run's log before the strategy starts, so a refused run leaves one too.
+
+        A log that cannot be opened costs the run only its log: it is a diagnostic, not a safety function.
+        """
+        options = self._episode
+        strategy = type(self.strategy)
+        header = {
+            **twin_header(self.twin),
+            "mode": "strategy",
+            "owner": self.owner,
+            "strategy": {"class": f"{strategy.__module__}:{strategy.__qualname__}", "hz": float(self.strategy.hz),
+                         "time_limit_s": self.time_limit_s},
+            "cameras": list(self._cameras),
+            "gripper_label": options.gripper,
+            "meta": dict(options.meta),
+        }
+        folder = options.folder if options.folder is not None else episodes_dir(self.twin.workspace.path)
+
+        # Under the lock: a run taken away while the file opens finds its log and closes it.
+        with self._lock:
+            if run is not self._run:
+                return
+            try:
+                run.log = EpisodeWriter.create(folder, header, self.twin, name=options.name,
+                                               keep_frames_s=options.keep_frames_s)
+            except OSError as exc:
+                logger.warning("Nie zapisze przebiegu strategii: %s", exc)
+                self.status.episode_error = f"nie zapisze przebiegu: {exc}"
+                return
+            self.status.episode = run.log.path
+
     def _engage(self, run: _Run) -> None:
         # The arm may have been taken while the strategy was starting.
         if not self.status.running:
@@ -210,7 +261,7 @@ class StrategyRunner:
 
         if not self.twin.set_engaged(True, owner=self.owner):
             reason = self._preempt_reason() or f"ramie ma: {self.twin.owner or 'nikt'}"
-            self._finish(run, f"przerwana: {reason}")
+            self._finish(run, f"przerwana: {reason}", code="preempted")
             raise RuntimeError(f"ramie odebrane ({reason})")
 
     # ------------------------------------------------------------------- loop
@@ -239,7 +290,7 @@ class StrategyRunner:
         try:
             return self._tick(run, now)
         except _BadTarget as exc:
-            self._finish(run, f"zly cel strategii: {exc}", hold_measured=True)
+            self._finish(run, f"zly cel strategii: {exc}", code="bad_target", hold_measured=True)
         except Exception as exc:  # noqa: BLE001 - any failure of a strategy's act ends its run
             self._fail(run, exc)
         return False
@@ -250,29 +301,31 @@ class StrategyRunner:
         t = now - run.t_start
 
         if not self.twin.connected:
-            self._finish(run, "ramie rozlaczone")
+            self._finish(run, "ramie rozlaczone", code="disconnected")
             return False
 
         if self.time_limit_s is not None and t >= self.time_limit_s:
-            self._finish(run, "limit czasu")
+            self._finish(run, "limit czasu", code="time_limit")
             return False
 
-        answer = self.strategy.act(self._observe(t=t, step=self.status.step))
-        action = _as_action(answer)
+        obs_t = run.log.now() if run.log is not None else 0.0
+        obs = self._observe(t=t, step=self.status.step)
+        action = _as_action(self.strategy.act(obs))
         target = self._checked(action.target)
 
-        if not self._send(run, target, action):
+        if not self._send(run, target, action, obs, obs_t):
             return False
         self._count_rate(run, now)
 
         if action.done:
             self.status.done = True
-            self._finish(run, "zadanie wykonane" if action.success else "strategia skonczyla")
+            self._finish(run, "zadanie wykonane" if action.success else "strategia skonczyla",
+                         code="done" if action.success else "gave_up")
             return False
 
         return True
 
-    def _send(self, run: _Run, target: dict[str, float], action: Action) -> bool:
+    def _send(self, run: _Run, target: dict[str, float], action: Action, obs: Observation, obs_t: float) -> bool:
         """Sends the target and records the tick, unless the run ended while `act` was running."""
         with self._lock:
             if run is not self._run or not self.status.running:
@@ -288,6 +341,17 @@ class StrategyRunner:
             status.success = action.success
             status.error = action.error
 
+            # Re-checked: a preempt fired inside `set_target` on this thread has closed the log already.
+            log = run.log
+            if log is not None and run is self._run:
+                log.step(StepRecord(
+                    step=obs.step, run_t=obs.t, obs_t=obs_t, t=log.now(), joints=obs.joints, command=obs.command,
+                    intent=target, goal=obs.goal, objects=obs.objects, frames=_fetched_frames(obs),
+                    done=action.done, success=action.success, error=action.error, note=action.note,
+                    decisions=tuple(action.decisions),
+                ))
+                status.episode_error = log.error
+
         return True
 
     def _count_rate(self, run: _Run, now: float) -> None:
@@ -301,11 +365,11 @@ class StrategyRunner:
     def _fail(self, run: _Run, exc: Exception) -> None:
         if self.twin.owner != self.owner:
             # The arm was taken during the tick (Home, STOP, reconnect): that is the reason, not `exc`.
-            self._finish(run, f"przerwana: {self._preempt_reason() or 'ramie odebrane'}")
+            self._finish(run, f"przerwana: {self._preempt_reason() or 'ramie odebrane'}", code="preempted")
             return
 
         logger.exception("Strategia przerwana")
-        self._finish(run, f"{type(exc).__name__}: {exc}", hold_measured=True)
+        self._finish(run, f"{type(exc).__name__}: {exc}", code="error", hold_measured=True)
 
     def _observe(self, *, t: float, step: int) -> Observation:
         status = self.twin.status
@@ -342,6 +406,9 @@ class StrategyRunner:
     # ------------------------------------------------------------------- stop
 
     def stop(self, reason: str = "") -> None:
+        self._halt(reason or "zatrzymana", "stopped")
+
+    def _halt(self, reason: str, code: EndCode) -> None:
         run = self._run
         self._stop.set()
 
@@ -350,28 +417,39 @@ class StrategyRunner:
             thread.join(timeout=self.join_timeout_s)
         self._thread = None
 
-        self._finish(run, reason or "zatrzymana")
+        self._finish(run, reason, code=code)
 
     def _preempted(self) -> None:
         """The twin took the arm (Home, STOP, reconnect, another owner)."""
-        self.stop(f"przerwana: {self._preempt_reason() or 'ramie odebrane'}")
+        self._halt(f"przerwana: {self._preempt_reason() or 'ramie odebrane'}", "preempted")
 
     def _preempt_reason(self) -> str:
         return getattr(self.twin, "preempt_reason", "")
 
-    def _finish(self, run: _Run | None, reason: str, hold_measured: bool = False) -> None:
+    def _finish(self, run: _Run | None, reason: str, *, code: EndCode, hold_measured: bool = False) -> None:
         """Ends `run` once, whoever gets here first: a tick, `stop`, or the twin taking the arm."""
         with self._lock:
             if run is None or run is not self._run or not self.status.running:
                 return
 
-            self.status.running = False
-            self.status.stopped_because = reason
+            status = self.status
+            status.running = False
+            status.stopped_because = reason
+            status.stopped_code = code
             self._run = None
             self._stop.set()
 
+            log = run.log
+            end = EpisodeEnd(code=code, reason=reason, t=None if log is None else log.now(), done=status.done,
+                             success=status.success, error=status.error, note=status.note, steps=status.step,
+                             began=run.began)
+
         # Outside the lock: the twin's calls take its own locks.
         self._let_go(hold_measured)
+        if log is not None:
+            # Before the strategy hears it: a slow `stop` must not hold back the end line.
+            log.close(end)
+            status.episode_error = log.error
         if run.began:
             self._tell_strategy(reason)
 
@@ -435,6 +513,10 @@ class _LazyFrames(Mapping[str, Frame]):
     def __len__(self) -> int:
         return len(self._names)
 
+    def fetched(self) -> dict[str, Frame | None]:
+        """The frames read so far in this tick, None for a camera that had none. Fetches nothing."""
+        return dict(self._fetched)
+
     def _read(self, name: str) -> Frame | None:
         image, captured = self._fetch(name)
         if image is None:
@@ -451,6 +533,10 @@ def _check_strategy(strategy: Any) -> None:
     hz = strategy.hz
     if not isinstance(hz, (int, float)) or not math.isfinite(hz) or hz <= 0:
         raise ValueError(f"strategia: hz musi byc dodatnie, jest {hz!r}")
+
+
+def _fetched_frames(obs: Observation) -> dict[str, Frame | None]:
+    return obs.frames.fetched() if isinstance(obs.frames, _LazyFrames) else {}
 
 
 def _as_action(answer: Any) -> Action:

@@ -74,6 +74,15 @@ def _no_config_from_env(monkeypatch):
     monkeypatch.delenv("MACHINEKIND_TWIN_CONFIG")
 
 
+@pytest.fixture(autouse=True)
+def _episodes_in_tmp(tmp_path, monkeypatch):
+    """Every strategy run writes an episode log next to its workspace file, or under the default
+    `workspace/` when the workspace has no file: that default goes to the test's own folder."""
+    from machinekind_twin import episode
+
+    monkeypatch.setattr(episode, "data_path", lambda rel: tmp_path / rel)
+
+
 @pytest.fixture
 def install_dist(tmp_path, monkeypatch):
     """Put a distribution on `sys.path` as `pip install` would leave it: its dist-info with these

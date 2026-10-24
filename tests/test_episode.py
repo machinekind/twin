@@ -1,13 +1,16 @@
-"""The episode log: its writer and loader on the simulated twin.
+"""The episode log: its writer and loader, every `StrategyRunner` run writing one, and the observation mode.
 
 Everything in simulated time: the twin's loop without a thread (`connect(threaded=False)` +
-`Twin.step`), as in `test_strategy`.
+`Twin.step`) and the runner without a thread (`start(threaded=False)` + `step_once`), as in
+`test_strategy`.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -16,20 +19,26 @@ import pytest
 pytest.importorskip("mujoco")
 
 from conftest import BOT
+from test_strategy import Plugin, answer, drive
+from test_twin_runtime import FakeArm, connect_fake
 
 from machinekind_twin.clock import VirtualClock
 from machinekind_twin.episode import (
     FORMAT,
     EpisodeEnd,
     EpisodeLog,
+    EpisodeOptions,
     EpisodeWriter,
     StepRecord,
     episodes_dir,
     twin_header,
 )
-from machinekind_twin.paths import data_path
+from machinekind_twin.episode_report import DelayFit, report
+from machinekind_twin.kinematics import RobotKinematics
+from machinekind_twin.robots import get_spec
 from machinekind_twin.runtime import Twin
-from machinekind_twin.strategy import Decision, Frame, ObjectPose
+from machinekind_twin.strategy import Action, Decision, Frame, ObjectPose, StrategyRunner
+from machinekind_twin.waypoints import Waypoints
 from machinekind_twin.workspace import Workspace
 
 TWIN_PERIOD = 0.02
@@ -279,5 +288,432 @@ def test_kept_frames_are_jpegs_next_to_the_log(twin, tmp_path):
 
 
 def test_logs_go_next_to_the_workspace_file(tmp_path):
+    """Without a workspace file, the default `workspace/` (in tests: the test's folder, conftest)."""
     assert episodes_dir(tmp_path / "twin.json") == tmp_path / "episodes"
-    assert episodes_dir(None) == data_path(Path("workspace") / "twin.json").parent / "episodes"
+    assert episodes_dir(None) == tmp_path / "workspace" / "episodes"
+
+
+# --------------------------------------------------------------------------- every run leaves a log
+
+#: Where the camera-seen gripper sits against the readings' TCP [m]: readings minus cameras.
+OFFSET = np.array([0.010, -0.005, 0.0])
+
+
+def tour(home: dict[str, float]) -> list[dict[str, float]]:
+    """Poses that move every joint of the test robot, then home."""
+    return [dict(home, j1=20.0, j2=0.0, gripper=60.0), dict(home, j1=-10.0, j2=35.0, gripper=10.0), dict(home)]
+
+
+def test_a_run_of_the_test_strategy_leaves_a_log_whose_report_shows_latency_on_every_joint_and_gripper_drift(
+        twin, tmp_path):
+    """#151 done: `EpisodeLog.load` reads the test strategy's run, and its report shows the latency of
+    every joint and the gripper's drift against the cameras. The cameras here see the gripper
+    10 mm and -5 mm off the readings' TCP, by construction."""
+    twin.connect("sim", threaded=False)
+    kinematics = RobotKinematics(get_spec(BOT))
+
+    def gripper_seen() -> dict[str, ObjectPose]:
+        T = kinematics.tcp(twin.status.measured)
+        return {"chwytak": ObjectPose(T[:3, 3] - OFFSET, T[:3, :3], "kamery", 0.0)}
+
+    runner = StrategyRunner(twin, Waypoints(tour(dict(twin.status.measured))), objects=gripper_seen,
+                            episode=EpisodeOptions(folder=tmp_path, gripper="chwytak"))
+    runner.start(threaded=False)
+    drive(twin, runner, 10.0)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    result = report(log)
+
+    assert log.end.code == "done"
+    assert log.end.succeeded
+    assert len(log.steps) == runner.status.step
+    assert [joint.joint for joint in result.latency] == list(log.joints)
+    for joint in result.latency:
+        for fit in (joint.total, joint.supervisor, joint.actuator):
+            assert isinstance(fit, DelayFit), (joint.joint, fit)
+            assert 0.0 < fit.lag_s < 1.0
+
+    drift = result.drift
+    assert drift is not None
+    assert drift.samples == len(log.steps)
+    assert drift.mean_m == pytest.approx(OFFSET, abs=1e-4)
+    assert drift.angle_max_deg is not None and drift.angle_max_deg < 0.1
+
+    text = result.lines()
+    for joint in log.joints:
+        assert any(line.split()[:1] == [joint] for line in text), joint
+    assert any("odczyty - kamery" in line for line in text)
+
+
+def test_a_fake_arms_delay_shows_as_servo_latency(twin, monkeypatch, tmp_path):
+    """A (fake) real arm whose readings show the pose from 60 ms ago: the servo column measures it."""
+    connect_fake(twin, monkeypatch, FakeArm(delay=0.06))
+    runner = StrategyRunner(twin, Waypoints(tour(dict(twin.status.measured))),
+                            episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 10.0)
+
+    assert runner.status.stopped_code == "done"
+    assert runner.status.episode is not None
+    result = report(EpisodeLog.load(runner.status.episode))
+
+    for joint in result.latency:
+        assert isinstance(joint.actuator, DelayFit), (joint.joint, joint.actuator)
+        assert 0.05 <= joint.actuator.lag_s <= 0.09, joint.joint
+
+
+def test_the_log_holds_every_accepted_tick(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    poses = tour(dict(twin.status.measured))
+    runner = StrategyRunner(twin, Waypoints(poses), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 10.0)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    kinds = [line["kind"] for line in lines(runner.status.episode)]
+
+    assert [step["step"] for step in log.steps] == list(range(runner.status.step))
+    assert {json.dumps(step["intent"], sort_keys=True) for step in log.steps} == {
+        json.dumps(pose, sort_keys=True) for pose in poses}
+    assert [step["run_t"] for step in log.steps] == pytest.approx([0.05 * k for k in range(len(log.steps))])
+    assert len(log.loop_t) > len(log.steps)
+    assert kinds[0] == "header"
+    assert kinds[-1] == "end"
+    assert kinds.count("end") == 1
+    assert log.end.error == pytest.approx(runner.status.error, abs=1e-6)
+    assert log.end.steps == runner.status.step
+    assert log.header["strategy"] == {"class": "machinekind_twin.waypoints:Waypoints", "hz": 20.0,
+                                      "time_limit_s": None}
+    assert log.header["owner"] == "strategia"
+    assert log.header["mode"] == "strategy"
+
+
+class Refusing(Plugin):
+    def start(self, run, obs):
+        raise RuntimeError("uczona na innym ramieniu")
+
+
+def raising(obs):
+    raise RuntimeError("zepsuta")
+
+
+def ends(code: str, twin: Twin, runner_for) -> StrategyRunner:
+    """Runs a strategy until it ends with `code`, the way that end happens."""
+    if code == "refused":
+        runner = runner_for(Refusing(answer({})))
+        with pytest.raises(RuntimeError, match="uczona na innym"):
+            runner.start(threaded=False)
+        return runner
+
+    answers = {
+        "done": answer(Action(target={"j1": 3.0}, done=True, success=True, error=0.2)),
+        "gave_up": answer(Action(target={"j1": 3.0}, done=True, success=False)),
+        "bad_target": answer({"j1": math.nan}),
+        "error": raising,
+    }
+    runner = runner_for(Plugin(answers.get(code, answer({"j1": 3.0}))),
+                        time_limit_s=0.2 if code == "time_limit" else None)
+    runner.start(threaded=False)
+    drive(twin, runner, 0.4)
+
+    if code == "stopped":
+        runner.stop()
+    elif code == "preempted":
+        twin.estop()
+    return runner
+
+
+@pytest.mark.parametrize("code, reason", [
+    ("done", "zadanie wykonane"),
+    ("gave_up", "strategia skonczyla"),
+    ("time_limit", "limit czasu"),
+    ("stopped", "zatrzymana"),
+    ("preempted", "przerwana: STOP awaryjny"),
+    ("bad_target", "zly cel strategii"),
+    ("error", "RuntimeError: zepsuta"),
+    ("refused", "strategia odmowila: uczona na innym ramieniu"),
+])
+def test_every_end_leaves_a_closed_log_with_its_code(twin, tmp_path, code, reason):
+    twin.connect("sim", threaded=False)
+
+    def runner_for(strategy, **kw) -> StrategyRunner:
+        return StrategyRunner(twin, strategy, episode=EpisodeOptions(folder=tmp_path), **kw)
+
+    runner = ends(code, twin, runner_for)
+    status = runner.status
+
+    assert not status.running
+    assert status.stopped_code == code
+    assert status.stopped_because.startswith(reason)
+    assert status.episode is not None
+    log = EpisodeLog.load(status.episode)
+
+    assert lines(status.episode)[-1]["kind"] == "end"
+    assert log.end.code == code
+    assert log.end.reason == status.stopped_because
+    assert log.end.steps == len(log.steps) == status.step
+    assert log.end.began == (code != "refused")
+    assert status.episode_error == ""
+
+
+def test_a_failed_claim_leaves_no_file(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    twin.estop()
+    runner = StrategyRunner(twin, Plugin(answer({})), episode=EpisodeOptions(folder=tmp_path / "runs"))
+
+    with pytest.raises(RuntimeError, match="aktywny STOP"):
+        runner.start(threaded=False)
+
+    assert runner.status.episode is None
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_late_act_writes_no_step(twin, tmp_path):
+    """An `act` that returns after its run ended (a slow model past `stop`) is refused, and so is its line."""
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Plugin(answer({})), episode=EpisodeOptions(folder=tmp_path))
+
+    def stopped_while_thinking(obs):
+        if obs.step == 3:
+            runner.stop("x")
+        return {"j1": 5.0}
+
+    runner.strategy.answer = stopped_while_thinking
+    runner.start(threaded=False)
+    drive(twin, runner, 0.5)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+
+    assert runner.status.step == 3
+    assert len(log.steps) == 3
+    assert lines(runner.status.episode)[-1]["kind"] == "end"
+    assert log.end.code == "stopped"
+    assert log.end.reason == "x"
+
+
+def test_the_log_stops_growing_once_the_run_ends(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Plugin(answer({"j1": 3.0})), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.3)
+    runner.stop()
+
+    assert runner.status.episode is not None
+    size = runner.status.episode.stat().st_size
+    run_ticks(twin, 20)
+
+    assert runner.status.episode.stat().st_size == size
+
+
+def test_frames_the_strategy_read_are_referenced_not_fetched(twin, tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    twin.connect("sim", threaded=False)
+    image = np.full((48, 64, 3), 90, np.uint8)
+    fetched = []
+
+    def camera(name):
+        fetched.append(name)
+        return image, time.monotonic()
+
+    def look_at_a(obs):
+        obs.frames["a"]
+        return {}
+
+    def run(keep_frames_s, name) -> EpisodeLog:
+        fetched.clear()
+        runner = StrategyRunner(twin, Plugin(look_at_a), cameras=("a", "b"), frame=camera,
+                                episode=EpisodeOptions(folder=tmp_path, name=name, keep_frames_s=keep_frames_s))
+        runner.start(threaded=False)
+        drive(twin, runner, 2.5)
+        runner.stop()
+        assert fetched == ["a"] * runner.status.step
+        assert runner.status.episode is not None
+        return EpisodeLog.load(runner.status.episode)
+
+    log = run(None, "references")
+    assert all([frame["camera"] for frame in step["frames"]] == ["a"] for step in log.steps)
+    assert all(step["frames"][0]["file"] is None for step in log.steps)
+    assert all(step["frames"][0]["shape"] == [48, 64, 3] for step in log.steps)
+
+    log = run(0, "every")
+    files = [step["frames"][0]["file"] for step in log.steps]
+    assert all(files)
+    assert cv2.imread(str(tmp_path / files[0])).shape == (48, 64, 3)
+
+    log = run(1.0, "sparse")
+    kept = [step["t"] for step in log.steps if step["frames"][0]["file"]]
+    assert len(kept) == 3
+    assert np.all(np.diff(kept) >= 1.0 - 1e-6)
+    assert len(list((tmp_path / "sparse.frames").iterdir())) == 3
+
+
+@dataclass
+class Move:
+    """A strategy's own answer object with `Action`'s attributes, decisions among them."""
+
+    target: dict = field(default_factory=dict)
+    decisions: tuple = ()
+
+
+def test_a_decision_goes_into_the_log_of_its_tick(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    asked = Decision(question="gdzie jest kostka?", answer='{"x": 0.2}', state={"joints": {"j1": 1.0}},
+                     confidence=0.8, response_s=1.25)
+    own = Decision(question="czy chwycic?", answer="tak")
+    last = Decision(question="koniec?", answer="tak", state={"image": np.zeros((480, 640, 3)), "gap": math.nan})
+
+    def thinking(obs):
+        if obs.step == 0:
+            return {"j1": 1.0}
+        if obs.step == 1:
+            return Action(target={"j1": 2.0}, decisions=(asked,))
+        if obs.step == 2:
+            return Move(target={"j1": 3.0}, decisions=(own,))
+        return Action(target={"j1": 3.0}, done=True, success=True, error=math.nan, decisions=(last,))
+
+    runner = StrategyRunner(twin, Plugin(thinking), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.5)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    decisions = [step["decisions"] for step in log.steps]
+
+    assert decisions[0] == []
+    assert decisions[1] == [{"question": "gdzie jest kostka?", "answer": '{"x": 0.2}', "state": {"joints": {"j1": 1.0}},
+                             "confidence": 0.8, "response_s": 1.25}]
+    assert decisions[2][0]["question"] == "czy chwycic?"
+    assert decisions[3][0]["state"] == {"image": "<ndarray float64 (480, 640, 3)>", "gap": None}
+    assert log.steps[3]["done"]
+    assert log.end.code == "done"
+    assert report(log).decisions.count == 3
+
+
+def test_the_log_is_strict_json(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Plugin(answer(Action(target={"j1": 1.0}, error=math.nan))),
+                            episode=EpisodeOptions(folder=tmp_path, meta={"limit": math.inf}))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.3)
+    runner.stop()
+
+    def refuse(constant):
+        raise ValueError(constant)
+
+    assert runner.status.episode is not None
+    parsed = [json.loads(line, parse_constant=refuse) for line in runner.status.episode.read_text().splitlines()]
+
+    assert parsed[0]["meta"] == {"limit": None}
+    assert all(line["error"] is None for line in parsed if line["kind"] in ("step", "end"))
+
+
+def test_two_runs_with_one_name_get_their_own_files(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    paths = []
+    for _ in range(2):
+        runner = StrategyRunner(twin, Plugin(answer({})), episode=EpisodeOptions(folder=tmp_path, name="same"))
+        runner.start(threaded=False)
+        drive(twin, runner, 0.2)
+        runner.stop()
+        paths.append(runner.status.episode)
+
+    assert paths == [tmp_path / "same.jsonl", tmp_path / "same-2.jsonl"]
+    assert [EpisodeLog.load(path).end.code for path in paths] == ["stopped", "stopped"]
+
+
+def test_a_run_goes_next_to_its_workspace(twin, tmp_path):
+    placed = Twin(Workspace(robot=BOT, path=tmp_path / "station" / "twin.json"), clock=VirtualClock(t0=0.0))
+    try:
+        for each in (placed, twin):
+            each.connect("sim", threaded=False)
+            runner = StrategyRunner(each, Plugin(answer({})))
+            runner.start(threaded=False)
+            runner.stop()
+            assert runner.status.episode is not None
+            assert runner.status.episode.parent == episodes_dir(each.workspace.path)
+    finally:
+        placed.close()
+
+    assert episodes_dir(placed.workspace.path) == tmp_path / "station" / "episodes"
+    assert episodes_dir(twin.workspace.path) == tmp_path / "workspace" / "episodes"
+
+
+def test_a_log_that_cannot_open_does_not_stop_the_run(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    blocker = tmp_path / "a-file"
+    blocker.write_text("", encoding="utf-8")
+    runner = StrategyRunner(twin, Waypoints([dict(twin.status.measured, j1=5.0)]),
+                            episode=EpisodeOptions(folder=blocker))
+    runner.start(threaded=False)
+    drive(twin, runner, 3.0)
+
+    assert runner.status.stopped_code == "done"
+    assert runner.status.episode is None
+    assert runner.status.episode_error.startswith("nie zapisze przebiegu")
+
+
+def test_a_log_that_breaks_mid_run_does_not_stop_the_run(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Waypoints([dict(twin.status.measured, j1=40.0)]),
+                            episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.2)
+    assert runner.status.running
+
+    def full_disk(self, line):
+        raise OSError("brak miejsca na dysku")
+
+    monkeypatch.setattr(EpisodeWriter, "_write", full_disk)
+    drive(twin, runner, 3.0)
+
+    assert runner.status.stopped_code == "done"
+    assert "brak miejsca na dysku" in runner.status.episode_error
+    assert runner.status.episode is not None
+    monkeypatch.undo()
+    assert EpisodeLog.load(runner.status.episode).end.code == "unfinished"
+
+
+# --------------------------------------------------------------------------- observation mode (#175)
+
+
+def test_observation_without_commands_does_not_count_latency(twin, monkeypatch, tmp_path):
+    """An arm driven by a foreign controller: the twin only reads it, and nobody tells it the command."""
+    connect_fake(twin, monkeypatch, FakeArm())
+    writer = observer(twin, tmp_path)
+    for step in range(20):
+        run_ticks(twin, 5)
+        writer.step(record(writer, twin, step))
+    writer.close(end(steps=20))
+
+    log = EpisodeLog.load(writer.path)
+    result = report(log)
+
+    assert np.isnan(log.sent).all()
+    assert np.isfinite(log.readings()[1]).all()
+    assert result.latency == ()
+    assert result.latency_note
+    assert result.latency_note in result.lines()
+
+
+def test_observation_with_a_foreign_controllers_commands_counts_latency(twin, tmp_path):
+    """The foreign controller's command goes into the intent: the latency counts against it."""
+    twin.connect("sim", threaded=False)
+    twin.claim("obcy")
+    assert twin.set_engaged(True, owner="obcy")
+    start = twin.status.measured["j1"]
+
+    writer = observer(twin, tmp_path)
+    for step in range(40):
+        command = {"j1": start + min(step, 20) * 1.5}
+        twin.set_target(command, owner="obcy")
+        writer.step(record(writer, twin, step, intent=command))
+        run_ticks(twin, 3)
+    writer.close(end(steps=40))
+
+    total = report(EpisodeLog.load(writer.path)).latency[0].total
+
+    assert isinstance(total, DelayFit)
+    assert 0.0 < total.lag_s < 0.5
