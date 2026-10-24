@@ -200,7 +200,8 @@ class Located:
     size_m: tuple[float, float, float] | None
     #: How it was placed, as the panel shows it: "sylwetka", "triangulacja" or "promien".
     method: str
-    #: The largest `Detection.age_s` among the detections used [s]; `t` is already moved back by it.
+    #: The largest `Detection.age_s` among the detections used [s]. `t` already has each one's own
+    #: age subtracted.
     age_s: float = 0.0
 
 

@@ -350,8 +350,9 @@ cube silhouettes, the twin fits the cube across camera views, masks arm
 occlusions as unknown and rejects poor fits. Near the gripper, a single view can
 confuse a held object with one lying on the table, so the tracker applies extra
 checks. When grasp evidence is present, the tracker follows the object with the
-TCP using its last relative pose. Detections keep the capture times of the frames
-they were made from; a repeated answer keeps the time of its question's frames.
+TCP using its last relative pose. Detections keep the capture times of the
+frames they were made from. A repeated answer keeps the time of its question's
+frames.
 
 ## Detectors and objects
 
@@ -390,9 +391,10 @@ than this call's frames the frames the detection was made from are. A detector
 that repeats an earlier answer sets it to how much earlier that answer's frame
 from the detection's camera was captured than this call's frame from it. 0, the
 default, means this call's frames. Labels are compared after stripping
-whitespace and lower-casing. The twin drops a detection that names an unknown camera, has a
-pixel outside the frame, has a mask of the wrong shape or has an `age_s` that
-is negative or not finite. The Detectors tab shows how many it dropped.
+whitespace and lower-casing. The twin drops a detection that names an unknown
+camera, has a pixel outside the frame, has a mask of the wrong shape or has an
+`age_s` that is negative or not finite. The Detectors tab shows how many it
+dropped.
 
 `start(info)` runs once before the first call and may raise to refuse the
 start. `stop(reason)` runs once after a successful start. It may run while
@@ -497,8 +499,8 @@ the detector's name prefills its form. Starting a running detector again
 restarts it with the new settings. Several detectors can run at once. When two
 of them report the same label, the measurement with the newer capture time
 wins. It is fed even when the other detector's last answer was a repeat read
-from later frames. Detectors never move the arm, so STOP leaves them running. Closing the
-panel stops them.
+from later frames. Detectors never move the arm, so STOP leaves them running.
+Closing the panel stops them.
 
 Starting shows `Startuje...` immediately. During each detection call, the panel
 shows `Wywolanie w toku` with elapsed seconds beside Start and in the detector's

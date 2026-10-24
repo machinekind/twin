@@ -212,9 +212,10 @@ captured.
 
 A detection made from older frames than this call's says by how much in `age_s` [s]. A detector
 that repeats an earlier answer instead of looking again sets it to how much earlier that answer's
-frame from the same camera was captured than this call's. The twin moves the capture time back by it, so the published `age_s` counts from the
-frames the detection was made from. The twin also counts it as latency, so the pose is held until
-the next answer. The default 0 means this call's frames.
+frame from the same camera was captured than this call's. The twin moves the capture time back by
+it, so the published `age_s` counts from the frames the detection was made from. The twin also
+counts it as latency, so the pose is held until the next answer. The default 0 means this call's
+frames.
 
 `request.frames` lists the cameras offered in this call. A frame is fetched only when read.
 `frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second.
