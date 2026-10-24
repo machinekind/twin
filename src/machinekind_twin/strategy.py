@@ -236,7 +236,7 @@ class StrategyRunner:
                          "time_limit_s": self.time_limit_s},
             "cameras": list(self._cameras),
             "gripper_label": options.gripper,
-            "meta": dict(options.meta),
+            "meta": options.meta,
         }
         folder = options.folder if options.folder is not None else episodes_dir(self.twin.workspace.path)
 

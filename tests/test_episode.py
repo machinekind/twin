@@ -721,6 +721,62 @@ def test_a_log_that_breaks_mid_run_does_not_stop_the_run(twin, tmp_path, monkeyp
     assert EpisodeLog.load(runner.status.episode).end.code == "unfinished"
 
 
+class Unreadable:
+    """An object whose `repr` raises, as a model client's may."""
+
+    def __repr__(self) -> str:
+        raise RuntimeError("repr nie dziala")
+
+
+class Changing(dict):
+    """A dict another thread changes while the log reads it."""
+
+    def items(self):
+        raise RuntimeError("dictionary changed size during iteration")
+
+
+def test_a_value_the_log_cannot_read_costs_only_that_value(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    state = {"client": Unreadable(), "live": Changing(a=1), "ok": 1}
+
+    def asking(obs):
+        return Action(target={"j1": 2.0}, done=obs.step == 3, success=True,
+                      decisions=(Decision(question="gdzie?", answer="tu", state=state),))
+
+    runner = StrategyRunner(twin, Plugin(asking),
+                            episode=EpisodeOptions(folder=tmp_path, meta={"client": Unreadable()}))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.5)
+
+    assert runner.status.stopped_code == "done"
+    assert runner.status.episode_error == ""
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+
+    assert log.header["meta"] == {"client": "<Unreadable>"}
+    assert log.end.code == "done"
+    assert len(log.steps) == runner.status.step == 4
+    assert log.steps[0]["decisions"][0]["state"] == {"client": "<Unreadable>", "live": "<Changing>", "ok": 1}
+
+
+def test_a_log_whose_header_cannot_be_written_leaves_no_file_and_does_not_stop_the_run(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+
+    def broken(self, line):
+        raise ValueError("zly naglowek")
+
+    monkeypatch.setattr(EpisodeWriter, "_write", broken)
+    runner = StrategyRunner(twin, Waypoints([dict(twin.status.measured, j1=5.0)]),
+                            episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 3.0)
+
+    assert runner.status.stopped_code == "done"
+    assert runner.status.episode is None
+    assert "zly naglowek" in runner.status.episode_error
+    assert list(tmp_path.iterdir()) == []
+
+
 # --------------------------------------------------------------------------- observation mode (#175)
 
 

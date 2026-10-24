@@ -203,7 +203,7 @@ class EpisodeWriter:
         `header` holds the fields `twin_header` gives plus the run's own (`mode`, `owner`,
         `strategy`, `cameras`, `gripper_label`, `meta`); this adds the format, the name, the start
         time, the clock and the versions. A name taken already gets `-2`, `-3`, ...: nothing is
-        overwritten.
+        overwritten. A header that cannot be written leaves no file behind.
         """
         local = time.localtime()
         folder = Path(folder)
@@ -224,9 +224,12 @@ class EpisodeWriter:
         try:
             writer._write(line)
             file.flush()
-        except OSError:
+        except Exception as exc:
             file.close()
-            raise
+            path.unlink(missing_ok=True)
+            if isinstance(exc, OSError):
+                raise
+            raise OSError(f"naglowek zapisu: {type(exc).__name__}: {exc}") from exc
 
         writer._handle = twin.add_tick_listener(writer.on_tick)
         return writer
@@ -548,20 +551,36 @@ def _pose(pose: Any) -> dict[str, Any]:
 
 
 def _decision(decision: Any) -> dict[str, Any]:
-    """By attributes: a plugin's own decision class with `Decision`'s attribute names works too."""
-    state = getattr(decision, "state", None)
-    return {
-        "question": str(getattr(decision, "question", "")),
-        "answer": str(getattr(decision, "answer", "")),
-        "state": _clean(state) if state is not None else {},
-        "confidence": _rounded(getattr(decision, "confidence", None), SECOND_DIGITS),
-        "response_s": _rounded(getattr(decision, "response_s", None), SECOND_DIGITS),
-    }
+    """By attributes: a plugin's own decision class with `Decision`'s attribute names works too.
+
+    A decision whose attributes cannot be read is logged by its type, and the run's log goes on.
+    """
+    try:
+        state = getattr(decision, "state", None)
+        return {
+            "question": str(getattr(decision, "question", "")),
+            "answer": str(getattr(decision, "answer", "")),
+            "state": _clean(state) if state is not None else {},
+            "confidence": _rounded(getattr(decision, "confidence", None), SECOND_DIGITS),
+            "response_s": _rounded(getattr(decision, "response_s", None), SECOND_DIGITS),
+        }
+    except Exception:  # noqa: BLE001 - a decision the log cannot read costs only that decision
+        return {"question": _placeholder(decision), "answer": "", "state": {}, "confidence": None,
+                "response_s": None}
 
 
 def _clean(value: Any, depth: int = 0) -> Any:
     """`value` as strict JSON values. It never raises: a non-finite number becomes null, a large
-    array its type and shape, and anything JSON has no type for its `repr`."""
+    array its type and shape, and anything JSON has no type for its `repr`. A value that cannot be
+    read, such as a mapping another thread changes or an object whose `repr` raises, becomes its
+    type in angle brackets, and only that value is lost."""
+    try:
+        return _cleaned(value, depth)
+    except Exception:  # noqa: BLE001 - a value the log cannot read costs only that value
+        return _placeholder(value)
+
+
+def _cleaned(value: Any, depth: int) -> Any:
     if value is None or isinstance(value, (bool, str)):
         return value
     if isinstance(value, np.bool_):
@@ -578,12 +597,16 @@ def _clean(value: Any, depth: int = 0) -> Any:
             return f"<ndarray {value.dtype} {value.shape}>"
         return _clean(value.tolist(), depth + 1)
     if isinstance(value, Mapping):
-        return {str(key): _clean(item, depth + 1) for key, item in value.items()}
+        return {str(key): _clean(item, depth + 1) for key, item in list(value.items())}
     if isinstance(value, (list, tuple)):
-        return [_clean(item, depth + 1) for item in value]
+        return [_clean(item, depth + 1) for item in list(value)]
     if isinstance(value, PurePath):
         return str(value)
     return repr(value)
+
+
+def _placeholder(value: Any) -> str:
+    return f"<{type(value).__name__}>"
 
 
 def _loads(line: bytes) -> dict[str, Any] | None:
