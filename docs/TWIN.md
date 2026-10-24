@@ -591,30 +591,31 @@ a still one 60. Five things bound it:
   last question repeats that question's answer instead of asking. Each camera's
   frame is compared as a grey thumbnail 256 px long, blurred 3x3, with the mean
   brightness matched so auto exposure does not count. A pixel counts as changed
-  when it moved by 16 grey levels plus a fifth of its distance from the mean,
-  so a gain change does not count. Two changed pixels belong to one blob when
-  neither their rows nor their columns lie more than 5 px apart, about 2.3 cm
-  at 1 m. The image counts as changed when its largest blob exceeds 24
-  thumbnail pixels. Changed pixels more than 5 px from any other stay blobs of
-  one. A 3 cm cube at 1 m through a 60 degree lens makes a blob of at least 39
-  when it moves by a centimetre and at least 49 when it leaves. A blinking 2x2
-  pixel LED makes at most 14. Sensor noise of ±20 levels, a +12 exposure step
-  and a 1.15 gain make none. A cube needs 39 to 64 grey levels of contrast to
-  the table, depending on the frame width and on where its edges fall on the
-  thumbnail's pixels, before every centimetre it moves along an axis counts.
-  With less it can move a centimetre unseen. Frames that changed since the last
-  question and also since the previous call show a scene that still moves. Such
-  a call repeats the answer too, for at most two calls in a row, and the
-  detector asks once two calls agree. An answer starts the count again. A
-  failed question does not, so the backoff below still applies while the scene
-  moves. Where the twin's arm masks (`DetectRequest.arm_masks`) hide the scene,
-  each camera keeps what its earlier frames showed there. Each mask is widened
-  by 5 thumbnail pixels, about 2.3 cm at 1 m, over the arm's edge and shadow.
-  The arm moving over the table therefore asks nothing. The place the arm
-  leaves counts as changed when it no longer shows what it showed before the
-  arm came, such as an object put down, or when no frame showed it yet, as
-  after a start with the arm in view. Once the last answer is `reuse_max_age_s`
-  old, the next call asks whatever the frames show;
+  when it moved by 16 grey levels plus a fifth of its distance from the mean, so
+  a gain change does not count. Two changed pixels belong to one blob when
+  neither their rows nor their columns lie more than 5 px apart, about 2.3 cm at
+  1 m. The image counts as changed when its largest blob exceeds 24 thumbnail
+  pixels. Changed pixels more than 5 px from any other stay blobs of one. A 3 cm
+  cube 80 grey levels darker than the table, at 1 m through a 60 degree lens,
+  makes a blob of at least 39 when it moves by a centimetre and at least 49 when
+  it leaves. A blinking 2x2 pixel LED makes at most 14. Sensor noise of ±20
+  levels, a +12 exposure step and a 1.15 gain make none. A cube needs 39 to 64
+  grey levels of contrast to the table, depending on the frame width and on
+  where its edges fall on the thumbnail's pixels, before every centimetre it
+  moves along an axis counts. With less it can move a centimetre unseen. Frames
+  that changed since the last question and also since the previous call show a
+  scene that still moves. Such a call repeats the answer too, for at most two
+  calls in a row, and the detector asks once two calls agree. An answer starts
+  the count again. A failed question does not, so the backoff below still
+  applies while the scene moves. Where the twin's arm masks
+  (`DetectRequest.arm_masks`) hide the scene, each camera keeps what its earlier
+  frames showed there. Each mask is widened by 5 thumbnail pixels, about 2.3 cm
+  at 1 m, over the arm's edge and shadow. The arm moving over the table
+  therefore asks nothing. The place the arm leaves counts as changed when it no
+  longer shows what it showed before the arm came, such as an object put down,
+  or when no frame showed it yet, as after a start with the arm in view. Once
+  the last answer is `reuse_max_age_s` old, the next call asks whatever the
+  frames show;
 - `max_calls_per_hour`: a call over the cap fails with "hourly cap of N
   questions reached";
 - backoff: a failed question (a timeout, a non-zero exit, a subscription limit,
