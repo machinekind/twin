@@ -570,9 +570,11 @@ def test_a_decision_goes_into_the_log_of_its_tick(twin, tmp_path):
         if obs.step == 0:
             return {"j1": 1.0}
         if obs.step == 1:
-            return Action(target={"j1": 2.0}, decisions=(asked,))
+            return Action(target={"j1": 2.0}, decisions=[asked])
         if obs.step == 2:
             return Move(target={"j1": 3.0}, decisions=(own,))
+        if obs.step == 3:
+            return Move(target={"j1": 3.0}, decisions=own)
         return Action(target={"j1": 3.0}, done=True, success=True, error=math.nan, decisions=(last,))
 
     runner = StrategyRunner(twin, Plugin(thinking), episode=EpisodeOptions(folder=tmp_path))
@@ -587,8 +589,9 @@ def test_a_decision_goes_into_the_log_of_its_tick(twin, tmp_path):
     assert decisions[1] == [{"question": "gdzie jest kostka?", "answer": '{"x": 0.2}', "state": {"joints": {"j1": 1.0}},
                              "confidence": 0.8, "response_s": 1.25}]
     assert decisions[2][0]["question"] == "czy chwycic?"
-    assert decisions[3][0]["state"] == {"image": "<ndarray float64 (480, 640, 3)>", "gap": None}
-    assert log.steps[3]["done"]
+    assert decisions[3] == []
+    assert decisions[4][0]["state"] == {"image": "<ndarray float64 (480, 640, 3)>", "gap": None}
+    assert log.steps[4]["done"]
     assert log.end.code == "done"
     assert report(log).decisions.count == 3
 

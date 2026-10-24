@@ -348,7 +348,7 @@ class StrategyRunner:
                     step=obs.step, run_t=obs.t, obs_t=obs_t, t=log.now(), joints=obs.joints, command=obs.command,
                     intent=target, goal=obs.goal, objects=obs.objects, frames=_fetched_frames(obs),
                     done=action.done, success=action.success, error=action.error, note=action.note,
-                    decisions=tuple(action.decisions),
+                    decisions=_decisions(action.decisions),
                 ))
                 status.episode_error = log.error
 
@@ -539,6 +539,12 @@ def _fetched_frames(obs: Observation) -> dict[str, Frame | None]:
     return obs.frames.fetched() if isinstance(obs.frames, _LazyFrames) else {}
 
 
+def _decisions(value: Any) -> tuple[Any, ...]:
+    """A strategy's decisions as a tuple. They only go to the log, so anything but a list or a tuple
+    is dropped rather than ending the run."""
+    return tuple(value) if isinstance(value, (list, tuple)) else ()
+
+
 def _as_action(answer: Any) -> Action:
     """The strategy's answer as an `Action`: an `Action`, an object with its attributes, or a mapping."""
     if isinstance(answer, Action):
@@ -558,5 +564,5 @@ def _as_action(answer: Any) -> Action:
         success=getattr(answer, "success", None),
         error=getattr(answer, "error", None),
         note=str(getattr(answer, "note", "") or ""),
-        decisions=tuple(getattr(answer, "decisions", ()) or ()),
+        decisions=_decisions(getattr(answer, "decisions", ())),
     )
