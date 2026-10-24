@@ -9,7 +9,8 @@ a value of another type is an error, as in `robot.yaml`. Then it creates the plu
 `cls(settings)`, or `cls()` when the class has no `settings`.
 
 Settings fields are `str`, `int`, `float` or `bool`: the panel draws a text field, a number or a
-switch for each. A field without a default must be given.
+switch for each. String fields may declare dropdown `choices` in dataclass metadata, optionally
+keyed by an earlier field named by `choices_from`. A field without a default must be given.
 
 The twin checks a plugin class by attribute only, never by `isinstance` against the contract: a
 class without the contract's base class loads when it has the method.
@@ -39,6 +40,9 @@ class SettingField:
     kind: type
     #: `dataclasses.MISSING` = no default: the field must be given.
     default: Any
+    #: UI choices only: explicit config values remain accepted by the plugin's own validation.
+    choices: tuple[str, ...] | dict[str, tuple[str, ...]] | None = None
+    choices_from: str | None = None
 
     @property
     def required(self) -> bool:
@@ -47,6 +51,14 @@ class SettingField:
     def convert(self, value: Any, where: str) -> Any:
         """`value` as this field's type, or ValueError."""
         return _as_kind(self.kind, value, f"{where}.{self.name}")
+
+    def options(self, values: Mapping[str, Any]) -> tuple[str, ...]:
+        """Dropdown choices for the current values of the form."""
+        if isinstance(self.choices, dict):
+            assert self.choices_from is not None
+            selector = values.get(self.choices_from)
+            return self.choices.get(selector, ()) if isinstance(selector, str) else ()
+        return self.choices or ()
 
 
 @dataclass(frozen=True)
@@ -170,9 +182,36 @@ def _fields(settings: Any, where: str) -> tuple[SettingField, ...]:
             raise TypeError(f"{where}: ustawienie {field.name} ma typ {kind} - panel umie tylko str, int, "
                             "float i bool")
 
-        found.append(SettingField(field.name, kind, _default(field, kind, where)))
+        choices, source = _choices(field, kind, found, where)
+        found.append(SettingField(field.name, kind, _default(field, kind, where), choices, source))
 
     return tuple(found)
+
+
+def _choices(field: dataclasses.Field, kind: type, earlier: list[SettingField], where: str
+             ) -> tuple[tuple[str, ...] | dict[str, tuple[str, ...]] | None, str | None]:
+    """Check dropdown metadata while loading the plugin, before drawing its form."""
+    choices = field.metadata.get("choices")
+    source = field.metadata.get("choices_from")
+    if choices is None and source is None:
+        return None, None
+    problem = f"{where}.{field.name}: niepoprawne choices / choices_from"
+    if kind is not str:
+        raise TypeError(f"{problem} - lista wyboru wymaga str")
+
+    def items(raw: Any) -> tuple[str, ...]:
+        if not isinstance(raw, (tuple, list)) or not raw or not all(isinstance(v, str) for v in raw):
+            raise TypeError(f"{problem} - choices wymaga niepustej listy napisow")
+        return tuple(dict.fromkeys(raw))
+
+    if source is None:
+        return items(choices), None
+    selector = next((f for f in earlier if f.name == source), None)
+    if not isinstance(source, str) or selector is None or not isinstance(selector.choices, tuple):
+        raise TypeError(f"{problem} - choices_from wymaga wczesniejszej listy wyboru")
+    if not isinstance(choices, Mapping) or set(choices) != set(selector.choices):
+        raise TypeError(f"{problem} - choices musi opisywac kazda opcje {source}")
+    return {key: items(value) for key, value in choices.items()}, source
 
 
 def _default(field: dataclasses.Field, kind: type, where: str) -> Any:

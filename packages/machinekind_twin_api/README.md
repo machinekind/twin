@@ -51,6 +51,26 @@ cube = "cube_detector:ColourCube"                # a class following Detector, b
   image and where, in pixels. The twin places and tracks the objects, and strategies read them as
   `Observation.objects[label]`.
 
+String settings can declare dropdown choices without importing the twin:
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Settings:
+    provider: str = field(default="local", metadata={"choices": ("local", "remote")})
+    model: str = field(default="small", metadata={
+        "choices_from": "provider",
+        "choices": {"local": ("small", "large"), "remote": ("fast", "accurate")},
+    })
+```
+
+`choices_from` names an earlier dropdown field, and its mapping covers every choice of that
+field. Changing it refreshes the dependent dropdown and selects its first option if the old
+value no longer applies. Choices guide the panel; the plugin still validates settings. Explicit
+config values remain available in the dropdown for their configured provider. An empty string
+appears as `(domyslne)` and is passed back as `""`; required dropdowns start with `(wybierz)`.
+
 The twin re-exports the same classes (`machinekind_twin.strategy`, `machinekind_twin.backends.base`,
 `machinekind_twin.detection`), so `machinekind_twin.strategy.Action is machinekind_twin_api.Action`.
 

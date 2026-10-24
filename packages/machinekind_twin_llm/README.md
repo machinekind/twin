@@ -11,6 +11,22 @@ the CLI is logged in with.
 
 The package depends on `machinekind-twin-api` (the contracts), numpy and OpenCV, never on the twin.
 
+## CLI and model selection
+
+The panel offers a `cli` dropdown (`codex`, `claude`) and a `model` dropdown for the selected CLI.
+The `(domyslne)` model choice uses that CLI's default. Switching CLI replaces an incompatible
+model selection with this default. The choices checked on 2026-10-24 are:
+
+| CLI | Model choices, besides the empty default |
+|---|---|
+| `codex` | `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
+| `claude` | `sonnet`, `opus`, `haiku`, `fable`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, `claude-fable-5-1` |
+
+The Codex choices come from its locally cached visible models, all accepting images, fetched on
+2026-10-24 by CLI 0.163.0. The Claude choices match installed Claude Code 2.1.310 and its official
+[model configuration documentation](https://code.claude.com/docs/en/model-config). Refresh these
+lists when the CLIs change. Explicit model names supplied in config remain supported.
+
 ## How a question runs (`machinekind_twin_llm.cli`)
 
 - Each call gets a directory of its own, holding the JPEGs, the prompt (`stdin.txt`), `stdout.txt`

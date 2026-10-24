@@ -8,12 +8,19 @@ constructor, so a setting the detector cannot work with is refused before anythi
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-__all__ = ["CLAUDE_IMAGES", "CLIS", "EFFORTS", "LlmSettings", "names", "validate"]
+__all__ = ["CLAUDE_IMAGES", "CLIS", "EFFORTS", "MODELS", "LlmSettings", "names", "validate"]
 
 #: The CLIs the detector can ask.
 CLIS = ("codex", "claude")
+#: Model picker choices by CLI; "" uses the CLI's default. Configs may name other models.
+MODELS = {
+    "codex": ("", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol",
+              "gpt-5.6-terra", "gpt-5.6-luna"),
+    "claude": ("", "sonnet", "opus", "haiku", "fable", "claude-sonnet-5-5", "claude-opus-5-5",
+               "claude-haiku-5-5", "claude-fable-5-1"),
+}
 #: Reasoning efforts passed to the CLI; "" = the CLI's default.
 EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 #: How claude gets the images: inline over stream-json, or as files it opens with Read.
@@ -31,10 +38,10 @@ PIXEL_ERROR_PX = (0.0, 500.0)
 @dataclass
 class LlmSettings:
     #: Which locally installed CLI answers, on your subscription: "codex" or "claude".
-    cli: str = "codex"
+    cli: str = field(default="codex", metadata={"choices": CLIS})
     #: The model as the CLI names it: "gpt-6-astra" (Astra), "sonnet", "claude-opus-5-5"; "" = the
     #: CLI's default.
-    model: str = "gpt-6-astra"
+    model: str = field(default="gpt-6-astra", metadata={"choices_from": "cli", "choices": MODELS})
     #: Reasoning effort passed to the CLI: low, medium, high, xhigh, max; "" = the CLI's default.
     effort: str = "low"
     #: What to look for, comma-separated ("red pen, cube"); "" = every movable object on the table.

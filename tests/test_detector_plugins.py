@@ -194,6 +194,25 @@ def test_its_settings_dataclass_becomes_the_form_fields(install_dist):
     assert fields["size_m"].default == 0.03
 
 
+@pytest.mark.parametrize("dist, fields", [
+    ("choices-number", "value: int = field(default=1, metadata={'choices': ('1', '2')})"),
+    ("choices-string", "value: str = field(default='red', metadata={'choices': 'red'})"),
+    ("choices-missing-selector", "value: str = field(default='', metadata={'choices_from': 'cli', "
+     "'choices': {'codex': ('',)}})"),
+    ("choices-missing-branch", "cli: str = field(default='codex', metadata={'choices': ('codex', 'claude')})\n"
+     "    model: str = field(default='', metadata={'choices_from': 'cli', 'choices': {'codex': ('',)}})"),
+])
+def test_invalid_dropdown_metadata_is_refused_when_the_plugin_loads(install_dist, dist, fields):
+    source = (
+        "from dataclasses import dataclass, field\n\n@dataclass\nclass Settings:\n"
+        f"    {fields}\n\nclass Detector:\n    settings = Settings\n"
+        "    def detect(self, request):\n        return []\n")
+    name = install_detector(install_dist, dist, source)
+
+    with pytest.raises(TypeError, match="choices"):
+        load_detector(name)
+
+
 def test_the_detector_is_created_with_its_settings(install_dist):
     name = install_detector(install_dist, "blocks-created", WITH_SETTINGS)
 
@@ -379,6 +398,21 @@ def test_the_llm_settings_draw_as_str_float_int_and_bool(llm_package):
     assert not any(field.required for field in fields.values())
     assert fields["cli"].default == "codex"
     assert fields["interval_s"].default == 10.0
+
+
+def test_the_llm_model_choices_follow_the_cli_without_limiting_config_models(llm_package):
+    plugin = load_detector(llm_package)
+    fields = {field.name: field for field in plugin.fields}
+
+    assert fields["cli"].options({}) == ("codex", "claude")
+    assert fields["model"].choices_from == "cli"
+    codex = fields["model"].options({"cli": "codex"})
+    claude = fields["model"].options({"cli": "claude"})
+    assert "" in codex and "" in claude
+    assert "gpt-6-astra" in codex and "gpt-6-astra" not in claude
+    assert "sonnet" in claude and "sonnet" not in codex
+    assert plugin.create({"cli": "codex", "model": "gpt-future"}).config.model == "gpt-future"
+    assert plugin.create({"cli": "claude", "model": "claude-future"}).config.model == "claude-future"
 
 
 def test_the_llm_config_section_prefills_the_detector(tmp_path, monkeypatch, llm_package):
