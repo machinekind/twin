@@ -370,6 +370,22 @@ def test_the_newer_capture_wins_a_shared_label(tracks: Tracks, clock: Clock):
     assert tracks.snapshot()[0].detector == "a"
 
 
+def test_a_newer_capture_from_another_detector_is_fed_after_a_repeat(tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 60.0
+    tracks.observe("llm", [located(t0, age_s=60.0)], latency_s=0.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 70.0
+    tracks.observe("vlm", [located(t0 + 50.0, pos=REST + [0.05, 0.0, 0.0])], latency_s=20.0, interval_s=10.0)
+    obj = tracks.step(None)["cube"]
+
+    assert obj.age_s == pytest.approx(20.0, abs=1e-6)
+    np.testing.assert_allclose(obj.position, REST + [0.05, 0.0, 0.0])
+    assert tracks.snapshot()[0].detector == "vlm"
+
+
 def test_two_steps_within_10_ms_read_the_hand_once(tracks: Tracks, clock: Clock):
     calls = []
 

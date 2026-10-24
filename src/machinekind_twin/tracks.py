@@ -103,7 +103,7 @@ class _Track:
     detector: str
     #: The newest measurement handed in; fed to the tracker once per newer frames (`used_t`).
     pending: Located
-    #: `_read_t` of the last measurement fed.
+    #: `_read_t` of the last measurement fed from `detector`.
     used_t: float = -math.inf
     #: The last measurement fed to the tracker: what the panel shows about it.
     fed: Located | None = None
@@ -154,7 +154,8 @@ class Tracks:
     # ------------------------------------------------------------------ the detector thread
     def observe(self, detector: str, batch: list[Located], latency_s: float, interval_s: float) -> None:
         """One detector call's placed labels. The newer capture time wins a label two detectors share;
-        a detector's latest answer always replaces its own earlier one.
+        a detector's latest answer always replaces its own earlier one. A detector that takes a track
+        over has its measurement fed, whatever the read time of the previous detector's last one.
 
         The largest `Located.age_s` in the batch counts as latency: a repeated answer is as late as
         the frames it was made from, so its pose is held until the next answer. A repeat made on newer
@@ -169,8 +170,10 @@ class Tracks:
                 track = self._tracks.get(loc.label)
                 if track is None:
                     self._tracks[loc.label] = _Track(ObjectTracker.for_spec(self._spec), detector, loc)
-                elif detector == track.detector or loc.t >= track.pending.t:
-                    track.pending, track.detector = loc, detector
+                elif detector == track.detector:
+                    track.pending = loc
+                elif loc.t >= track.pending.t:
+                    track.pending, track.detector, track.used_t = loc, detector, -math.inf
 
     # ------------------------------------------------------------------ the readers
     def step(self, hand: Hand | Callable[[], Hand | None] | None = None) -> dict[str, ObjectPose]:

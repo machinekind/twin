@@ -319,11 +319,11 @@ def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
     det.stop("test")
 
 
-def test_a_repeat_carries_the_time_since_the_question_it_repeats(fake: Fake):
+def test_repeats_age_from_the_frames_of_the_question_they_repeat_and_a_new_answer_has_age_0(fake: Fake):
     clock = Clock()
     det = LlmDetector(settings(fake), clock=clock)
     det.start(INFO)
-    first = det.detect(request(0))
+    first = det.detect(request(0, ages={"top": 0.5, "side": 0.5}))
 
     assert first
     assert all(d.age_s == 0.0 for d in first)
@@ -331,13 +331,13 @@ def test_a_repeat_carries_the_time_since_the_question_it_repeats(fake: Fake):
     clock.t += 12.5
     again = det.detect(request(1))
 
-    assert [d.age_s for d in again] == [12.5] * len(first)
+    assert [d.age_s for d in again] == pytest.approx([13.0] * len(first), abs=1e-9)
     assert described(again) == described(first)
 
     clock.t += 10.0
-    later = det.detect(request(2))
+    later = det.detect(request(2, ages={"top": 1.0, "side": 1.0}))
 
-    assert [d.age_s for d in later] == [22.5] * len(first)
+    assert [d.age_s for d in later] == pytest.approx([22.0] * len(first), abs=1e-9)
     assert described(later) == described(first)
     assert len(fake.runs()) == 1
 
@@ -361,6 +361,19 @@ def test_a_repeat_s_age_is_the_gap_between_the_capture_times_of_its_frames(fake:
     assert {d.camera for d in again} == {"top", "side"}
     for d in again:
         assert d.age_s == pytest.approx({"top": 10.9, "side": 9.5}[d.camera], abs=1e-9)
+    det.stop("test")
+
+
+def test_a_repeat_on_a_frame_a_hair_older_than_the_question_s_has_age_0(fake: Fake):
+    clock = Clock()
+    det = LlmDetector(settings(fake), clock=clock)
+    det.start(INFO)
+    det.detect(request(0))
+    clock.t += 10.0
+    again = det.detect(request(1, ages={"top": 10.0 + 1e-6, "side": 0.0}))
+
+    assert len(fake.runs()) == 1
+    assert {d.camera: d.age_s for d in again}["top"] == 0.0
     det.stop("test")
 
 
