@@ -10,11 +10,11 @@ import atexit
 import shutil
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 import numpy as np
 import pytest
+import tomllib
 from machinekind_twin_api.entry_points import DETECTORS
 
 from machinekind_twin.robots import reload_robots

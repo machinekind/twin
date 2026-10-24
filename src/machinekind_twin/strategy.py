@@ -239,7 +239,7 @@ class StrategyRunner:
             return self._tick(run, now)
         except _BadTarget as exc:
             self._finish(run, f"zly cel strategii: {exc}", hold_measured=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any failure of a strategy's act ends its run
             self._fail(run, exc)
         return False
 

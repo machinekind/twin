@@ -16,15 +16,14 @@ from machinekind_twin_api.entry_points import STRATEGIES
 
 pytest.importorskip("mujoco")
 
-from conftest import BOT, SWING  # noqa: E402
+from conftest import BOT, SWING
+from test_strategy import drive
 
-from machinekind_twin.clock import VirtualClock  # noqa: E402
-from machinekind_twin.runtime import Twin  # noqa: E402
-from machinekind_twin.strategies import ENTRY_POINT_GROUP, config_section, load_strategy, strategies  # noqa: E402
-from machinekind_twin.strategy import StrategyRunner  # noqa: E402
-from machinekind_twin.workspace import Workspace  # noqa: E402
-
-from test_strategy import drive  # noqa: E402
+from machinekind_twin.clock import VirtualClock
+from machinekind_twin.runtime import Twin
+from machinekind_twin.strategies import ENTRY_POINT_GROUP, config_section, load_strategy, strategies
+from machinekind_twin.strategy import StrategyRunner
+from machinekind_twin.workspace import Workspace
 
 GROUP = "machinekind_twin.strategies"
 

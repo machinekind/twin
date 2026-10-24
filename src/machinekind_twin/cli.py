@@ -71,7 +71,7 @@ def _check(_: argparse.Namespace) -> int:
                 line(f"model {spec.title}", f"{m.nbody} cial, {faces} trojkatow ({folder})")
             except Exception as exc:  # noqa: BLE001 - zly model to wiersz raportu, nie wyjatek
                 line(f"model {name}", f"{type(exc).__name__}: {exc}", False)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a broken robot registry is a report line, not a crash
         line("ramiona", f"{type(exc).__name__}: {exc}", False)
 
     try:

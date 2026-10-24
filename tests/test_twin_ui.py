@@ -18,9 +18,9 @@ import pytest
 pytest.importorskip("viser")
 pytest.importorskip("mujoco")
 
-from conftest import BOT  # noqa: E402
+from conftest import BOT
 
-from machinekind_twin.ui import jobs  # noqa: E402
+from machinekind_twin.ui import jobs
 
 
 def free_port() -> int:
