@@ -453,9 +453,7 @@ and it takes these Polish values:
   latest answer lacks the label. A measurement that is already older than
   `fresh_s` when it arrives gets this value at once. A detector that answers in
   tens of seconds, such as a language model, therefore never publishes
-  `kamery`. The one exception is the LLM detector with `reuse_if_still` on,
-  which is off by default (see "LLM detector"). A strategy reads `age_s` to
-  decide whether a pose is too old.
+  `kamery`. A strategy reads `age_s` to decide whether a pose is too old.
 - `w dloni` (in hand) means the gripper holds the object and the pose follows
   the TCP. On a connected arm, the closed jaw position comes from the
   hardware's limit, so an empty closed gripper does not count as a grasp.
@@ -552,7 +550,6 @@ terminal wrapper (a cmux shim), point `executable` at the real binary, e.g.
 | `timeout_s` | 120 | the CLI's process group is killed after this [s], 5 to 900 |
 | `max_side_px` | 1280 | long edge of the images sent [px]; answers are scaled back to each frame |
 | `pixel_error_px` | 25 | how far off the model's pixels may be, in the sent image's pixels |
-| `reuse_if_still` | false | repeat the last answer while the whole-frame mean grey difference of each camera's 64x48 thumbnail stays under 3 levels; a small object moving on an otherwise still table may not trip it. Off by default, see "Freshness" |
 | `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
 | `min_confidence` | 0.3 | answers the model is less sure of are dropped |
 | `executable` | `""` | the CLI binary; `""` = `cli` on PATH |
@@ -566,15 +563,11 @@ label drift does not create stray tracks.
 ### Cost and rate
 
 Every question counts against the CLI subscription's usage limits. At the
-default 10 s, a scene that keeps changing costs up to 360 questions an hour.
-Five things bound it:
+default 10 s, the detector costs up to 360 questions an hour.
+Four things bound it:
 
 - one question in flight at a time;
 - `interval_s`, at least 2 s;
-- `reuse_if_still`, off by default: while the whole-frame mean grey difference
-  of each sent camera's 64x48 thumbnail stays under 3 levels and the last answer
-  is younger than 60 s, the detector repeats it without asking. A small object
-  moving on an otherwise still table may not trip it;
 - `max_calls_per_hour`: a call over the cap fails with "hourly cap of N
   questions reached";
 - backoff: a failed question (a timeout, a non-zero exit, a subscription limit,
@@ -608,14 +601,6 @@ at a 10 s interval and a 9 s answer. soarm-lab's policy, which waits for
 `kamery`, never takes such a pose for a live one. A strategy that wants the
 LLM's objects reads `age_s` and decides how old is too old. `w dloni` still
 works: the tracker follows an object the gripper closes on.
-
-Known defect, and the reason `reuse_if_still` is off by default: an answer it
-repeats returns at once, and the twin stamps it with the capture time of the
-frames just read. It then publishes `kamery` for up to a second, at the
-position the model saw up to 60 s earlier. The thumbnail check can miss a
-small object, so a 3 cm cube that was moved or taken away still counts as
-unchanged and is published at its old place. Leave `reuse_if_still` off while
-a strategy acts on `kamery`.
 
 ### Privacy
 

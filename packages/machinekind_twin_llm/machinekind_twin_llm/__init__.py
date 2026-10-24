@@ -6,7 +6,7 @@ package never talks to a model API itself and holds no API key.
 * `detector`: `LlmDetector`, the detector the twin finds under the entry point name `llm`;
 * `settings`: `LlmSettings`, what the operator sets, and the checks it must pass;
 * `cli`: running the CLIs, the login check, one question per CLI;
-* `images`: the JPEGs a question sends and whether the scene moved since the last one;
+* `images`: the JPEGs a question sends;
 * `prompt`: the answer schema and the prompt;
 * `answer`: the model's answer checked and scaled back to Detections in frame pixels;
 * `smoke`: one real question per CLI, by hand (`python -m machinekind_twin_llm.smoke`).

@@ -12,7 +12,7 @@ import pytest
 from machinekind_twin_api import Detection
 from machinekind_twin_llm import smoke
 from machinekind_twin_llm.answer import MAX_DETECTIONS, parse_answer
-from machinekind_twin_llm.images import THUMB_SIZE, SentImage, encode, thumbnail, unchanged
+from machinekind_twin_llm.images import SentImage, encode
 from machinekind_twin_llm.prompt import SCHEMA, build_prompt, normalise_label
 
 #: A 1920x1440 frame sent as 1280x960: scale 1.5.
@@ -238,19 +238,3 @@ def test_encode_scales_large_frames_down_and_keeps_small_ones(tmp_path: Path):
 def test_encode_refuses_an_image_that_is_not_rgb(tmp_path: Path):
     with pytest.raises(ValueError, match="RGB"):
         encode(tmp_path, [("top", np.zeros((10, 10), np.uint8))], max_side_px=1280)
-
-
-def test_unchanged_compares_thumbnails_of_the_same_cameras():
-    rng = np.random.default_rng(0)
-    scene = rng.integers(0, 256, (480, 640, 3), dtype=np.uint8)
-    noisy = np.clip(scene.astype(int) + rng.integers(-2, 3, scene.shape), 0, 255).astype(np.uint8)
-    moved = scene.copy()
-    moved[100:300, 100:300] = 0
-
-    before = {"top": thumbnail(scene), "side": thumbnail(scene)}
-
-    assert thumbnail(scene).shape == (THUMB_SIZE[1], THUMB_SIZE[0])
-    assert unchanged(before, {"top": thumbnail(noisy), "side": thumbnail(scene)})
-    assert not unchanged(before, {"top": thumbnail(moved), "side": thumbnail(scene)})
-    assert not unchanged(before, {"top": thumbnail(scene)})  # a camera fewer
-    assert not unchanged({}, {})

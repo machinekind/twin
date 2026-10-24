@@ -17,7 +17,6 @@ import numpy as np
 import pytest
 from machinekind_twin_api import Detection, DetectorInfo, DetectRequest, Frame
 from machinekind_twin_llm import LlmDetector, LlmSettings
-from machinekind_twin_llm import detector as llm_detector
 from machinekind_twin_llm.cli import KEEP_ENV, CliCancelled
 
 FAKE = Path(__file__).with_name("fake_cli.py")
@@ -206,6 +205,22 @@ def test_start_finds_the_cli_on_path(fake: Fake, monkeypatch: pytest.MonkeyPatch
     det.stop("test")
 
 
+@pytest.mark.parametrize("source", ["executable", "path"])
+def test_relative_cli_paths_still_work_in_the_call_directory(
+        fake: Fake, monkeypatch: pytest.MonkeyPatch, source: str):
+    monkeypatch.chdir(fake.bin.parent)
+    if source == "path":
+        monkeypatch.setenv("PATH", "bin")
+    det = started(fake, executable="./bin/codex" if source == "executable" else "")
+    try:
+        assert det.detect(request())
+        (run,) = fake.runs()
+        assert Path(run["cwd"]) != fake.bin.parent
+        assert Path(det._exe).is_absolute()
+    finally:
+        det.stop("test")
+
+
 def test_start_with_an_unknown_camera_lists_the_available_ones(fake: Fake):
     with pytest.raises(ValueError, match=r"unknown camera\(s\) in `cameras`: back; available: top, side"):
         started(fake, cameras="top, back")
@@ -274,34 +289,15 @@ def test_no_frame_at_all_raises(fake: Fake):
     det.stop("test")
 
 
-def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
-    det = started(fake, reuse_if_still=True)
+def test_reuse_if_still_is_refused_before_start(fake: Fake, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(LlmDetector, "start", lambda *_: pytest.fail("must refuse before startup"))
 
-    first = det.detect(request(0))
-    again = det.detect(request(1))
-
-    assert len(fake.runs()) == 1
-    assert again == first
-
-    det.detect(request(2, top=image(shade=20), side=image()))
-
-    assert len(fake.runs()) == 2
-    det.stop("test")
+    with pytest.raises(NotImplementedError, match="reuse_if_still is not implemented"):
+        started(fake, reuse_if_still=True)
 
 
-def test_an_old_answer_is_not_repeated(fake: Fake):
-    det = started(fake, reuse_if_still=True)
-    det.detect(request(0))
-    det._last_t -= llm_detector.REUSE_MAX_AGE_S + 1.0
-
-    det.detect(request(1))
-
-    assert len(fake.runs()) == 2
-    det.stop("test")
-
-
-def test_without_reuse_every_call_asks(fake: Fake):
-    det = started(fake, reuse_if_still=False)
+def test_every_call_asks_even_with_identical_frames(fake: Fake):
+    det = started(fake)
 
     det.detect(request(0))
     det.detect(request(1))
@@ -311,14 +307,12 @@ def test_without_reuse_every_call_asks(fake: Fake):
 
 
 def test_the_hourly_cap_refuses_the_next_question(fake: Fake):
-    det = started(fake, max_calls_per_hour=1, reuse_if_still=True)
+    det = started(fake, max_calls_per_hour=1)
     det.detect(request(0))
 
     with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):
-        det.detect(request(1, top=image(shade=20), side=image()))
+        det.detect(request(1))
     assert len(fake.runs()) == 1
-    # Unchanged images still get the last answer: the cap counts questions only.
-    assert det.detect(request(2))
     det.stop("test")
 
 

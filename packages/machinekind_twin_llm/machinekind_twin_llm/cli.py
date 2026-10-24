@@ -113,7 +113,7 @@ def _failure(name: str, detail: str) -> CliError:
 
 
 def _kill(proc: subprocess.Popen[Any]) -> None:
-    """Terminate the whole process group, then kill what is left after 2 s."""
+    """Terminate the group, give its parent up to 2 s to exit, then kill any remaining members."""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -121,11 +121,13 @@ def _kill(proc: subprocess.Popen[Any]) -> None:
     try:
         proc.wait(2)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+        pass
+    # The parent exiting does not mean its children accepted SIGTERM.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
 
 
 def run_cli(cmd: Sequence[str], *, stdin: str, cwd: Path, timeout_s: float, cancel: threading.Event,
@@ -193,17 +195,20 @@ def check_login(cli: str, exe: str, *, timeout_s: float = LOGIN_TIMEOUT_S) -> st
     """
     args = [exe, "auth", "status"] if cli == "claude" else [exe, "login", "status"]
     try:
-        r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=clean_env(),
-                           timeout=timeout_s, start_new_session=True, check=False)
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"{cli} login check gave no answer in {timeout_s:.0f} s") from e
+        with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=clean_env(), start_new_session=True) as r:
+            try:
+                stdout, stderr = r.communicate(timeout=timeout_s)
+            except subprocess.TimeoutExpired as e:
+                _kill(r)
+                raise RuntimeError(f"{cli} login check gave no answer in {timeout_s:.0f} s") from e
     except OSError as e:
         raise RuntimeError(f"{cli} could not be run: {e}") from e
-    text = _tail(r.stdout + "\n" + r.stderr, 300)
+    text = _tail(stdout + "\n" + stderr, 300)
     logged_out = RuntimeError(f"{cli} is not logged in; {_hint(cli)}")
     if cli == "claude":
         try:
-            status = json.loads(r.stdout)
+            status = json.loads(stdout)
         except ValueError:
             status = None
         if isinstance(status, dict):

@@ -1,27 +1,18 @@
-"""The images a question sends: one JPEG per camera, scaled down from the camera's frame.
-
-`encode` writes them. `thumbnail` and `unchanged` tell whether the scene moved since the last
-question, so a detector can repeat its last answer instead of asking again.
-"""
+"""The images a question sends: one JPEG per camera, scaled down from the camera's frame."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-__all__ = ["JPEG_QUALITY", "STILL_GREY", "THUMB_SIZE", "SentImage", "encode", "thumbnail", "unchanged"]
+__all__ = ["JPEG_QUALITY", "SentImage", "encode"]
 
 #: JPEG quality of the images sent.
 JPEG_QUALITY = 90
-#: (width, height) of the grey thumbnails `unchanged` compares [px].
-THUMB_SIZE = (64, 48)
-#: Mean absolute difference of two thumbnails below which a camera's image counts as unchanged
-#: [grey levels, 0..255].
-STILL_GREY = 3.0
 
 
 @dataclass(frozen=True)
@@ -67,17 +58,3 @@ def encode(call: Path, frames: Sequence[tuple[str, np.ndarray]], max_side_px: in
             raise OSError(f"could not write {path}")
         sent.append(SentImage(camera, path, (int(bgr.shape[1]), int(bgr.shape[0])), (int(w), int(h))))
     return sent
-
-
-def thumbnail(image: np.ndarray) -> np.ndarray:
-    """A small grey copy of an RGB frame (`THUMB_SIZE`, float32) for `unchanged`."""
-    grey = cv2.cvtColor(_rgb(image), cv2.COLOR_RGB2GRAY)
-    return cv2.resize(grey, THUMB_SIZE, interpolation=cv2.INTER_AREA).astype(np.float32)
-
-
-def unchanged(before: Mapping[str, np.ndarray], now: Mapping[str, np.ndarray],
-              still_grey: float = STILL_GREY) -> bool:
-    """True when both hold thumbnails of the same cameras and none differs by `still_grey` or more."""
-    if not before or set(before) != set(now):
-        return False
-    return all(float(np.mean(np.abs(before[name] - now[name]))) < still_grey for name in now)

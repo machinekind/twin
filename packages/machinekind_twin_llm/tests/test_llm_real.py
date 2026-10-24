@@ -78,7 +78,7 @@ def test_a_real_model_finds_the_red_cube():
     model = os.environ.get("MACHINEKIND_TWIN_LLM_MODEL", "" if cli == "claude" else "gpt-6-astra")
     detector = LlmDetector(LlmSettings(cli=cli, model=model, objects="red cube",
                                        executable=os.environ.get("MACHINEKIND_TWIN_LLM_EXECUTABLE", ""),
-                                       timeout_s=300.0, reuse_if_still=False))
+                                       timeout_s=300.0))
     detector.start(DetectorInfo(cameras=("top",), robot="test", simulated=True))
     try:
         found = detector.detect(DetectRequest(frames={"top": Frame(image=image, age_s=0.0)}, step=0))

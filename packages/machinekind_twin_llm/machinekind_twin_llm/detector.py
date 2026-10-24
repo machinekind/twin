@@ -3,7 +3,7 @@ what is where, in each frame's pixels.
 
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory,
-unless no camera's image changed since the last answer or the hourly cap is reached. `stop`
+unless the hourly cap is reached. `stop`
 cancels a running question: the CLI's process group is killed within 0.2 s.
 """
 
@@ -23,16 +23,14 @@ from machinekind_twin_api import Detection, Detector, DetectorInfo, DetectReques
 
 from . import cli
 from .answer import parse_answer
-from .images import encode, thumbnail, unchanged
+from .images import encode
 from .prompt import SCHEMA, build_prompt
 from .settings import LlmSettings, names, validate
 
-__all__ = ["CALL_WINDOW_S", "REUSE_MAX_AGE_S", "LlmDetector"]
+__all__ = ["CALL_WINDOW_S", "LlmDetector"]
 
 logger = logging.getLogger(__name__)
 
-#: The last answer is repeated for unchanged images only while it is younger than this [s].
-REUSE_MAX_AGE_S = 60.0
 #: The window `max_calls_per_hour` counts questions in [s].
 CALL_WINDOW_S = 3600.0
 
@@ -55,9 +53,6 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
-        self._thumbs: dict[str, np.ndarray] = {}
-        self._last: list[Detection] = []
-        self._last_t = -float("inf")
 
     def start(self, info: DetectorInfo) -> None:
         config = self.config
@@ -70,6 +65,8 @@ class LlmDetector(Detector[LlmSettings]):
             exe = shutil.which(config.cli)
             if exe is None:
                 raise RuntimeError(f"{config.cli} not found on PATH; install it or set `executable`")
+        # Calls change working directory; keep the executable's original symlink name.
+        exe = str(Path(exe).absolute())
         unknown = [name for name in self._cameras if name not in info.cameras]
         if unknown:
             raise ValueError(f"llm: unknown camera(s) in `cameras`: {', '.join(unknown)}; "
@@ -80,7 +77,6 @@ class LlmDetector(Detector[LlmSettings]):
         self._work = Path(tempfile.mkdtemp(prefix="twin-llm-"))
         self._cancel = threading.Event()
         self._calls.clear()
-        self._thumbs, self._last, self._last_t = {}, [], -float("inf")
 
     def stop(self, reason: str) -> None:
         self._cancel.set()
@@ -103,10 +99,6 @@ class LlmDetector(Detector[LlmSettings]):
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
         now = time.monotonic()
-        thumbs = {name: thumbnail(image) for name, image in frames} if config.reuse_if_still else {}
-        if thumbs and now - self._last_t < REUSE_MAX_AGE_S and unchanged(self._thumbs, thumbs):
-            return list(self._last)
-
         if config.max_calls_per_hour:
             while self._calls and now - self._calls[0] >= CALL_WINDOW_S:
                 self._calls.popleft()
@@ -136,6 +128,4 @@ class LlmDetector(Detector[LlmSettings]):
         if self._cancel.is_set():
             raise cli.CliCancelled("stopped")
 
-        dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
-        self._thumbs, self._last, self._last_t = thumbs, dets, now
-        return list(dets)
+        return parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)

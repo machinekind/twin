@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import signal
 import stat
 import sys
 import threading
@@ -248,6 +249,67 @@ def test_a_timeout_kills_the_whole_process_group(fake: Fake, call: Path, monkeyp
         cli.ask_codex(fake.codex, jpegs(call), "p", SCHEMA, cwd=call, timeout_s=1.0)
 
     pid = next(r["grandchild"] for r in fake.runs() if "grandchild" in r)
+    deadline = time.monotonic() + 3.0
+    while _alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _alive(pid)
+
+
+@pytest.fixture
+def stubborn_cli(tmp_path: Path):
+    """A parent that exits on SIGTERM, with a child that is ready to ignore it."""
+    pid_file = tmp_path / "child.pid"
+    exe = tmp_path / "stubborn-cli"
+    child = ("import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+             "print(os.getpid(), flush=True); time.sleep(60)")
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.PIPE, "
+        "stderr=subprocess.DEVNULL, text=True)\n"
+        f"Path({str(pid_file)!r}).write_text(child.stdout.readline())\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    try:
+        yield str(exe), pid_file
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize("operation", ["timeout", "cancel", "login"])
+def test_cleanup_kills_a_child_ignoring_sigterm_after_its_parent_exits(
+        stubborn_cli: tuple[str, Path], call: Path, operation: str):
+    exe, pid_file = stubborn_cli
+    cancel = threading.Event()
+
+    def cancel_when_ready() -> None:
+        deadline = time.monotonic() + 4.0
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancel.set()
+
+    worker = threading.Thread(target=cancel_when_ready) if operation == "cancel" else None
+    if worker is not None:
+        worker.start()
+    try:
+        if operation == "login":
+            with pytest.raises(RuntimeError, match="login check gave no answer"):
+                cli.check_login("codex", exe, timeout_s=1.0)
+        else:
+            error = cli.CliCancelled if operation == "cancel" else cli.CliTimeout
+            with pytest.raises(error):
+                cli.run_cli([exe], stdin="", cwd=call, timeout_s=5.0 if operation == "cancel" else 1.0,
+                            cancel=cancel)
+    finally:
+        if worker is not None:
+            worker.join()
+
+    pid = int(pid_file.read_text())
     deadline = time.monotonic() + 3.0
     while _alive(pid) and time.monotonic() < deadline:
         time.sleep(0.05)
