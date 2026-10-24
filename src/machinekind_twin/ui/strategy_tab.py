@@ -13,6 +13,10 @@ strategy is starting win over it.
 A handle in the 3D view gives the strategy its goal, `Observation.goal` in the base frame, every
 tick, also while it runs. The twin only reports where the handle is: what the goal means and how
 the arm gets there is the strategy's business.
+
+Every run leaves an episode log next to the workspace file (`episode`), with the strategy's name,
+package and settings in its header; the status line names the file. A checkbox keeps the camera
+frames the strategy read, at most one per camera per second.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import viser
 
+from ..episode import EpisodeOptions
 from ..kinematics import inverse
 from ..strategies import StrategyPlugin, config_section, load_strategy, strategies
 from ..strategy import OWNER, Strategy, StrategyRunner
@@ -82,6 +87,11 @@ class StrategyTab:
             self.confirm = gui.add_checkbox(
                 "Prawdziwe ramie: rozumiem, ze sie ruszy", False,
                 hint="Prawdziwe ramie: potwierdzenie przed kazdym Uruchom (gasnie po starcie). W sim niepotrzebne.")
+            self.keep_frames = gui.add_checkbox(
+                "Zapisuj klatki kamer", False,
+                hint="Zapis przebiegu (workspace/episodes) dostaje co najwyzej jedna klatke JPEG na kamere na "
+                     "sekunde, z kamer, ktore strategia czytala (ok. 17 KB na 640x480). Wylaczone: tylko "
+                     "odwolania do klatek.")
             self.goal_on = gui.add_checkbox(
                 "Cel z uchwytu 3D", False,
                 hint="Uchwyt w widoku 3D, postawiony na koncowce, podaje strategii cel (obs.goal, uklad "
@@ -209,8 +219,10 @@ class StrategyTab:
         mark = app._motion_mark()
 
         self._check_arm()
-        runner = StrategyRunner(app.twin, self._create(), goal=self.goal, cameras=self._cameras(),
-                                objects=app.perception.objects)
+        strategy, meta = self._create()
+        episode = EpisodeOptions(meta=meta, keep_frames_s=1.0 if self.keep_frames.value else None)
+        runner = StrategyRunner(app.twin, strategy, goal=self.goal, cameras=self._cameras(),
+                                objects=app.perception.objects, episode=episode)
 
         self.stop("nowa strategia")
         app._release_panel()
@@ -238,16 +250,18 @@ class StrategyTab:
         if busy:
             raise RuntimeError(f"ramie zajete: {busy} - najpierw je zatrzymaj")
 
-    def _create(self) -> Strategy[Any]:
-        """The strategy from the form, strictly. The config section only prefills the form, but a
-        broken one is refused rather than silently left out."""
+    def _create(self) -> tuple[Strategy[Any], dict[str, Any]]:
+        """The strategy from the form, strictly, and what its run's log says about it. The config
+        section only prefills the form, but a broken one is refused rather than silently left out."""
         with self._form_lock:
             plugin = self.plugin
             if plugin is None:
                 raise RuntimeError("wybierz strategie, ktora sie laduje")
 
             plugin.check(config_section(plugin.name))
-            return plugin.create(self.form.values(plugin))
+            values = self.form.values(plugin)
+            meta = {"strategy": plugin.name, "source": plugin.source, "settings": dict(values)}
+            return plugin.create(values), meta
 
     def _cameras(self) -> list[str]:
         """Enabled workspace cameras, then the cameras on the arm, each name once.
@@ -305,6 +319,10 @@ class StrategyTab:
             line += ", **sukces**" if status.success else ", bez sukcesu"
         if not status.running and status.stopped_because:
             line += f"  \nzatrzymana: {status.stopped_because}"
+        if status.episode is not None:
+            line += f"  \nzapis: `{status.episode.name}`"
+        if status.episode_error:
+            line += f"  \n**zapis przebiegu:** {status.episode_error}"
 
         self.run_md.content = line
 

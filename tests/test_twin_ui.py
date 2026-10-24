@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -20,6 +21,7 @@ pytest.importorskip("mujoco")
 
 from conftest import BOT
 
+from machinekind_twin.episode import EpisodeLog
 from machinekind_twin.ui import jobs
 
 
@@ -137,6 +139,7 @@ def app(shared_app):
     a.arm_engage.value = False
     a.tcp_gizmo_on.value = False
     a.strategies.goal_on.value = False
+    a.strategies.keep_frames.value = False
     for owner in (a.twin.owner,):
         if owner is not None:
             a.twin.release(owner)
@@ -750,6 +753,7 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
 
     app.twin.connect("sim", threaded=False)
     tab = choose_strategy(app, swing, joint="j1", period_s=1.0)
+    tab.keep_frames.value = True
 
     tab.start()
 
@@ -774,6 +778,16 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
     assert app.twin.owner is None
     tab.tick()
     assert "zatrzymana z panelu" in tab.run_md.content
+
+    episode = tab.runner.status.episode
+    assert episode is not None
+    assert episode.parent == Path(app.ws.path).parent / "episodes"
+    assert episode.name in tab.run_md.content
+    log = EpisodeLog.load(episode)
+    assert log.end.code == "stopped"
+    assert log.header["meta"]["strategy"] == swing
+    assert log.header["meta"]["settings"]["period_s"] == 1.0
+    assert log.header["keep_frames_s"] == 1.0
 
 
 def test_a_wrong_key_in_the_strategys_config_section_is_refused_before_start(app, swing, tmp_path, monkeypatch):
