@@ -7,7 +7,8 @@ With `reuse_if_still` it repeats the last answer instead while no camera's image
 frames of the last question. It also repeats it while the scene still moves: frames that changed
 since the last question and since the previous call wait, for up to `SETTLE_MAX_SKIPS` calls, so a
 hand or the arm passing through is not asked about mid-motion. Pixels the twin's arm masks hide in
-either frame compared are left out (`images`). A question over the hourly cap fails. `stop`
+this call's frames are left out (`images`). Pixels the arm hid in the earlier frames still count:
+those frames could not show what lies there now. A question over the hourly cap fails. `stop`
 cancels a running question: the CLI's process group is killed within 0.2 s.
 """
 
@@ -28,7 +29,7 @@ from machinekind_twin_api import Detection, Detector, DetectorInfo, DetectReques
 
 from . import cli
 from .answer import parse_answer
-from .images import arm_thumbnail, encode, thumbnail, unchanged, union_masks
+from .images import arm_thumbnail, encode, thumbnail, unchanged
 from .prompt import SCHEMA, build_prompt
 from .settings import LlmSettings, names, validate
 
@@ -52,8 +53,8 @@ class _Look:
     arms: dict[str, np.ndarray] = field(default_factory=dict)
 
     def same_as(self, other: _Look) -> bool:
-        """No camera's image changed since `other`, pixels the arm hides in either left out."""
-        return unchanged(other.thumbs, self.thumbs, union_masks(other.arms, self.arms))
+        """No camera's image changed since `other`, pixels the arm hides in these frames left out."""
+        return unchanged(other.thumbs, self.thumbs, self.arms)
 
 
 class LlmDetector(Detector[LlmSettings]):
@@ -166,7 +167,7 @@ class LlmDetector(Detector[LlmSettings]):
             raise cli.CliCancelled("stopped")
 
         dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
-        self._ref, self._last, self._last_t, self._moving = look, dets, now, 0
+        self._ref, self._last, self._last_t = look, dets, now
         return list(dets)
 
     def _look(self, request: DetectRequest, frames: list[tuple[str, np.ndarray]]) -> _Look:
@@ -181,13 +182,14 @@ class LlmDetector(Detector[LlmSettings]):
         return _Look(thumbs, arms)
 
     def _repeat_reason(self, look: _Look, now: float) -> str:
-        """Why this call repeats the last answer instead of asking; "" = ask."""
-        if not look.thumbs or now - self._last_t >= self.config.reuse_max_age_s:
-            return ""
-        if look.same_as(self._ref):
-            self._moving = 0
-            return "no camera's image changed"
-        if self._moving < SETTLE_MAX_SKIPS and not look.same_as(self._prev):
-            self._moving += 1
-            return f"the scene still moves ({self._moving} of {SETTLE_MAX_SKIPS})"
+        """Why this call repeats the last answer instead of asking; "" = ask. A call that asks
+        restarts the count of repeats for motion, whether or not its question succeeds."""
+        if look.thumbs and now - self._last_t < self.config.reuse_max_age_s:
+            if look.same_as(self._ref):
+                self._moving = 0
+                return "no camera's image changed"
+            if self._moving < SETTLE_MAX_SKIPS and not look.same_as(self._prev):
+                self._moving += 1
+                return f"the scene still moves ({self._moving} of {SETTLE_MAX_SKIPS})"
+        self._moving = 0
         return ""

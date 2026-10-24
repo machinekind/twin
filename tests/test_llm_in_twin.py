@@ -156,16 +156,18 @@ def test_a_still_scene_repeats_the_answer_and_the_object_stays_seen(perception: 
 
 class ArmScene:
     """A grey table whose frames show the arm's dark bar at the column `column(capture time)` gives,
-    stamped on the test clock, and the arm masks of that bar for the times asked."""
+    reaching `reach(capture time)` px down, stamped on the test clock, and the arm masks of that bar
+    for the times asked."""
 
-    def __init__(self, clock: Clock, column):
+    def __init__(self, clock: Clock, column, reach=lambda t: 300):
         self.clock = clock
         self.column = column
+        self.reach = reach
         self.asked: list[dict[str, float]] = []
 
     def mask(self, t: float) -> np.ndarray:
         mask = np.zeros((H, W), bool)
-        mask[:300, self.column(t):self.column(t) + 40] = True
+        mask[:self.reach(t), self.column(t):self.column(t) + 40] = True
         return mask
 
     def frame(self, name: str):
@@ -193,15 +195,15 @@ def make_perception(clock: Clock):
         p.stop_all("koniec testu")
 
 
-def test_the_arm_moving_under_its_mask_does_not_ask_again(make_perception, clock: Clock, llm_package: str,
-                                                          fake_codex: tuple[str, Path]):
+def test_the_arm_reaching_further_under_its_mask_does_not_ask_again(make_perception, clock: Clock,
+                                                                    llm_package: str, fake_codex: tuple[str, Path]):
     exe, log = fake_codex
-    scene = ArmScene(clock, lambda t: 100 + int(10 * (t - 1000.0)))
+    scene = ArmScene(clock, lambda t: 100, reach=lambda t: min(450, 150 + int(10 * (t - 1000.0))))
     perception = make_perception(frame=scene.frame, occluders=scene.occluders)
     runner = start_llm(perception, llm_package, exe)
     captured = []
 
-    for _ in range(3):
+    for _ in range(5):
         captured += [{"a": clock.t}, {"b": clock.t}]
         runner.step_once()
         clock.advance(10.0)

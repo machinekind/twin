@@ -6,11 +6,11 @@ the detector can repeat an answer instead of asking again.
 
 The check compares grey thumbnails with their mean brightness matched, so auto exposure does not
 count. A pixel's change must also exceed a share of its contrast to the mean, so a gain change does
-not count on a high-contrast scene. What decides is the largest patch of changed pixels, not their
-total: an object moving makes one patch, while noise, banding and a flickering camera scatter
-single pixels. The arm moving is no change either. `arm_thumbnail` shrinks the twin's arm mask to
-the thumbnail and widens it over the arm's edge and shadow. `union_masks` joins the masks of both
-frames compared, so neither the place the arm left nor the one it entered counts.
+not count on a high-contrast scene. What decides is the largest blob of changed pixels, not their
+total: an object moving changes one patch, while noise, banding and a flickering camera change
+isolated pixels or small groups. Pixels the arm hides in the newer frames are left out.
+`arm_thumbnail` shrinks the twin's arm mask to the thumbnail and widens it over the arm's edge and
+shadow.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import numpy as np
 
 __all__ = ["ARM_DILATE_PX", "BLOB_JOIN_PX", "CHANGED_LEVELS", "GAIN_TOLERANCE", "JPEG_QUALITY",
            "STILL_MAX_BLOB_PX", "THUMB_LONG_PX", "SentImage", "arm_thumbnail", "encode", "largest_change_px",
-           "thumbnail", "unchanged", "union_masks"]
+           "thumbnail", "unchanged"]
 
 #: JPEG quality of the images sent.
 JPEG_QUALITY = 90
@@ -39,9 +39,10 @@ CHANGED_LEVELS = 16.0
 #: so a gain change does not count. A 1.15 gain on a scene of a 160 table, dark cables and white
 #: paper makes blobs of 250 to 2200 thumbnail pixels without it and 0 with it.
 GAIN_TOLERANCE = 0.2
-#: Changed pixels this close to each other [thumbnail px] belong to one blob, so the leading and
-#: trailing edges of a moving object count together.
-BLOB_JOIN_PX = 2
+#: Two changed pixels belong to one blob when neither their rows nor their columns lie more than
+#: this far apart [thumbnail px], so the leading and trailing edges of a moving object count
+#: together. 5 px is 2.3 cm at 1 m.
+BLOB_JOIN_PX = 5
 #: Largest blob of changed thumbnail pixels a camera may have while its image counts as unchanged.
 #: Measured at 320 to 1920 px wide frames on a 100..140 table: a 3 cm cube 80 levels darker at
 #: 1 m moving 1 cm makes at least 39, leaving at least 50; a blinking 2x2 thumbnail pixel LED makes
@@ -127,25 +128,15 @@ def arm_thumbnail(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
     return cv2.dilate(small.astype(np.uint8), kernel) > 0
 
 
-def union_masks(a: Mapping[str, np.ndarray], b: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
-    """Per camera, the pixels either mapping masks. A camera in one mapping only keeps its mask;
-    masks of different shapes keep `b`'s."""
-    union = {**a, **b}
-    for name in set(a) & set(b):
-        if a[name].shape == b[name].shape:
-            union[name] = a[name] | b[name]
-    return union
-
-
 def largest_change_px(before: np.ndarray, now: np.ndarray, ignore: np.ndarray | None = None) -> int:
     """The area of the largest blob of changed pixels between two thumbnails of one camera, pixels
     in `ignore` left out [thumbnail px].
 
     The mean brightness of the pixels left in is matched first. A pixel counts as changed when it
     moved by `CHANGED_LEVELS` plus `GAIN_TOLERANCE` of its smaller distance from the mean. Changed
-    pixels within `BLOB_JOIN_PX` of each other form one blob, and only changed pixels count towards
-    its area. Thumbnails of different shapes, and an image with nothing left in, count as changed
-    throughout.
+    pixels up to `BLOB_JOIN_PX` apart along both axes form one blob, and only changed pixels count
+    towards its area. Thumbnails of different shapes, and an image with nothing left in, count as
+    changed throughout.
     """
     if before.shape != now.shape:
         return int(now.size)
@@ -158,7 +149,7 @@ def largest_change_px(before: np.ndarray, now: np.ndarray, ignore: np.ndarray | 
     changed = keep & (np.abs(dn - db) >= limit)
     if not changed.any():
         return 0
-    join = np.ones((2 * BLOB_JOIN_PX + 1,) * 2, np.uint8)
+    join = np.ones((BLOB_JOIN_PX, BLOB_JOIN_PX), np.uint8)
     labels = cv2.connectedComponents(cv2.dilate(changed.astype(np.uint8), join), connectivity=8)[1]
     return int(np.bincount(labels[changed].astype(np.intp)).max())
 

@@ -13,6 +13,7 @@ from machinekind_twin_api import Detection
 from machinekind_twin_llm import smoke
 from machinekind_twin_llm.answer import MAX_DETECTIONS, parse_answer
 from machinekind_twin_llm.images import (
+    BLOB_JOIN_PX,
     STILL_MAX_BLOB_PX,
     THUMB_LONG_PX,
     SentImage,
@@ -21,7 +22,6 @@ from machinekind_twin_llm.images import (
     largest_change_px,
     thumbnail,
     unchanged,
-    union_masks,
 )
 from machinekind_twin_llm.prompt import SCHEMA, build_prompt, normalise_label
 
@@ -395,34 +395,44 @@ def test_noise_a_brightness_step_and_a_gain_change_are_not_a_change():
         assert largest_change_px(before, thumbnail(u8(changed))) <= STILL_MAX_BLOB_PX
 
 
-def arm_at(img: np.ndarray, x: int) -> tuple[np.ndarray, np.ndarray]:
-    """`img` with a dark arm bar 80 px wide from the top edge at column `x`, and its bool mask."""
+def test_changed_pixels_join_one_blob_up_to_blob_join_px_apart():
+    before = thumbnail(np.full((960, 1280, 3), 120, np.uint8))
+
+    for gap, area in ((BLOB_JOIN_PX, 2), (BLOB_JOIN_PX + 1, 1)):
+        for rows, cols in ((0, gap), (gap, 0), (gap, gap)):
+            now = before.copy()
+            now[50, 50] += 60
+            now[50 + rows, 50 + cols] += 60
+            assert largest_change_px(before, now) == area, (rows, cols)
+
+
+def arm_at(img: np.ndarray, x: int, reach: int = 600) -> tuple[np.ndarray, np.ndarray]:
+    """`img` with a dark arm bar 80 px wide at column `x`, reaching `reach` px down from the top
+    edge, and its bool mask."""
     mask = np.zeros(img.shape[:2], bool)
-    mask[:600, x:x + 80] = True
+    mask[:reach, x:x + 80] = True
     out = img.copy()
     out[mask] = 30
     return out, mask
 
 
-def test_pixels_the_arm_hides_in_either_frame_do_not_count():
+def test_the_arm_reaching_further_under_its_mask_is_no_change():
     base = table(np.random.default_rng(0))
-    before_img, before_arm = arm_at(base, 300)
-    now_img, now_arm = arm_at(base, 700)
-    before, now = thumbnail(before_img), thumbnail(now_img)
-    before_mask, now_mask = arm_thumbnail(before_arm, before.shape), arm_thumbnail(now_arm, now.shape)
-    both = union_masks({"top": before_mask}, {"top": now_mask})
+    near_img, _ = arm_at(base, 300, reach=300)
+    far_img, far_arm = arm_at(base, 300)
+    near, far = thumbnail(near_img), thumbnail(far_img)
+    arm = arm_thumbnail(far_arm, far.shape)
 
-    assert largest_change_px(before, now) > STILL_MAX_BLOB_PX
-    assert largest_change_px(before, now, now_mask) > STILL_MAX_BLOB_PX
-    assert largest_change_px(before, now, both["top"]) == 0
-    assert unchanged({"top": before}, {"top": now}, both)
+    assert largest_change_px(near, far) > STILL_MAX_BLOB_PX
+    assert largest_change_px(near, far, arm) == 0
+    assert unchanged({"top": near}, {"top": far}, {"top": arm})
 
     cube_before = thumbnail(with_box(base, 1000, 800, CUBE_PX, 40))
     entering_img, entering_arm = arm_at(with_box(base, 1000 + CM_PX, 800, CUBE_PX, 40), 300)
     entering = thumbnail(entering_img)
-    arm = union_masks({}, {"top": arm_thumbnail(entering_arm, entering.shape)})
 
-    assert not unchanged({"top": cube_before}, {"top": entering}, arm)
+    assert not unchanged({"top": cube_before}, {"top": entering},
+                         {"top": arm_thumbnail(entering_arm, entering.shape)})
 
 
 def test_the_mean_is_matched_over_the_pixels_the_arm_leaves_visible():
@@ -436,28 +446,17 @@ def test_the_mean_is_matched_over_the_pixels_the_arm_leaves_visible():
     assert largest_change_px(before, now, arm_thumbnail(arm, now.shape)) == 0
 
 
-def test_an_arm_mask_is_shrunk_to_the_thumbnail_and_dilated():
-    frame = np.zeros((960, 1280, 3), np.uint8)
-    column = np.zeros((960, 1280), bool)
-    column[:, 640] = True
+def test_the_arm_s_edge_and_shadow_beside_its_mask_do_not_count_but_a_cube_further_off_does():
+    base = table(np.random.default_rng(0))
+    shadowed, arm = arm_at(base, 500)
+    shadowed[:600, 580:595] = 70                   # a shadow 3 thumbnail pixels wide
+    before, now = thumbnail(base), thumbnail(shadowed)
+    mask = arm_thumbnail(arm, now.shape)
 
-    mask = arm_thumbnail(column, thumbnail(frame).shape)
-
-    assert mask.shape == thumbnail(frame).shape and mask.dtype == bool
-    assert np.flatnonzero(mask[100]).tolist() == list(range(123, 134))
-
-
-def test_union_masks_joins_each_camera_s_masks():
-    left, right = np.zeros((2, 2), bool), np.zeros((2, 2), bool)
-    left[0, 0] = True
-    right[1, 1] = True
-
-    both = union_masks({"top": left, "side": left}, {"top": right, "front": right})
-
-    assert set(both) == {"top", "side", "front"}
-    assert both["top"].tolist() == [[True, False], [False, True]]
-    assert both["side"].tolist() == left.tolist()
-    assert both["front"].tolist() == right.tolist()
+    assert mask.shape == now.shape and mask.dtype == bool
+    assert largest_change_px(before, now) > STILL_MAX_BLOB_PX
+    assert largest_change_px(before, now, mask) == 0
+    assert largest_change_px(before, thumbnail(with_box(shadowed, 650, 300, CUBE_PX, 40)), mask) > STILL_MAX_BLOB_PX
 
 
 def test_a_fully_masked_image_counts_as_changed():
