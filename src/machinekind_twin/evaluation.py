@@ -10,10 +10,10 @@
 Every episode builds a fresh twin on a `VirtualClock`, places the object (`scene_truth`) and runs a
 fresh instance of the strategy through the same `StrategyRunner` and `SafetySupervisor` as the
 panel's Strategie tab. The twin's loop steps at its own rate and the strategy at its own, on one
-simulated clock. The strategy sees the object's true pose in `Observation.objects`
-(`SimulationPoses`, source `symulacja`). The scene judges the run (`scene_truth.judge`); the
-strategy's own claim (`done` with or without success) is kept next to that verdict, never mixed
-into it.
+simulated clock. The strategy sees the object in `Observation.objects`: its true pose
+(`SimulationPoses`, source `symulacja`) or a detector's answer through `Perception`
+(`DetectorPoses`). The scene judges the run (`scene_truth.judge`); the strategy's own claim (`done`
+with or without success) is kept next to that verdict, never mixed into it.
 
 The campaign folder gets one episode log per run (`NNN.jsonl`, written by the runner) and
 `summary.json`, which is rewritten after every episode, so a campaign cut off leaves what it ran.
@@ -40,6 +40,8 @@ from machinekind_twin_api.strategy import ObjectPose
 
 from . import __version__ as twin_version
 from .clock import VirtualClock
+from .detection import Perception
+from .detectors import DetectorPlugin
 from .episode import EpisodeOptions, episodes_dir
 from .paths import CONFIG_ENV
 from .plugin_settings import PluginClass, SettingField
@@ -67,10 +69,11 @@ from .scene_truth import (
 )
 from .strategies import StrategyPlugin
 from .strategy import StrategyRunner
+from .ui.watch import arm_mask
 from .workspace import Workspace
 
 __all__ = [
-    "FORMAT", "SUMMARY", "VERSION", "Campaign", "CampaignResult", "EpisodeRow",
+    "FORMAT", "SUMMARY", "VERSION", "Campaign", "CampaignResult", "DetectorPoses", "EpisodeRow",
     "EvaluationAborted", "StrategyFacts", "campaign_folder", "drive", "effective_time_limit", "episode_name",
     "footer_lines", "header_lines", "object_label", "object_size_m", "plugin_values", "preflight", "row_line",
     "run_campaign", "run_episode", "setting_from_text", "settle", "strategy_cameras", "summary_data",
@@ -91,6 +94,8 @@ OVERRUN_S = 1.0
 DEFAULT_LABEL = "cube"
 #: The twin's loop rate [Hz], the panel's.
 LOOP_HZ = 50.0
+#: How far the arm's mask is widened for the detector's silhouette fit [px], as in the panel.
+MASK_DILATE_PX = 5
 
 
 class EvaluationAborted(RuntimeError):
@@ -274,6 +279,9 @@ class Campaign:
     speed_deg_s: float | None = None
     #: A run cut after this many real seconds [s]; None = none. Results then depend on the machine.
     wall_limit_s: float | None = None
+    #: Object poses from this detector instead of the simulation's truth.
+    detector: DetectorPlugin | None = None
+    detector_settings: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.rule not in RULES:
@@ -290,7 +298,7 @@ class Campaign:
     @property
     def poses(self) -> str:
         """Where the strategy's object poses come from, as the report names it."""
-        return SIM_SOURCE
+        return SIM_SOURCE if self.detector is None else f"detektor {self.detector.name}"
 
 
 @dataclass(frozen=True)
@@ -400,8 +408,55 @@ class PoseSource(Protocol):
     def end(self) -> None: ...
 
 
+class DetectorPoses:
+    """Object poses from a detector through `Perception`, as the panel gets them, on the simulated clock.
+
+    Frames are renders of the workstation's simulated cameras, stamped on the twin's clock; a real
+    camera is never opened. The detector is called on its own interval, between physics steps.
+    """
+
+    def __init__(self, twin: Any, workspace: Workspace, plugin: DetectorPlugin, values: Mapping[str, Any]):
+        simulated = {camera.name for camera in workspace.cameras if camera.simulated}
+
+        def frame(name: str) -> tuple[np.ndarray | None, float]:
+            now = twin.clock.now()
+            return (twin.render(name), now) if name in simulated else (None, now)
+
+        def occluders(times: Mapping[str, float]) -> dict[str, np.ndarray]:
+            return twin.render_with(lambda scene: {name: arm_mask(scene, name, dilate=MASK_DILATE_PX)
+                                                   for name in times})
+
+        self._twin = twin
+        self._plugin = plugin
+        self._values = dict(values)
+        self._next_due = math.inf
+        self._runner: Any = None
+        self.perception = Perception(twin, workspace, clock=twin.clock.now, frame=frame, occluders=occluders)
+
+    def objects(self) -> Mapping[str, ObjectPose]:
+        return self.perception.objects()
+
+    def begin(self) -> None:
+        """Starts the detector and calls it once, so it has looked before the strategy starts."""
+        self._runner = self.perception.start_detector(self._plugin, self._values, threaded=False)
+        self._call(self._twin.clock.now())
+
+    def advance(self, now: float) -> None:
+        if self._runner is not None and now + EPS >= self._next_due:
+            self._call(now)
+
+    def end(self) -> None:
+        self.perception.stop_all("koniec przebiegu")
+
+    def _call(self, now: float) -> None:
+        self._next_due = now + self._runner.step_once()
+
+
 def _poses(twin: Any, workspace: Workspace, campaign: Campaign) -> PoseSource:
-    return SimulationPoses(twin, campaign.label)
+    if campaign.detector is None:
+        return SimulationPoses(twin, campaign.label)
+
+    return DetectorPoses(twin, workspace, campaign.detector, campaign.detector_settings)
 
 
 # --------------------------------------------------------------------------- one episode
@@ -409,9 +464,12 @@ def _poses(twin: Any, workspace: Workspace, campaign: Campaign) -> PoseSource:
 
 def preflight(workspace: Workspace, campaign: Campaign) -> StrategyFacts:
     """Refuses, with ValueError or TypeError, what would fail in every episode: settings the strategy
-    refuses, a robot without jaw sensors, an area off the table, a strategy the runner refuses.
-    Builds and closes one twin; runs nothing."""
+    or the detector refuses, a robot without jaw sensors, an area off the table, a strategy the
+    runner refuses, a detector without a simulated camera or a render. Builds and closes one twin;
+    runs nothing."""
     strategy = campaign.plugin.create(campaign.settings)
+    if campaign.detector is not None:
+        campaign.detector.create(campaign.detector_settings)
     check_jaws(workspace.spec())
 
     twin = Twin(workspace, loop_hz=LOOP_HZ, clock=VirtualClock(t0=0.0))
@@ -419,11 +477,26 @@ def preflight(workspace: Workspace, campaign: Campaign) -> StrategyFacts:
         configure_object(twin, campaign.obj)
         check_on_table(campaign.area, campaign.obj, twin.scene)
         StrategyRunner(twin, strategy)
+        if campaign.detector is not None:
+            _check_detector_cameras(twin, workspace, campaign.detector.name)
 
         return StrategyFacts(float(strategy.hz), own_time_limit(strategy),
                              effective_time_limit(campaign.time_limit_s, strategy))
     finally:
         twin.close()
+
+
+def _check_detector_cameras(twin: Any, workspace: Workspace, name: str) -> None:
+    simulated = {camera.name for camera in workspace.cameras if camera.simulated}
+    cameras = [camera for camera in Perception(twin, workspace, hand=lambda: None).cameras() if camera in simulated]
+    if not cameras:
+        raise ValueError(f"--detector {name}: stanowisko nie ma zaufanej kamery symulowanej (zrodlo sim), "
+                         "z ktorej detektor by widzial")
+
+    try:
+        twin.render(cameras[0])
+    except Exception as exc:
+        raise ValueError(f"render kamery {cameras[0]} nie dziala: {exc} (bez ekranu: MUJOCO_GL=egl)") from exc
 
 
 def drive(twin: Any, runner: StrategyRunner, poses: PoseSource, watch: Watch, start_t: float, limit_s: float,
@@ -649,7 +722,7 @@ def _spread(values: Sequence[float]) -> dict[str, float] | None:
 
 def summary_data(workspace: Workspace, campaign: Campaign, result: CampaignResult) -> dict[str, Any]:
     """`summary.json`: the conditions, the totals and one entry per episode. SI units, angles in degrees."""
-    plugin, facts = campaign.plugin, result.facts
+    plugin, facts, detector = campaign.plugin, result.facts, campaign.detector
     return {
         "kind": "evaluation",
         "format": FORMAT,
@@ -671,6 +744,8 @@ def summary_data(workspace: Workspace, campaign: Campaign, result: CampaignResul
             "object": campaign.obj.to_json(),
             "area": campaign.area.to_json(),
             "poses": campaign.poses,
+            "detector": None if detector is None else {"name": detector.name, "source": detector.source,
+                                                       "settings": dict(campaign.detector_settings)},
             "time_limit_cap_s": campaign.time_limit_s,
             "wall_limit_s": campaign.wall_limit_s,
             "strategy": {"name": plugin.name, "source": plugin.source, "hz": facts.hz,

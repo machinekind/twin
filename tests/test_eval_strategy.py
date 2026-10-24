@@ -13,9 +13,11 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from conftest import BOT
+from conftest import BOT, CubeScene
 from test_strategy_plugins import install_strategy
 
+from machinekind_twin.calib.simulate import look_at
+from machinekind_twin.detectors import load_detector
 from machinekind_twin.episode import EpisodeLog
 from machinekind_twin.evaluation import (
     Campaign,
@@ -28,7 +30,7 @@ from machinekind_twin.evaluation import (
 from machinekind_twin.plugin_settings import SettingField
 from machinekind_twin.scene_truth import Area, ObjectSpec
 from machinekind_twin.strategies import StrategyPlugin, load_strategy
-from machinekind_twin.workspace import Workspace
+from machinekind_twin.workspace import CameraRecord, Workspace
 
 PRESS = '''
 from machinekind_twin_api.strategy import Action
@@ -135,6 +137,22 @@ class Strategy:
         if self.interrupt and obs.step == 3:
             raise KeyboardInterrupt
         return Action(done=obs.step >= 5, success=True)
+'''
+
+SEES = '''
+from machinekind_twin_api.strategy import Action
+
+
+class Strategy:
+    """Done once the cameras see the cube."""
+
+    hz = 20.0
+    time_limit_s = 2.0
+
+    def act(self, obs):
+        cube = obs.objects.get("cube")
+        seen = cube is not None and cube.source == "kamery"
+        return Action(done=seen, success=True if seen else None)
 '''
 
 
@@ -293,3 +311,27 @@ def test_ctrl_c_leaves_a_partial_summary(install_dist, tmp_path):
     assert (summary["interrupted"], summary["finished"], len(summary["episodes"])) == (True, False, 1)
     assert (end.code, end.reason) == ("stopped", "przerwana przez operatora")
     assert not (tmp_path / "out" / "002.jsonl").exists()
+
+
+# --------------------------------------------------------------------------- poses from a detector
+
+
+@pytest.mark.render
+def test_the_cube_detector_feeds_the_strategy_through_perception(cube_example, install_dist, tmp_path):
+    workspace = Workspace(robot=BOT)
+    for name, eye in CubeScene.EYES:
+        pose = look_at(eye, (0.2, 0.0, 0.0)).tolist()
+        workspace.add_camera(CameraRecord(name, "sim", 640, 480, K=[list(row) for row in CubeScene.K],
+                                          sim_pose=pose, T_cam2base=pose, intrinsics_from="symulacja",
+                                          calibration={"trusted": True}))
+    detector = load_detector(cube_example)
+    plan = campaign(installed(install_dist, "eval-sees", SEES), radius=(0.2, 0.2), time_limit_s=2.0,
+                    detector=detector, detector_settings=plugin_values(detector, {}))
+
+    row = run_campaign(workspace, plan, tmp_path / "out").rows[0]
+    seen = [step["objects"]["cube"] for step in EpisodeLog.load(tmp_path / "out" / "000.jsonl").steps]
+
+    assert row.claim is True
+    assert seen[-1]["source"] == "kamery"
+    assert np.linalg.norm(np.asarray(seen[-1]["position"]) - [0.2, 0.0, 0.015]) < 0.005
+    assert summary_of(tmp_path / "out")["conditions"]["poses"] == "detektor cube"
