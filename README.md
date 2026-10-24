@@ -22,8 +22,8 @@ devices and tasks.
   multiple cameras using a tagged card held in the gripper. Identify servo
   dynamics from recorded motion.
 - **Inspect perception and alignment.** View camera streams, a stitched tabletop
-  map and the objects that detector plugins find and the twin tracks. Compare
-  real images with simulated overlays and detect moved cameras.
+  map and the objects the twin tracks from detector plugins. Compare real images
+  with simulated overlays and detect moved cameras.
 - **Export for training.** Export the MuJoCo scene, assets, camera calibration and
   identified dynamics for external training tools. Training lives outside this
   repository; `soarm-lab` provides training and policy strategies for the SO-101.
@@ -66,9 +66,10 @@ uv run twin --config configs/local.yaml ui
 ## Hardware, strategies and detectors
 
 Hardware models, backends, control strategies and object detectors are installed
-as separate Python packages and discovered through entry points. A detector says
-what it sees where in each camera image; the twin places it in the robot's base
-frame, tracks it and hands it to strategies as `Observation.objects`.
+as separate Python packages and discovered through entry points. A detector
+reports what it sees in each camera image and where. The twin places each object
+in the robot's base frame, tracks it and passes it to strategies in
+`Observation.objects`.
 
 Existing robot integrations include the **SO-101** through
 [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) and the

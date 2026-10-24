@@ -45,10 +45,11 @@ cube = "cube_detector:ColourCube"                # a class following Detector, b
   fields), creates the strategy as `cls(settings)`, or `cls()` without `settings`, and runs it:
   an `Observation` in every tick at `hz`, an `Action` (or any object with its attributes, or a
   plain mapping of joint targets) out, every target through the twin's safety supervisor.
-* **Detector**: settings as for a strategy, from the config section named like the detector. The
-  twin calls `detect` with a `DetectRequest` (frames by camera name) on a thread of its own and
-  gets `Detection`s back: what is seen where in each image, in pixels. The twin does the geometry
-  and the tracking, and strategies read the result as `Observation.objects[label]`.
+* **Detector**: the twin builds its settings like a strategy's, from the config section named
+  like the detector. It calls `detect` on a dedicated thread with a `DetectRequest`, which holds
+  the frames by camera name. The detector returns `Detection`s, each giving what it sees in one
+  image and where, in pixels. The twin places and tracks the objects, and strategies read them as
+  `Observation.objects[label]`.
 
 The twin re-exports the same classes (`machinekind_twin.strategy`, `machinekind_twin.backends.base`,
 `machinekind_twin.detection`), so `machinekind_twin.strategy.Action is machinekind_twin_api.Action`.
@@ -176,27 +177,39 @@ class Red(Detector[RedSettings]):
         return found
 ```
 
-A detector says what it sees and where in the image, nothing more: a label, the camera, a pixel
-and, when it can, a box, a silhouette `mask`, the object's `height_m` above the table or its
-`size_m`. It knows no intrinsics, no camera poses and no clock. The twin turns each pixel into a
-ray through the calibrated camera and places the object one of three ways: a box of `size_m`
-fitted to the masks of every camera, the point nearest to two or more cameras' rays, or one ray
-meeting the plane at the object's height. It then tracks each label and publishes it with `age_s`,
-the seconds since the frames were captured.
+A detector reports what it sees in the image and where. Each detection has a label, the camera
+and a pixel. When it can, the detector adds a box, a silhouette `mask`, the object's `height_m`
+above the table or its `size_m`. The detector needs no intrinsics, camera poses or clock. The twin
+turns each pixel into a ray through the calibrated camera and places the object in one of three
+ways:
 
-`request.frames` lists the cameras offered in this call. Their frames are fetched only when read:
-`frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second,
-and `frames[name]` raises `KeyError` when it has none. Pixels follow OpenCV, in the frame's own
-resolution. Labels are compared stripped and lower-cased, one object per label.
+* It fits a cube of `size_m` to the masks from every camera.
+* It takes the point nearest to the rays of two or more cameras.
+* It takes the point where one ray meets the plane at the object's height.
 
-`Detector` supplies the defaults: `settings` None, `interval_s` 1.0 (the shortest time between the
-starts of two calls), `pixel_error_px` 3.0 (how far off the pixels may be; two cameras' rays of one
-label are paired only when they pass this close) and `start` and `stop` doing nothing. The twin
-reads `interval_s` and `pixel_error_px` from the instance, so a detector may set them from its
-settings. `start(info)` may raise to refuse; `stop(reason)` may come from another thread while
-`detect` runs, and a detector that blocks on a subprocess should then make `detect` return soon.
-A `detect` that raises is shown in the panel and called again later, after a longer wait each time.
-At runtime the twin does not need the base class: it requires `detect`.
+The twin then tracks each label and publishes it with `age_s`, the seconds since the frames were
+captured.
+
+`request.frames` lists the cameras offered in this call. A frame is fetched only when read.
+`frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second.
+`frames[name]` raises `KeyError` when it has none. Pixels follow the OpenCV convention in the
+frame's own resolution. Labels are compared after stripping whitespace and lower-casing, and each
+label holds one object.
+
+`Detector` supplies these defaults:
+
+* `settings` is None.
+* `interval_s` is 1.0, the shortest time between the starts of two calls.
+* `pixel_error_px` is 3.0, how far off the pixels may be. The twin pairs the rays of two cameras
+  for one label only when they pass this close.
+* `start` and `stop` do nothing.
+
+The twin reads `interval_s` and `pixel_error_px` from the instance, so a detector can set them
+from its settings. `start(info)` may raise to refuse the start. `stop(reason)` may arrive from
+another thread while `detect` runs. A detector that blocks on a subprocess should then make
+`detect` return soon. When `detect` raises, the panel shows the error and the twin calls it again
+later, with a longer wait after each failure. The twin requires only `detect` at runtime, so
+subclassing `Detector` is optional.
 
 ## Evolving the contract
 

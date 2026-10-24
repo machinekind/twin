@@ -111,10 +111,10 @@ uv run twin --config configs/local.yaml ui
 The twin reads `safety`, `robot` and optional `joints` overrides. Robot descriptions
 supply the joints, limits, gripper range and home pose. Other YAML sections belong
 to the backend, strategy or detector with that name (`feetech:`, `a1x:`, `swing:`,
-`cube:`, etc.). The namespace is flat, so a strategy and a detector of one name
-share a section; the panel warns about it. Backends validate their settings;
-strategy and detector sections prefill the panel's settings form and are
-validated before a start. The panel selects the connection backend
+`cube:`, etc.). A strategy and a detector with the same name share a section, and
+the panel warns about it. Backends validate their settings. Strategy and detector
+sections prefill the panel's settings form and are validated before a start.
+The panel selects the connection backend
 and port; `--arm` reconnects using the workstation's saved selection at startup.
 With one USB-serial adapter plugged in, its current port takes precedence over
 a saved port. With multiple adapters, choose the correct one explicitly.
@@ -134,10 +134,10 @@ through the browser's animation loop, which can pause in a background tab.
 | **Ramię** (Arm) | Backend/port, **Połącz** (Connect), **UZBRÓJ** (Arm manual controls), joint sliders, 3D IK handle, **Dom** (Home), **Ustaw dom = tu** (Set home here) and **Rozłącz** (Disconnect) |
 | **Kamery** (Cameras) | Add USB or simulated cameras, preview streams, enable/remove cameras, move simulated cameras in 3D and inspect their status |
 | **Kalibracja** (Calibration) | Step 1: lens intrinsics; step 2: camera poses from a tagged card in the gripper; save/discard results and relocalize moved cameras |
-| **Mapa** (Map) | Stitched tabletop view, the objects tracked from running detectors and a tag-on-table reach action |
+| **Mapa** (Map) | Stitched tabletop view, the objects that running detectors track and a tag-on-table reach action |
 | **Dynamika** (Dynamics) | Record supervised excitation, fit servo dynamics and save the result to the workstation |
-| **Detektory** (Detectors) | Choose an installed detector, edit settings, start it, stop each running one, see the tracked objects in text and 3D |
-| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run; the strategy gets the tracked objects in `Observation.objects` |
+| **Detektory** (Detectors) | Choose an installed detector, edit settings, start it and stop running ones. Tracked objects show as text and 3D markers |
+| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run. The strategy gets the tracked objects in `Observation.objects` |
 | **Sim-Real** | Real image with simulated edges overlaid using the same camera pose and intrinsics |
 
 The guide (**Przewodnik**, **Teraz**) reports the next action from the current
@@ -343,11 +343,11 @@ poses. Use segmentation geometry to check projection accuracy; colored blob
 centres can be biased by lighting and shadows.
 
 The tabletop map warps frames from trusted cameras onto the table plane. It
-does not search for objects itself; it draws what the running detectors find
-(see [Detectors and objects](#detectors-and-objects)). For a detector that
-reports cube silhouettes, the twin fits the cube across camera views, masks arm
+draws the objects that the running detectors find, as described in
+[Detectors and objects](#detectors-and-objects). For a detector that reports
+cube silhouettes, the twin fits the cube across camera views, masks arm
 occlusions as unknown and rejects poor fits. Near the gripper, a single view can
-confuse a held object with one lying on the table; the tracker applies additional
+confuse a held object with one lying on the table, so the tracker applies extra
 checks. When grasp evidence is present, the tracker follows the object with the
 TCP using its last relative pose. Detections retain their capture timestamps, and
 stale or repeated frames do not extend tracking lifetime.
@@ -355,144 +355,154 @@ stale or repeated frames do not extend tracking lifetime.
 ## Detectors and objects
 
 A detector is the fourth plugin kind, next to robots, backends and strategies.
-It is a class from an installed package, registered under the
-`machinekind_twin.detectors` entry point group. It looks at camera frames and
-says what it sees where **in the image**. The twin does the geometry and the
-tracking, and strategies read the result as `Observation.objects[label]`: an
-`ObjectPose` in the robot's base frame, with `source` and `age_s`. The contract
-lives in [`machinekind_twin_api.detector`](../packages/machinekind_twin_api);
-its README has a minimal detector.
+It is a class in an installed package, registered in the
+`machinekind_twin.detectors` entry point group. It reads camera frames and
+reports what it sees **in the image** and where. The twin turns these image
+positions into poses and tracks them. Strategies read the result as
+`Observation.objects[label]`, an `ObjectPose` in the robot's base frame with
+`source` and `age_s`. The contract lives in
+[`machinekind_twin_api.detector`](../packages/machinekind_twin_api), and that
+package's README has a minimal detector.
 
 ### The contract
 
-The twin calls `detect(request)` on a thread of its own, one call at a time,
-starting a call no sooner than `interval_s` after the previous one started.
-Nothing waits for a detector: a slow one only makes the poses older.
+The twin calls `detect(request)` on a dedicated thread, one call at a time. A
+call starts at least `interval_s` after the previous one started. Nothing waits
+for a detector, so a slow detector only makes its poses older.
 
-`request.frames` maps camera names to frames. It offers the cameras the twin can
-place detections from now: enabled, with a calibrated pose that is trusted (or
-simulated), and fixed to the base. The set is read again for every call, so a
-camera calibrated during a run is offered from the next call. Frames are
-fetched only when read. Iterating and `len` list the offered cameras;
-`name in frames` and `frames.get(name)` fetch the frame and tell whether the
-camera has one younger than a second; `frames[name]` raises `KeyError` when it
-has none. Images are raw RGB, never undistorted.
+`request.frames` maps camera names to frames. It offers the cameras that the
+twin can place detections from at that moment. Such a camera is enabled and
+fixed to the base, and its calibrated pose is trusted or the camera is
+simulated. The twin builds the set again for every call, so a camera calibrated
+during a run is offered from the next call on. A frame is fetched only when
+read. Iterating and `len` list the offered cameras. `name in frames` and
+`frames.get(name)` fetch the frame and tell whether the camera has one younger
+than a second. `frames[name]` raises `KeyError` when it has none. Images are
+raw RGB and never undistorted.
 
-Each `Detection` carries a label, a camera and a pixel (OpenCV convention, in
-the frame's own resolution), and optionally a box, a confidence, a bool
-silhouette `mask`, the height above the table of the point the pixel marks
-(`height_m`), the object's size (`size_m`) and the pixel error of that one
-detection. Labels are compared stripped and lower-cased. The twin drops and
-counts malformed detections (unknown camera, a pixel outside the frame, a mask
-of the wrong shape); the Detektory tab shows the count.
+Each `Detection` carries a label, a camera and a pixel. The pixel follows the
+OpenCV convention in the frame's own resolution. A detection may also carry a
+box, a confidence, a boolean silhouette `mask`, `height_m`, `size_m` and its own
+pixel error. `height_m` is the height above the table of the point the pixel
+marks, and `size_m` is the object's size. Labels are compared after stripping
+whitespace and lower-casing. The twin drops a detection that names an unknown
+camera, has a pixel outside the frame or has a mask of the wrong shape. The
+Detectors tab shows how many it dropped.
 
-`start(info)` runs once before the first call and may raise to refuse.
-`stop(reason)` runs once after a successful start, possibly while `detect` runs
-on the detector thread; the twin discards a late answer. A `detect` that raises
-is shown in the panel and retried after a wait that doubles with each
-consecutive failure, up to 300 s.
+`start(info)` runs once before the first call and may raise to refuse the
+start. `stop(reason)` runs once after a successful start. It may run while
+`detect` is still running on the detector thread, and the twin discards the
+late answer. When `detect` raises, the panel shows the error and the twin
+retries after a wait. The wait doubles with each consecutive failure, up to
+300 s.
 
 ### Where an object is
 
-Per label, the twin keeps the surest detection from each camera and places the
-object one of three ways. The Detektory tab names the path in Polish:
+For each label, the twin keeps the most confident detection from each camera.
+It places the object in one of three ways, and the Detectors tab shows the
+Polish name of the way it used:
 
 | Path | When | Result |
 |---|---|---|
-| silhouette (`sylwetka`) | every camera gave a mask of a full-size frame and `size_m` is a cube | the cube silhouette fit across all masks: position, yaw and the fit's IoU as confidence |
-| triangulation (`triangulacja`) | two or more cameras, rays that pass within the detectors' pixel error scaled by depth | the point nearest to all rays, in front of every camera and between 3 cm below and 60 cm above the table |
-| one ray (`promien`) | one camera, or rays that disagree | the surest detection's ray meeting the plane at `height_m`, else half of `size_m`, else the table top |
+| silhouette (`sylwetka`) | Every camera gave a mask of a full-size frame, and `size_m` is a cube | The cube silhouette fit across all masks. It gives the position, the yaw and the fit's IoU as confidence |
+| triangulation (`triangulacja`) | Two or more cameras whose rays pass within the detectors' pixel error, scaled by depth | The point nearest to all rays. It must lie in front of every camera and between 3 cm below and 60 cm above the table |
+| one ray (`promien`) | One camera, or rays that disagree | The most confident detection's ray meets the plane at `height_m`. Without `height_m` the plane is at half of `size_m`, and without both it is the table top |
 
-The geometry uses the calibrated camera poses with lens distortion, never the
-simulator's ground-truth poses, so simulated perception tests the calibration.
-A detection's `t` is the capture time of the oldest frame it used.
+The geometry uses the calibrated camera poses with lens distortion, also in
+simulation. Simulated perception therefore tests the calibration. A placed
+object's `t` is the capture time of the oldest frame used to place it.
 
 ### The example cube detector
 
-`examples/detectors/cube` (`machinekind-twin-cube`, installed by `uv sync`)
-replaces the Map tab's old built-in cube search. It thresholds one colour in
-HSV with the same ranges and opening the old `CubeDetector.mask` used, and
-answers per camera with the largest blob's centroid, box and mask and the
-cube's size. The twin then runs the old multi-view silhouette fit on those
-masks. The only difference from the old pipeline is the start of the fit: the
-mask is computed on the raw frame and then warped to the table, instead of
-thresholding the warped colour map. In simulation both land within 2 mm and
-7 degrees of the true pose. Settings: `color` (red, green, blue or yellow),
-`size_m`, `label` (default `cube`, the key soarm-lab's policy reads),
-`min_area_px` and `interval_s` (default 0.33 s, the old Map tab rate).
+The example detector in `examples/detectors/cube` replaces the Map tab's old
+built-in cube search. Its package is `machinekind-twin-cube`, and `uv sync`
+installs it. It thresholds one colour in HSV with the ranges and the opening
+that the old `CubeDetector.mask` used. For each camera it reports the largest
+blob's centroid, box and mask, and the cube's size. The twin runs the old
+multi-view silhouette fit on those masks. The one change is the fit's input.
+The masks come from the raw frames and are then warped to the table, where the
+old pipeline thresholded the warped colour map. In simulation both pipelines
+place the cube within 2 mm and 7 degrees of its true pose.
+
+Its settings are `color` (red, green, blue or yellow), `size_m`, `label`,
+`min_area_px` and `interval_s`. `label` defaults to `cube`, the key that
+soarm-lab's policy reads. `interval_s` defaults to 0.33 s, the old Map tab's
+rate.
 
 ### Tracking, `source` and `age_s`
 
-Each label gets the twin's cube tracker (`perception.ObjectTracker`), which also
-follows an object held in the gripper. A measurement is fed to it once, and
-only when its confidence is above 0.4. A track with no measurement for
-`hold_s` is dropped: 6 s, or three times the detector's interval plus its
-latency when that is longer, so a slow detector's object survives between
-answers.
+Each label gets its own copy of the twin's cube tracker,
+`perception.ObjectTracker`. The tracker also follows an object held in the
+gripper. Each measurement is fed to it once, and only when its confidence is
+above 0.4. A track is dropped after `hold_s` without a measurement. `hold_s` is
+the larger of 6 s and three times the sum of the detector's interval and
+latency, so a slow detector's object survives between answers.
 
-`age_s` is the time since the frames the pose was measured from were captured,
-and 0 while the object follows the jaws. `source` says what the pose rests on:
+`age_s` is the time since the capture of the frames the pose comes from. It is
+0 while the object follows the jaws. `source` says what the pose is based on,
+and it takes these Polish values:
 
-- `kamery`: the cameras saw it recently. It holds while the detector's latest
-  answer contains the label and `age_s <= fresh_s`, where `fresh_s` is twice
-  the detector's interval, kept within 0.5 to 1.0 s. The cube detector at
-  0.33 s keeps `kamery` within 0.66 s of capture.
-- `ostatnie widziane`: the last known pose, older than `fresh_s`, or the label
-  is missing from the latest answer. A measurement that is already older than
-  `fresh_s` when it arrives is published like this at once. A detector that
-  answers in tens of seconds, such as a language model, therefore never
-  publishes `kamery`, and a strategy never mistakes its pose for a live one.
-  Read `age_s` to decide how old is too old.
-- `w dloni`: the gripper holds it and the pose follows the TCP. The closed jaw
-  is the hardware's limit on a connected arm, so an empty closed gripper is
-  not taken for a grasp.
-- Annotated variants such as `ostatnie widziane (upuszczona)` come from the
-  tracker unchanged.
+- `kamery` (cameras) means the cameras saw the object recently. The value holds
+  while the detector's latest answer contains the label and
+  `age_s <= fresh_s`. `fresh_s` is twice the detector's interval, kept between
+  0.5 and 1.0 s. The cube detector at 0.33 s keeps `kamery` for 0.66 s after
+  capture.
+- `ostatnie widziane` (last seen) means the pose is the last known one. The
+  source switches to it when `age_s` exceeds `fresh_s` or when the detector's
+  latest answer lacks the label. A measurement that is already older than
+  `fresh_s` when it arrives gets this value at once. A detector that answers in
+  tens of seconds, such as a language model, therefore never publishes
+  `kamery`. A strategy reads `age_s` to decide whether a pose is too old.
+- `w dloni` (in hand) means the gripper holds the object and the pose follows
+  the TCP. On a connected arm, the closed jaw position comes from the
+  hardware's limit, so an empty closed gripper does not count as a grasp.
+- The tracker can annotate a value, as in `ostatnie widziane (upuszczona)`
+  (last seen, dropped). Annotated values pass through unchanged.
 
-The tracker's thresholds on the jaw (its `still` test, 0.02 rad) are per
-update, not per second. They therefore depend on who steps the tracks and how
-often, as they depended on the policy's rate before.
+The tracker's jaw thresholds, such as the 0.02 rad `still` test, apply per
+update. Their effect therefore depends on how often the tracks are stepped.
 
 ### Threads and who steps the tracks
 
 | Thread | Rate | Does |
 |---|---|---|
-| `detektor:<name>`, one per running detector | `interval_s`, longer after failures | reads frames, calls `detect`, places the answer, hands it to the tracks |
-| `detektor-start:<name>`, short-lived | once per start | creates the detector, calls its `start`, starts its thread |
-| strategy runner | the strategy's `hz` | reads `Observation.objects`, which steps the tracks |
-| panel loop | 5 Hz | steps the tracks when nobody did for 0.15 s, then draws them |
+| `detektor:<name>`, one per running detector | `interval_s`, longer after failures | Reads frames, calls `detect`, places the answer and feeds it to the tracks |
+| `detektor-start:<name>`, short-lived | Once per start | Creates the detector, calls its `start` and starts its thread |
+| strategy runner | The strategy's `hz` | Reads `Observation.objects`, which steps the tracks |
+| panel loop | 5 Hz | Steps the tracks when nothing else did for 0.15 s, then draws them |
 
-There is no tracker thread. Whoever reads the objects steps the tracks, at
-most once per 10 ms. With a strategy running, the tracks move at its `hz`;
-without one, the panel steps them at 5 Hz, so the Detektory tab, the 3D
-markers and `w dloni` keep working while the operator drives the arm from the
-panel. Reading objects never waits for a detector.
+The tracks have no thread of their own. Each read of the objects steps them, at
+most once per 10 ms. A running strategy steps them at its `hz`. Without one,
+the panel steps them at 5 Hz. The Detectors tab, the 3D markers and `w dloni`
+therefore keep working while the operator moves the arm from the panel. Reading
+the objects never waits for a detector.
 
 ### Running detectors
 
-Start a detector in the **Detektory** tab. Its form is prefilled from the
-config section of its name. Starting a running detector again restarts it with
-the new settings. Several detectors may run at once; when two of them report
-the same label, the measurement with the newer capture time wins. STOP does not
-stop detectors, because they never move the arm; closing the panel does.
+Start a detector in the **Detektory** (Detectors) tab. The config section with
+the detector's name prefills its form. Starting a running detector again
+restarts it with the new settings. Several detectors can run at once. When two
+of them report the same label, the measurement with the newer capture time
+wins. Detectors never move the arm, so STOP leaves them running. Closing the
+panel stops them.
 
-`twin ui --detector cube` starts the named detector at panel start with its
-config section's settings, as **Uruchom detektor** would. The flag repeats for
-several detectors. A detector that fails to start is logged and shown in its
-row; the panel runs on.
+`twin ui --detector cube` starts the named detector when the panel starts. It
+uses the settings from the detector's config section, like the **Uruchom
+detektor** (Start detector) button. Repeat the flag to start several
+detectors. When a detector fails to start, the panel logs the error, shows it
+in the detector's row and keeps running.
 
-Loader messages and panel labels are Polish, like the rest of the panel. A
-plugin's own exception texts are English, as the plugin wrote them, and reach
-the panel verbatim after a Polish label such as `blad:`. This mix is
-intentional.
+Loader messages and panel labels are in Polish, like the rest of the panel. The
+panel shows a plugin's exception text verbatim after a Polish label such as
+`blad:` (error:).
 
 ### Limits
 
-- Only cameras fixed to the base are used. A camera on the arm is never
-  offered to a detector.
-- A point detection (triangulation or one ray) has no orientation; its
+- Detectors only get cameras fixed to the base. A camera on the arm is never
+  offered.
+- An object placed by triangulation or by one ray has no orientation, so its
   rotation is the identity. Only the cube silhouette fit gives yaw.
-- One object per label. Two red pens need two labels.
+- Each label holds one object. Two red pens need two labels.
 
 ## Cameras on the arm
 

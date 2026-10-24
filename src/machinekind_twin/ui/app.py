@@ -107,8 +107,8 @@ _skip_unchanged_markdown()
 GREEN, ORANGE, GREY, BLUE, RED = (40, 190, 90), (240, 160, 30), (150, 150, 150), (60, 140, 255), (230, 50, 50)
 
 
-#: "Jak uzywac" na gorze zakladek Mapa, Dynamika, Detektory, Strategie i Sim-Real (Ramie, Kamery
-#: i Kalibracja prowadza same).
+#: The "Jak uzywac" (How to use) note at the top of the Mapa, Dynamika, Detektory, Strategie and
+#: Sim-Real tabs. The Ramie, Kamery and Kalibracja tabs guide the operator themselves.
 TAB_HELP = {
     "Mapa": (
         "Mapa dziala sama, gdy jest co najmniej jedna zaufana kamera (Kalibracja).\n"
