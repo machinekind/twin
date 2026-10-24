@@ -9,6 +9,9 @@
     twin calib-sim --robot NAZWA     # ... na innym zainstalowanym ramieniu
     twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
     twin export <folder>             # stanowisko jako dane (MJCF + station.json) dla treningu
+    twin episode                     # raport ostatniego przebiegu strategii (opoznienia stawow, dryf chwytaka)
+    twin episode <plik.jsonl>        # ... z tego zapisu
+    twin episode <folder>            # lista przebiegow: koniec, sukces, blad zadania
     twin ui                          # panel w przegladarce: http://localhost:8080
     twin ui --host 0.0.0.0           # ... dostepny z sieci (bez hasla - tylko w zaufanej)
     twin ui --stream-port 8766       # ... plus podglad kamer (MJPEG, tylko odczyt): http://<maszyna>:8766
@@ -32,6 +35,7 @@ import os
 import platform
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _check(_: argparse.Namespace) -> int:
@@ -189,6 +193,66 @@ def _export(a: argparse.Namespace) -> int:
     print(f"Stanowisko -> {folder.resolve()}: scene.xml, assets/, station.json "
           f"(ramie {ws.robot}, kamer {sum(c.enabled for c in ws.cameras)})")
     return 0
+
+
+def _episode(a: argparse.Namespace) -> int:
+    """The report of one run's episode log, or one line per run for a folder of them.
+
+    Without a path it reports the newest log next to the workspace file.
+    """
+    from .episode import EpisodeLog, episodes_dir
+    from .episode_report import report
+
+    target = Path(a.target) if a.target else episodes_dir(a.path)
+    if not target.exists():
+        print(f"twin episode: nie ma {target}", file=sys.stderr)
+        return 1
+
+    if target.is_dir():
+        logs = sorted(target.glob("*.jsonl"), key=lambda path: _natural(path.stem), reverse=True)
+        if not logs:
+            print(f"brak zapisow przebiegow w {target}", file=sys.stderr)
+            return 1
+        if a.target:
+            _list_episodes(target, logs)
+            return 0
+        target = logs[0]
+
+    try:
+        log = EpisodeLog.load(target)
+    except ValueError as exc:
+        print(f"twin episode: {exc}", file=sys.stderr)
+        return 1
+
+    offset_m = tuple(value / 1000.0 for value in a.offset_mm)
+    print("\n".join(report(log, gripper=a.gripper, offset_m=offset_m).lines()))
+    return 0
+
+
+def _list_episodes(folder: Path, logs: list[Path]) -> None:
+    from .episode import EpisodeLog
+
+    print(f"Przebiegi w {folder} (najnowsze pierwsze):")
+    for path in logs:
+        try:
+            summary = EpisodeLog.summary(path)
+        except (OSError, ValueError) as exc:
+            print(f"  {path.stem:<24} nieczytelny: {exc}")
+            continue
+
+        end = summary.end
+        success = "-" if end.success is None else ("tak" if end.success else "nie")
+        error = "-" if end.error is None else f"{end.error:.3g}"
+        length = "-" if end.t is None else f"{end.t:.2f}"
+        print(f"  {path.stem:<24} {end.code:<13} sukces {success:<4} blad zadania {error:<9} "
+              f"czas {length:>8} s  krokow {end.steps:<6} {end.reason}")
+
+
+def _natural(name: str) -> list[Any]:
+    """`name` split into text and numbers, so `-10` sorts after `-2`."""
+    import re
+
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
 
 
 #: The example station in simulation: two cameras whose calibrated pose is their true pose in
@@ -429,6 +493,16 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("folder")
     p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_export)
+
+    p = sub.add_parser("episode", help="zapis przebiegu strategii: raport albo lista przebiegow")
+    p.add_argument("target", nargs="?", default=None, metavar="PATH",
+                   help="plik .jsonl (raport) albo folder (lista); domyslnie najnowszy zapis obok stanowiska")
+    p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
+    p.add_argument("--gripper", default=None, metavar="ETYKIETA",
+                   help="etykieta obiektu widzianego przez kamery, ktory oznacza chwytak (dryf odczyty - kamery)")
+    p.add_argument("--offset-mm", nargs=3, type=float, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"),
+                   help="gdzie ten znacznik siedzi w ukladzie TCP [mm]")
+    p.set_defaults(fn=_episode)
 
     p = sub.add_parser("ui", help="panel blizniaka w przegladarce (viser)")
     # Panel rusza prawdziwym ramieniem i nie ma hasla, a viser dzieli stan GUI miedzy

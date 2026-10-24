@@ -22,6 +22,7 @@ from conftest import BOT
 from test_strategy import Plugin, answer, drive
 from test_twin_runtime import FakeArm, connect_fake
 
+from machinekind_twin.cli import main as twin_cli
 from machinekind_twin.clock import VirtualClock
 from machinekind_twin.episode import (
     FORMAT,
@@ -717,3 +718,74 @@ def test_observation_with_a_foreign_controllers_commands_counts_latency(twin, tm
 
     assert isinstance(total, DelayFit)
     assert 0.0 < total.lag_s < 0.5
+
+
+# --------------------------------------------------------------------------- twin episode
+
+
+def finished_run(twin: Twin, folder: Path | None, name: str, code: str = "done") -> Path:
+    """A short run of the test strategy that ends with `code`; its log's path."""
+    pose = dict(twin.status.measured, j1=5.0 if code == "done" else 60.0)
+    runner = StrategyRunner(twin, Waypoints([pose]), episode=EpisodeOptions(folder=folder, name=name))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.5 if code == "stopped" else 3.0)
+    runner.stop()
+    assert runner.status.stopped_code == code
+    assert runner.status.episode is not None
+    return runner.status.episode
+
+
+def test_twin_episode_reports_a_file(twin, tmp_path, capsys):
+    twin.connect("sim", threaded=False)
+    path = finished_run(twin, tmp_path, "run")
+
+    assert twin_cli(["episode", str(path), "--gripper", "chwytak", "--offset-mm", "0", "0", "10"]) == 0
+
+    out = capsys.readouterr().out
+    assert "[done]" in out
+    for joint in twin.workspace.spec().joints:
+        assert f"\n  {joint} " in out
+    assert "chwytak" in out
+
+
+def test_twin_episode_lists_a_folder_newest_first(twin, tmp_path, capsys):
+    twin.connect("sim", threaded=False)
+    for name, code in (("run-2", "done"), ("run-10", "stopped")):
+        finished_run(twin, tmp_path, name, code)
+    (tmp_path / "broken.jsonl").write_text("nie zapis\n", encoding="utf-8")
+
+    assert twin_cli(["episode", str(tmp_path)]) == 0
+
+    rows = capsys.readouterr().out.splitlines()[1:]
+    assert [row.split()[0] for row in rows] == ["run-10", "run-2", "broken"]
+    assert "stopped" in rows[0]
+    assert "done" in rows[1] and "sukces tak" in rows[1]
+    assert "nieczytelny" in rows[2]
+
+
+def test_twin_episode_without_a_path_reports_the_newest_log_next_to_the_workspace(twin, tmp_path, capsys):
+    twin.connect("sim", threaded=False)
+    finished_run(twin, None, "a")
+    finished_run(twin, None, "b", "stopped")
+
+    assert twin_cli(["episode"]) == 0
+
+    out = capsys.readouterr().out
+    assert out.startswith("Przebieg b ")
+    assert str(tmp_path / "workspace" / "episodes" / "b.jsonl") in out
+
+
+def test_twin_episode_says_what_is_missing(tmp_path, capsys):
+    assert twin_cli(["episode", str(tmp_path / "nie-ma.jsonl")]) == 1
+    assert "nie ma" in capsys.readouterr().err
+
+    assert twin_cli(["episode", "--path", str(tmp_path / "twin.json")]) == 1
+    assert "nie ma" in capsys.readouterr().err
+
+    (tmp_path / "episodes").mkdir()
+    assert twin_cli(["episode", "--path", str(tmp_path / "twin.json")]) == 1
+    assert "brak zapisow przebiegow" in capsys.readouterr().err
+
+    (tmp_path / "other.jsonl").write_text('{"kind": "header"}\n', encoding="utf-8")
+    assert twin_cli(["episode", str(tmp_path / "other.jsonl")]) == 1
+    assert "to nie jest zapis przebiegu" in capsys.readouterr().err
