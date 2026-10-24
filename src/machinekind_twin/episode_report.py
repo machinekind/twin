@@ -9,7 +9,9 @@ each pair `delay_fit` finds the time shift that best lays the earlier signal ove
 Intent to readings is the whole actuator latency, from a decision to the motion. Intent to
 command is the supervisor's ramp at `max_vel`, so it grows with the length of the move. Command
 to readings is the servo itself. Within one loop tick the twin reads before it sends, so one tick
-of that ordering is part of every delay measured here, in simulation and on hardware.
+of that ordering is part of every delay measured here, in simulation and on hardware. A target
+that follows the motion instead of leading it, as when a strategy copies the readings into its
+target, gives no delay.
 
 Drift. A label the operator names marks the gripper among the objects the cameras see
 (`--gripper ETYKIETA`). Where the cameras saw it (source "kamery"), the report compares its
@@ -59,6 +61,7 @@ DEGREES = "st."
 GRIPPER_UNITS = "jedn."
 
 STILL = "staw nie ruszal sie"
+FOLLOWS = "cel idzie za ruchem, nie przed nim - opoznienia nie licze"
 NOT_NAMED = "strategia nie podawala celu temu stawowi"
 NOTHING_SENT = "nic nie poszlo do serw"
 NO_INTENT = "brak zamiaru w zapisie"
@@ -264,6 +267,11 @@ def delay_fit(ref_t: Any, ref_v: Any, prior: float, sample_t: Any, sample_v: Any
     first event; at a sample's time it holds the last value set strictly before. Only samples
     taken while the reference moved within `max_delay_s + active_window_s` before them count, the
     same set for every shift, so the errors compare.
+
+    The scan cannot go below a shift of 0. When no positive shift fits better than none and a
+    negative one does, the reference follows the samples instead of leading them, as when a
+    strategy copies the readings into its target while the joint creeps: that is no delay, and the
+    result says so instead of giving 0 ms.
     """
     ref_t, ref_v = np.asarray(ref_t, float), np.asarray(ref_v, float)
     usable = np.isfinite(ref_t) & np.isfinite(ref_v)
@@ -290,6 +298,8 @@ def delay_fit(ref_t: Any, ref_v: Any, prior: float, sample_t: Any, sample_v: Any
     errors = np.array([_rms(values - _held(ref_t, ref_v, prior, times - shift)) for shift in shifts])
     best = int(np.argmin(errors))
     lowest = float(errors[best])
+    if best == 0 and _leads_better(ref_t, ref_v, prior, times, values, shifts[1:], lowest):
+        return FOLLOWS
     near = shifts[errors <= max(BAND_FACTOR * lowest, lowest + BAND_UNITS)]
 
     return DelayFit(
@@ -373,6 +383,12 @@ def _prior(first_t: float, command_t: np.ndarray, command_v: np.ndarray, reading
 def _held(ref_t: np.ndarray, ref_v: np.ndarray, prior: float, at: np.ndarray) -> np.ndarray:
     index = np.searchsorted(ref_t, at, side="left") - 1
     return np.where(index >= 0, ref_v[np.clip(index, 0, None)], prior)
+
+
+def _leads_better(ref_t: np.ndarray, ref_v: np.ndarray, prior: float, times: np.ndarray, values: np.ndarray,
+                  leads: np.ndarray, error: float) -> bool:
+    """Some reference moved earlier by one of `leads` fits the samples better than `error`."""
+    return any(_rms(values - _held(ref_t, ref_v, prior, times + lead)) < error for lead in leads)
 
 
 def _active(ref_t: np.ndarray, ref_v: np.ndarray, prior: float, sample_t: np.ndarray, span: float) -> np.ndarray:

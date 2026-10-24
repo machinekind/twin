@@ -456,7 +456,13 @@ bias). The band in brackets holds the shifts whose error is within 5 % or
 0.05 units of the best. The report flags a delay at the end of the scan, a
 shift that explains less than half of the error, and readings at a limit
 more than 5 % of the time. A joint that never moved, or that the strategy
-never named, gets a reason instead of a delay.
+never named, gets a reason instead of a delay. So does a pair whose target
+follows the motion instead of leading it: `cel idzie za ruchem, nie przed nim`
+(the target follows the motion). That happens when a strategy copies the
+readings into its target to keep a joint where it is, and the joint creeps.
+The scan cannot go below 0, so it would otherwise show 0 ms. The report gives
+this reason when no positive shift fits better than none and a negative one
+does.
 
 On the test robot in simulation, the test strategy's tour gives 140 to 220 ms
 from intent to readings, 80 to 160 ms for the supervisor and 45 to 65 ms for

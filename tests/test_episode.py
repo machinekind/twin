@@ -406,6 +406,28 @@ def test_a_fake_arms_delay_shows_as_servo_latency(twin, monkeypatch, tmp_path):
         assert 0.05 <= joint.actuator.lag_s <= 0.09, joint.joint
 
 
+def test_joints_whose_target_copies_the_readings_get_no_delay(twin, tmp_path):
+    """A strategy that moves j1 and keeps the rest where they are by copying the readings into its
+    target. Those joints creep a little in simulation, and the target follows them: no delay."""
+    twin.connect("sim", threaded=False)
+
+    def swing_j1_keep_the_rest(obs):
+        return dict(obs.joints, j1=20.0 if obs.step // 20 % 2 == 0 else -20.0)
+
+    runner = StrategyRunner(twin, Plugin(swing_j1_keep_the_rest), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    drive(twin, runner, 6.0)
+    runner.stop()
+
+    assert runner.status.episode is not None
+    latency = {joint.joint: joint for joint in report(EpisodeLog.load(runner.status.episode)).latency}
+
+    assert all(isinstance(fit, DelayFit) for fit in (latency["j1"].total, latency["j1"].actuator))
+    for name in set(latency) - {"j1"}:
+        assert not isinstance(latency[name].total, DelayFit), latency[name]
+        assert not isinstance(latency[name].actuator, DelayFit), latency[name]
+
+
 def test_the_log_holds_every_accepted_tick(twin, tmp_path):
     twin.connect("sim", threaded=False)
     poses = tour(dict(twin.status.measured))

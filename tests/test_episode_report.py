@@ -13,7 +13,16 @@ import pytest
 from conftest import BOT
 
 from machinekind_twin.episode import FORMAT, VERSION, EpisodeLog
-from machinekind_twin.episode_report import DelayFit, delay_fit, report
+from machinekind_twin.episode_report import (
+    FOLLOWS,
+    NEITHER,
+    NOTHING_SENT,
+    ONLY_ACTUATOR,
+    ONLY_TOTAL,
+    DelayFit,
+    delay_fit,
+    report,
+)
 from machinekind_twin.robots import get_spec
 
 SPEC = get_spec(BOT)
@@ -93,6 +102,29 @@ def test_samples_before_the_first_event_use_the_prior():
     assert fit.lag_s == pytest.approx(0.1, abs=0.005)
 
 
+def test_a_reference_that_follows_its_samples_gives_no_delay():
+    """A target copied from the readings every 50 ms while the joint creeps: the readings lead it."""
+    ref_t = np.arange(0.0, 3.0, 0.05)
+    sample_t = np.arange(0.0, 3.0, 0.02)
+
+    fit = delay_fit(ref_t, 2.0 * ref_t, 0.0, sample_t, 2.0 * sample_t)
+
+    assert fit == FOLLOWS
+
+
+def test_a_reference_the_samples_take_up_at_once_gives_zero():
+    """A command that is the target from the next loop tick on: the scan's lowest shift fits exactly."""
+    ref_t = np.arange(0.0, 3.0, 0.05)
+    ref_v = np.where(np.arange(len(ref_t)) // 5 % 2 == 0, 10.0, -10.0)
+    sample_t = np.arange(0.01, 3.0, 0.02)
+
+    fit = delay_fit(ref_t, ref_v, 0.0, sample_t, held(ref_t, ref_v, 0.0, sample_t))
+
+    assert isinstance(fit, DelayFit)
+    assert fit.lag_s == 0.0
+    assert fit.error_rms == 0.0
+
+
 def test_too_few_samples_in_motion_give_no_delay():
     ref_t, ref_v = np.array([1.0]), np.array([10.0])
     sample_t = np.array([1.0, 1.1, 1.2, 5.0, 6.0])
@@ -124,12 +156,37 @@ def pose_at(t: float) -> dict[str, float]:
     return dict(SPEC.home, **{JOINTS[0]: 30.0 * s, JOINTS[1]: SPEC.home[JOINTS[1]] - 20.0 * s})
 
 
-def readings_loops(seconds: float = 1.5, sent: bool = False) -> list[dict]:
+def readings_loops(seconds: float = 1.5) -> list[dict]:
     loops = []
     for t in np.arange(0.02, seconds, 0.02):
         pose = [round(pose_at(t)[joint], 6) for joint in JOINTS]
-        loops.append({"t": float(t), "sent": pose if sent else None, "measured": pose, "measured_t": float(t)})
+        loops.append({"t": float(t), "sent": None, "measured": pose, "measured_t": float(t)})
     return loops
+
+
+#: The loop's period in the hand-written logs [s].
+LOOP_S = 0.02
+HOME = np.array([SPEC.home[joint] for joint in JOINTS])
+
+
+def chain(supervisor_s: float, servo_s: float, seconds: float = 3.0) -> tuple[list[dict], list[dict]]:
+    """Loop and step lines with known delays on the first joint. The intent is a square wave set
+    every 50 ms; the command is the held intent `supervisor_s` later and the readings are the held
+    command `servo_s` later, on a 20 ms loop. The other joints stand at home."""
+    intent_t = np.round(np.arange(0.05, seconds - 0.5, 0.05), 6)
+    intent_v = np.where(np.arange(len(intent_t)) // 5 % 2 == 0, 10.0, -10.0)
+    loop_t = np.round(np.arange(1, round(seconds / LOOP_S)) * LOOP_S, 6)
+
+    sent = np.tile(HOME, (len(loop_t), 1))
+    sent[:, 0] = held(intent_t, intent_v, HOME[0], loop_t - supervisor_s)
+    measured = np.tile(HOME, (len(loop_t), 1))
+    measured[:, 0] = held(loop_t, sent[:, 0], HOME[0], loop_t - servo_s)
+
+    loops = [{"t": float(t), "sent": command.tolist(), "measured": reading.tolist(), "measured_t": float(t)}
+             for t, command, reading in zip(loop_t, sent, measured, strict=True)]
+    steps = [{"step": index, "obs_t": float(t), "t": float(t), "intent": {JOINTS[0]: float(value)}}
+             for index, (t, value) in enumerate(zip(intent_t, intent_v, strict=True))]
+    return loops, steps
 
 
 @pytest.fixture
@@ -209,6 +266,21 @@ def test_an_identity_rotation_means_position_only(tmp_path, tcp):
     assert "  obrot: kamery podaja tylko polozenie" in result.lines()
 
 
+def test_each_pair_measures_its_own_link_of_the_chain(tmp_path):
+    path = write_log(tmp_path / "chain.jsonl", *chain(supervisor_s=0.10, servo_s=0.06))
+
+    result = report(EpisodeLog.load(path))
+    moving = result.latency[0]
+
+    assert result.latency_note == ""
+    assert isinstance(moving.supervisor, DelayFit)
+    assert isinstance(moving.actuator, DelayFit)
+    assert isinstance(moving.total, DelayFit)
+    assert moving.supervisor.lag_s == pytest.approx(0.10, abs=0.005)
+    assert moving.actuator.lag_s == pytest.approx(0.06, abs=0.005)
+    assert 0.16 <= moving.total.lag_s <= 0.185
+
+
 def test_a_log_without_intent_or_command_says_it_does_not_count_latency(tmp_path):
     steps = [{"step": index, "obs_t": float(t), "t": float(t)} for index, t in enumerate(np.arange(0.1, 1.4, 0.1))]
     path = write_log(tmp_path / "watched.jsonl", readings_loops(), steps, mode="observation", strategy=None)
@@ -216,20 +288,37 @@ def test_a_log_without_intent_or_command_says_it_does_not_count_latency(tmp_path
     result = report(EpisodeLog.load(path))
 
     assert result.latency == ()
-    assert result.latency_note
+    assert result.latency_note == NEITHER
     assert result.latency_note in result.lines()
 
 
 def test_a_log_with_commands_but_no_intent_counts_only_the_servo(tmp_path):
-    path = write_log(tmp_path / "commanded.jsonl", readings_loops(sent=True), [])
+    loops, _ = chain(supervisor_s=0.10, servo_s=0.06)
+    path = write_log(tmp_path / "commanded.jsonl", loops, [])
 
     result = report(EpisodeLog.load(path))
     moving = result.latency[0]
 
+    assert result.latency_note == ONLY_ACTUATOR
     assert result.latency_note in result.lines()
     assert isinstance(moving.total, str)
     assert isinstance(moving.actuator, DelayFit)
-    assert moving.actuator.lag_s == pytest.approx(0.0, abs=0.025)
+    assert moving.actuator.lag_s == pytest.approx(0.06, abs=0.005)
+
+
+def test_a_log_with_intents_but_no_command_counts_only_intent_to_readings(tmp_path):
+    """A read-only backend that mirrors a foreign controller's command into the intent (#175)."""
+    loops, steps = chain(supervisor_s=0.10, servo_s=0.06)
+    path = write_log(tmp_path / "mirrored.jsonl", [dict(loop, sent=None) for loop in loops], steps)
+
+    result = report(EpisodeLog.load(path))
+    moving = result.latency[0]
+
+    assert result.latency_note == ONLY_TOTAL
+    assert result.latency_note in result.lines()
+    assert isinstance(moving.total, DelayFit)
+    assert 0.16 <= moving.total.lag_s <= 0.185
+    assert moving.supervisor == moving.actuator == NOTHING_SENT
 
 
 def test_decisions_are_counted_with_their_response_times(tmp_path):
