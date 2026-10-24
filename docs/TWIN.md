@@ -525,11 +525,26 @@ the log itself:
 `EpisodeWriter.create(folder, {**twin_header(twin), "mode": "observation", "strategy": None}, twin)`.
 Loop lines then fill on their own. At its own rate the observer writes
 `StepRecord`s with `run_t` null and the foreign controller's command as the
-intent, or `{}` without one. It takes the objects from `Perception.snapshot()`,
-which never steps the trackers. When it writes no steps, it calls `flush()`
-every half second. It ends with `close(EpisodeEnd(...))`. A read-only backend
-sends nothing, so every loop line has `sent: null`. Without a foreign command,
-the report says it does not count latency.
+intent, or `{}` without one. When it writes no steps, it calls `flush()` every
+half second. It ends with `close(EpisodeEnd(...))`. A read-only backend sends
+nothing, so every loop line has `sent: null`. Without a foreign command, the
+report says it does not count latency.
+
+The observer takes the objects from `Perception.snapshot()`, which never steps
+the trackers. The snapshot gives `TrackView`s, while a step holds `ObjectPose`s
+by label. Each view's age was taken at the last tracker step, so the observer
+adds the time since that step. Without it, an age is short by up to about
+0.15 s while only the panel steps the trackers. The drift report then takes
+the frames' capture time too late, and a moving gripper shows drift that is
+not there.
+
+```python
+since = perception.clock() - perception.tracks.last_step()
+objects = {view.label: ObjectPose(view.pos, view.rot, view.source, view.age_s + since)
+           for view in perception.snapshot()}
+now = writer.now()
+writer.step(StepRecord(step=k, run_t=None, obs_t=now, t=now, objects=objects, ...))
+```
 
 ### For evaluation runs
 
