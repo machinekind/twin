@@ -473,12 +473,12 @@ class EpisodeLog:
 
     def readings(self) -> tuple[np.ndarray, np.ndarray]:
         """The fresh readings: (R,) their times and (R, n) their values, each reading once."""
-        rows = self._reading_rows()
+        rows = self.reading_rows()
         return self.measured_t[rows], self.measured[rows]
 
     def commands(self) -> tuple[np.ndarray, np.ndarray]:
         """What went to the servos: (C,) loop times and (C, n) values, only ticks that sent something."""
-        rows = self._command_rows()
+        rows = self.command_rows()
         return self.loop_t[rows], self.sent[rows]
 
     def intents(self) -> tuple[np.ndarray, np.ndarray]:
@@ -488,13 +488,15 @@ class EpisodeLog:
                            for step in self.steps], float).reshape(len(self.steps), len(self.joints))
         return t, values
 
-    def _reading_rows(self) -> np.ndarray:
+    def reading_rows(self) -> np.ndarray:
+        """The loop rows of `readings`: the first row of each fresh reading."""
         fresh = np.isfinite(self.measured_t) & np.isfinite(self.measured).any(axis=1)
         rows = np.flatnonzero(fresh)
         _, first = np.unique(self.measured_t[rows], return_index=True)
         return rows[np.sort(first)]
 
-    def _command_rows(self) -> np.ndarray:
+    def command_rows(self) -> np.ndarray:
+        """The loop rows of `commands`."""
         return np.flatnonzero(np.isfinite(self.sent).any(axis=1))
 
 
