@@ -100,7 +100,7 @@ MASK_DILATE_PX = 5
 
 
 class EvaluationAborted(RuntimeError):
-    """The campaign cannot go on: an episode's arm did not start, which no strategy explains."""
+    """The campaign cannot go on: an episode's arm or detector did not start, which no strategy explains."""
 
 
 # --------------------------------------------------------------------------- settings
@@ -466,8 +466,8 @@ def _poses(twin: Any, workspace: Workspace, campaign: Campaign) -> PoseSource:
 def preflight(workspace: Workspace, campaign: Campaign) -> StrategyFacts:
     """Refuses, with ValueError or TypeError, what would fail in every episode: settings the strategy
     or the detector refuses, a robot without jaw sensors, an area off the table, a strategy the
-    runner refuses, a detector without a simulated camera or a render. Builds and closes one twin;
-    runs nothing."""
+    runner refuses, a detector without a simulated camera or a render, a detector that refuses to
+    start. Builds and closes one twin; runs nothing."""
     strategy = campaign.plugin.create(campaign.settings)
     if campaign.detector is not None:
         campaign.detector.create(campaign.detector_settings)
@@ -480,6 +480,7 @@ def preflight(workspace: Workspace, campaign: Campaign) -> StrategyFacts:
         StrategyRunner(twin, strategy)
         if campaign.detector is not None:
             _check_detector_cameras(twin, workspace, campaign.detector.name)
+            _check_detector_starts(twin, workspace, campaign.detector, campaign.detector_settings)
 
         return StrategyFacts(float(strategy.hz), own_time_limit(strategy),
                              effective_time_limit(campaign.time_limit_s, strategy))
@@ -498,6 +499,17 @@ def _check_detector_cameras(twin: Any, workspace: Workspace, name: str) -> None:
         twin.render(cameras[0])
     except Exception as exc:
         raise ValueError(f"render kamery {cameras[0]} nie dziala: {exc} (bez ekranu: MUJOCO_GL=egl)") from exc
+
+
+def _check_detector_starts(twin: Any, workspace: Workspace, plugin: DetectorPlugin,
+                           values: Mapping[str, Any]) -> None:
+    perception = Perception(twin, workspace, hand=lambda: None)
+    try:
+        perception.start_detector(plugin, values, threaded=False)
+    except Exception as exc:
+        raise ValueError(f"detektor {plugin.name} odmowil: {exc}") from exc
+    finally:
+        perception.stop_all("sprawdzenie przed ocena")
 
 
 def drive(twin: Any, runner: StrategyRunner, poses: PoseSource, watch: Watch, start_t: float, limit_s: float,
@@ -566,7 +578,10 @@ def run_episode(workspace: Workspace, campaign: Campaign, folder: Path, index: i
         clash = robot_contacts(twin) > 0
 
         poses = _poses(twin, workspace, campaign)
-        poses.begin()
+        try:
+            poses.begin()
+        except Exception as exc:
+            raise EvaluationAborted(f"przebieg {index}: {campaign.poses} odmowil: {exc}") from exc
         strategy = campaign.plugin.create(campaign.settings)
         limit_s = effective_time_limit(campaign.time_limit_s, strategy)
         name = episode_name(index, campaign.episodes)

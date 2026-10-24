@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from conftest import BOT, CubeScene
+from conftest import BOT, CubeScene, install_detector
 from test_strategy_plugins import install_strategy
 
 from machinekind_twin.calib.simulate import look_at
@@ -241,6 +241,37 @@ class Strategy:
         return {}
 '''
 
+REFUSING_DETECTOR = '''
+class Detector:
+    settings = None
+    interval_s = 1.0
+    pixel_error_px = 3.0
+
+    def start(self, info):
+        raise RuntimeError("brak klucza")
+
+    def detect(self, request):
+        return []
+'''
+
+LATE_REFUSING_DETECTOR = '''
+class Detector:
+    """Its first start passes, every later one refuses."""
+
+    settings = None
+    started = 0
+    interval_s = 1.0
+    pixel_error_px = 3.0
+
+    def start(self, info):
+        Detector.started += 1
+        if Detector.started > 1:
+            raise RuntimeError("limit zapytan")
+
+    def detect(self, request):
+        return []
+'''
+
 
 def installed(install_dist, dist: str, source: str) -> StrategyPlugin:
     return load_strategy(install_strategy(install_dist, dist, source))
@@ -271,6 +302,17 @@ def station(tmp_path):
 
 def evaluate(station, out, *args: str) -> int:
     return twin_cli(["eval-strategy", *FIXED, *args, "--path", str(station), "--out", str(out)])
+
+
+def watched_station() -> Workspace:
+    """The test robot with `CubeScene`'s two trusted simulated cameras, looking at r = 0.2 m."""
+    workspace = Workspace(robot=BOT)
+    for name, eye in CubeScene.EYES:
+        pose = look_at(eye, (0.2, 0.0, 0.0)).tolist()
+        workspace.add_camera(CameraRecord(name, "sim", 640, 480, K=[list(row) for row in CubeScene.K],
+                                          sim_pose=pose, T_cam2base=pose, intrinsics_from="symulacja",
+                                          calibration={"trusted": True}))
+    return workspace
 
 
 # --------------------------------------------------------------------------- settings and counts
@@ -463,17 +505,11 @@ def test_the_summary_keeps_the_settings_the_strategy_got(install_dist, tmp_path)
 
 @pytest.mark.render
 def test_the_cube_detector_feeds_the_strategy_through_perception(cube_example, install_dist, tmp_path):
-    workspace = Workspace(robot=BOT)
-    for name, eye in CubeScene.EYES:
-        pose = look_at(eye, (0.2, 0.0, 0.0)).tolist()
-        workspace.add_camera(CameraRecord(name, "sim", 640, 480, K=[list(row) for row in CubeScene.K],
-                                          sim_pose=pose, T_cam2base=pose, intrinsics_from="symulacja",
-                                          calibration={"trusted": True}))
     detector = load_detector(cube_example)
     plan = campaign(installed(install_dist, "eval-sees", SEES), radius=(0.2, 0.2), time_limit_s=2.0,
                     detector=detector, detector_settings=plugin_values(detector, {}))
 
-    row = run_campaign(workspace, plan, tmp_path / "out").rows[0]
+    row = run_campaign(watched_station(), plan, tmp_path / "out").rows[0]
     seen = [step["objects"]["cube"] for step in EpisodeLog.load(tmp_path / "out" / "000.jsonl").steps]
 
     assert row.claim is True
@@ -481,6 +517,35 @@ def test_the_cube_detector_feeds_the_strategy_through_perception(cube_example, i
     assert np.linalg.norm(np.asarray(seen[-1]["position"]) - [0.2, 0.0, 0.015]) < 0.005
     assert summary_of(tmp_path / "out")["conditions"]["poses"] == "detektor cube"
 
+
+@pytest.mark.render
+def test_a_detector_that_refuses_to_start_is_refused_before_anything_is_written(swing, install_dist, tmp_path,
+                                                                                capsys):
+    station = watched_station().save(tmp_path / "watched.json")
+    name = install_detector(install_dist, "eval-refusing-detector", REFUSING_DETECTOR)
+    out = tmp_path / "out"
+
+    code = evaluate(station, out, "swing", "--set", "joint=j1", "--detector", name)
+
+    assert code == 1
+    assert f"detektor {name} odmowil: brak klucza" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.render
+def test_a_detector_that_refuses_in_an_episode_aborts_the_campaign(swing, install_dist, tmp_path, capsys):
+    station = watched_station().save(tmp_path / "watched.json")
+    name = install_detector(install_dist, "eval-late-detector", LATE_REFUSING_DETECTOR)
+    out = tmp_path / "out"
+
+    code = evaluate(station, out, "swing", "--set", "joint=j1", "--detector", name, "--episodes", "2")
+    err = capsys.readouterr().err
+    summary = summary_of(out)
+
+    assert code == 1
+    assert "przebieg 0" in err and "limit zapytan" in err
+    assert (summary["finished"], summary["episodes"]) == (False, [])
+    assert summary["aborted"].startswith("przebieg 0") and "limit zapytan" in summary["aborted"]
 
 
 # --------------------------------------------------------------------------- the command

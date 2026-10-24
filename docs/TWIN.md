@@ -642,9 +642,9 @@ from the strategy's own is refused.
 `--detector NAME` gives the strategy the poses a detector finds through
 `Perception`, as in the panel, with its settings from its config section. The
 frames are renders of the workstation's trusted simulated cameras, taken on
-the simulated clock. A workstation without such a camera is refused. Rendering
-needs OpenGL (`MUJOCO_GL=egl` without a display). A detector call on two
-640x480 cameras costs about 32 ms.
+the simulated clock. A workstation without such a camera is refused, and so is
+a detector that refuses to start. Rendering needs OpenGL (`MUJOCO_GL=egl`
+without a display). A detector call on two 640x480 cameras costs about 32 ms.
 
 ### Rules
 
@@ -709,8 +709,9 @@ scene says no: `NIEZGODNE` (disagree).
 
 The command exits with 0 when the campaign ran, whatever the successes. It
 exits with 1 when a check refused the campaign, before anything is written, or
-when an episode's arm could not start. Ctrl-C ends the current run with code
-`stopped`, marks the summary `interrupted` and exits with 130.
+when an episode's arm or detector could not start, which marks the summary
+`aborted`. Ctrl-C ends the current run with code `stopped`, marks the summary
+`interrupted` and exits with 130.
 
 ### Limits
 
