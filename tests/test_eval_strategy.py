@@ -230,6 +230,17 @@ class Strategy:
         return {}
 '''
 
+BELOW_ONE_HERTZ = '''
+class Strategy:
+    """Ticks every 3.33 s, so its own limit falls between two ticks."""
+
+    hz = 0.3
+    time_limit_s = 8.0
+
+    def act(self, obs):
+        return {}
+'''
+
 
 def installed(install_dist, dist: str, source: str) -> StrategyPlugin:
     return load_strategy(install_strategy(install_dist, dist, source))
@@ -358,6 +369,13 @@ def test_a_strategy_that_raises_ends_as_error_and_the_campaign_goes_on(install_d
     assert [row.code for row in rows] == ["error"] * 3
     assert all(row.reason.startswith("RuntimeError:") for row in rows)
     assert [row.steps for row in rows] == [2] * 3
+
+
+def test_a_strategy_below_one_hertz_ends_at_its_own_time_limit(install_dist, tmp_path):
+    row = run(installed(install_dist, "eval-below-one-hertz", BELOW_ONE_HERTZ), tmp_path / "out").rows[0]
+
+    assert (row.code, row.steps) == ("time_limit", 3)
+    assert row.duration_s == pytest.approx(10.0, abs=0.03)
 
 
 def test_a_strategy_without_a_limit_ends_at_the_cap(install_dist, tmp_path):

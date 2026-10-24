@@ -88,8 +88,8 @@ VERSION = 1
 SUMMARY = "summary.json"
 #: Slack when comparing times on the simulated clock [s].
 EPS = 1e-9
-#: How far past its time limit a run may go before the evaluation stops it [s]. Only a runner that
-#: fails to apply its own limit gets there.
+#: How far past its first tick at or after its time limit a run may go before the evaluation stops
+#: it [s]. Only a runner that fails to apply its own limit gets there.
 OVERRUN_S = 1.0
 #: The object's label when neither the operator nor a plugin names one.
 DEFAULT_LABEL = "cube"
@@ -524,7 +524,7 @@ def drive(twin: Any, runner: StrategyRunner, poses: PoseSource, watch: Watch, st
             if wall_limit_s is not None and time.monotonic() - wall_t0 > wall_limit_s:
                 runner.stop(f"ocena: limit czasu rzeczywistego {wall_limit_s:g} s")
                 wall_cut = True
-            elif now - start_t > limit_s + OVERRUN_S:
+            elif now - start_t > limit_s + period + OVERRUN_S:
                 runner.stop("ocena: przebieg nie skonczyl sie w limicie")
         else:
             runner.step_once(due)
