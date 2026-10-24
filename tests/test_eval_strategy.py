@@ -193,6 +193,43 @@ class Strategy:
         return Action(done=seen, success=True if seen else None)
 '''
 
+ODD_VALUES = '''
+from decimal import Decimal
+
+from machinekind_twin_api.strategy import Action
+
+
+class Strategy:
+    """Reports its error and note in types JSON has none for."""
+
+    hz = 20.0
+    time_limit_s = 10.0
+
+    def act(self, obs):
+        return Action(done=obs.step >= 3, success=True, error=Decimal("0.25"), note=Decimal("1.5"))
+'''
+
+FINE = '''
+from dataclasses import dataclass
+
+
+@dataclass
+class Settings:
+    tolerance_m: float = 3e-7
+
+
+class Strategy:
+    hz = 20.0
+    time_limit_s = 0.2
+    settings = Settings
+
+    def __init__(self, settings):
+        self.config = settings
+
+    def act(self, obs):
+        return {}
+'''
+
 
 def installed(install_dist, dist: str, source: str) -> StrategyPlugin:
     return load_strategy(install_strategy(install_dist, dist, source))
@@ -365,6 +402,42 @@ def test_ctrl_c_leaves_a_partial_summary(install_dist, station, tmp_path, capsys
     plugin.cls.started = 0
     assert evaluate(station, tmp_path / "again", plugin.name, "--episodes", "3") == 130
     assert "Przerwano po 1 z 3 przebiegow" in capsys.readouterr().out
+
+
+def test_an_unexpected_error_is_written_into_the_summary_and_propagates(install_dist, tmp_path):
+    press = installed(install_dist, "eval-press-broken-pipe", PRESS)
+
+    def print_row(row):
+        raise BrokenPipeError("stdout zamkniete")
+
+    with pytest.raises(BrokenPipeError):
+        run_campaign(Workspace(robot=BOT), campaign(press, episodes=2), tmp_path / "out", on_episode=print_row)
+    summary = summary_of(tmp_path / "out")
+
+    assert (summary["finished"], summary["aborted"]) == (False, "BrokenPipeError: stdout zamkniete")
+    assert len(summary["episodes"]) == 1
+
+
+# --------------------------------------------------------------------------- the summary
+
+
+def test_a_value_json_has_no_type_for_does_not_stop_the_campaign(install_dist, tmp_path):
+    rows = run(installed(install_dist, "eval-odd-values", ODD_VALUES), tmp_path / "out", episodes=2).rows
+    summary = summary_of(tmp_path / "out")
+    logged = EpisodeLog.load(tmp_path / "out" / "000.jsonl").steps[-1]
+
+    assert [(row.error, row.success) for row in rows] == [(0.25, True)] * 2
+    assert summary["finished"] is True
+    assert [entry["strategy"]["error"] for entry in summary["episodes"]] == [0.25, 0.25]
+    assert summary["episodes"][0]["strategy"]["note"] == logged["note"]
+
+
+def test_the_summary_keeps_the_settings_the_strategy_got(install_dist, tmp_path):
+    run(installed(install_dist, "eval-fine", FINE), tmp_path / "out")
+    meta = EpisodeLog.load(tmp_path / "out" / "000.jsonl").header["meta"]
+
+    assert summary_of(tmp_path / "out")["conditions"]["strategy"]["settings"] == meta["settings"] \
+        == {"tolerance_m": 3e-7}
 
 
 # --------------------------------------------------------------------------- poses from a detector

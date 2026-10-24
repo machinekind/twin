@@ -21,6 +21,7 @@ The campaign folder gets one episode log per run (`NNN.jsonl`, written by the ru
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -30,7 +31,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Protocol
 
 import machinekind_twin_api
@@ -587,7 +588,8 @@ def run_episode(workspace: Workspace, campaign: Campaign, folder: Path, index: i
         return EpisodeRow(
             index=index, name=name, placement=placement, start=start, clash=clash,
             code=status.stopped_code, reason=status.stopped_because, claim=_claim(status.stopped_code),
-            done=status.done, success=status.success, error=status.error, note=status.note, steps=status.step,
+            done=status.done, success=_bool_or_none(status.success), error=_float_or_none(status.error),
+            note=str(status.note), steps=status.step,
             attempts=_attempts(strategy), start_error=start_error, verdict=verdict, duration_s=duration_s,
             wall_s=time.monotonic() - episode_t0, wall_limit=wall_cut,
             log=None if status.episode is None else status.episode.name, log_error=status.episode_error,
@@ -639,6 +641,26 @@ def _attempts(strategy: Any) -> int | None:
     return attempt if _whole(attempt) else None
 
 
+def _bool_or_none(value: Any) -> bool | None:
+    """A strategy's `success` as a bool; None when it gave none or one that has no truth value."""
+    if value is None:
+        return None
+    try:
+        return bool(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    """A strategy's `error` as a float, whatever number type it came in; None when it is not a number."""
+    if value is None:
+        return None
+    try:
+        return float(np.asarray(value))
+    except (TypeError, ValueError):
+        return None
+
+
 # --------------------------------------------------------------------------- the campaign
 
 
@@ -668,7 +690,9 @@ def run_campaign(workspace: Workspace, campaign: Campaign, folder: Path, *, fact
         result.aborted = str(exc)
     except Exception as exc:
         result.aborted = f"{type(exc).__name__}: {exc}"
-        write_summary(folder, summary_data(workspace, campaign, result))
+        # The error that ended the campaign propagates even when its summary cannot be written.
+        with contextlib.suppress(Exception):
+            write_summary(folder, summary_data(workspace, campaign, result))
         raise
 
     write_summary(folder, summary_data(workspace, campaign, result))
@@ -768,23 +792,35 @@ def write_summary(folder: Path, data: Mapping[str, Any]) -> Path:
 
 
 def _json_value(value: Any) -> Any:
-    """Strict JSON values: numbers rounded to 6 decimals, a non-finite one null."""
+    """`value` as strict JSON values, never rounded, as the episode log writes them. It never raises:
+    a non-finite number becomes null, any other number type (a Decimal, a tensor's scalar) a float,
+    and anything JSON has no type for its `repr`."""
+    try:
+        return _json_cleaned(value)
+    except Exception:  # noqa: BLE001 - a value the summary cannot read costs only that value
+        return f"<{type(value).__name__}>"
+
+
+def _json_cleaned(value: Any) -> Any:
+    if value is None or isinstance(value, str):
+        return value
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
     if isinstance(value, (int, np.integer)):
         return int(value)
-    if isinstance(value, (float, np.floating)):
-        number = float(value)
-        return round(number, 6) if math.isfinite(number) else None
-    if isinstance(value, np.ndarray):
-        return _json_value(value.tolist())
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
-    if isinstance(value, Path):
+    if isinstance(value, np.ndarray) and value.ndim > 0:
+        return [_json_value(item) for item in value.tolist()]
+    if isinstance(value, PurePath):
         return str(value)
-    return value
+    try:
+        number = float(np.asarray(value))
+    except (TypeError, ValueError):
+        return repr(value)
+    return number if math.isfinite(number) else None
 
 
 def _whole(value: Any) -> bool:

@@ -177,10 +177,8 @@ class Placement:
     yaw_rad: float
 
     def to_json(self) -> dict[str, Any]:
-        """Rounded to 6 decimals, as the summary writes it, so the log's copy compares equal."""
-        values = {"x_m": self.x_m, "y_m": self.y_m, "radius_m": self.radius_m,
-                  "bearing_deg": math.degrees(self.bearing_rad), "yaw_deg": math.degrees(self.yaw_rad)}
-        return {key: round(value, 6) for key, value in values.items()}
+        return {"x_m": self.x_m, "y_m": self.y_m, "radius_m": self.radius_m,
+                "bearing_deg": math.degrees(self.bearing_rad), "yaw_deg": math.degrees(self.yaw_rad)}
 
 
 def draw_placement(area: Area, seed: int) -> Placement:
