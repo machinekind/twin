@@ -83,7 +83,8 @@ def run_ticks(twin: Twin, count: int) -> None:
 
 
 def lines(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    """The log's records; only "\\n" ends a line, as in `EpisodeLog.load`."""
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]
 
 
 # --------------------------------------------------------------------------- the file
@@ -179,6 +180,46 @@ def test_a_cut_off_log_loads_as_unfinished(twin, tmp_path):
     assert len(log.steps) == 2
     assert log.end.steps == 2
     assert log.end.note == "krok 1"
+
+
+def test_a_log_cut_inside_a_character_loads_as_unfinished(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path)
+    for step, note in enumerate(("chwytam kostkę", "chwytak złapał")):
+        run_ticks(twin, 2)
+        writer.step(record(writer, twin, step, note=note))
+    writer.close(end(code="done", steps=2))
+
+    data = writer.path.read_bytes()
+    cut = tmp_path / "cut.jsonl"
+    cut.write_bytes(data[: data.rindex("ł".encode()) + 1])
+
+    log = EpisodeLog.load(cut)
+
+    assert log.end.code == "unfinished"
+    assert [step["note"] for step in log.steps] == ["chwytam kostkę"]
+    assert EpisodeLog.summary(cut).end.code == "unfinished"
+
+
+def test_line_separators_inside_text_stay_inside_their_line(twin, tmp_path):
+    """JSON keeps U+2028, U+2029 and U+0085 in a string as they are: only "\\n" ends a line."""
+    twin.connect("sim", threaded=False)
+    odd = "lewo\u2028prawo\u2029dalej\x85koniec"
+    writer = EpisodeWriter.create(tmp_path, {**twin_header(twin), "meta": {"ustawienia": odd}}, twin)
+    run_ticks(twin, 2)
+    writer.step(record(writer, twin, 0, note=odd, decisions=[Decision(question="gdzie kostka?", answer=odd)]))
+    writer.close(end(code="done", steps=1, success=True, reason=odd, note=odd))
+
+    log = EpisodeLog.load(writer.path)
+    summary = EpisodeLog.summary(writer.path)
+
+    assert log.header["meta"] == {"ustawienia": odd}
+    assert log.steps[0]["note"] == odd
+    assert log.steps[0]["decisions"][0]["answer"] == odd
+    assert log.end.code == "done"
+    assert log.end.reason == odd
+    assert summary.header["meta"] == {"ustawienia": odd}
+    assert summary.end == log.end
 
 
 def test_a_broken_line_a_newer_version_or_another_file_are_refused(twin, tmp_path):

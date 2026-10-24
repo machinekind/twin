@@ -419,11 +419,11 @@ class EpisodeLog:
     def load(path: str | Path) -> EpisodeLog:
         """Reads a log; ValueError when it is not one, is newer than this twin, or is broken mid-file.
 
-        A last line cut off mid-write is skipped, and a missing end line gives the code "unfinished".
+        A last line cut off mid-write is skipped, even inside a character, and a missing end line
+        gives the code "unfinished".
         """
         path = Path(path)
-        lines = path.read_text(encoding="utf-8").splitlines()
-        records = _parse(path, lines)
+        records = _parse(path, path.read_bytes().split(b"\n"))
         header = _header(path, records[0] if records else None)
 
         joints = tuple(header["joints"])
@@ -448,10 +448,10 @@ class EpisodeLog:
         """The header and the end of a log, from its first line and its last `tail_bytes`."""
         path = Path(path)
         with path.open("rb") as file:
-            first = file.readline().decode("utf-8", errors="replace")
+            first = file.readline()
             size = file.seek(0, os.SEEK_END)
             file.seek(max(0, size - tail_bytes))
-            tail = file.read().decode("utf-8", errors="replace").splitlines()
+            tail = file.read().split(b"\n")
 
         header = _header(path, _loads(first))
         end_line = None
@@ -586,15 +586,20 @@ def _clean(value: Any, depth: int = 0) -> Any:
     return repr(value)
 
 
-def _loads(line: str) -> dict[str, Any] | None:
+def _loads(line: bytes) -> dict[str, Any] | None:
+    """One line as a record; None for a line that is not a JSON object, or not UTF-8.
+
+    Lines are split on "\\n" only: JSON keeps U+2028, U+2029 and U+0085 inside a string as they
+    are, and `str.splitlines` would split there.
+    """
     try:
-        record = json.loads(line)
+        record = json.loads(line.decode("utf-8"))
     except ValueError:
         return None
     return record if isinstance(record, dict) else None
 
 
-def _parse(path: Path, lines: list[str]) -> list[dict[str, Any]]:
+def _parse(path: Path, lines: list[bytes]) -> list[dict[str, Any]]:
     numbered = [(number, line) for number, line in enumerate(lines, 1) if line.strip()]
     records = []
 
