@@ -880,6 +880,38 @@ def test_a_float_setting_with_an_int_default_keeps_its_decimals(app, install_dis
     assert tab._inputs["speed"].value == 1.5
 
 
+@pytest.mark.parametrize("name, choices", [("words", ("first", "second")),
+                                         ("labels", ("(wybierz)", "(domyslne)"))])
+def test_a_required_dropdown_starts_empty_and_accepts_its_first_real_option(app, install_dist, name, choices):
+    source = f'''
+from dataclasses import dataclass, field
+
+@dataclass
+class Settings:
+    choice: str = field(metadata={{"choices": {choices!r}}})
+
+class Strategy:
+    hz = 10.0
+    settings = Settings
+
+    def __init__(self, settings):
+        self.config = settings
+
+    def act(self, obs):
+        return {{}}
+'''
+    module = f"choice_strategy_{name}"
+    install_dist(f"choice-strategy-{name}", {"machinekind_twin.strategies": {name: f"{module}:Strategy"}},
+                 {module: source})
+    tab = choose_strategy(app, name)
+    handle = tab.form.inputs["choice"]
+
+    assert handle.value not in choices
+    assert "choice" not in tab.form.values(tab.plugin)
+    handle.value = choices[0]
+    assert tab.plugin.create(tab.form.values(tab.plugin)).config.choice == choices[0]
+
+
 GOALS = '''
 class Strategy:
     hz = 50.0
@@ -1020,6 +1052,69 @@ def test_the_detectors_config_section_prefills_its_form(app, cube_example, tmp_p
     assert tab.form.inputs["color"].value == "green"
 
 
+def test_the_llm_cli_and_model_dropdowns_keep_the_model_compatible(app, llm_package):
+    from machinekind_twin.ui.plugin_form import DEFAULT_CHOICE
+
+    tab = choose_detector(app, llm_package)
+    inputs = tab.form.inputs
+    assert type(inputs["cli"]).__name__ == "GuiDropdownHandle"
+    assert type(inputs["model"]).__name__ == "GuiDropdownHandle"
+    assert inputs["cli"].options == ("codex", "claude")
+    assert inputs["model"].value == "gpt-6-astra"
+    assert "gpt-6.1-sol" in inputs["model"].options
+    assert "sonnet" not in inputs["model"].options
+
+    inputs["cli"].value = "claude"
+    assert "sonnet" in inputs["model"].options
+    assert "gpt-6-astra" not in inputs["model"].options
+    assert inputs["model"].value == DEFAULT_CHOICE
+    assert tab.form.values(tab.plugin)["model"] == ""
+
+    inputs["model"].value = "sonnet"
+    assert tab.form.values(tab.plugin)["model"] == "sonnet"
+    inputs["model"].value = DEFAULT_CHOICE
+    inputs["cli"].value = "codex"
+    assert inputs["model"].value == DEFAULT_CHOICE
+    assert tab.form.values(tab.plugin)["model"] == ""
+
+
+def test_a_claude_only_config_uses_the_cli_default_in_the_model_dropdown(
+        app, llm_package, tmp_path, monkeypatch):
+    from machinekind_twin.ui.plugin_form import DEFAULT_CHOICE
+
+    a_config_file(tmp_path, monkeypatch, "llm:\n  cli: claude\n")
+    tab = choose_detector(app, llm_package)
+
+    assert tab.section_problem == ""
+    assert tab.form.inputs["cli"].value == "claude"
+    assert tab.form.inputs["model"].value == DEFAULT_CHOICE
+    values = tab.form.values(tab.plugin)
+    assert values["model"] == ""
+    assert tab.plugin.create(values).config.model == ""
+
+
+@pytest.mark.parametrize("cli, model, other", [
+    ("codex", "gpt-future", "claude"),
+    ("claude", "claude-future", "codex"),
+])
+def test_a_configured_custom_model_stays_available_only_for_its_cli(
+        app, llm_package, tmp_path, monkeypatch, cli, model, other):
+    from machinekind_twin.ui.plugin_form import DEFAULT_CHOICE
+
+    a_config_file(tmp_path, monkeypatch, f"llm:\n  cli: {cli}\n  model: {model}\n")
+    tab = choose_detector(app, llm_package)
+    inputs = tab.form.inputs
+
+    assert model in inputs["model"].options
+    assert inputs["model"].value == model
+    assert tab.plugin.create(tab.form.values(tab.plugin)).config.model == model
+
+    inputs["cli"].value = other
+    assert model not in inputs["model"].options
+    assert inputs["model"].value == DEFAULT_CHOICE
+    assert tab.form.values(tab.plugin)["model"] == ""
+
+
 def test_a_wrong_key_in_the_detectors_config_section_blocks_its_start(app, cube_example, tmp_path, monkeypatch):
     a_config_file(tmp_path, monkeypatch, "cube:\n  colour: green\n")
 
@@ -1087,6 +1182,9 @@ def test_a_second_start_while_the_first_is_starting_is_refused_and_the_panel_doe
 
     monkeypatch.setattr(app.perception, "start_detector", slow_start)
     tab.start()                                                   # returns while the detector starts
+    assert tab.activity_md.visible
+    assert tab.activity_md.content == "⏳ **Startuje...**"
+    assert tab._rows["cube"].md.content == "**startuje...**"  # no panel tick needed
     assert inside.wait(5.0)
     tab.tick()
     assert tab._rows["cube"].md.content == "**startuje...**"
@@ -1097,6 +1195,65 @@ def test_a_second_start_while_the_first_is_starting_is_refused_and_the_panel_doe
     let_go.set()
     tab.start_thread.join(5.0)
     assert "cube" in app.perception.running()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_pending_detector_call_shows_elapsed_time_until_it_finishes(app, cube_example, monkeypatch, fails):
+    tab = choose_detector(app, cube_example, interval_s=60.0)
+    entered, release = threading.Event(), threading.Event()
+    now = [0.0]
+    monkeypatch.setattr(app.perception, "clock", lambda: now[0])
+
+    def slow_detect(self, request):
+        entered.set()
+        assert release.wait(5.0)
+        if fails:
+            raise RuntimeError("test request failed")
+        return []
+
+    monkeypatch.setattr(tab.plugin.cls, "detect", slow_detect)
+    try:
+        start_detector(tab)
+        assert entered.wait(5.0)
+        runner = app.perception.running()["cube"]
+        runner._wait = lambda _: True  # end the thread after this call, without stopping its status
+        now[0] = 7.0
+        tab.tick()
+
+        assert tab.activity_md.visible
+        assert "Wywolanie w toku" in tab.activity_md.content and "7.0 s" in tab.activity_md.content
+        line = tab._rows["cube"].md.content
+        assert "wywolanie 1 w toku" in line and "7.0 s" in line
+        assert "oczekiwanie na pierwszy wynik" in line and "wynik: nic" not in line
+        assert runner.status.calls == 0
+
+        release.set()
+        runner.join(5.0)
+        assert not runner._thread.is_alive()
+        tab.tick()
+
+        assert not tab.activity_md.visible
+        line = tab._rows["cube"].md.content
+        assert "w toku" not in line and "ukonczonych wywolan 1" in line
+        if fails:
+            assert "test request failed" in line and "kolejna proba za" in line
+        else:
+            assert "ostatni wynik: nic" in line
+    finally:
+        release.set()
+
+
+def test_a_retry_in_progress_shows_the_previous_error_without_a_retry_countdown():
+    from machinekind_twin.detection import DetectorStatus
+    from machinekind_twin.ui.detector_tab import _running_line
+
+    status = DetectorStatus(running=True, call_started=0.0, calls=1, failures=1,
+                            last_error="RuntimeError: model unavailable")
+    line = _running_line(SimpleNamespace(status=status), 7.0)
+
+    assert "wywolanie 2 w toku" in line and "7.0 s" in line
+    assert "poprzedni blad" in line and "model unavailable" in line
+    assert "kolejna proba za" not in line
 
 
 def test_a_detector_refusing_its_settings_shows_why_in_its_row(app, cube_example):

@@ -28,6 +28,8 @@ BOT = "testbot"
 SWING = EXAMPLES / "strategies" / "swing"
 #: The example detector's package: a colour cube, settings in a dataclass.
 CUBE = EXAMPLES / "detectors" / "cube"
+#: The LLM detector's package: frames to the claude or codex CLI.
+LLM = Path(__file__).resolve().parents[1] / "packages" / "machinekind_twin_llm"
 
 
 def write_dist(site: Path, name: str, entry_points: dict[str, dict[str, str]],
@@ -128,6 +130,13 @@ def cube_example(install_dist, monkeypatch):
     """The example detector (`examples/detectors/cube`), installed."""
     install_example(install_dist, monkeypatch, CUBE)
     return "cube"
+
+
+@pytest.fixture
+def llm_package(install_dist, monkeypatch):
+    """The LLM detector (`packages/machinekind_twin_llm`), installed."""
+    install_example(install_dist, monkeypatch, LLM)
+    return "llm"
 
 
 class CubeScene:
