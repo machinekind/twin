@@ -269,6 +269,38 @@ def test_a_detection_from_a_camera_that_left_is_dropped(clock: Clock, frames: Fr
 
 
 # ------------------------------------------------------------------ failures and pacing
+@pytest.mark.parametrize("fail", [False, True])
+def test_the_current_call_is_visible_until_success_or_failure(clock: Clock, frames: Frames, fail: bool):
+    clock.t = 0.0
+    det = Scripted(RuntimeError("model down") if fail else [], block=True)
+    runner = runner_for(det, clock, frames)
+    runner.start(threaded=False)
+    assert runner.status.call_started is None
+    thread = threading.Thread(target=runner.step_once)
+    thread.start()
+    try:
+        assert det.entered.wait(5.0)
+        assert runner.status.call_started == 0.0
+        assert runner.status.cameras == ("a", "b")
+        assert runner.status.calls == 0
+        clock.advance(7.0)
+        assert runner.status.call_started == 0.0
+        assert det.block is not None
+        det.block.set()
+        thread.join(5.0)
+        assert not thread.is_alive()
+        assert runner.status.call_started is None
+        assert runner.status.calls == 1
+        assert runner.status.last_latency_s == 7.0
+        assert runner.status.failures == int(fail)
+        assert runner.status.last_error == ("RuntimeError: model down" if fail else "")
+    finally:
+        assert det.block is not None
+        det.block.set()
+        thread.join(5.0)
+        runner.stop("test")
+
+
 def test_the_wait_after_a_success_is_the_interval(clock: Clock, frames: Frames):
     runner = runner_for(Scripted([], interval_s=0.33), clock, frames)
     runner.start(threaded=False)
@@ -395,6 +427,69 @@ def test_stop_during_a_blocked_detect_discards_the_late_answer(clock: Clock, fra
     assert not runner.status.running and runner.status.stopped_because == "operator"
     runner.stop("again")
     assert len(det.stops) == 1
+
+
+def test_stop_clears_the_current_call_before_an_uncooperative_detector_returns(clock: Clock, frames: Frames):
+    det = Scripted(seen(), block=True)
+    det.stop = lambda reason: None
+    runner = runner_for(det, clock, frames)
+    runner.start(threaded=False)
+    thread = threading.Thread(target=runner.step_once)
+    thread.start()
+    try:
+        assert det.entered.wait(5.0)
+        assert runner.status.call_started == clock.t
+        runner.stop("operator", wait=False)
+        assert runner.status.call_started is None
+        assert thread.is_alive()
+        clock.advance(7.0)
+        assert det.block is not None
+        det.block.set()
+        thread.join(5.0)
+        assert not thread.is_alive()
+        assert runner.status.call_started is None
+        assert not runner.status.running
+        assert runner.status.calls == 0
+        assert runner.status.last_done == 0.0
+        assert runner.fed == []
+    finally:
+        assert det.block is not None
+        det.block.set()
+        thread.join(5.0)
+        runner.stop("test")
+
+
+def test_stop_during_camera_listing_cannot_restart_a_call(clock: Clock, frames: Frames):
+    entered, release = threading.Event(), threading.Event()
+
+    def cameras():
+        entered.set()
+        release.wait(5.0)
+        return ("a",)
+
+    det = Scripted(seen())
+    runner = runner_for(det, clock, frames)
+    runner._cameras = cameras
+    runner.start(threaded=False)
+    thread = threading.Thread(target=runner.step_once)
+    thread.start()
+    try:
+        assert entered.wait(5.0)
+        assert runner.status.call_started == clock.t
+        runner.stop("operator", wait=False)
+        assert runner.status.call_started is None
+        release.set()
+        thread.join(5.0)
+        assert not thread.is_alive()
+        assert runner.status.call_started is None
+        assert runner.status.cameras == ()
+        assert runner.status.calls == 0
+        assert det.requests == []
+        assert runner.fed == []
+    finally:
+        release.set()
+        thread.join(5.0)
+        runner.stop("test")
 
 
 # ------------------------------------------------------------------ several detectors
