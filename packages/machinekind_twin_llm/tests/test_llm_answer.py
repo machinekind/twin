@@ -12,7 +12,15 @@ import pytest
 from machinekind_twin_api import Detection
 from machinekind_twin_llm import smoke
 from machinekind_twin_llm.answer import MAX_DETECTIONS, parse_answer
-from machinekind_twin_llm.images import SentImage, encode
+from machinekind_twin_llm.images import (
+    STILL_MAX_CHANGED_PX,
+    THUMB_LONG_PX,
+    SentImage,
+    changed_pixels,
+    encode,
+    thumbnail,
+    unchanged,
+)
 from machinekind_twin_llm.prompt import SCHEMA, build_prompt, normalise_label
 
 #: A 1920x1440 frame sent as 1280x960: scale 1.5.
@@ -238,3 +246,65 @@ def test_encode_scales_large_frames_down_and_keeps_small_ones(tmp_path: Path):
 def test_encode_refuses_an_image_that_is_not_rgb(tmp_path: Path):
     with pytest.raises(ValueError, match="RGB"):
         encode(tmp_path, [("top", np.zeros((10, 10), np.uint8))], max_side_px=1280)
+
+
+# --- the still check ----------------------------------------------------------------------------
+
+
+def scene(rng: np.random.Generator) -> np.ndarray:
+    """A 1280x960 table: textured grey with a 3 cm cube's worth of dark pixels at 1 m, 24x24 px."""
+    table = rng.integers(100, 140, (960, 1280, 3), dtype=np.uint8)
+    table[600:624, 100:124] = (40, 40, 40)
+    return table
+
+
+def test_a_thumbnail_is_a_small_grey_float_copy_with_the_frame_s_aspect():
+    thumb = thumbnail(np.zeros((960, 1280, 3), np.uint8))
+
+    assert thumb.shape == (THUMB_LONG_PX * 3 // 4, THUMB_LONG_PX) and thumb.dtype == np.float32
+    assert thumbnail(np.zeros((120, 160, 3), np.uint8)).shape == (120, 160)
+
+
+def test_sensor_noise_and_exposure_drift_do_not_count_as_a_change():
+    rng = np.random.default_rng(0)
+    before = scene(rng)
+    noisy = np.clip(before.astype(int) + rng.integers(-6, 7, before.shape), 0, 255).astype(np.uint8)
+    brighter = np.clip(before.astype(int) + 12, 0, 255).astype(np.uint8)
+
+    assert changed_pixels(thumbnail(before), thumbnail(noisy)) == 0
+    assert changed_pixels(thumbnail(before), thumbnail(brighter)) == 0
+    assert unchanged({"top": thumbnail(before)}, {"top": thumbnail(noisy)})
+
+
+def test_a_small_object_moving_or_leaving_counts_as_a_change():
+    rng = np.random.default_rng(0)
+    before = scene(rng)
+    moved = scene(rng)
+    moved[600:624, 100:124] = before[600:624, 200:224]
+    moved[600:624, 140:164] = (40, 40, 40)
+    gone = scene(rng)
+    gone[600:624, 100:124] = before[600:624, 200:224]
+
+    assert changed_pixels(thumbnail(before), thumbnail(moved)) > STILL_MAX_CHANGED_PX
+    assert changed_pixels(thumbnail(before), thumbnail(gone)) > STILL_MAX_CHANGED_PX
+    assert not unchanged({"top": thumbnail(before), "side": thumbnail(before)},
+                         {"top": thumbnail(moved), "side": thumbnail(before)})
+
+
+def test_a_few_flickering_pixels_are_not_a_change():
+    before = np.full((480, 640, 3), 120, np.uint8)
+    blink = before.copy()
+    blink[10:14, 10:14] = 255                      # a status LED: 2x2 thumbnail pixels
+
+    assert 0 < changed_pixels(thumbnail(before), thumbnail(blink)) <= STILL_MAX_CHANGED_PX
+
+
+def test_unchanged_needs_the_same_cameras_and_frame_shapes():
+    frame = thumbnail(np.full((480, 640, 3), 120, np.uint8))
+    other_shape = thumbnail(np.full((640, 480, 3), 120, np.uint8))
+
+    assert changed_pixels(frame, other_shape) == other_shape.size
+    assert not unchanged({"top": frame, "side": frame}, {"top": frame})
+    assert not unchanged({"top": frame}, {"top": frame, "side": frame})
+    assert not unchanged({}, {})
+    assert not unchanged({"top": frame}, {"top": other_shape})

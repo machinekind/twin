@@ -52,3 +52,5 @@ robot:
 #   effort: low          # low, medium, high, xhigh or max; "" = the CLI's default
 #   objects: "red pen, cube"   # labels to look for; "" = every movable object on the table
 #   interval_s: 10.0     # seconds between questions, at least 2
+#   reuse_if_still: true  # repeat the last answer while no camera's image changed (default)
+#   reuse_max_age_s: 60   # ask again anyway once the last answer is this old

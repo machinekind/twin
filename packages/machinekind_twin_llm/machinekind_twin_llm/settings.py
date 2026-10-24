@@ -33,6 +33,7 @@ MIN_INTERVAL_S = 2.0
 TIMEOUT_S = (5.0, 900.0)
 MAX_SIDE_PX = (256, 4096)
 PIXEL_ERROR_PX = (0.0, 500.0)
+REUSE_MAX_AGE_S = (0.0, 3600.0)
 
 
 @dataclass
@@ -59,8 +60,11 @@ class LlmSettings:
     max_side_px: int = 1280
     #: How far off the model's pixels may be, in the SENT image's pixels; scaled to each frame.
     pixel_error_px: float = 25.0
-    # TBD: reuse requires preserving the original observation age and reliable change detection.
-    reuse_if_still: bool = False
+    #: Repeat the last answer, without asking, while no camera's image changed since the frames it
+    #: was given (a cheap pixel count, see `images`).
+    reuse_if_still: bool = True
+    #: Ask again anyway once the last answer is this old [s], so a wrong answer does not stick.
+    reuse_max_age_s: float = 60.0
     #: Ask at most this many times per hour; 0 = no cap.
     max_calls_per_hour: int = 0
     #: Drop answers the model is less sure of than this.
@@ -85,8 +89,6 @@ def _within(value: float, lo: float, hi: float) -> bool:
 def validate(settings: LlmSettings) -> None:
     """Refuse unsupported settings before the detector starts."""
     s = settings
-    if s.reuse_if_still:
-        raise NotImplementedError("llm: reuse_if_still is not implemented")
     if s.cli not in CLIS:
         raise ValueError(f"llm: cli must be one of {', '.join(CLIS)}, not {s.cli!r}")
     if s.effort not in EFFORTS:
@@ -100,6 +102,9 @@ def validate(settings: LlmSettings) -> None:
     if not _within(s.pixel_error_px, *PIXEL_ERROR_PX):
         raise ValueError(f"llm: pixel_error_px must be in [{PIXEL_ERROR_PX[0]:g}, {PIXEL_ERROR_PX[1]:g}] px, "
                          f"got {s.pixel_error_px}")
+    if not _within(s.reuse_max_age_s, *REUSE_MAX_AGE_S):
+        raise ValueError(f"llm: reuse_max_age_s must be in [{REUSE_MAX_AGE_S[0]:g}, {REUSE_MAX_AGE_S[1]:g}] s, "
+                         f"got {s.reuse_max_age_s}")
     if not _within(s.min_confidence, 0.0, 1.0):
         raise ValueError(f"llm: min_confidence must be in [0, 1], got {s.min_confidence}")
     if s.max_calls_per_hour < 0:
