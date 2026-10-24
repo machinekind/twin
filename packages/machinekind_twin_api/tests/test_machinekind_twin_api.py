@@ -293,6 +293,18 @@ def test_a_detection_with_a_mask_compares_by_identity():
     assert hash(d) == hash(d)
 
 
+def test_a_detection_is_made_from_this_call_s_frames_by_default():
+    d = Detection("cube", "front", (320.0, 240.0))
+
+    assert d.age_s == 0.0
+
+    older = dataclasses.replace(d, age_s=5.0)
+
+    assert older is not d
+    assert older.age_s == 5.0
+    assert (older.label, older.camera, older.pixel) == (d.label, d.camera, d.pixel)
+
+
 # --------------------------------------------------------------------------- backend
 
 

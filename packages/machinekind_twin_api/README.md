@@ -210,6 +210,12 @@ ways:
 The twin then tracks each label and publishes it with `age_s`, the seconds since the frames were
 captured.
 
+A detection made from older frames than this call's says by how much in `age_s` [s]. A detector
+that repeats an earlier answer instead of looking again sets it to the time since that answer's
+frames. The twin moves the capture time back by it, so the published `age_s` counts from the
+frames the detection was made from. The twin also counts it as latency, so the pose is held until
+the next answer. The default 0 means this call's frames.
+
 `request.frames` lists the cameras offered in this call. A frame is fetched only when read.
 `frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second.
 `frames[name]` raises `KeyError` when it has none. Pixels follow the OpenCV convention in the

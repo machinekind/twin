@@ -9,7 +9,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +109,18 @@ def started(fake: Fake, **kw: Any) -> LlmDetector:
     det = LlmDetector(settings(fake, **kw))
     det.start(INFO)
     return det
+
+
+class Clock:
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def described(dets: Sequence[Detection]) -> list[tuple[Any, ...]]:
+    return [(d.label, d.camera, d.pixel, d.box, d.confidence, d.pixel_error_px) for d in dets]
 
 
 # --- settings -------------------------------------------------------------------------------------
@@ -298,11 +310,41 @@ def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
     again = det.detect(request(1))
 
     assert len(fake.runs()) == 1
-    assert again == first
+    assert described(again) == described(first)
 
     det.detect(request(2, top=image(shade=20), side=image()))
 
     assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_a_repeat_carries_the_time_since_the_question_it_repeats(fake: Fake):
+    clock = Clock()
+    det = LlmDetector(settings(fake), clock=clock)
+    det.start(INFO)
+    first = det.detect(request(0))
+
+    assert first
+    assert all(d.age_s == 0.0 for d in first)
+
+    clock.t += 12.5
+    again = det.detect(request(1))
+
+    assert [d.age_s for d in again] == [12.5] * len(first)
+    assert described(again) == described(first)
+
+    clock.t += 10.0
+    later = det.detect(request(2))
+
+    assert [d.age_s for d in later] == [22.5] * len(first)
+    assert described(later) == described(first)
+    assert len(fake.runs()) == 1
+
+    changed = det.detect(request(3, top=image(shade=20), side=image()))
+
+    assert len(fake.runs()) == 2
+    assert changed
+    assert all(d.age_s == 0.0 for d in changed)
     det.stop("test")
 
 
@@ -345,7 +387,7 @@ def test_a_repeat_is_not_a_question_for_the_hourly_cap(fake: Fake):
     det = started(fake, max_calls_per_hour=1)
     det.detect(request(0))
 
-    assert det.detect(request(1)) == det.detect(request(2))
+    assert described(det.detect(request(1))) == described(det.detect(request(2)))
     with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):
         det.detect(request(3, top=image(shade=20), side=image()))
     assert len(fake.runs()) == 1

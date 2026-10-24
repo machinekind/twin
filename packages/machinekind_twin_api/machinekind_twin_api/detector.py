@@ -89,6 +89,10 @@ class Detection:
     #: How far off `pixel` may be, in THIS frame's pixels; None = the detector's `pixel_error_px`.
     #: A detector that answers on a resized copy scales its error back with the pixel.
     pixel_error_px: float | None = None
+    #: How much older than this call's frames the frames this detection was made from are [s];
+    #: 0 = these frames. A detector that repeats an earlier answer gives the time since that
+    #: answer's frames. The twin counts the published `age_s` from them.
+    age_s: float = 0.0
 
 
 class Detector(Protocol[S]):

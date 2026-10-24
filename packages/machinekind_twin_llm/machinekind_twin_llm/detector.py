@@ -4,19 +4,20 @@ what is where, in each frame's pixels.
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory,
 unless no camera's image changed since the last question (`reuse_if_still`: the last answer is
-repeated) or the hourly cap is reached. `stop` cancels a running question: the CLI's process group
-is killed within 0.2 s.
+repeated with its age) or the hourly cap is reached. `stop` cancels a running question: the CLI's
+process group is killed within 0.2 s.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import shutil
 import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -41,10 +42,11 @@ class LlmDetector(Detector[LlmSettings]):
 
     settings = LlmSettings
 
-    def __init__(self, settings: LlmSettings | None = None):
+    def __init__(self, settings: LlmSettings | None = None, *, clock: Callable[[], float] = time.monotonic):
         settings = settings if settings is not None else LlmSettings()
         validate(settings)
         self.config = settings
+        self._clock = clock
         self.interval_s = float(settings.interval_s)
         # A fallback only: each Detection carries the error scaled to its own frame.
         self.pixel_error_px = float(settings.pixel_error_px)
@@ -55,7 +57,7 @@ class LlmDetector(Detector[LlmSettings]):
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
         #: The still check's reference: thumbnails of the frames the last question was asked on,
-        #: that question's answer and when it was asked.
+        #: that question's answer and when it was asked (on `_clock`).
         self._thumbs: dict[str, np.ndarray] = {}
         self._last: list[Detection] = []
         self._last_t = -float("inf")
@@ -105,11 +107,12 @@ class LlmDetector(Detector[LlmSettings]):
         if not frames:
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
-        now = time.monotonic()
+        now = self._clock()
         thumbs = {name: thumbnail(image) for name, image in frames} if config.reuse_if_still else {}
         if thumbs and now - self._last_t < config.reuse_max_age_s and unchanged(self._thumbs, thumbs):
-            logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", now - self._last_t)
-            return list(self._last)
+            age = now - self._last_t
+            logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", age)
+            return [dataclasses.replace(d, age_s=age) for d in self._last]
 
         if config.max_calls_per_hour:
             while self._calls and now - self._calls[0] >= CALL_WINDOW_S:

@@ -4,6 +4,7 @@ ways to place a label, and what `locate` drops. Synthetic cameras and projected 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import ClassVar
 
 import cv2
@@ -273,6 +274,43 @@ def test_a_point_behind_a_camera_is_not_triangulated():
     np.testing.assert_allclose(obj.pos, P, atol=1e-6)
 
 
+# ------------------------------------------------------------------ age
+def test_a_detection_s_age_moves_its_capture_time_back():
+    (obj,), _ = run([Detection("pen", "a", project(A, P), height_m=float(P[2]), age_s=2.5)])
+
+    assert obj.method == "promien"
+    assert obj.t == -1.5
+    assert obj.age_s == 2.5
+
+
+def test_two_cameras_of_one_age_triangulate_at_the_aged_capture_time():
+    dets = [Detection("pen", "a", project(A, P), age_s=10.0),
+            Detection("pen", "b", project(B, P), age_s=10.0)]
+    (obj,), _ = run(dets)
+
+    assert obj.method == "triangulacja" and obj.n_cameras == 2
+    assert np.linalg.norm(obj.pos - P) < 5e-4
+    assert obj.t == 1.0 - 10.0
+    assert obj.age_s == 10.0
+
+
+def test_the_oldest_aged_frame_dates_a_triangulated_point():
+    dets = [Detection("pen", "a", project(A, P)),
+            Detection("pen", "b", project(B, P), age_s=1.5)]
+    (obj,), _ = run(dets)
+
+    assert obj.method == "triangulacja"
+    assert obj.t == 0.5
+    assert obj.age_s == 1.5
+
+
+@pytest.mark.parametrize("age", [-0.5, float("nan"), float("inf")])
+def test_an_age_that_is_not_a_finite_non_negative_number_is_dropped(age):
+    placed, dropped = run([Detection("pen", "a", project(A, P), age_s=age)])
+
+    assert placed == [] and dropped == 1
+
+
 # ------------------------------------------------------------------ labels and what is dropped
 def test_labels_are_compared_stripped_and_lower_cased():
     dets = [Detection("Red Pen ", "a", project(A, P), height_m=float(P[2])),
@@ -369,6 +407,26 @@ def test_masks_of_a_cube_go_to_the_silhouette_fit():
     (side, masks, used_mapper, used_occ, t), = FakeCube.calls
     assert side == pytest.approx(0.03) and used_mapper is mapper and used_occ is occ and t == 1.0
     assert masks["a"] is dets[0].mask and masks["b"] is dets[1].mask
+
+
+def test_the_silhouette_fit_and_its_arm_masks_use_the_aged_times():
+    FakeCube.calls = []
+    answer = CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.88, n_cameras=2)
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    seen_times = []
+
+    def occluders(times):
+        seen_times.append(times)
+
+    dets = [replace(d, age_s=3.0) for d in _masks()]
+    (obj,), _ = run(dets, mapper=mapper, occluders=occluders, cube=lambda side: FakeCube(side, answer))
+
+    assert obj.method == "sylwetka"
+    assert seen_times == [{"a": -2.0, "b": -1.0}]
+    (*_, t), = FakeCube.calls
+    assert t == -2.0
+    assert obj.t == -2.0
+    assert obj.age_s == 3.0
 
 
 def test_a_gated_out_fit_places_nothing():

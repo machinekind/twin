@@ -46,8 +46,9 @@ def tracks(clock: Clock) -> Tracks:
 
 
 def located(t: float, label: str = "cube", pos=REST, confidence: float = 0.9, n_cameras: int = 2,
-            method: str = "sylwetka") -> Located:
-    return Located(label, np.array(pos, float), np.eye(3), confidence, n_cameras, t, (0.03, 0.03, 0.03), method)
+            method: str = "sylwetka", age_s: float = 0.0) -> Located:
+    return Located(label, np.array(pos, float), np.eye(3), confidence, n_cameras, t, (0.03, 0.03, 0.03), method,
+                   age_s)
 
 
 def hand_at(tcp, grip_q: float, grip_cmd: float, grip_closed: float = 0.0) -> Hand:
@@ -154,6 +155,45 @@ def test_a_slow_detector_keeps_its_track_until_the_next_answer(clock: Clock):
     obj = slow.step(None)["cube"]
     assert obj.source == "ostatnie widziane"
     assert obj.age_s == pytest.approx(50.0, abs=1e-6)
+
+
+def test_repeats_of_one_answer_hold_its_pose_through_a_60_s_still_scene_and_one_interval(
+        tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=0.0, interval_s=10.0)
+    tracks.step(None)
+    for k in range(1, 6):
+        clock.t = t0 + 10.0 * k
+        tracks.observe("llm", [located(t0, age_s=10.0 * k)], latency_s=0.0, interval_s=10.0)
+        obj = tracks.step(None)["cube"]
+
+        assert obj.source == "ostatnie widziane"
+        assert obj.age_s == pytest.approx(10.0 * k, abs=1e-6)
+
+    clock.t = t0 + 70.0
+    obj = tracks.step(None)["cube"]
+
+    assert obj.age_s == pytest.approx(70.0, abs=1e-6)
+    np.testing.assert_allclose(obj.position, REST)
+
+
+def test_a_repeated_answer_s_age_counts_as_latency_for_the_hold(tracks: Tracks, clock: Clock):
+    t = clock.t
+    clock.advance(50.0)
+    tracks.observe("llm", [located(t, age_s=50.0)], latency_s=0.0, interval_s=10.0)
+    fed_at = clock.t
+    obj = tracks.step(None)["cube"]
+
+    assert obj.source == "ostatnie widziane"
+    assert obj.age_s == pytest.approx(50.0, abs=1e-6)
+
+    clock.t = fed_at + Tracks.hold_s_for(10.0, 50.0) - 0.1
+
+    assert "cube" in tracks.step(None)
+
+    clock.advance(0.2)
+
+    assert "cube" not in tracks.step(None)
 
 
 def test_a_pose_expires_after_hold_s_and_its_track_goes(tracks: Tracks, clock: Clock):

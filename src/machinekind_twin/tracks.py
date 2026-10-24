@@ -14,7 +14,8 @@ word matches the age:
   and `age_s <= fresh_s`; the tracker says "kamery" only on the step that accepts a measurement,
   and a strategy stepping faster than the detector answers would otherwise see it flicker;
 - a "kamery" becomes "ostatnie widziane" once `age_s > fresh_s`, so a measurement that is old on
-  arrival (a language model answering in 20 s) is never presented as what the cameras see now.
+  arrival (a language model answering in 20 s, or repeating an answer) is never presented as what
+  the cameras see now.
 
 `fresh_s` is twice the detector's interval, kept within 0.5 to 1.0 s: the cube detector at 0.33 s
 keeps "kamery" within 0.66 s of capture, close to the old panel's 0.5 s. Annotated sources
@@ -145,10 +146,15 @@ class Tracks:
 
     # ------------------------------------------------------------------ the detector thread
     def observe(self, detector: str, batch: list[Located], latency_s: float, interval_s: float) -> None:
-        """One detector call's placed labels. The newer capture time wins a label two detectors share."""
+        """One detector call's placed labels. The newer capture time wins a label two detectors share.
+
+        The largest `Located.age_s` in the batch counts as latency: a repeated answer is as late as
+        the frames it was made from, so its pose is held until the next answer.
+        """
+        age_s = max((loc.age_s for loc in batch), default=0.0)
         with self._lock:
             self._answers[detector] = _Answer(frozenset(loc.label for loc in batch),
-                                              self.hold_s_for(interval_s, latency_s),
+                                              self.hold_s_for(interval_s, latency_s + age_s),
                                               self.fresh_s_for(interval_s))
             for loc in batch:
                 track = self._tracks.get(loc.label)
