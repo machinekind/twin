@@ -8,6 +8,7 @@ and output folder, so nothing lands in the repository's `workspace/`.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -54,6 +55,20 @@ class Strategy:
 
     def act(self, obs):
         return Action(target={"j1": 0.0, "j2": 45.0, "gripper": 0.0}, done=obs.t >= 2.0, success=True)
+'''
+
+GIVES_UP = '''
+from machinekind_twin_api.strategy import Action
+
+
+class Strategy:
+    """Presses the closed jaws down at r 0.10 m for 2 s, then gives up."""
+
+    hz = 20.0
+    time_limit_s = 10.0
+
+    def act(self, obs):
+        return Action(target={"j1": 0.0, "j2": 45.0, "gripper": 0.0}, done=obs.t >= 2.0, success=False)
 '''
 
 HOIST = '''
@@ -278,9 +293,11 @@ def installed(install_dist, dist: str, source: str) -> StrategyPlugin:
 
 
 def campaign(plugin: StrategyPlugin, *, radius: tuple[float, float] = (0.10, 0.10),
-             bearing_deg: tuple[float, float] = (0.0, 0.0), **options) -> Campaign:
+             bearing_deg: tuple[float, float] = (0.0, 0.0), yaw_deg: tuple[float, float] = (0.0, 0.0),
+             **options) -> Campaign:
     options = {"rule": "touch", "label": "cube", "obj": ObjectSpec(), "episodes": 1, **options}
-    area = Area(radius, (np.radians(bearing_deg[0]), np.radians(bearing_deg[1])), (0.0, 0.0))
+    area = Area(radius, (np.radians(bearing_deg[0]), np.radians(bearing_deg[1])),
+                (np.radians(yaw_deg[0]), np.radians(yaw_deg[1])))
     return Campaign(plugin=plugin, settings=plugin_values(plugin, {}), area=area, **options)
 
 
@@ -345,11 +362,24 @@ def test_wilson_interval_of_46_of_50_is_81_to_97_percent():
 
 def test_press_is_a_touch_and_the_scene_agrees(install_dist, tmp_path):
     row = run(installed(install_dist, "eval-press", PRESS), tmp_path / "out").rows[0]
+    summary = summary_of(tmp_path / "out")
+    entry = summary["episodes"][0]
 
     assert (row.code, row.claim) == ("done", True)
     assert row.verdict.ok and row.agree
     assert max(row.verdict.contacts_end) > 0.5
     assert row.verdict.push_m < 0.01
+    assert (entry["scene"]["ok"], entry["strategy"]["claim"], entry["agree"]) == (True, True, True)
+    assert (summary["totals"]["scene"]["success"], summary["finished"]) == (1, True)
+
+
+def test_a_strategy_that_gives_up_on_a_touch_is_an_unclaimed_success(install_dist, tmp_path):
+    rows = run(installed(install_dist, "eval-gives-up", GIVES_UP), tmp_path / "out").rows
+    counts = totals(rows)
+
+    assert [(row.code, row.claim, row.verdict.ok, row.agree) for row in rows] == [("gave_up", False, True, False)]
+    assert (counts["agreement"]["unclaimed_success"], counts["claim"]["failure"]) == (1, 1)
+    assert summary_of(tmp_path / "out")["totals"]["agreement"]["disagree"] == ["000"]
 
 
 def test_press_out_of_reach_is_a_false_claim(install_dist, tmp_path):
@@ -368,17 +398,20 @@ def test_lift_needs_both_jaws_and_four_centimetres(install_dist, tmp_path):
     lifted = run(hoist, tmp_path / "lift", rule="lift").rows[0]
     pushed = run(hoist, tmp_path / "touch", rule="touch").rows[0]
     pressed = run(press, tmp_path / "press", rule="lift").rows[0]
+    seen_z = [step["objects"]["cube"]["position"][2] for step in EpisodeLog.load(tmp_path / "lift" / "000.jsonl").steps]
 
     assert lifted.verdict.ok
     assert lifted.verdict.rise_settled_m >= 0.04
     assert min(lifted.verdict.contacts_end) > 0.5
+    assert max(seen_z) - seen_z[0] > 0.04
+    assert seen_z[-1] == pytest.approx(lifted.verdict.position_end_m[2], abs=0.003)
     assert not pushed.verdict.ok and pushed.verdict.reason.startswith("obiekt przesuniety")
     assert not pressed.verdict.ok and pressed.verdict.reason.startswith("uniesiony")
 
 
 def test_episode_i_is_the_same_in_any_campaign(install_dist, tmp_path):
     press = installed(install_dist, "eval-press-seed", PRESS)
-    options = {"radius": (0.095, 0.105), "bearing_deg": (-3.0, 3.0)}
+    options = {"radius": (0.095, 0.105), "bearing_deg": (-3.0, 3.0), "yaw_deg": (-30.0, 30.0)}
 
     three = run(press, tmp_path / "three", seed=100, episodes=3, **options).rows
     one = run(press, tmp_path / "one", seed=102, episodes=1, **options).rows
@@ -389,7 +422,33 @@ def test_episode_i_is_the_same_in_any_campaign(install_dist, tmp_path):
 
     assert three[2].seed == one[0].seed == 102
     assert same(three[2]) == same(one[0])
-    assert three[0].placement != three[1].placement
+    assert not np.allclose(three[0].start.position_m, three[1].start.position_m)
+    for row in [*three, *one]:
+        rotation = row.start.rotation
+        assert row.start.position_m[:2] == pytest.approx((row.placement.x_m, row.placement.y_m), abs=1e-6)
+        assert math.atan2(rotation[1, 0], rotation[0, 0]) == pytest.approx(row.placement.yaw_rad)
+
+
+def test_the_speed_cap_reaches_the_arm(install_dist, station, tmp_path):
+    press = installed(install_dist, "eval-press-capped", PRESS)
+
+    free = run(press, tmp_path / "free").rows[0]
+    code = evaluate(station, tmp_path / "capped", press.name, "--speed-deg-s", "5")
+    summary = summary_of(tmp_path / "capped")
+    scene = summary["episodes"][0]["scene"]
+
+    assert free.verdict.ok
+    assert code == 0
+    assert summary["conditions"]["speed_deg_s"] == 5.0
+    assert (scene["ok"], scene["reason"]) == (False, "brak kontaktu na koncu")
+
+
+def test_an_object_placed_against_the_robot_fails_whatever_the_strategy_does(install_dist, tmp_path):
+    row = run(installed(install_dist, "eval-press-clash", PRESS), tmp_path / "out", radius=(0.0, 0.0)).rows[0]
+
+    assert row.clash
+    assert (row.verdict.ok, row.verdict.reason) == (False, "obiekt dotyka ramienia na starcie")
+    assert summary_of(tmp_path / "out")["episodes"][0]["start"]["clash"] is True
 
 
 # --------------------------------------------------------------------------- how runs end
@@ -397,10 +456,12 @@ def test_episode_i_is_the_same_in_any_campaign(install_dist, tmp_path):
 
 def test_a_refusing_strategy_is_counted_and_the_campaign_goes_on(install_dist, tmp_path):
     rows = run(installed(install_dist, "eval-refusing", REFUSING), tmp_path / "out", episodes=2).rows
+    counts = totals(rows)
 
     assert [(row.code, row.reason, row.claim, row.verdict.ok) for row in rows] \
         == [("refused", "strategia odmowila: bez kostki", None, False)] * 2
     assert all(row.start_error == "ValueError: bez kostki" for row in rows)
+    assert (counts["agreement"]["both_failure"], counts["claim"]["none"]) == (2, 2)
     for name in ("000", "001"):
         assert EpisodeLog.summary(tmp_path / "out" / f"{name}.jsonl").end.began is False
 
