@@ -142,6 +142,29 @@ def test_a_measurement_is_fed_once(tracks: Tracks, clock: Clock, monkeypatch: py
     assert fed[-1] is True
 
 
+def test_the_same_frames_handed_in_again_are_not_fed_again(tracks: Tracks, clock: Clock,
+                                                           monkeypatch: pytest.MonkeyPatch):
+    fed = []
+    update = ObjectTracker.update
+
+    def spy(self, det, *args):
+        fed.append(det is not None)
+        return update(self, det, *args)
+
+    monkeypatch.setattr(ObjectTracker, "update", spy)
+    t = clock.t
+    tracks.observe("cube", [located(t)], latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+    clock.advance(0.33)
+    tracks.observe("cube", [located(t)], latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+    clock.advance(0.33)
+    tracks.observe("cube", [located(t - 1.0, age_s=1.0)], latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+
+    assert fed == [True, False, False]
+
+
 def test_a_slow_detector_keeps_its_track_until_the_next_answer(clock: Clock):
     slow, fast = Tracks(SPEC, clock), Tracks(SPEC, clock)
     t = clock.t
@@ -175,6 +198,44 @@ def test_repeats_of_one_answer_hold_its_pose_through_a_60_s_still_scene_and_one_
 
     assert obj.age_s == pytest.approx(70.0, abs=1e-6)
     np.testing.assert_allclose(obj.position, REST)
+
+
+def test_after_a_still_scene_one_answer_without_the_label_keeps_the_object(tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
+    tracks.step(None)
+    for k in range(1, 6):
+        clock.t = t0 + 10.0 * k
+        tracks.observe("llm", [located(t0, age_s=10.0 * k)], latency_s=0.0, interval_s=10.0)
+        tracks.step(None)
+    clock.t = t0 + 62.0
+    tracks.observe("llm", [], latency_s=2.0, interval_s=10.0)
+    obj = tracks.step(None)["cube"]
+
+    assert obj.source == "ostatnie widziane"
+    assert obj.age_s == pytest.approx(62.0, abs=1e-6)
+
+
+def test_a_repeat_dated_a_hair_before_the_fed_measurement_keeps_the_object(tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 10.0
+    tracks.observe("llm", [located(t0 - 1e-9, age_s=10.0)], latency_s=0.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 40.0
+    tracks.observe("llm", [], latency_s=2.0, interval_s=10.0)
+
+    assert "cube" in tracks.step(None)
+
+
+def test_the_oldest_label_in_an_answer_sets_the_hold(tracks: Tracks, clock: Clock):
+    t = clock.t
+    tracks.observe("llm", [located(t, "a"), located(t - 50.0, "b", age_s=50.0)], latency_s=0.0, interval_s=10.0)
+    objs = tracks.step(None)
+
+    assert set(objs) == {"a", "b"}
+    assert objs["b"].age_s == pytest.approx(50.0, abs=1e-6)
 
 
 def test_a_repeated_answer_s_age_counts_as_latency_for_the_hold(tracks: Tracks, clock: Clock):

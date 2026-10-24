@@ -304,6 +304,15 @@ def test_the_oldest_aged_frame_dates_a_triangulated_point():
     assert obj.age_s == 1.5
 
 
+def test_a_single_ray_is_dated_by_the_surer_detection_alone():
+    sure, unsure = _disagreeing()
+    (obj,), _ = run([sure, replace(unsure, age_s=20.0)], pixel_error_px=3.0)
+
+    assert obj.method == "promien"
+    assert obj.t == 1.0
+    assert obj.age_s == 0.0
+
+
 @pytest.mark.parametrize("age", [-0.5, float("nan"), float("inf")])
 def test_an_age_that_is_not_a_finite_non_negative_number_is_dropped(age):
     placed, dropped = run([Detection("pen", "a", project(A, P), age_s=age)])

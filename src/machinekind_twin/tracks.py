@@ -3,8 +3,8 @@
 Each label gets the twin's old cube tracker (`perception.ObjectTracker`), unchanged. A detector
 thread hands its placed labels to `Tracks.observe`; whoever reads the objects (a running strategy
 through `objects=`, or the panel when idle) calls `Tracks.step`, which feeds each tracker its newest
-measurement once, together with the hand (TCP pose and jaw angles), and publishes one `ObjectPose`
-per label.
+measurement once per newer frames, together with the hand (TCP pose and jaw angles), and publishes
+one `ObjectPose` per label.
 
 Every published pose carries `age_s`: seconds since the frames it was measured from were captured,
 0 while it follows the jaws. The tracker's `source` passes through with one bounded rewrite, so the
@@ -101,14 +101,21 @@ class _Answer:
 class _Track:
     tracker: ObjectTracker
     detector: str
-    #: The newest measurement handed in; fed to the tracker once (`used_t`).
+    #: The newest measurement handed in; fed to the tracker once per newer frames (`used_t`).
     pending: Located
+    #: `_read_t` of the last measurement fed.
     used_t: float = -math.inf
     #: The last measurement fed to the tracker: what the panel shows about it.
     fed: Located | None = None
     #: Since when the tracker has given no pose; None while it gives one.
     none_since: float | None = None
     view: TrackView | None = field(default=None)
+
+
+def _read_t(loc: Located) -> float:
+    """About when the frames of the call that gave `loc` were captured: its `t` moved forward by its
+    `age_s` again. A repeated answer has an old `t` and a new `_read_t`."""
+    return loc.t + loc.age_s
 
 
 class Tracks:
@@ -146,10 +153,12 @@ class Tracks:
 
     # ------------------------------------------------------------------ the detector thread
     def observe(self, detector: str, batch: list[Located], latency_s: float, interval_s: float) -> None:
-        """One detector call's placed labels. The newer capture time wins a label two detectors share.
+        """One detector call's placed labels. The newer capture time wins a label two detectors share;
+        a detector's latest answer always replaces its own earlier one.
 
         The largest `Located.age_s` in the batch counts as latency: a repeated answer is as late as
-        the frames it was made from, so its pose is held until the next answer.
+        the frames it was made from, so its pose is held until the next answer. A repeat made on newer
+        frames is fed to the tracker again: it renews the hold, and the age still counts from its `t`.
         """
         age_s = max((loc.age_s for loc in batch), default=0.0)
         with self._lock:
@@ -160,7 +169,7 @@ class Tracks:
                 track = self._tracks.get(loc.label)
                 if track is None:
                     self._tracks[loc.label] = _Track(ObjectTracker.for_spec(self._spec), detector, loc)
-                elif loc.t >= track.pending.t:
+                elif detector == track.detector or loc.t >= track.pending.t:
                     track.pending, track.detector = loc, detector
 
     # ------------------------------------------------------------------ the readers
@@ -230,8 +239,8 @@ class Tracks:
         answer = self._answers.get(track.detector) or _Answer(frozenset(), self.HOLD_S, self.FRESH_MIN_S)
         p = track.pending
         det = None
-        if p.t > track.used_t and p.confidence > self.MIN_CONFIDENCE and now - p.t <= answer.hold_s:
-            track.used_t, track.fed = p.t, p
+        if _read_t(p) > track.used_t and p.confidence > self.MIN_CONFIDENCE and now - p.t <= answer.hold_s:
+            track.used_t, track.fed = _read_t(p), p
             det = CubeDetection(np.asarray(p.pos, float).copy(), np.asarray(p.rot, float).copy(),
                                 area_px=p.confidence, confidence=p.confidence, n_cameras=p.n_cameras, t=p.t)
         tracker = track.tracker

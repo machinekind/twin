@@ -413,10 +413,11 @@ Polish name of the way it used:
 | one ray (`promien`) | One camera, or rays that disagree | The most confident detection's ray meets the plane at `height_m`. Without `height_m` the plane is at half of `size_m`, and without both it is the table top |
 
 The geometry uses the calibrated camera poses with lens distortion, also in
-simulation. Simulated perception therefore tests the calibration. A placed
-object's `t` is the oldest capture time among its detections, each its frame's
-capture time minus its `age_s`. The silhouette fit's arm masks use the same
-times.
+simulation. Simulated perception therefore tests the calibration. Each
+detection is dated by its frame's capture time minus its `age_s`. A placed
+object's `t` is the oldest of these dates for the silhouette and triangulation
+paths. For one ray it is the date of the most confident detection. The
+silhouette fit's arm masks use the same dates.
 
 ### The example cube detector
 
@@ -439,11 +440,14 @@ rate.
 
 Each label gets its own copy of the twin's cube tracker,
 `perception.ObjectTracker`. The tracker also follows an object held in the
-gripper. Each measurement is fed to it once, and only when its confidence is
-above 0.4. A track is dropped after `hold_s` without a measurement. `hold_s` is
-the larger of 6 s and three times the sum of the detector's interval, its
-latency and the largest `age_s` in its answer, so a slow detector's object
-survives between answers, and so does a repeated answer's.
+gripper. A measurement is fed to it once per call that read newer frames, and
+only when its confidence is above 0.4. The same frames read again do not renew
+a track. A repeated answer read from new frames does, while its age still counts
+from the frames the answer was made from. A detector's latest answer replaces
+its own earlier one. A track is dropped after `hold_s` without a measurement.
+`hold_s` is the larger of 6 s and three times the sum of the detector's
+interval, its latency and the largest `age_s` in its answer, so a slow
+detector's object survives between answers, and so does a repeated answer's.
 
 `age_s` is the time since the capture of the frames the pose comes from. A
 detection's own `age_s` moves that capture back. It is 0 while the object
@@ -627,15 +631,17 @@ LLM's objects reads `age_s` and decides how old is too old. `w dloni` still
 works: the tracker follows an object the gripper closes on.
 
 A repeated answer (`reuse_if_still`) is no fresher than the question it
-repeats. Each repeated detection carries `age_s`, the time since that question
-was asked, and the twin counts the pose's age from that question's frames. A
-repeat therefore publishes `ostatnie widziane` with that age, at an unchanged
-position. The hold grows with the age: three times the interval plus the
-latency and the age. The object therefore stays published until the next
-question answers. At a 10 s interval and the default `reuse_max_age_s` of 60 s,
-the last repeat, 50 s old, holds the pose for 180 s. If that next question
-fails, the pose stays published for the rest of the hold, with its age growing.
-`reuse_max_age_s` bounds how long a wrong answer can be repeated.
+repeats. Each repeated detection carries `age_s`: how much earlier that
+question's frame from its camera was captured than this call's. The twin counts
+the pose's age from that question's frames. A repeat therefore publishes
+`ostatnie widziane` with that age, at an unchanged position. The hold grows
+with the age: three times the interval plus the latency and the age. Each
+repeat renews the hold, because it was read from new frames. The object
+therefore stays published until the next question answers, and through one
+answer that misses it. At a 10 s interval and the default `reuse_max_age_s` of
+60 s, the last repeat, 50 s old, holds the pose for 180 s. If that next
+question fails, the pose stays published for the rest of the hold, with its age
+growing. `reuse_max_age_s` bounds how long a wrong answer can be repeated.
 
 ### Privacy
 

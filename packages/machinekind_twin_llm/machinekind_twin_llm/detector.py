@@ -57,8 +57,9 @@ class LlmDetector(Detector[LlmSettings]):
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
         #: The still check's reference: thumbnails of the frames the last question was asked on,
-        #: that question's answer and when it was asked (on `_clock`).
+        #: their capture times by camera, that question's answer and when it was asked (on `_clock`).
         self._thumbs: dict[str, np.ndarray] = {}
+        self._captured: dict[str, float] = {}
         self._last: list[Detection] = []
         self._last_t = -float("inf")
 
@@ -85,7 +86,7 @@ class LlmDetector(Detector[LlmSettings]):
         self._work = Path(tempfile.mkdtemp(prefix="twin-llm-"))
         self._cancel = threading.Event()
         self._calls.clear()
-        self._thumbs, self._last, self._last_t = {}, [], -float("inf")
+        self._thumbs, self._captured, self._last, self._last_t = {}, {}, [], -float("inf")
 
     def stop(self, reason: str) -> None:
         self._cancel.set()
@@ -100,19 +101,21 @@ class LlmDetector(Detector[LlmSettings]):
         config = self.config
         cameras = self._cameras or tuple(request.frames)
         frames: list[tuple[str, np.ndarray]] = []
+        captured: dict[str, float] = {}
         for name in cameras:
             frame = request.frames.get(name)
             if frame is not None:
                 frames.append((name, frame.image))
+                captured[name] = self._clock() - frame.age_s
         if not frames:
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
         now = self._clock()
         thumbs = {name: thumbnail(image) for name, image in frames} if config.reuse_if_still else {}
         if thumbs and now - self._last_t < config.reuse_max_age_s and unchanged(self._thumbs, thumbs):
-            age = now - self._last_t
-            logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", age)
-            return [dataclasses.replace(d, age_s=age) for d in self._last]
+            logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", now - self._last_t)
+            return [dataclasses.replace(d, age_s=max(0.0, captured[d.camera] - self._captured[d.camera]))
+                    for d in self._last]
 
         if config.max_calls_per_hour:
             while self._calls and now - self._calls[0] >= CALL_WINDOW_S:
@@ -144,5 +147,5 @@ class LlmDetector(Detector[LlmSettings]):
             raise cli.CliCancelled("stopped")
 
         dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
-        self._thumbs, self._last, self._last_t = thumbs, dets, now
+        self._thumbs, self._captured, self._last, self._last_t = thumbs, captured, dets, now
         return list(dets)

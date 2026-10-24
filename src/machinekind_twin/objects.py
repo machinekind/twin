@@ -193,8 +193,9 @@ class Located:
     rot: np.ndarray
     confidence: float
     n_cameras: int
-    #: Capture time of the OLDEST frame the detections were made from: each frame's capture time
-    #: minus its detection's `age_s`, on the Perception clock (time.monotonic in the panel).
+    #: Capture time of the frames the detections used were made from: each frame's capture time
+    #: minus its detection's `age_s`, the oldest of them for "sylwetka" and "triangulacja", the
+    #: most confident detection's for "promien". On the Perception clock (time.monotonic in the panel).
     t: float
     size_m: tuple[float, float, float] | None
     #: How it was placed, as the panel shows it: "sylwetka", "triangulacja" or "promien".

@@ -71,14 +71,15 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fake:
 class Frames(Mapping[str, Frame]):
     """Like the twin's lazy frames: every offered camera iterates; one without a frame raises KeyError."""
 
-    def __init__(self, offered: Mapping[str, np.ndarray | None]) -> None:
+    def __init__(self, offered: Mapping[str, np.ndarray | None], ages: Mapping[str, float] | None = None) -> None:
         self._offered = dict(offered)
+        self._ages = dict(ages or {})
 
     def __getitem__(self, name: str) -> Frame:
         image = self._offered[name]
         if image is None:
             raise KeyError(name)
-        return Frame(image=image, age_s=0.0)
+        return Frame(image=image, age_s=self._ages.get(name, 0.0))
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._offered)
@@ -93,8 +94,8 @@ def image(shade: int = 120) -> np.ndarray:
     return img
 
 
-def request(step: int = 0, **offered: np.ndarray | None) -> DetectRequest:
-    return DetectRequest(frames=Frames(offered or {"top": image(), "side": image()}), step=step)
+def request(step: int = 0, ages: Mapping[str, float] | None = None, **offered: np.ndarray | None) -> DetectRequest:
+    return DetectRequest(frames=Frames(offered or {"top": image(), "side": image()}, ages), step=step)
 
 
 def settings(fake: Fake, **kw: Any) -> LlmSettings:
@@ -345,6 +346,21 @@ def test_a_repeat_carries_the_time_since_the_question_it_repeats(fake: Fake):
     assert len(fake.runs()) == 2
     assert changed
     assert all(d.age_s == 0.0 for d in changed)
+    det.stop("test")
+
+
+def test_a_repeat_s_age_is_the_gap_between_the_capture_times_of_its_frames(fake: Fake):
+    clock = Clock()
+    det = LlmDetector(settings(fake), clock=clock)
+    det.start(INFO)
+    det.detect(request(0, ages={"top": 0.9, "side": 0.2}))
+    clock.t += 10.0
+    again = det.detect(request(1, ages={"top": 0.0, "side": 0.7}))
+
+    assert len(fake.runs()) == 1
+    assert {d.camera for d in again} == {"top", "side"}
+    for d in again:
+        assert d.age_s == pytest.approx({"top": 10.9, "side": 9.5}[d.camera], abs=1e-9)
     det.stop("test")
 
 

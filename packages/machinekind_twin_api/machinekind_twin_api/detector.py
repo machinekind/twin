@@ -90,8 +90,8 @@ class Detection:
     #: A detector that answers on a resized copy scales its error back with the pixel.
     pixel_error_px: float | None = None
     #: How much older than this call's frames the frames this detection was made from are [s];
-    #: 0 = these frames. A detector that repeats an earlier answer gives the time since that
-    #: answer's frames. The twin counts the published `age_s` from them.
+    #: 0 = these frames. A detector that repeats an earlier answer gives how much earlier that
+    #: answer's frame from `camera` was captured. The twin counts the published `age_s` from it.
     age_s: float = 0.0
 
 
