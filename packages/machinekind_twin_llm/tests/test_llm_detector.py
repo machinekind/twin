@@ -361,7 +361,7 @@ def test_without_reuse_every_call_asks(fake: Fake):
     det.stop("test")
 
 
-def test_a_repeat_is_not_a_question_for_the_hourly_cap(fake: Fake):
+def test_a_repeat_does_not_count_toward_the_hourly_cap(fake: Fake):
     det = started(fake, max_calls_per_hour=1)
     det.detect(request(0))
 
