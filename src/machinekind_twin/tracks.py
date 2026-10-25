@@ -2,9 +2,9 @@
 
 Each label gets the twin's old cube tracker (`perception.ObjectTracker`), unchanged. A detector
 thread hands its placed labels to `Tracks.observe`; whoever reads the objects (a running strategy
-through `objects=`, or the panel when idle) calls `Tracks.step`, which feeds each tracker its newest
-measurement once per newer frames, together with the hand (TCP pose and jaw angles), and publishes
-one `ObjectPose` per label.
+through `objects=`, or the panel when idle) calls `Tracks.step`. A step feeds each tracker the hand
+(TCP pose and jaw angles) and publishes one `ObjectPose` per label. It feeds a tracker its newest
+measurement only when that measurement's call read newer frames than the last one fed.
 
 Every published pose carries `age_s`: seconds since the frames it was measured from were captured,
 0 while it follows the jaws. The tracker's `source` passes through with one bounded rewrite, so the
@@ -14,8 +14,8 @@ word matches the age:
   and `age_s <= fresh_s`; the tracker says "kamery" only on the step that accepts a measurement,
   and a strategy stepping faster than the detector answers would otherwise see it flicker;
 - a "kamery" becomes "ostatnie widziane" once `age_s > fresh_s`, so a measurement that is old on
-  arrival (a language model answering in 20 s, or repeating an answer) is never presented as what
-  the cameras see now.
+  arrival is never presented as what the cameras see now. A language model's 20 s answer and a
+  repeated answer are both old on arrival.
 
 `fresh_s` is twice the detector's interval, kept within 0.5 to 1.0 s: the cube detector at 0.33 s
 keeps "kamery" within 0.66 s of capture, close to the old panel's 0.5 s. Annotated sources
@@ -101,9 +101,9 @@ class _Answer:
 class _Track:
     tracker: ObjectTracker
     detector: str
-    #: The newest measurement handed in; fed to the tracker once per newer frames (`used_t`).
+    #: The newest measurement handed in. It is fed when its call read newer frames than `used_t`.
     pending: Located
-    #: `_read_t` of the last measurement fed from `detector`.
+    #: The `_read_t` of the last measurement fed from `detector`.
     used_t: float = -math.inf
     #: The last measurement fed to the tracker: what the panel shows about it.
     fed: Located | None = None
@@ -113,8 +113,8 @@ class _Track:
 
 
 def _read_t(loc: Located) -> float:
-    """About when the frames of the call that gave `loc` were captured: its `t` moved forward by its
-    `age_s` again. A repeated answer has an old `t` and a new `_read_t`."""
+    """Roughly when the frames read by the call that gave `loc` were captured. A repeated answer has
+    an old `t` and a new `_read_t`."""
     return loc.t + loc.age_s
 
 
@@ -153,13 +153,13 @@ class Tracks:
 
     # ------------------------------------------------------------------ the detector thread
     def observe(self, detector: str, batch: list[Located], latency_s: float, interval_s: float) -> None:
-        """One detector call's placed labels. The newer capture time wins a label two detectors share;
-        a detector's latest answer always replaces its own earlier one. A detector that takes a track
-        over has its measurement fed, whatever the read time of the previous detector's last one.
+        """One detector call's placed labels. The newer capture time wins a label two detectors share.
+        A detector's latest answer always replaces its own earlier one. A detector that takes over a
+        track has its measurement fed, even if the previous detector's last call read later frames.
 
-        The largest `Located.age_s` in the batch counts as latency: a repeated answer is as late as
-        the frames it was made from, so its pose is held until the next answer. A repeat made on newer
-        frames is fed to the tracker again: it renews the hold, and the age still counts from its `t`.
+        The largest `Located.age_s` in the batch counts as latency, so a repeated answer's pose is
+        held until the next answer. A repeat read from newer frames is fed again. It renews the hold,
+        and its age still counts from its `t`.
         """
         age_s = max((loc.age_s for loc in batch), default=0.0)
         with self._lock:

@@ -216,7 +216,7 @@ def test_after_a_still_scene_one_answer_without_the_label_keeps_the_object(track
     assert obj.age_s == pytest.approx(62.0, abs=1e-6)
 
 
-def test_a_repeat_dated_a_hair_before_the_fed_measurement_keeps_the_object(tracks: Tracks, clock: Clock):
+def test_a_repeat_dated_just_before_the_fed_measurement_keeps_the_object(tracks: Tracks, clock: Clock):
     t0 = clock.t
     tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
     tracks.step(None)

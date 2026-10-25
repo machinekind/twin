@@ -293,7 +293,7 @@ def test_a_detection_with_a_mask_compares_by_identity():
     assert hash(d) == hash(d)
 
 
-def test_a_detection_is_made_from_this_call_s_frames_by_default():
+def test_a_detection_s_age_defaults_to_0_and_can_be_replaced():
     d = Detection("cube", "front", (320.0, 240.0))
 
     assert d.age_s == 0.0

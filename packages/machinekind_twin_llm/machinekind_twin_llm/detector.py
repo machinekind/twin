@@ -3,9 +3,9 @@ what is where, in each frame's pixels.
 
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory,
-unless no camera's image changed since the last question (`reuse_if_still`: the last answer is
-repeated with its age) or the hourly cap is reached. `stop` cancels a running question: the CLI's
-process group is killed within 0.2 s.
+unless the hourly cap is reached. With `reuse_if_still`, a call whose images did not change since
+the last question repeats that question's answer instead. The repeat is as old as that question's
+frames. `stop` cancels a running question: the CLI's process group is killed within 0.2 s.
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
-        #: The still check's reference: thumbnails of the frames the last question was asked on,
-        #: their capture times by camera, that question's answer and when it was asked (on `_clock`).
+        #: The still check compares against the last question. These hold its frames' thumbnails
+        #: and capture times by camera, its answer and the `_clock` time it was asked.
         self._thumbs: dict[str, np.ndarray] = {}
         self._captured: dict[str, float] = {}
         self._last: list[Detection] = []

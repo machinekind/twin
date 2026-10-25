@@ -186,7 +186,7 @@ def test_step_once_feeds_the_objects(perception: Perception, clock: Clock):
     assert runner.status.cameras == ("a", "b")
 
 
-def test_a_detection_s_age_is_part_of_the_published_age(perception: Perception, clock: Clock):
+def test_a_detection_s_age_adds_to_the_published_age(perception: Perception, clock: Clock):
     runner = perception.start_detector(plugin(Scripted(seen(age_s=5.0))), {}, threaded=False)
     runner.step_once()
     obj = perception.objects()["x"]

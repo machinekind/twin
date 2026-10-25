@@ -60,8 +60,8 @@ class LlmSettings:
     max_side_px: int = 1280
     #: How far off the model's pixels may be, in the SENT image's pixels; scaled to each frame.
     pixel_error_px: float = 25.0
-    #: Repeat the last answer, aged from the frames it was given, without asking, while no camera's
-    #: image changed since those frames (a cheap pixel count, see `images`).
+    #: Repeat the last answer without asking while no camera's image changed since the frames it
+    #: was given. The repeat is as old as those frames. The check is a cheap pixel count in `images`.
     reuse_if_still: bool = True
     #: Ask again anyway once the last answer is this old [s], so a wrong answer does not stick.
     reuse_max_age_s: float = 60.0

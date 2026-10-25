@@ -319,7 +319,7 @@ def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
     det.stop("test")
 
 
-def test_repeats_age_from_the_frames_of_the_question_they_repeat_and_a_new_answer_has_age_0(fake: Fake):
+def test_a_repeat_is_as_old_as_its_question_s_frames_and_a_new_answer_has_age_0(fake: Fake):
     clock = Clock()
     det = LlmDetector(settings(fake), clock=clock)
     det.start(INFO)
@@ -349,7 +349,7 @@ def test_repeats_age_from_the_frames_of_the_question_they_repeat_and_a_new_answe
     det.stop("test")
 
 
-def test_a_repeat_s_age_is_the_gap_between_the_capture_times_of_its_frames(fake: Fake):
+def test_a_repeat_s_age_is_the_time_between_the_two_frames_from_its_camera(fake: Fake):
     clock = Clock()
     det = LlmDetector(settings(fake), clock=clock)
     det.start(INFO)
@@ -364,7 +364,7 @@ def test_a_repeat_s_age_is_the_gap_between_the_capture_times_of_its_frames(fake:
     det.stop("test")
 
 
-def test_a_repeat_on_a_frame_a_hair_older_than_the_question_s_has_age_0(fake: Fake):
+def test_a_repeat_on_a_frame_captured_before_the_question_s_has_age_0(fake: Fake):
     clock = Clock()
     det = LlmDetector(settings(fake), clock=clock)
     det.start(INFO)

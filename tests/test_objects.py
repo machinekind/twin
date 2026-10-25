@@ -283,7 +283,7 @@ def test_a_detection_s_age_moves_its_capture_time_back():
     assert obj.age_s == 2.5
 
 
-def test_two_cameras_of_one_age_triangulate_at_the_aged_capture_time():
+def test_two_detections_of_the_same_age_triangulate_at_their_date():
     dets = [Detection("pen", "a", project(A, P), age_s=10.0),
             Detection("pen", "b", project(B, P), age_s=10.0)]
     (obj,), _ = run(dets)
@@ -294,7 +294,7 @@ def test_two_cameras_of_one_age_triangulate_at_the_aged_capture_time():
     assert obj.age_s == 10.0
 
 
-def test_the_oldest_aged_frame_dates_a_triangulated_point():
+def test_a_triangulated_point_takes_the_oldest_detection_date():
     dets = [Detection("pen", "a", project(A, P)),
             Detection("pen", "b", project(B, P), age_s=1.5)]
     (obj,), _ = run(dets)
@@ -304,7 +304,7 @@ def test_the_oldest_aged_frame_dates_a_triangulated_point():
     assert obj.age_s == 1.5
 
 
-def test_a_single_ray_is_dated_by_the_surer_detection_alone():
+def test_a_single_ray_takes_the_more_confident_detection_s_date():
     sure, unsure = _disagreeing()
     (obj,), _ = run([sure, replace(unsure, age_s=20.0)], pixel_error_px=3.0)
 
@@ -314,7 +314,7 @@ def test_a_single_ray_is_dated_by_the_surer_detection_alone():
 
 
 @pytest.mark.parametrize("age", [-0.5, float("nan"), float("inf")])
-def test_an_age_that_is_not_a_finite_non_negative_number_is_dropped(age):
+def test_a_negative_or_non_finite_age_is_dropped(age):
     placed, dropped = run([Detection("pen", "a", project(A, P), age_s=age)])
 
     assert placed == [] and dropped == 1
@@ -418,7 +418,7 @@ def test_masks_of_a_cube_go_to_the_silhouette_fit():
     assert masks["a"] is dets[0].mask and masks["b"] is dets[1].mask
 
 
-def test_the_silhouette_fit_and_its_arm_masks_use_the_aged_times():
+def test_the_silhouette_fit_and_its_arm_masks_use_the_detection_dates():
     FakeCube.calls = []
     answer = CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.88, n_cameras=2)
     mapper = mapper_for(CAMS, get_spec(BOT).desk)
