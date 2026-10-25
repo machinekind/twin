@@ -164,7 +164,19 @@ class EpisodeReport:
             (f"{header.get('robot', '?')}, {where}, {mode}, {length} s, steps: {len(log.steps)}, "
              f"loop samples: {len(log.loop_t)}"),
             ending,
+            *self._recording_lines(),
         ]
+
+    def _recording_lines(self) -> list[str]:
+        status = self.log.recording
+        if not status:
+            return []
+        telemetry = "complete" if status.get("telemetry_complete") else "INCOMPLETE"
+        return [(f"Collection: telemetry {telemetry}; loop samples lost {status.get('loop_dropped', 0)}, "
+                 f"steps lost {status.get('step_dropped', 0)}; "
+                 f"frames saved {status.get('frames_saved', 0)}/{status.get('frames_requested', 0)}, "
+                 f"skipped {status.get('frames_skipped', 0)}, failed {status.get('frames_failed', 0)}, "
+                 f"unfinished {status.get('frames_pending', 0)}")]
 
     def _latency_lines(self) -> list[str]:
         lines = []
@@ -232,6 +244,9 @@ def report(log: EpisodeLog, *, gripper: str | None = None, offset_m: Sequence[fl
     `gripper` is the label of the camera-seen object that marks the gripper, by default the one
     the run named (`header.gripper_label`); `offset_m` is where that marker sits in the TCP frame.
     """
+    if log.recording.get("telemetry_complete") is False:
+        return EpisodeReport(log, (), "Telemetry is incomplete; delay estimates are unavailable.", None,
+                             "Gripper drift is unavailable because telemetry is incomplete.", _decisions(log))
     latency, latency_note = _latency(log, max_delay_s)
     label = gripper or log.header.get("gripper_label")
     drift, drift_note = _drift(log, str(label) if label else None, np.asarray(offset_m, float).reshape(3))

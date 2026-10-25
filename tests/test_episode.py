@@ -261,8 +261,8 @@ def test_a_broken_line_a_newer_version_or_another_file_are_refused(twin, tmp_pat
         EpisodeLog.load(broken)
 
     newer = tmp_path / "newer.jsonl"
-    newer.write_text("\n".join([json.dumps({**json.loads(text[0]), "version": 2}), *text[1:]]), encoding="utf-8")
-    with pytest.raises(ValueError, match="version 2"):
+    newer.write_text("\n".join([json.dumps({**json.loads(text[0]), "version": 3}), *text[1:]]), encoding="utf-8")
+    with pytest.raises(ValueError, match="version 3"):
         EpisodeLog.load(newer)
 
     other = tmp_path / "other.jsonl"
@@ -334,7 +334,8 @@ def test_kept_frames_round_trip_in_both_formats(twin, tmp_path, frame_format, ex
     kept = tmp_path / frames[0]["file"]
     assert frames[0]["camera"] == "a"
     assert frames[0]["shape"] == [48, 64, 3]
-    assert frames[1] == {"camera": "b", "age_s": None, "shape": None, "file": None}
+    assert frames[1] == {"camera": "b", "age_s": None, "shape": None, "file": None,
+                         "drop_reason": "camera frame unavailable"}
     assert kept.parent == tmp_path / "every.frames"
     assert kept.suffix == extension
     assert cv2.imread(str(kept)).shape == (48, 64, 3)
@@ -1080,11 +1081,11 @@ def test_disk_writes_do_not_block_steps_or_stopping(twin, tmp_path, monkeypatch)
     assert log.end.code == "stopped"
 
 
-def test_queue_overflow_stops_recording_without_stopping_the_strategy(twin, tmp_path, monkeypatch):
+def test_telemetry_overflow_is_marked_and_collection_resumes(twin, tmp_path, monkeypatch):
     from machinekind_twin import episode
 
     twin.connect("sim", threaded=False)
-    writing, release = threading.Event(), threading.Event()
+    writing, release, resumed = threading.Event(), threading.Event(), threading.Event()
     original = EpisodeWriter._write
 
     def paused(self, line):
@@ -1092,6 +1093,8 @@ def test_queue_overflow_stops_recording_without_stopping_the_strategy(twin, tmp_
             writing.set()
             assert release.wait(5.0)
         original(self, line)
+        if line["kind"] == "loop":
+            resumed.set()
 
     monkeypatch.setattr(episode, "MAX_PENDING", 4)
     monkeypatch.setattr(EpisodeWriter, "_write", paused)
@@ -1102,14 +1105,30 @@ def test_queue_overflow_stops_recording_without_stopping_the_strategy(twin, tmp_
         run_ticks(twin, 20)
         assert runner.step_once(0.0)
         assert runner.status.running
-        assert "queue capacity exceeded" in runner.status.episode_error
+        assert runner.status.episode_error == ""
+        assert "INCOMPLETE TELEMETRY" in runner.status.episode_warning
+        release.set()
+        assert resumed.wait(5.0)
+        writer = runner._episode_writer
+        assert writer is not None
+        assert writer.flush(wait=True, timeout=5.0)
+        assert runner.step_once(0.05)
+        assert writer.flush(wait=True, timeout=5.0)
     finally:
         release.set()
         runner.stop()
         assert runner.wait_for_episode(timeout=5.0)
 
     assert runner.status.episode is not None
-    assert EpisodeLog.load(runner.status.episode).end.code == "unfinished"
+    log = EpisodeLog.load(runner.status.episode)
+    assert log.end.code == "stopped"
+    assert log.recording["loop_dropped"] == 16
+    assert log.recording["step_dropped"] == 1
+    assert not log.recording["telemetry_complete"]
+    assert [step["step"] for step in log.steps] == [1]
+    assert report(log).latency == ()
+    assert "Telemetry is incomplete" in report(log).latency_note
+    assert twin_cli(["episode", str(runner.status.episode)]) == 2
 
 
 def test_zstandard_truncation_recovers_records_and_checksum_corruption_is_reported(twin, tmp_path):
@@ -1178,14 +1197,19 @@ def test_image_queue_has_a_byte_limit(twin, tmp_path, monkeypatch):
     writer.step(record(writer, twin, 0, frames={"a": Frame(np.zeros((20, 20, 3), np.uint8), 0.0)}))
     writer.close(end(steps=1), wait=True)
 
-    assert "queue capacity exceeded" in writer.error
-    assert EpisodeLog.load(writer.path).end.code == "unfinished"
+    assert writer.error == ""
+    log = EpisodeLog.load(writer.path)
+    assert log.end.code == "stopped"
+    assert log.recording["telemetry_complete"]
+    assert log.recording["frames_skipped"] == 1
+    assert log.steps[0]["frames"][0]["drop_reason"] == "image memory budget exhausted"
 
 
 @pytest.mark.parametrize("options", [
     {"keep_frames_s": -1}, {"keep_frames_s": math.inf},
     {"frame_quality": 0}, {"frame_quality": 101}, {"frame_quality": True},
-    {"frame_format": "png"},
+    {"frame_format": "png"}, {"queue_capacity": 0}, {"queue_capacity": True},
+    {"frame_buffer_bytes": -1},
 ])
 def test_invalid_recording_options_are_rejected(twin, tmp_path, options):
     with pytest.raises(ValueError):
@@ -1333,20 +1357,6 @@ def test_close_succeeds_with_a_full_queue_without_waiting_for_capacity(twin, tmp
     assert len(log.loop_t) == 4
     assert log.end.code == "stopped"
 
-
-def test_contended_enqueue_does_not_wait_or_affect_the_runner(twin, tmp_path):
-    twin.connect("sim", threaded=False)
-    runner = StrategyRunner(twin, Plugin(answer({"j1": 5.0})), episode=EpisodeOptions(folder=tmp_path))
-    runner.start(threaded=False)
-    writer = runner._episode_writer
-    assert writer is not None
-    with writer._enqueue_lock:
-        assert runner.step_once(0.0)
-        assert runner.status.running
-        runner.stop()
-        assert "queue is busy" in runner.status.episode_error
-    assert runner.wait_for_episode(timeout=5.0)
-    assert EpisodeLog.load(writer.path).end.code == "unfinished"
 
 
 def test_concurrent_close_writes_exactly_one_end_record(twin, tmp_path, monkeypatch):
@@ -1522,3 +1532,197 @@ def test_threaded_runner_keeps_acting_while_storage_is_blocked(twin, tmp_path, m
 
     assert runner.status.episode is not None
     assert EpisodeLog.load(runner.status.episode).end.steps == runner.status.step
+
+
+def test_image_backlog_cannot_spoil_two_minutes_of_complete_telemetry(twin, tmp_path, monkeypatch):
+    blocked, release = threading.Event(), threading.Event()
+    original = EpisodeWriter._keep
+
+    def slow(self, step, camera, image):
+        blocked.set()
+        assert release.wait(15.0)
+        return original(self, step, camera, image)
+
+    monkeypatch.setattr(EpisodeWriter, "_keep", slow)
+    twin.connect("sim", threaded=False)
+    image = np.zeros((48, 64, 3), np.uint8)
+
+    def look(obs):
+        obs.frames["camera"]
+        return {}
+
+    runner = StrategyRunner(twin, Plugin(look), cameras=("camera",),
+                            frame=lambda _: (image, time.monotonic()),
+                            episode=EpisodeOptions(folder=tmp_path, keep_frames_s=0))
+    runner.start(threaded=False)
+    try:
+        assert runner.step_once(0.0)
+        assert blocked.wait(2.0)
+        drive(twin, runner, 120.0)
+        writer = runner._episode_writer
+        assert writer is not None
+        assert writer.flush(wait=True, timeout=10.0), "image I/O blocked the telemetry writer"
+        assert writer.recording["step_written"] == runner.status.step == 2401
+        assert writer.recording["loop_written"] == 6000
+        assert writer.recording["step_dropped"] == writer.recording["loop_dropped"] == 0
+        assert writer.recording["frames_skipped"] > 0
+        assert runner.status.running
+        assert runner.status.episode_error == ""
+        release.set()
+        drained = threading.Event()
+
+        def drain_images():
+            writer._images.join()
+            drained.set()
+
+        threading.Thread(target=drain_images, daemon=True).start()
+        assert drained.wait(5.0)
+        twin.step(TWIN_PERIOD)
+        assert runner.step_once(120.05)
+    finally:
+        release.set()
+        runner.stop()
+        assert runner.wait_for_episode(timeout=10.0)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    assert log.recording["telemetry_complete"]
+    assert len(log.steps) == 2402
+    assert len(log.loop_t) == 6001
+    assert log.recording["frames_requested"] == 2402
+    assert log.steps[-1]["frames"][0]["file"], "image capture did not recover after its backlog drained"
+    assert log.recording["frames_pending"] == 0
+    assert sum(bool(frame.get("drop_reason")) for step in log.steps for frame in step["frames"]) == (
+        log.recording["frames_skipped"] + log.recording["frames_failed"])
+
+
+def test_an_image_encoding_failure_does_not_stop_later_frames_or_telemetry(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    original = EpisodeWriter._keep
+
+    def fails_once(self, step, camera, image):
+        if step == 0:
+            raise OSError("temporary image failure")
+        return original(self, step, camera, image)
+
+    monkeypatch.setattr(EpisodeWriter, "_keep", fails_once)
+    writer = observer(twin, tmp_path, keep_frames_s=0)
+    frame = Frame(np.zeros((48, 64, 3), np.uint8), 0.0)
+    writer.step(record(writer, twin, 0, frames={"camera": frame}))
+    writer.step(record(writer, twin, 1, frames={"camera": frame}))
+    assert writer.close(end(steps=2), wait=True)
+
+    log = EpisodeLog.load(writer.path)
+    assert writer.error == ""
+    assert log.recording["telemetry_complete"]
+    assert log.recording["frames_failed"] == 1
+    assert log.recording["frames_saved"] == 1
+    assert log.steps[0]["frames"][0]["file"] is None
+    assert "temporary image failure" in log.steps[0]["frames"][0]["drop_reason"]
+    assert (tmp_path / log.steps[1]["frames"][0]["file"]).exists()
+    assert EpisodeLog.summary(writer.path).recording == log.recording
+
+
+def test_stuck_image_cannot_prevent_a_complete_telemetry_end(twin, tmp_path, monkeypatch):
+    from machinekind_twin import episode
+
+    twin.connect("sim", threaded=False)
+    blocked, release = threading.Event(), threading.Event()
+    original = EpisodeWriter._keep
+
+    def stuck(self, step, camera, image):
+        blocked.set()
+        assert release.wait(5.0)
+        return original(self, step, camera, image)
+
+    monkeypatch.setattr(EpisodeWriter, "_keep", stuck)
+    monkeypatch.setattr(episode, "FRAME_CLOSE_TIMEOUT_S", 0.05)
+    writer = observer(twin, tmp_path, keep_frames_s=0)
+    try:
+        writer.step(record(writer, twin, 0, frames={"camera": Frame(np.zeros((12, 16, 3), np.uint8), 0.0)}))
+        assert blocked.wait(2.0)
+        writer.close(end(steps=1))
+        assert writer.wait(timeout=2.0)
+        log = EpisodeLog.load(writer.path)
+        assert log.end.code == "stopped"
+        assert log.recording["telemetry_complete"]
+        assert log.recording["frames_pending"] == 1
+        assert not log.recording["frames_complete"]
+        assert log.steps[0]["frames"][0]["file"] is None
+        assert "did not finish" in log.steps[0]["frames"][0]["drop_reason"]
+        assert "telemetry complete" in "\n".join(report(log).lines())
+    finally:
+        release.set()
+        assert writer._images_finished.wait(5.0)
+
+
+def test_concurrent_producers_do_not_abort_recording(twin, tmp_path):
+    from types import SimpleNamespace
+
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path)
+    gate = threading.Barrier(4)
+
+    def produce():
+        gate.wait(timeout=2.0)
+        for number in range(200):
+            writer.on_tick(SimpleNamespace(t=twin.clock.now(), sent={}, measured={}, fresh=False, measured_t=0.0))
+
+    producers = [threading.Thread(target=produce) for _ in range(4)]
+    for producer in producers:
+        producer.start()
+    for producer in producers:
+        producer.join(timeout=3.0)
+        assert not producer.is_alive()
+    assert writer.close(end(), wait=True)
+
+    log = EpisodeLog.load(writer.path)
+    assert len(log.loop_t) == 800
+    assert log.recording["loop_dropped"] == 0
+    assert log.recording["telemetry_complete"]
+    assert writer.error == ""
+
+
+def test_camera_names_cannot_overwrite_each_others_frames(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path, keep_frames_s=0)
+    writer.step(record(writer, twin, 0, frames={
+        name: Frame(np.full((12, 16, 3), value, np.uint8), 0.0)
+        for name, value in (("a/b", 20), ("a_b", 50), ("A", 100), ("a", 200))
+    }))
+    assert writer.close(end(steps=1), wait=True)
+    log = EpisodeLog.load(writer.path)
+    files = [frame["file"] for frame in log.steps[0]["frames"]]
+    assert len({file.lower() for file in files}) == 4
+    assert all((tmp_path / file).exists() for file in files)
+    assert log.recording["frames_saved"] == 4
+
+
+def test_version_one_logs_remain_readable(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path)
+    writer.step(record(writer, twin, 0))
+    assert writer.close(end(steps=1), wait=True)
+    records = lines(writer.path)
+    records[0]["version"] = 1
+    records = [record for record in records if record["kind"] not in ("frame", "recording")]
+    records[-1].pop("recording", None)
+    path = tmp_path / "legacy.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    assert len(EpisodeLog.load(path).steps) == 1
+    assert EpisodeLog.load(path).recording == {}
+
+
+def test_missing_camera_frames_are_explicit_and_later_images_are_saved(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path, keep_frames_s=0)
+    writer.step(record(writer, twin, 0, frames={"camera": None}))
+    writer.step(record(writer, twin, 1, frames={"camera": Frame(np.zeros((12, 16, 3), np.uint8), 0.0)}))
+    assert writer.close(end(steps=2), wait=True)
+    log = EpisodeLog.load(writer.path)
+    assert log.recording["telemetry_complete"]
+    assert log.recording["frames_requested"] == 2
+    assert log.recording["frames_skipped"] == 1
+    assert log.recording["frames_saved"] == 1
+    assert log.steps[0]["frames"][0]["drop_reason"] == "camera frame unavailable"
+    assert log.steps[1]["frames"][0]["file"]

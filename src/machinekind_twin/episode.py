@@ -5,10 +5,10 @@ See docs/EPISODES.md for recording options, the record format and report limitat
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import itertools
 import json
-import logging
 import math
 import os
 import re
@@ -35,12 +35,10 @@ __all__ = [
     "EpisodeWriter", "StepRecord", "episodes_dir", "twin_header",
 ]
 
-logger = logging.getLogger(__name__)
-
 #: The header's `format`: what tells an episode log from any other JSON Lines file.
 FORMAT = "machinekind-twin-episode"
 #: The version this twin writes, and the newest it reads.
-VERSION = 1
+VERSION = 2
 
 #: The workspace file's default place, as `workspace.DEFAULT_REL` (not imported: `workspace` pulls in MuJoCo).
 DEFAULT_WORKSPACE = Path("workspace") / "twin.json"
@@ -53,11 +51,13 @@ EndCode = Literal[
 #: Default quality for saved camera images.
 FRAME_QUALITY = 85
 #: Maximum queued events per writer, including loop samples and strategy steps.
-MAX_PENDING = 1024
+MAX_PENDING = 8192
 MAX_PENDING_IMAGE_BYTES = 64 * 1024 * 1024
 FLUSH_INTERVAL_S = 0.25
 WAIT_TIMEOUT_S = 5.0
 IMAGE_BUDGET_UNIT = 64 * 1024
+MAX_FRAME_JOBS = 128
+FRAME_CLOSE_TIMEOUT_S = 3.0
 #: An array with more elements than this is logged by its type and shape, not its values.
 ARRAY_LIMIT = 64
 
@@ -110,6 +110,10 @@ class EpisodeOptions:
     frame_quality: int = FRAME_QUALITY
     #: The label of the camera-seen object that marks the gripper, for the drift report.
     gripper: str | None = None
+    #: Telemetry records buffered during storage stalls; None uses 8192.
+    queue_capacity: int | None = None
+    #: Raw image memory budget, reserved before copying; None uses 64 MiB.
+    frame_buffer_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -172,20 +176,24 @@ class _Write:
     success: bool = False
 
     def finish(self, success: bool) -> None:
+        if self.kind == "images" and self.value is not None:
+            self.value[1].clear()
+            self.value = None
         self.resources.close()
         self.success = success
         self.completed.set()
 
 
 class EpisodeWriter:
-    """Records snapshots on a bounded queue; one worker owns compression and filesystem I/O.
+    """Independent telemetry and image workers with bounded queues and visible loss accounting.
 
-    `close` is nonblocking by default. Only explicit `wait`/`flush(wait=True)` calls wait, with a timeout.
-    Errors disable recording without stopping the strategy. Queue overflow leaves an unfinished log.
+    Producers never wait for storage or queue capacity. Frame overload creates marked gaps;
+    telemetry overload marks the recording incomplete and collection resumes as capacity returns.
     """
 
     def __init__(self, folder: Path, header: Mapping[str, Any], twin: Any, name: str,
-                 keep_frames_s: float | None, frame_format: Literal["webp", "jpeg"], frame_quality: int):
+                 keep_frames_s: float | None, frame_format: Literal["webp", "jpeg"], frame_quality: int,
+                 queue_capacity: int, frame_buffer_bytes: int):
         self.path = folder / f"{name}.jsonl.zst"
         self.error = ""
         self.opened = False
@@ -196,81 +204,143 @@ class EpisodeWriter:
         self._keep_frames_s = keep_frames_s
         self._frame_format = frame_format
         self._frame_quality = frame_quality
-        self._kept_at: dict[str, float] = {}
-        self._pending: Queue[_Write] = Queue(maxsize=MAX_PENDING)
+        self._attempted_at: dict[str, float] = {}
+        self._pending: Queue[_Write] = Queue(maxsize=queue_capacity)
         self._ending: Queue[EpisodeEnd] = Queue(maxsize=1)
+        self._images: Queue[_Write] = Queue(maxsize=MAX_FRAME_JOBS)
+        self._image_results: Queue[dict[str, Any]] = Queue(maxsize=MAX_FRAME_JOBS)
         self._closed = threading.Event()
         self._finished = threading.Event()
-        # Producers never wait for this gate. The consumer only takes it after closing.
-        self._enqueue_lock = threading.Lock()
-        self._image_budget = threading.BoundedSemaphore(MAX_PENDING_IMAGE_BYTES // IMAGE_BUDGET_UNIT)
+        self._ready = threading.Event()
+        self._images_finished = threading.Event()
+        self._cancel_images = threading.Event()
+        self._image_error = ""
+        self._close_requested_at: float | None = None
+        # This lock protects only counters and queue handoffs: never copies, encoding, disk I/O or waits.
+        self._state = threading.Lock()
+        self._counts = {key: 0 for key in (
+            "loop_enqueued", "loop_written", "loop_dropped", "step_enqueued", "step_written", "step_dropped",
+            "frames_requested", "frames_saved", "frames_skipped", "frames_failed",
+        )}
+        self._image_budget = threading.BoundedSemaphore(frame_buffer_bytes // IMAGE_BUDGET_UNIT)
         self._file: BinaryIO | None = None
         self._compressor: Any = None
         self._handle: int | None = None
-        local = time.localtime()
+        self._last_recording: dict[str, Any] = {}
         own = {
             "kind": "header", "format": FORMAT, "version": VERSION, "name": name,
-            "started": time.strftime("%Y-%m-%dT%H:%M:%S", local),
+            "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "clock": "virtual" if getattr(twin.clock, "virtual", False) else "wall", "t0": self._t0,
         }
         self._header = {**_HEADER_DEFAULTS, **_clean(header), **own, "joints": list(self._joints),
                         "keep_frames_s": keep_frames_s, "frame_format": frame_format, "frame_quality": frame_quality,
+                        "queue_capacity": queue_capacity, "frame_buffer_bytes": frame_buffer_bytes,
                         "versions": {"twin": twin_version, "api": machinekind_twin_api.__version__}}
         self._handle = twin.add_tick_listener(self.on_tick)
+        # No executor: a permanently blocked disk must not make interpreter exit join these workers.
+        if keep_frames_s is None:
+            self._images_finished.set()
+        else:
+            try:
+                threading.Thread(target=self._work_images, name="episode-frames", daemon=True).start()
+            except Exception as exc:  # noqa: BLE001 - losing image capture must not lose telemetry
+                self._image_error = f"image worker unavailable: {exc}"
+                self._images_finished.set()
         try:
-            # Executors join their workers at interpreter exit, including permanently blocked I/O.
             threading.Thread(target=self._work, name="episode-writer", daemon=True).start()
         except Exception:
+            self._cancel_images.set()
+            self._closed.set()
             self._detach()
             raise
 
     @classmethod
     def create(cls, folder: str | Path, header: Mapping[str, Any], twin: Any, *, name: str | None = None,
                keep_frames_s: float | None = None, frame_format: Literal["webp", "jpeg"] = "jpeg",
-               frame_quality: int = FRAME_QUALITY) -> EpisodeWriter:
-        """Start recording without waiting for disk access. `path` is final once `opened` is true."""
+               frame_quality: int = FRAME_QUALITY, queue_capacity: int | None = None,
+               frame_buffer_bytes: int | None = None) -> EpisodeWriter:
+        """Start background collection. `path` is final once `opened` is true."""
         if keep_frames_s is not None and (not math.isfinite(keep_frames_s) or keep_frames_s < 0):
             raise ValueError("keep_frames_s must be finite and non-negative")
         if frame_format not in ("webp", "jpeg"):
             raise ValueError("frame_format must be webp or jpeg")
         if isinstance(frame_quality, bool) or not isinstance(frame_quality, int) or not 1 <= frame_quality <= 100:
             raise ValueError("frame_quality must be an integer between 1 and 100")
+        capacity = MAX_PENDING if queue_capacity is None else queue_capacity
+        image_bytes = MAX_PENDING_IMAGE_BYTES if frame_buffer_bytes is None else frame_buffer_bytes
+        for key, value in (("queue_capacity", capacity), ("frame_buffer_bytes", image_bytes)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{key} must be a positive integer")
         return cls(Path(folder), header, twin, _safe(name) if name else time.strftime("%Y%m%d-%H%M%S"),
-                   keep_frames_s, frame_format, frame_quality)
+                   keep_frames_s, frame_format, frame_quality, capacity, image_bytes)
 
     def now(self) -> float:
-        """Seconds on the twin's clock since recording was requested."""
         return self._clock.now() - self._t0
 
+    @property
+    def recording(self) -> dict[str, Any]:
+        with self._state:
+            counts = dict(self._counts)
+        counts["frames_pending"] = max(0, counts["frames_requested"] - counts["frames_saved"]
+                                        - counts["frames_skipped"] - counts["frames_failed"])
+        counts["telemetry_complete"] = (not self.error and not counts["loop_dropped"] and not counts["step_dropped"]
+                                        and counts["loop_enqueued"] == counts["loop_written"]
+                                        and counts["step_enqueued"] == counts["step_written"])
+        counts["frames_complete"] = not (counts["frames_skipped"] or counts["frames_failed"]
+                                         or counts["frames_pending"])
+        return counts
+
+    @property
+    def warning(self) -> str:
+        counts = self.recording
+        notes = []
+        if counts["loop_dropped"] or counts["step_dropped"]:
+            notes.append(f"INCOMPLETE TELEMETRY: {counts['loop_dropped']} loop samples and "
+                         f"{counts['step_dropped']} steps lost")
+        if counts["frames_skipped"] or counts["frames_failed"]:
+            notes.append(f"Frame gaps: {counts['frames_skipped']} skipped, {counts['frames_failed']} failed")
+        if self._finished.is_set() and counts["frames_pending"]:
+            notes.append(f"Frame gaps: {counts['frames_pending']} saves did not finish")
+        if self._image_error:
+            notes.append(self._image_error)
+        if self._pending.qsize() >= self._pending.maxsize * 0.8:
+            notes.append("Telemetry buffer above 80% capacity")
+        return "; ".join(notes)
+
+    def _count(self, **values: int) -> None:
+        with self._state:
+            for key, value in values.items():
+                self._counts[key] += value
+
     def on_tick(self, sample: Any) -> None:
-        """Capture a loop sample without serializing data or accessing the filesystem."""
         if not self._closed.is_set() and not self.error:
             self._put(_Write("loop", (sample.t, dict(sample.sent), dict(sample.measured) if sample.fresh else None,
                                      sample.measured_t, tuple(self._twin.status.at_limit))))
 
     def step(self, record: StepRecord) -> None:
-        """Snapshot an accepted action. Only images due for retention are copied."""
+        """Snapshot telemetry; image pressure skips only the requested images, never the step."""
         if self._closed.is_set() or self.error:
             return
-        job = _Write("step", None)
+        images = _Write("images", (record.step, []))
+        published = False
         try:
-            frames, images = [], []
+            frames = []
             for camera, frame in record.frames.items():
                 item: dict[str, Any] = {"camera": camera, "age_s": None, "shape": None, "file": None}
+                image = None
                 if frame is not None:
                     image = np.asarray(frame.image)
                     item.update(age_s=_rounded(frame.age_s, SECOND_DIGITS), shape=list(image.shape))
-                    every = self._keep_frames_s
-                    previous = self._kept_at.get(camera)
-                    if (every is not None and (previous is None or record.t - previous >= every)
-                            and image.ndim == 3 and image.shape[2] == 3 and image.dtype == np.uint8):
-                        units = math.ceil(image.nbytes / IMAGE_BUDGET_UNIT)
-                        for _ in range(units):
-                            if not self._image_budget.acquire(blocking=False):
-                                raise Full("episode image queue capacity exceeded")
-                            job.resources.callback(self._image_budget.release)
-                        images.append((len(frames), camera, image.copy()))
-                        self._kept_at[camera] = record.t
+                every, previous = self._keep_frames_s, self._attempted_at.get(camera)
+                if every is not None and (previous is None or record.t - previous >= every):
+                    self._attempted_at[camera] = record.t
+                    self._count(frames_requested=1)
+                    reason = "camera frame unavailable" if image is None else self._capture_image(images, camera, image)
+                    if reason:
+                        item["drop_reason"] = reason
+                        self._count(frames_skipped=1)
+                    else:
+                        item["pending"] = True
                 frames.append(item)
             line = {
                 "kind": "step", "step": int(record.step), "run_t": _rounded(record.run_t, SECOND_DIGITS),
@@ -284,14 +354,49 @@ class EpisodeWriter:
                 "error": _rounded(record.error, SECOND_DIGITS), "note": str(record.note),
                 "decisions": [_decision(decision) for decision in record.decisions],
             }
-            job.value = (line, images)
-            self._put(job)
-        except Exception as exc:  # noqa: BLE001 - recording errors must not interrupt control
-            job.finish(False)
-            self._broken(exc)
+            if images.value[1]:
+                try:
+                    with self._state:
+                        if self._closed.is_set() or self.error or self._cancel_images.is_set():
+                            raise Full
+                        self._images.put_nowait(images)
+                        published = True
+                except Full:
+                    images.finish(False)
+                    for item in frames:
+                        if item.pop("pending", False):
+                            item["drop_reason"] = "image buffer full"
+                            self._count(frames_skipped=1)
+            self._put(_Write("step", line))
+        except Exception:  # noqa: BLE001 - a malformed diagnostic packet cannot end collection or motion
+            if not published:
+                self._count(frames_skipped=len(images.value[1]))
+                images.finish(False)
+            self._count(step_dropped=1)
+
+    def _capture_image(self, job: _Write, camera: str, image: np.ndarray) -> str:
+        if self._image_error:
+            return self._image_error
+        if self._cancel_images.is_set() or self._images_finished.is_set():
+            return "image worker unavailable"
+        if image.ndim != 3 or image.shape[2] != 3 or image.dtype != np.uint8:
+            return "unsupported image shape or type"
+        if self._images.full():
+            return "image buffer full"
+        if self._pending.qsize() >= max(1, self._pending.maxsize // 2):
+            return "telemetry backlog"
+        with ExitStack() as reserved:
+            for _ in range(math.ceil(image.nbytes / IMAGE_BUDGET_UNIT)):
+                if not self._image_budget.acquire(blocking=False):
+                    return "image memory budget exhausted"
+                reserved.callback(self._image_budget.release)
+            copied = image.copy()
+            job.value[1].append((camera, copied))
+            job.resources.callback(reserved.pop_all().close)
+        return ""
 
     def flush(self, *, wait: bool = False, timeout: float = WAIT_TIMEOUT_S) -> bool:
-        """Queue a flush. Explicit waits have a finite timeout and wake on writer failure."""
+        """Flush telemetry already queued, independently of image encoding and saving."""
         if wait:
             _check_timeout(timeout)
         job = _Write("flush", None)
@@ -300,39 +405,33 @@ class EpisodeWriter:
         return (job.completed.wait(timeout) and job.success) if wait else True
 
     def close(self, end: EpisodeEnd, *, wait: bool = False, timeout: float = WAIT_TIMEOUT_S) -> bool:
-        """Request completion without waiting for queue space, listener removal or disk I/O."""
-        try:
-            self._ending.put_nowait(end)
-        except Full:
-            pass  # First close wins, even when callers race or the data queue is full.
-        self._closed.set()
+        with self._state:
+            if not self._closed.is_set():
+                self._ending.put_nowait(end)
+                self._close_requested_at = time.monotonic()
+                self._closed.set()
         return self.wait(timeout) if wait else True
 
     def wait(self, timeout: float = WAIT_TIMEOUT_S) -> bool:
-        """Wait outside control paths for file cleanup to finish; never join the worker thread."""
+        """Wait outside control paths; an image timeout becomes explicit frame gaps."""
         _check_timeout(timeout)
         return self._finished.wait(timeout)
 
     def _put(self, job: _Write) -> bool:
-        if self._closed.is_set() or self.error:
+        accepted = False
+        with self._state:
+            if not self._closed.is_set() and not self.error:
+                try:
+                    self._pending.put_nowait(job)
+                    accepted = True
+                    if job.kind in ("loop", "step"):
+                        self._counts[f"{job.kind}_enqueued"] += 1
+                except Full:
+                    if job.kind in ("loop", "step"):
+                        self._counts[f"{job.kind}_dropped"] += 1
+        if not accepted:
             job.finish(False)
-            return False
-        if not self._enqueue_lock.acquire(blocking=False):
-            job.finish(False)
-            self._broken(Full("episode queue is busy; recording stopped"))
-            return False
-        try:
-            if self._closed.is_set() or self.error:
-                job.finish(False)
-                return False
-            self._pending.put_nowait(job)
-            return True
-        except Full:
-            job.finish(False)
-            self._broken(Full("episode queue capacity exceeded"))
-            return False
-        finally:
-            self._enqueue_lock.release()
+        return accepted
 
     def _work(self) -> None:
         try:
@@ -348,29 +447,30 @@ class EpisodeWriter:
                 self.path.unlink(missing_ok=True)
                 raise
             self.opened = True
+            self._ready.set()
             flushed = time.monotonic()
             end = None
             while not self.error:
+                self._drain_image_results()
                 try:
                     job = self._pending.get(timeout=FLUSH_INTERVAL_S)
                 except Empty:
                     if self._closed.is_set():
-                        # Fence a producer that entered put_nowait just before close.
-                        with self._enqueue_lock:
-                            try:
-                                job = self._pending.get_nowait()
-                            except Empty:
-                                end = self._ending.get_nowait()
-                                break
-                    else:
-                        self._flush()
-                        flushed = time.monotonic()
-                        continue
+                        expired = (self._close_requested_at is not None
+                                   and time.monotonic() - self._close_requested_at >= FRAME_CLOSE_TIMEOUT_S)
+                        if self._images_finished.is_set() or expired:
+                            self._cancel_images.set()
+                            self._drain_image_results(all_pending=True)
+                            end = self._ending.get_nowait()
+                            break
+                    self._write_recording()
+                    self._flush()
+                    flushed = time.monotonic()
+                    continue
                 success = False
                 try:
-                    kind, value = job.kind, job.value
-                    if kind == "loop":
-                        t, sent, measured, measured_t, at_limit = value
+                    if job.kind == "loop":
+                        t, sent, measured, measured_t, at_limit = job.value
                         self._write({
                             "kind": "loop", "t": _rounded(t - self._t0, SECOND_DIGITS),
                             "sent": self._vector(sent) if sent else None,
@@ -379,14 +479,16 @@ class EpisodeWriter:
                                                                                  SECOND_DIGITS),
                             "at_limit": list(at_limit),
                         })
-                    elif kind == "step":
-                        line, images = value
-                        for index, camera, image in images:
-                            line["frames"][index]["file"] = self._keep(line["step"], camera, image)
+                        self._count(loop_written=1)
+                    elif job.kind == "step":
+                        line = job.value
                         self._write(line)
-                    elif kind == "flush":
+                        self._count(step_written=1)
+                    elif job.kind == "flush":
+                        self._write_recording()
                         self._flush()
                     if time.monotonic() - flushed >= FLUSH_INTERVAL_S:
+                        self._write_recording()
                         self._flush()
                         flushed = time.monotonic()
                     success = True
@@ -400,38 +502,107 @@ class EpisodeWriter:
                     "success": None if end.success is None else bool(end.success),
                     "error": _rounded(end.error, SECOND_DIGITS), "note": end.note,
                     "steps": int(end.steps), "began": bool(end.began),
-                    "finished": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "finished": time.strftime("%Y-%m-%dT%H:%M:%S"), "recording": self.recording,
                 })
             self._file.write(self._compressor.flush())
             self._file.flush()
             os.fsync(self._file.fileno())
-        except Exception as exc:  # noqa: BLE001 - recording errors must not interrupt control
+        except Exception as exc:  # noqa: BLE001 - storage failure cannot affect motion
             self._broken(exc)
         finally:
-            self._closed.set()
+            with self._state:
+                self._closed.set()
+            self._cancel_images.set()
             try:
                 if self._file is not None:
                     self._file.close()
-            except Exception as exc:  # noqa: BLE001 - cleanup cannot escape into control
+            except Exception as exc:  # noqa: BLE001 - cleanup errors remain diagnostics
                 self._broken(exc)
             finally:
-                # No disk I/O under the gate. Every queued flush gets a failure response.
-                with self._enqueue_lock:
-                    while True:
-                        try:
-                            job = self._pending.get_nowait()
-                        except Empty:
-                            break
-                        job.finish(False)
-                        self._pending.task_done()
+                while True:
+                    try:
+                        job = self._pending.get_nowait()
+                    except Empty:
+                        break
+                    job.finish(False)
+                    self._pending.task_done()
                 try:
                     self._detach()
-                except Exception as exc:  # noqa: BLE001 - always signal completion, including cleanup failures
+                except Exception as exc:  # noqa: BLE001 - always signal completion
                     self._broken(exc)
                 finally:
                     self._finished.set()
-            if self.error:
-                logger.warning("Episode recording %s failed: %s", self.path, self.error)
+
+    def _write_recording(self) -> None:
+        current = self.recording
+        if current != self._last_recording:
+            self._write({"kind": "recording", "t": _rounded(self.now(), SECOND_DIGITS), **current})
+            self._last_recording = current
+
+    def _drain_image_results(self, *, all_pending: bool = False) -> None:
+        for _ in range(MAX_FRAME_JOBS if all_pending else 32):
+            try:
+                result = self._image_results.get_nowait()
+            except Empty:
+                break
+            try:
+                self._write(result)
+                self._count(**{f"frames_{result['status']}": 1})
+            finally:
+                self._image_results.task_done()
+
+    def _work_images(self) -> None:
+        try:
+            while not self._ready.wait(FLUSH_INTERVAL_S):
+                if self._cancel_images.is_set():
+                    return
+            while not self._cancel_images.is_set():
+                try:
+                    job = self._images.get(timeout=FLUSH_INTERVAL_S)
+                except Empty:
+                    if self._closed.is_set():
+                        break
+                    continue
+                try:
+                    step, images = job.value
+                    for camera, image in images:
+                        result: dict[str, Any] = {"kind": "frame", "step": step, "camera": camera,
+                                                   "file": None, "drop_reason": "", "status": "failed"}
+                        if self._cancel_images.is_set():
+                            break
+                        try:
+                            if self._pending.qsize() >= max(1, self._pending.maxsize // 2):
+                                result["drop_reason"] = "telemetry backlog"
+                                result["status"] = "skipped"
+                            else:
+                                result["file"] = self._keep(step, camera, image)
+                                if not result["file"]:
+                                    result["drop_reason"] = "image encoder returned no data"
+                                else:
+                                    result["status"] = "saved"
+                        except Exception as exc:  # noqa: BLE001 - one failed image must not end collection
+                            result["drop_reason"] = f"{type(exc).__name__}: {exc}"
+                        while not self._cancel_images.is_set():
+                            try:
+                                self._image_results.put(result, timeout=FLUSH_INTERVAL_S)
+                                break
+                            except Full:
+                                continue  # Only the image worker waits, never telemetry or control.
+                finally:
+                    image = None  # Release the last loop variable before returning its memory reservation.
+                    job.finish(True)
+                    self._images.task_done()
+        except Exception as exc:  # noqa: BLE001 - unexpected image-worker errors stay separate from telemetry
+            self._image_error = f"image worker failed: {exc}"
+        finally:
+            while True:
+                try:
+                    job = self._images.get_nowait()
+                except Empty:
+                    break
+                job.finish(False)
+                self._images.task_done()
+            self._images_finished.set()
 
     def _flush(self) -> None:
         assert self._file is not None
@@ -440,6 +611,13 @@ class EpisodeWriter:
 
     def _vector(self, values: Mapping[str, float]) -> list[float | None]:
         return [_rounded(values.get(joint), JOINT_DIGITS) for joint in self._joints]
+
+    def _frame_name(self, step: int, camera: str) -> tuple[Path, str]:
+        extension = ".webp" if self._frame_format == "webp" else ".jpg"
+        folder = self.path.parent / (self.path.name.removesuffix(".jsonl.zst") + ".frames")
+        camera_id = hashlib.sha256(camera.encode("utf-8")).hexdigest()[:20]
+        name = f"{step:06d}-{_safe(camera)[:64]}-{camera_id}{extension}"
+        return folder / name, f"{folder.name}/{name}"
 
     def _keep(self, step: int, camera: str, image: np.ndarray) -> str | None:
         import cv2
@@ -450,11 +628,13 @@ class EpisodeWriter:
         encoded, data = cv2.imencode(extension, bgr, [int(quality_flag), self._frame_quality])
         if not encoded:
             return None
-        folder = self.path.parent / (self.path.name.removesuffix(".jsonl.zst") + ".frames")
-        folder.mkdir(exist_ok=True)
-        name = f"{step:06d}-{_safe(camera)}{extension}"
-        (folder / name).write_bytes(data.tobytes())
-        return f"{folder.name}/{name}"
+        path, relative = self._frame_name(step, camera)
+        path.parent.mkdir(exist_ok=True)
+        with path.open("xb") as file:
+            file.write(data.tobytes())
+            file.flush()
+            os.fsync(file.fileno())
+        return relative
 
     def _write(self, line: Mapping[str, Any]) -> None:
         assert self._file is not None
@@ -463,8 +643,12 @@ class EpisodeWriter:
         self._file.write(self._compressor.compress(data))
 
     def _broken(self, exc: BaseException) -> None:
-        if not self.error:
-            self.error = f"episode recording failed: {exc}"
+        reason = f"episode recording failed: {exc}"
+        with self._state:
+            if not self.error:
+                self.error = reason
+            self._closed.set()
+        self._cancel_images.set()
 
     def _detach(self) -> None:
         handle, self._handle = self._handle, None
@@ -482,6 +666,7 @@ class EpisodeSummary:
     path: Path
     header: dict[str, Any]
     end: EpisodeEnd
+    recording: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -501,6 +686,7 @@ class EpisodeLog:
     #: Step lines as written.
     steps: list[dict[str, Any]]
     end: EpisodeEnd
+    recording: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def load(path: str | Path) -> EpisodeLog:
@@ -520,6 +706,10 @@ class EpisodeLog:
         loops = [record for record in records if record.get("kind") == "loop"]
         steps = [record for record in records if record.get("kind") == "step"]
         ends = [record for record in records if record.get("kind") == "end"]
+        _resolve_frames(steps, records, finished=bool(ends))
+        recording = _recording_status(records, finished=bool(ends))
+        if header["version"] >= 2 and not ends:
+            recording.update(telemetry_complete=False, frames_complete=False)
 
         width = len(joints)
         loop_t = np.array([_number(record.get("t")) for record in loops], float)
@@ -531,7 +721,7 @@ class EpisodeLog:
 
         return EpisodeLog(path=path, header=header, joints=joints, loop_t=loop_t, sent=sent, measured=measured,
                           measured_t=measured_t, at_limit=at_limit, steps=steps,
-                          end=_end(ends[-1] if ends else None, steps))
+                          end=_end(ends[-1] if ends else None, steps), recording=recording)
 
     @staticmethod
     def summary(path: str | Path) -> EpisodeSummary:
@@ -541,6 +731,7 @@ class EpisodeLog:
         header = None
         last = None
         last_step = []
+        recording = {}
         previous_bad = False
         for number, line in enumerate(reader, 1):
             if not line.strip():
@@ -554,9 +745,15 @@ class EpisodeLog:
                 last = record
             if record is not None and record.get("kind") == "step":
                 last_step = [record]
+            if record is not None and record.get("kind") == "recording":
+                recording = record
+            if record is not None and record.get("kind") == "end":
+                recording = record.get("recording") or recording
             previous_bad = record is None
         return EpisodeSummary(path=path, header=_header(path, header),
-                              end=_end(last if reader.complete else None, last_step))
+                              end=_end(last if reader.complete else None, last_step),
+                              recording=_recording_status([{"kind": "recording", **recording}],
+                                                          finished=reader.complete and last is not None))
 
     def readings(self) -> tuple[np.ndarray, np.ndarray]:
         """The fresh readings: (R,) their times and (R, n) their values, each reading once."""
@@ -636,6 +833,38 @@ def _pose(pose: Any) -> dict[str, Any]:
         "source": str(getattr(pose, "source", "")),
         "age_s": _rounded(getattr(pose, "age_s", None), SECOND_DIGITS),
     }
+
+
+def _resolve_frames(steps: list[dict[str, Any]], records: list[dict[str, Any]], *, finished: bool) -> None:
+    results = {(record.get("step"), record.get("camera")): record for record in records
+               if record.get("kind") == "frame"}
+    for step in steps:
+        for frame in step.get("frames") or ():
+            if not isinstance(frame, dict):
+                continue
+            if not frame.pop("pending", False):
+                continue
+            result = results.get((step.get("step"), frame.get("camera")))
+            if result is None:
+                frame["file"] = None
+                frame["drop_reason"] = ("image save did not finish before recording closed"
+                                        if finished else "image save pending")
+            else:
+                frame["file"] = result.get("file")
+                if not frame["file"]:
+                    frame["drop_reason"] = result.get("drop_reason") or "image save failed"
+
+
+def _recording_status(records: list[dict[str, Any]], *, finished: bool) -> dict[str, Any]:
+    status = {}
+    for record in records:
+        if record.get("kind") == "recording":
+            status = {key: value for key, value in record.items() if key not in ("kind", "t")}
+        elif record.get("kind") == "end" and record.get("recording"):
+            status = record["recording"]
+    if status and not finished:
+        status = {**status, "telemetry_complete": False, "frames_complete": False}
+    return status
 
 
 def _check_timeout(timeout: float) -> None:

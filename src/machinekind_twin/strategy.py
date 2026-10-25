@@ -113,6 +113,11 @@ class RunnerStatus:
         writer = self._recorder
         return writer.error if writer is not None else self._episode_error
 
+    @property
+    def episode_warning(self) -> str:
+        """Nonfatal collection gaps and buffer pressure, including missing camera images."""
+        return self._recorder.warning if self._recorder is not None else ""
+
 
 # --------------------------------------------------------------------------- the runner
 
@@ -267,7 +272,9 @@ class StrategyRunner:
             try:
                 run.log = EpisodeWriter.create(folder, header, self.twin, name=options.name,
                                                keep_frames_s=options.keep_frames_s,
-                                               frame_format=options.frame_format, frame_quality=options.frame_quality)
+                                               frame_format=options.frame_format, frame_quality=options.frame_quality,
+                                               queue_capacity=options.queue_capacity,
+                                               frame_buffer_bytes=options.frame_buffer_bytes)
             except Exception as exc:  # noqa: BLE001 - diagnostics cannot prevent a strategy from running
                 status._episode_error = f"episode recording failed: {exc}"
                 return

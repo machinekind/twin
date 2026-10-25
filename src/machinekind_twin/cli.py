@@ -227,7 +227,7 @@ def _episode(a: argparse.Namespace) -> int:
 
     offset_m = tuple(value / 1000.0 for value in a.offset_mm)
     print("\n".join(report(log, gripper=a.gripper, offset_m=offset_m).lines()))
-    return 0
+    return 2 if log.recording.get("telemetry_complete") is False else 0
 
 
 def _list_episodes(folder: Path, logs: list[Path]) -> None:
@@ -246,8 +246,13 @@ def _list_episodes(folder: Path, logs: list[Path]) -> None:
         success = "-" if end.success is None else ("yes" if end.success else "no")
         error = "-" if end.error is None else f"{end.error:.3g}"
         length = "-" if end.t is None else f"{end.t:.2f}"
+        collection = ""
+        if summary.recording.get("telemetry_complete") is False:
+            collection = "  INCOMPLETE TELEMETRY"
+        elif summary.recording and not summary.recording.get("frames_complete"):
+            collection = "  frame gaps"
         print(f"  {name:<24} {end.code:<13} success {success:<4} task error {error:<9} "
-              f"duration {length:>8} s  steps {end.steps:<6} {end.reason}")
+              f"duration {length:>8} s  steps {end.steps:<6} {end.reason}{collection}")
 
 
 def _natural(name: str) -> list[Any]:

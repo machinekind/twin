@@ -16,20 +16,29 @@ Omit `folder` to use `episodes/` beside the workspace file. Names default to a
 local timestamp; duplicates receive a numeric suffix. In the Strategies tab,
 **Record episode** enables the same recorder.
 
-A worker handles file creation, JSON serialization, Zstandard compression,
-image encoding and disk writes. Control callbacks only snapshot and enqueue data.
-Standard-library queues, events and semaphores bound recording to 1,024 queued
-events and 64 MiB of retained image data. Image capacity is reserved before copying.
-If a queue fills, enqueueing contends, or a write fails, recording stops and
-`runner.status.episode_error` reports why. Producers never wait for queue capacity
-or the writer. Selected image copies and small data snapshots still run synchronously.
-The strategy continues. Queue overflow leaves an unfinished recording.
+Telemetry and images use separate background workers. Image encoding or storage
+backlog cannot end telemetry collection. The recorder streams throughout the run;
+there is no duration limit or growing in-memory history.
 
-Close requests use a separate channel, so they succeed even when the data queue
-is full. Stopping a run never waits for disk I/O or listener cleanup. The daemon
-writer cannot hold process exit indefinitely on a stuck disk. Explicit completion
-waits default to five seconds and return `False` on timeout. Before reading
-its completed file, wait explicitly:
+The telemetry queue holds 8,192 records by default, about 117 seconds at a 50 Hz
+control loop plus a 20 Hz strategy. Set `EpisodeOptions.queue_capacity` to change
+it. Retained image copies are limited to 64 MiB; `frame_buffer_bytes` changes
+that budget. Encoding uses additional working memory. Capacity is reserved before copying images. Queues use short standard
+synchronization; no shared lock covers encoding, disk I/O or a capacity wait.
+Selected image copies and data snapshots still cost CPU on the caller.
+
+Frame pressure skips only affected images and capture resumes automatically.
+`RunnerStatus.episode_warning` shows gaps and high telemetry backlog. A genuine
+telemetry overflow is counted, marks the recording incomplete and allows later
+records to be collected. Disk failures set `episode_error`. Neither stops motion.
+No finite buffer can preserve unlimited input during a permanent storage failure.
+
+`close(end)` is nonblocking, even with full queues. Explicit completion waits have
+finite timeouts. After close, outstanding images may be abandoned after three seconds and
+become explicit gaps so a stuck image writer cannot prevent telemetry's
+end record. Daemon workers cannot hold process exit indefinitely.
+
+Before reading a completed file, wait explicitly:
 
 ```python
 runner.stop()
@@ -64,7 +73,9 @@ Image storage is approximately `cameras × saved frames/second × average encode
 bytes × seconds`. For example, three cameras at one frame/second and 50 KB/image
 add about 9 MB/minute (540 MB/hour). Measure representative images: scene content
 and resolution change image size substantially. Images are already compressed and
-are not passed through Zstandard.
+are not passed through Zstandard. Each saved image is flushed and synced before
+its completion is recorded. Camera filenames include an identity hash to avoid
+collisions on case-insensitive filesystems.
 
 ## Inspect a recording
 
@@ -76,12 +87,23 @@ uv run twin episode --gripper marker --offset-mm 0 0 20
 ```
 
 `--path` selects a different workspace file when locating recordings.
-`EpisodeLog.load(path)` returns arrays and step records. `EpisodeLog.summary(path)`
-streams just the header and final status into memory; compressed logs must still
-be scanned from the beginning. Loading compressed files requires `zstandard`.
+`EpisodeLog.load(path)` returns arrays, step records and collection accounting in
+`log.recording`. Check `log.recording["telemetry_complete"]` before using a run for
+evaluation or training. Frame gaps are allowed independently: affected entries in
+`step["frames"]` have `file=None` and a `drop_reason`. Counts distinguish requested,
+saved, skipped, failed and unfinished images. Pending images never count as saved.
+
+`twin episode` shows these counts and exits with status 2 for incomplete telemetry.
+Latency and drift reports are disabled for known telemetry gaps. A successful
+strategy outcome is separate from collection completeness.
+
+`EpisodeLog.summary(path)` streams the header, final outcome and collection counts
+without retaining samples. Compressed logs must be scanned from the beginning.
+Loading compressed files requires `zstandard`.
 
 ## Record format
 
+Writers emit format version 2; version 1 logs remain readable.
 Each line has a `kind`. Joint arrays follow `header.joints`; angles are degrees
 and gripper values use the robot's 0–100 scale. Positions are metres and rotations
 are 3×3 matrices in the robot's base frame. Non-finite numbers become `null`.
@@ -91,7 +113,9 @@ are 3×3 matrices in the robot's base frame. Non-finite numbers become `null`.
 | `header` | Format/version, robot and joint limits, backend, workspace, strategy class/rate/time limit, recording options, package versions and caller metadata |
 | `loop` | Sample time, command sent to actuators, fresh joint readings and their timestamp, joints at a limit |
 | `step` | Strategy step/time, observation and action timestamps, observed joints/command/objects/goal, validated target (`intent`), frame metadata, action result and model decisions |
-| `end` | Termination code/detail, duration, accepted step count, whether startup returned, and the last action's result |
+| `frame` | Completion or failure of an asynchronous image save, identified by strategy step and camera |
+| `recording` | Periodic queue-loss and image accounting, also included in `end.recording` |
+| `end` | Termination code/detail, duration, accepted step count, last action result and final collection accounting |
 
 Timestamps use seconds since recording started on `Twin.clock`; `header.t0`
 contains that origin. `run_t` is the strategy's elapsed time. `age_s` is an age,
@@ -168,3 +192,16 @@ When converting `Perception.snapshot()` views to `ObjectPose`s, add
 `perception.clock() - perception.tracks.last_step()` to each view's `age_s`.
 The snapshot's ages were calculated at the last tracker step. Using them unchanged
 would align camera poses with joint readings too late.
+
+## Collection checks
+
+The manual soak uses synthetic 50 Hz telemetry, a 20 Hz strategy and three
+640×480 camera images per second. Accelerated mode paces ten-second input batches;
+`--block-images` deliberately stalls image saving while telemetry continues.
+
+```bash
+uv run python tests/soak_episode.py --seconds 28800 --block-images
+uv run python tests/soak_episode.py --seconds 60 --realtime --frame-format webp
+```
+
+Use `--output /tmp/episode-soak` to retain the synthetic recordings and counters.

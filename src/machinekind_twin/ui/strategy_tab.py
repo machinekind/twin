@@ -335,6 +335,8 @@ class StrategyTab:
             line += f"  \nzatrzymana: {status.stopped_because}"
         if status.episode is not None:
             line += f"  \nzapis: `{status.episode.name}`"
+        if status.episode_warning:
+            line += f"  \n**Recording warning:** {status.episode_warning}"
         if status.episode_error:
             line += f"  \n**zapis przebiegu:** {status.episode_error}"
 
