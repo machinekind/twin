@@ -148,7 +148,7 @@ def test_a_repeat_is_last_seen_with_the_age_of_the_model_s_frames(perception: Pe
 
     runner.step_once()
 
-    assert len(runs(log)) == 1                  # the frames did not change: no second question
+    assert len(runs(log)) == 1                  # no second question for unchanged frames
     assert runner.status.calls == 2 and runner.status.failures == 0
 
     clock.advance(0.4)

@@ -567,8 +567,8 @@ terminal wrapper (a cmux shim), point `executable` at the real binary, e.g.
 | `timeout_s` | 120 | the CLI's process group is killed after this [s], 5 to 900 |
 | `max_side_px` | 1280 | long edge of the images sent [px]; answers are scaled back to each frame |
 | `pixel_error_px` | 25 | how far off the model's pixels may be, in the sent image's pixels |
-| `reuse_if_still` | true | repeat the last answer without asking while no camera's image changed since the frames it was given. The repeat is as old as those frames. See "Cost and rate" |
-| `reuse_max_age_s` | 60 | ask again anyway once the last answer is this old [s], 0 to 3600 |
+| `reuse_if_still` | true | repeat the last answer instead of asking while no camera's image changes. The repeat is as old as the frames it answered. "Cost and rate" says what counts as a change |
+| `reuse_max_age_s` | 60 | longest time after a question that its answer may be repeated [s], 0 to 3600 |
 | `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
 | `min_confidence` | 0.3 | answers the model is less sure of are dropped |
 | `executable` | `""` | the CLI binary; `""` = `cli` on PATH |
@@ -582,22 +582,22 @@ label drift does not create stray tracks.
 ### Cost and rate
 
 Every question counts against the CLI subscription's usage limits. At the
-default 10 s, a scene that keeps changing costs up to 360 questions an hour and
-a still one 60. Five things bound it:
+default 10 s, a scene that keeps changing costs up to 360 questions an hour. A
+still scene costs 60. Five things bound it:
 
 - one question in flight at a time;
 - `interval_s`, at least 2 s;
-- `reuse_if_still`, on by default: a call whose frames did not change since the
-  last question repeats that question's answer instead of asking. The repeat is
-  as old as that question's frames. Each camera's frame is compared with the one
-  sent, as a grey thumbnail 256 px long, blurred 3x3, with the mean brightness
-  matched so auto exposure does not count. The image counts as changed when more
-  than 15 thumbnail pixels moved by 16 grey levels or more. A 3 cm cube at 1 m
-  through a 60 degree lens covers about 45 such pixels, so the cube leaving or
-  moving by a centimetre trips the check, while sensor noise, a blinking LED or
-  an exposure step does not. A move under a thumbnail pixel, 4.5 mm at 1 m, can
-  pass; the model's own error is larger. Once the last answer is
-  `reuse_max_age_s` old, the next call asks whatever the frames show;
+- `reuse_if_still`, on by default. While no camera's image changes, a call
+  repeats the last answer instead of asking. The repeat is as old as that
+  answer's frames. The check turns each new frame and the frame last sent into
+  grey thumbnails 256 px long, blurred 3x3. It matches their mean brightness, so
+  auto exposure does not count. An image has changed when more than 15
+  thumbnail pixels differ by 16 grey levels or more. A 3 cm cube at 1 m through
+  a 60 degree lens covers about 45 thumbnail pixels. The check therefore sees
+  the cube leave or move by a centimetre. Sensor noise, a blinking LED and an
+  exposure step stay under the limit. A move of less than 4.5 mm at 1 m can
+  pass. The model's own error is larger. Once the last answer is
+  `reuse_max_age_s` old, the next call asks again;
 - `max_calls_per_hour`: a call over the cap fails with "hourly cap of N
   questions reached";
 - backoff: a failed question (a timeout, a non-zero exit, a subscription limit,

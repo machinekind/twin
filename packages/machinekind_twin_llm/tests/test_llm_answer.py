@@ -252,13 +252,13 @@ def test_encode_refuses_an_image_that_is_not_rgb(tmp_path: Path):
 
 
 def scene(rng: np.random.Generator) -> np.ndarray:
-    """A 1280x960 table: textured grey with a 3 cm cube's worth of dark pixels at 1 m, 24x24 px."""
+    """A 1280x960 textured grey table with a dark 24x24 px patch, the size of a 3 cm cube at 1 m."""
     table = rng.integers(100, 140, (960, 1280, 3), dtype=np.uint8)
     table[600:624, 100:124] = (40, 40, 40)
     return table
 
 
-def test_a_thumbnail_is_a_small_grey_float_copy_with_the_frame_s_aspect():
+def test_a_thumbnail_is_grey_float32_and_shrinks_only_large_frames():
     thumb = thumbnail(np.zeros((960, 1280, 3), np.uint8))
 
     assert thumb.shape == (THUMB_LONG_PX * 3 // 4, THUMB_LONG_PX) and thumb.dtype == np.float32
@@ -294,7 +294,7 @@ def test_a_small_object_moving_or_leaving_counts_as_a_change():
 def test_a_few_flickering_pixels_are_not_a_change():
     before = np.full((480, 640, 3), 120, np.uint8)
     blink = before.copy()
-    blink[10:14, 10:14] = 255                      # a status LED: 2x2 thumbnail pixels
+    blink[10:14, 10:14] = 255                      # a status LED covers 2x2 thumbnail pixels
 
     assert 0 < changed_pixels(thumbnail(before), thumbnail(blink)) <= STILL_MAX_CHANGED_PX
 

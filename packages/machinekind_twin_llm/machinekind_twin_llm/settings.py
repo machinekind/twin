@@ -60,10 +60,10 @@ class LlmSettings:
     max_side_px: int = 1280
     #: How far off the model's pixels may be, in the SENT image's pixels; scaled to each frame.
     pixel_error_px: float = 25.0
-    #: Repeat the last answer without asking while no camera's image changed since the frames it
-    #: was given. The repeat is as old as those frames. The check is a cheap pixel count in `images`.
+    #: Repeat the last answer instead of asking while no camera's image changes. The repeat is as
+    #: old as its frames. `images.unchanged` decides what counts as a change.
     reuse_if_still: bool = True
-    #: Ask again anyway once the last answer is this old [s], so a wrong answer does not stick.
+    #: Longest time after a question that its answer may be repeated [s].
     reuse_max_age_s: float = 60.0
     #: Ask at most this many times per hour; 0 = no cap.
     max_calls_per_hour: int = 0
