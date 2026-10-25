@@ -5,7 +5,7 @@ See docs/EPISODES.md for recording options, the record format and report limitat
 
 from __future__ import annotations
 
-import collections
+import inspect
 import itertools
 import json
 import logging
@@ -14,9 +14,12 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from queue import Empty, Full, Queue
+from types import MemberDescriptorType
 from typing import Any, BinaryIO, Literal
 
 import machinekind_twin_api
@@ -53,6 +56,8 @@ FRAME_QUALITY = 85
 MAX_PENDING = 1024
 MAX_PENDING_IMAGE_BYTES = 64 * 1024 * 1024
 FLUSH_INTERVAL_S = 0.25
+WAIT_TIMEOUT_S = 5.0
+IMAGE_BUDGET_UNIT = 64 * 1024
 #: An array with more elements than this is logged by its type and shape, not its values.
 ARRAY_LIMIT = 64
 
@@ -158,16 +163,29 @@ class EpisodeEnd:
         return self.code == "done"
 
 
+@dataclass
+class _Write:
+    kind: str
+    value: Any
+    resources: ExitStack = field(default_factory=ExitStack)
+    completed: threading.Event = field(default_factory=threading.Event)
+    success: bool = False
+
+    def finish(self, success: bool) -> None:
+        self.resources.close()
+        self.success = success
+        self.completed.set()
+
+
 class EpisodeWriter:
     """Records snapshots on a bounded queue; one worker owns compression and filesystem I/O.
 
-    `close` queues the end record. Call `wait` when the completed file is needed immediately.
+    `close` is nonblocking by default. Only explicit `wait`/`flush(wait=True)` calls wait, with a timeout.
     Errors disable recording without stopping the strategy. Queue overflow leaves an unfinished log.
     """
 
     def __init__(self, folder: Path, header: Mapping[str, Any], twin: Any, name: str,
-                 keep_frames_s: float | None, frame_format: Literal["webp", "jpeg"], frame_quality: int,
-                 on_update: Callable[[EpisodeWriter], None] | None):
+                 keep_frames_s: float | None, frame_format: Literal["webp", "jpeg"], frame_quality: int):
         self.path = folder / f"{name}.jsonl.zst"
         self.error = ""
         self.opened = False
@@ -179,16 +197,16 @@ class EpisodeWriter:
         self._frame_format = frame_format
         self._frame_quality = frame_quality
         self._kept_at: dict[str, float] = {}
-        self._on_update = on_update
-        self._condition = threading.Condition()
-        self._pending: collections.deque[tuple[str, Any]] = collections.deque()
-        self._pending_image_bytes = 0
-        self._flush_waiters: set[threading.Event] = set()
-        self._closed = False
-        self._end: EpisodeEnd | None = None
+        self._pending: Queue[_Write] = Queue(maxsize=MAX_PENDING)
+        self._ending: Queue[EpisodeEnd] = Queue(maxsize=1)
+        self._closed = threading.Event()
+        self._finished = threading.Event()
+        # Producers never wait for this gate. The consumer only takes it after closing.
+        self._enqueue_lock = threading.Lock()
+        self._image_budget = threading.BoundedSemaphore(MAX_PENDING_IMAGE_BYTES // IMAGE_BUDGET_UNIT)
         self._file: BinaryIO | None = None
         self._compressor: Any = None
-        self._handle: int | None = twin.add_tick_listener(self.on_tick)
+        self._handle: int | None = None
         local = time.localtime()
         own = {
             "kind": "header", "format": FORMAT, "version": VERSION, "name": name,
@@ -198,14 +216,18 @@ class EpisodeWriter:
         self._header = {**_HEADER_DEFAULTS, **_clean(header), **own, "joints": list(self._joints),
                         "keep_frames_s": keep_frames_s, "frame_format": frame_format, "frame_quality": frame_quality,
                         "versions": {"twin": twin_version, "api": machinekind_twin_api.__version__}}
-        self._thread = threading.Thread(target=self._work, name="episode-writer", daemon=True)
-        self._thread.start()
+        self._handle = twin.add_tick_listener(self.on_tick)
+        try:
+            # Executors join their workers at interpreter exit, including permanently blocked I/O.
+            threading.Thread(target=self._work, name="episode-writer", daemon=True).start()
+        except Exception:
+            self._detach()
+            raise
 
     @classmethod
     def create(cls, folder: str | Path, header: Mapping[str, Any], twin: Any, *, name: str | None = None,
                keep_frames_s: float | None = None, frame_format: Literal["webp", "jpeg"] = "jpeg",
-               frame_quality: int = FRAME_QUALITY,
-               on_update: Callable[[EpisodeWriter], None] | None = None) -> EpisodeWriter:
+               frame_quality: int = FRAME_QUALITY) -> EpisodeWriter:
         """Start recording without waiting for disk access. `path` is final once `opened` is true."""
         if keep_frames_s is not None and (not math.isfinite(keep_frames_s) or keep_frames_s < 0):
             raise ValueError("keep_frames_s must be finite and non-negative")
@@ -214,7 +236,7 @@ class EpisodeWriter:
         if isinstance(frame_quality, bool) or not isinstance(frame_quality, int) or not 1 <= frame_quality <= 100:
             raise ValueError("frame_quality must be an integer between 1 and 100")
         return cls(Path(folder), header, twin, _safe(name) if name else time.strftime("%Y%m%d-%H%M%S"),
-                   keep_frames_s, frame_format, frame_quality, on_update)
+                   keep_frames_s, frame_format, frame_quality)
 
     def now(self) -> float:
         """Seconds on the twin's clock since recording was requested."""
@@ -222,13 +244,15 @@ class EpisodeWriter:
 
     def on_tick(self, sample: Any) -> None:
         """Capture a loop sample without serializing data or accessing the filesystem."""
-        self._put("loop", (sample.t, dict(sample.sent), dict(sample.measured) if sample.fresh else None,
-                           sample.measured_t, tuple(self._twin.status.at_limit)))
+        if not self._closed.is_set() and not self.error:
+            self._put(_Write("loop", (sample.t, dict(sample.sent), dict(sample.measured) if sample.fresh else None,
+                                     sample.measured_t, tuple(self._twin.status.at_limit))))
 
     def step(self, record: StepRecord) -> None:
         """Snapshot an accepted action. Only images due for retention are copied."""
-        if self._closed or self.error:
+        if self._closed.is_set() or self.error:
             return
+        job = _Write("step", None)
         try:
             frames, images = [], []
             for camera, frame in record.frames.items():
@@ -240,6 +264,11 @@ class EpisodeWriter:
                     previous = self._kept_at.get(camera)
                     if (every is not None and (previous is None or record.t - previous >= every)
                             and image.ndim == 3 and image.shape[2] == 3 and image.dtype == np.uint8):
+                        units = math.ceil(image.nbytes / IMAGE_BUDGET_UNIT)
+                        for _ in range(units):
+                            if not self._image_budget.acquire(blocking=False):
+                                raise Full("episode image queue capacity exceeded")
+                            job.resources.callback(self._image_budget.release)
                         images.append((len(frames), camera, image.copy()))
                         self._kept_at[camera] = record.t
                 frames.append(item)
@@ -255,55 +284,55 @@ class EpisodeWriter:
                 "error": _rounded(record.error, SECOND_DIGITS), "note": str(record.note),
                 "decisions": [_decision(decision) for decision in record.decisions],
             }
-            self._put("step", (line, images))
+            job.value = (line, images)
+            self._put(job)
         except Exception as exc:  # noqa: BLE001 - recording errors must not interrupt control
+            job.finish(False)
             self._broken(exc)
 
-    def flush(self, *, wait: bool = False, timeout: float | None = None) -> bool:
-        """Request a flush; optionally wait for all previously queued events to reach the file."""
-        completed = threading.Event()
-        with self._condition:
-            self._flush_waiters.add(completed)
-        if not self._put("flush", completed):
-            with self._condition:
-                self._flush_waiters.discard(completed)
-            return False
-        if not wait:
-            return True
-        finished = completed.wait(timeout)
-        with self._condition:
-            self._flush_waiters.discard(completed)
-        return finished and not self.error
-
-    def close(self, end: EpisodeEnd, *, wait: bool = True) -> None:
-        """Stop accepting events and queue the end record; optionally wait for durable completion."""
-        with self._condition:
-            if not self._closed:
-                self._closed = True
-                self._end = end
-                self._condition.notify()
-        self._detach()
+    def flush(self, *, wait: bool = False, timeout: float = WAIT_TIMEOUT_S) -> bool:
+        """Queue a flush. Explicit waits have a finite timeout and wake on writer failure."""
         if wait:
-            self.wait()
+            _check_timeout(timeout)
+        job = _Write("flush", None)
+        if not self._put(job):
+            return False
+        return (job.completed.wait(timeout) and job.success) if wait else True
 
-    def wait(self, timeout: float | None = None) -> bool:
-        """Wait for a closed or failed writer. False means the worker is still running."""
-        self._thread.join(timeout)
-        return not self._thread.is_alive()
+    def close(self, end: EpisodeEnd, *, wait: bool = False, timeout: float = WAIT_TIMEOUT_S) -> bool:
+        """Request completion without waiting for queue space, listener removal or disk I/O."""
+        try:
+            self._ending.put_nowait(end)
+        except Full:
+            pass  # First close wins, even when callers race or the data queue is full.
+        self._closed.set()
+        return self.wait(timeout) if wait else True
 
-    def _put(self, kind: str, value: Any) -> bool:
-        with self._condition:
-            if self._closed or self.error:
+    def wait(self, timeout: float = WAIT_TIMEOUT_S) -> bool:
+        """Wait outside control paths for file cleanup to finish; never join the worker thread."""
+        _check_timeout(timeout)
+        return self._finished.wait(timeout)
+
+    def _put(self, job: _Write) -> bool:
+        if self._closed.is_set() or self.error:
+            job.finish(False)
+            return False
+        if not self._enqueue_lock.acquire(blocking=False):
+            job.finish(False)
+            self._broken(Full("episode queue is busy; recording stopped"))
+            return False
+        try:
+            if self._closed.is_set() or self.error:
+                job.finish(False)
                 return False
-            image_bytes = sum(image.nbytes for _, _, image in value[1]) if kind == "step" else 0
-            if (len(self._pending) < MAX_PENDING
-                    and self._pending_image_bytes + image_bytes <= MAX_PENDING_IMAGE_BYTES):
-                self._pending_image_bytes += image_bytes
-                self._pending.append((kind, value))
-                self._condition.notify()
-                return True
-        self._broken(RuntimeError("episode queue capacity exceeded"))
-        return False
+            self._pending.put_nowait(job)
+            return True
+        except Full:
+            job.finish(False)
+            self._broken(Full("episode queue capacity exceeded"))
+            return False
+        finally:
+            self._enqueue_lock.release()
 
     def _work(self) -> None:
         try:
@@ -319,21 +348,27 @@ class EpisodeWriter:
                 self.path.unlink(missing_ok=True)
                 raise
             self.opened = True
-            self._notify()
             flushed = time.monotonic()
-            while True:
-                with self._condition:
-                    if not self._pending and not self._closed and not self.error:
-                        self._condition.wait(FLUSH_INTERVAL_S)
-                    if self.error:
-                        break
-                    event = self._pending.popleft() if self._pending else None
-                    if event is not None and event[0] == "step":
-                        self._pending_image_bytes -= sum(image.nbytes for _, _, image in event[1][1])
-                    if event is None and self._closed:
-                        break
-                if event is not None:
-                    kind, value = event
+            end = None
+            while not self.error:
+                try:
+                    job = self._pending.get(timeout=FLUSH_INTERVAL_S)
+                except Empty:
+                    if self._closed.is_set():
+                        # Fence a producer that entered put_nowait just before close.
+                        with self._enqueue_lock:
+                            try:
+                                job = self._pending.get_nowait()
+                            except Empty:
+                                end = self._ending.get_nowait()
+                                break
+                    else:
+                        self._flush()
+                        flushed = time.monotonic()
+                        continue
+                success = False
+                try:
+                    kind, value = job.kind, job.value
                     if kind == "loop":
                         t, sent, measured, measured_t, at_limit = value
                         self._write({
@@ -351,13 +386,13 @@ class EpisodeWriter:
                         self._write(line)
                     elif kind == "flush":
                         self._flush()
-                        with self._condition:
-                            self._flush_waiters.discard(value)
-                        value.set()
-                if time.monotonic() - flushed >= FLUSH_INTERVAL_S:
-                    self._flush()
-                    flushed = time.monotonic()
-            end = self._end
+                    if time.monotonic() - flushed >= FLUSH_INTERVAL_S:
+                        self._flush()
+                        flushed = time.monotonic()
+                    success = True
+                finally:
+                    job.finish(success)
+                    self._pending.task_done()
             if not self.error and end is not None:
                 self._write({
                     "kind": "end", "t": _rounded(end.t, SECOND_DIGITS), "code": end.code,
@@ -373,22 +408,30 @@ class EpisodeWriter:
         except Exception as exc:  # noqa: BLE001 - recording errors must not interrupt control
             self._broken(exc)
         finally:
-            self._detach()
-            if self._file is not None:
-                try:
+            self._closed.set()
+            try:
+                if self._file is not None:
                     self._file.close()
-                except OSError as exc:
+            except Exception as exc:  # noqa: BLE001 - cleanup cannot escape into control
+                self._broken(exc)
+            finally:
+                # No disk I/O under the gate. Every queued flush gets a failure response.
+                with self._enqueue_lock:
+                    while True:
+                        try:
+                            job = self._pending.get_nowait()
+                        except Empty:
+                            break
+                        job.finish(False)
+                        self._pending.task_done()
+                try:
+                    self._detach()
+                except Exception as exc:  # noqa: BLE001 - always signal completion, including cleanup failures
                     self._broken(exc)
-            with self._condition:
-                self._pending.clear()
-                self._pending_image_bytes = 0
-                waiters = tuple(self._flush_waiters)
-                self._flush_waiters.clear()
-            for completed in waiters:
-                completed.set()
+                finally:
+                    self._finished.set()
             if self.error:
                 logger.warning("Episode recording %s failed: %s", self.path, self.error)
-            self._notify()
 
     def _flush(self) -> None:
         assert self._file is not None
@@ -420,19 +463,11 @@ class EpisodeWriter:
         self._file.write(self._compressor.compress(data))
 
     def _broken(self, exc: BaseException) -> None:
-        with self._condition:
-            if not self.error:
-                self.error = f"episode recording failed: {exc}"
-            self._condition.notify()
-        self._notify()
-
-    def _notify(self) -> None:
-        if self._on_update is not None:
-            self._on_update(self)
+        if not self.error:
+            self.error = f"episode recording failed: {exc}"
 
     def _detach(self) -> None:
-        with self._condition:
-            handle, self._handle = self._handle, None
+        handle, self._handle = self._handle, None
         if handle is not None:
             self._twin.remove_tick_listener(handle)
 
@@ -603,30 +638,36 @@ def _pose(pose: Any) -> dict[str, Any]:
     }
 
 
-def _decision(decision: Any) -> dict[str, Any]:
-    """By attributes: a plugin's own decision class with `Decision`'s attribute names works too.
+def _check_timeout(timeout: float) -> None:
+    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("recording waits require a finite, non-negative timeout")
 
-    A decision whose attributes cannot be read is logged by its type, and the run's log goes on.
-    """
+
+def _decision(decision: Any) -> dict[str, Any]:
+    """Snapshot stored diagnostic fields without executing plugin properties."""
+    def stored(name: str, default: Any = None) -> Any:
+        value = inspect.getattr_static(decision, name, default)
+        return value.__get__(decision) if isinstance(value, MemberDescriptorType) else value
+
     try:
-        state = getattr(decision, "state", None)
+        question, answer = stored("question", ""), stored("answer", "")
+        state = stored("state")
         return {
-            "question": str(getattr(decision, "question", "")),
-            "answer": str(getattr(decision, "answer", "")),
+            "question": question if isinstance(question, str) else _placeholder(question),
+            "answer": answer if isinstance(answer, str) else _placeholder(answer),
             "state": _clean(state) if state is not None else {},
-            "confidence": _rounded(getattr(decision, "confidence", None), SECOND_DIGITS),
-            "response_s": _rounded(getattr(decision, "response_s", None), SECOND_DIGITS),
+            "confidence": _rounded(stored("confidence"), SECOND_DIGITS),
+            "response_s": _rounded(stored("response_s"), SECOND_DIGITS),
         }
-    except Exception:  # noqa: BLE001 - a decision the log cannot read costs only that decision
+    except Exception:  # noqa: BLE001 - unreadable diagnostic data costs only that decision
         return {"question": _placeholder(decision), "answer": "", "state": {}, "confidence": None,
                 "response_s": None}
 
 
 def _clean(value: Any, depth: int = 0) -> Any:
     """`value` as strict JSON values. It never raises: a non-finite number becomes null, a large
-    array its type and shape, and anything JSON has no type for its `repr`. A value that cannot be
-    read, such as a mapping another thread changes or an object whose `repr` raises, becomes its
-    type in angle brackets, and only that value is lost."""
+    array its type and shape, and unsupported objects a type placeholder. Custom mappings and
+    representations are not evaluated on the producer thread."""
     try:
         return _cleaned(value, depth)
     except Exception:  # noqa: BLE001 - a value the log cannot read costs only that value
@@ -644,18 +685,21 @@ def _cleaned(value: Any, depth: int) -> Any:
         number = float(value)
         return number if math.isfinite(number) else None
     if depth > 32:
-        return repr(value)
+        return _placeholder(value)
     if isinstance(value, np.ndarray):
         if value.size > ARRAY_LIMIT:
             return f"<ndarray {value.dtype} {value.shape}>"
         return _clean(value.tolist(), depth + 1)
     if isinstance(value, Mapping):
-        return {str(key): _clean(item, depth + 1) for key, item in list(value.items())}
-    if isinstance(value, (list, tuple)):
+        if type(value) is not dict:
+            return _placeholder(value)
+        return {str(key) if type(key) in (str, int, float, bool, type(None)) else _placeholder(key):
+                _clean(item, depth + 1) for key, item in value.copy().items()}
+    if type(value) in (list, tuple):
         return [_clean(item, depth + 1) for item in list(value)]
     if isinstance(value, PurePath):
         return str(value)
-    return repr(value)
+    return _placeholder(value)
 
 
 def _placeholder(value: Any) -> str:

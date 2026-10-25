@@ -41,7 +41,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +58,16 @@ from machinekind_twin_api.strategy import (
     Strategy,
 )
 
-from .episode import EndCode, EpisodeEnd, EpisodeOptions, EpisodeWriter, StepRecord, episodes_dir, twin_header
+from .episode import (
+    WAIT_TIMEOUT_S,
+    EndCode,
+    EpisodeEnd,
+    EpisodeOptions,
+    EpisodeWriter,
+    StepRecord,
+    episodes_dir,
+    twin_header,
+)
 
 __all__ = [
     "OWNER", "Action", "ActionLike", "Decision", "Frame", "FrameSource", "ObjectPose", "Observation",
@@ -89,10 +98,20 @@ class RunnerStatus:
     note: str = ""
     #: Why the run ended, as a stable code (`episode.EndCode`); "" while it runs.
     stopped_code: str = ""
-    #: The recording path; None when recording is disabled, pending or failed to open.
-    episode: Path | None = None
-    #: Why the run's log is missing or incomplete; "" when it is written.
-    episode_error: str = ""
+    _recorder: EpisodeWriter | None = field(default=None, repr=False)
+    _episode_error: str = ""
+
+    @property
+    def episode(self) -> Path | None:
+        """The recording path once opened, or None when disabled, pending or failed to open."""
+        writer = self._recorder
+        return writer.path if writer is not None and writer.opened else None
+
+    @property
+    def episode_error(self) -> str:
+        """Current recording error, read without callbacks or waiting on the writer."""
+        writer = self._recorder
+        return writer.error if writer is not None else self._episode_error
 
 
 # --------------------------------------------------------------------------- the runner
@@ -193,6 +212,7 @@ class StrategyRunner:
         with self._lock:
             self._run = run
             self.status = RunnerStatus(running=True)
+            self._episode_writer = None
         self._stop.clear()
 
         try:
@@ -244,21 +264,16 @@ class StrategyRunner:
                 return
             status = self.status
 
-            def updated(writer: EpisodeWriter) -> None:
-                status.episode = writer.path if writer.opened else None
-                status.episode_error = writer.error
-
             try:
                 run.log = EpisodeWriter.create(folder, header, self.twin, name=options.name,
                                                keep_frames_s=options.keep_frames_s,
-                                               frame_format=options.frame_format, frame_quality=options.frame_quality,
-                                               on_update=updated)
-            except (OSError, ValueError) as exc:
-                status.episode_error = f"episode recording failed: {exc}"
+                                               frame_format=options.frame_format, frame_quality=options.frame_quality)
+            except Exception as exc:  # noqa: BLE001 - diagnostics cannot prevent a strategy from running
+                status._episode_error = f"episode recording failed: {exc}"
                 return
-            self._episode_writer = run.log
+            status._recorder = self._episode_writer = run.log
 
-    def wait_for_episode(self, timeout: float | None = None) -> bool:
+    def wait_for_episode(self, timeout: float = WAIT_TIMEOUT_S) -> bool:
         """Wait for recording to finish after a run. Control and stop paths never call this."""
         writer = self._episode_writer
         return writer is None or writer.wait(timeout)
@@ -360,7 +375,6 @@ class StrategyRunner:
                     done=action.done, success=action.success, error=action.error, note=action.note,
                     decisions=_decisions(action.decisions),
                 ))
-                status.episode_error = log.error
 
         return True
 
@@ -459,7 +473,6 @@ class StrategyRunner:
         if log is not None:
             # Queue completion before calling plugin cleanup; disk I/O stays on the writer thread.
             log.close(end, wait=False)
-            status.episode_error = log.error
         if run.began:
             self._tell_strategy(reason)
 

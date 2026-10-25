@@ -18,11 +18,17 @@ local timestamp; duplicates receive a numeric suffix. In the Strategies tab,
 
 A worker handles file creation, JSON serialization, Zstandard compression,
 image encoding and disk writes. Control callbacks only snapshot and enqueue data.
-The queue holds at most 1,024 events and 64 MiB of pending image data. If it fills,
-or a write fails, recording stops and `runner.status.episode_error` reports why.
+Standard-library queues, events and semaphores bound recording to 1,024 queued
+events and 64 MiB of retained image data. Image capacity is reserved before copying.
+If a queue fills, enqueueing contends, or a write fails, recording stops and
+`runner.status.episode_error` reports why. Producers never wait for queue capacity
+or the writer. Selected image copies and small data snapshots still run synchronously.
 The strategy continues. Queue overflow leaves an unfinished recording.
 
-Stopping a run queues completion without waiting for disk I/O. Before reading
+Close requests use a separate channel, so they succeed even when the data queue
+is full. Stopping a run never waits for disk I/O or listener cleanup. The daemon
+writer cannot hold process exit indefinitely on a stuck disk. Explicit completion
+waits default to five seconds and return `False` on timeout. Before reading
 its completed file, wait explicitly:
 
 ```python
@@ -142,7 +148,9 @@ action = Action(target=target, decisions=(Decision(
 
 Return each decision once, with the next action after its answer arrives.
 The recorder stores it on that step; it does not drive the arm. `state` should
-contain JSON data. Arrays larger than 64 elements are represented by type and
+contain plain JSON data. Custom properties, mappings and object representations
+are not evaluated during snapshots; unsupported values become type placeholders.
+Arrays larger than 64 elements are represented by type and
 shape. A plain target mapping cannot carry decisions. Startup decisions must be
 returned with an action; decisions arriving after the run ends are not recorded.
 
@@ -152,8 +160,9 @@ Without a `StrategyRunner`, use `EpisodeWriter.create(folder, header, twin)` wit
 `header={**twin_header(twin), "mode": "observation", "strategy": None}`.
 The writer captures twin loop samples. Submit `StepRecord`s with `run_t=None`
 and any externally observed commands as `intent`; leave `intent={}` when unknown.
-Close with an `EpisodeEnd`. `close(..., wait=False)` returns immediately;
-`wait(timeout)` lets a non-control caller wait for completion.
+Close with an `EpisodeEnd`; `close(end)` returns immediately.
+`wait(timeout)` or `close(end, wait=True, timeout=5.0)` lets a non-control caller
+wait for completion with a finite timeout.
 
 When converting `Perception.snapshot()` views to `ObjectPose`s, add
 `perception.clock() - perception.tracks.last_step()` to each view's `age_s`.

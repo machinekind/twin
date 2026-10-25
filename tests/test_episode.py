@@ -122,7 +122,7 @@ def test_a_log_round_trips_through_its_loader(twin, tmp_path):
                        note="poza 1/1"))
     run_ticks(twin, 3)
     assert writer.now() == pytest.approx(8 * TWIN_PERIOD)
-    writer.close(end(t=1.0, steps=1, success=True, error=0.5, note="poza 1/1"))
+    writer.close(end(t=1.0, steps=1, success=True, error=0.5, note="poza 1/1"), wait=True)
 
     log = EpisodeLog.load(writer.path)
 
@@ -171,7 +171,7 @@ def test_every_line_is_strict_json_with_constant_keys(twin, tmp_path):
                         confidence=math.inf)
     writer.step(record(writer, twin, 0, error=math.nan, decisions=[decision]))
     writer.step(record(writer, twin, 1))
-    writer.close(end(steps=2, error=math.nan))
+    writer.close(end(steps=2, error=math.nan), wait=True)
 
     def refuse(constant):
         raise ValueError(constant)
@@ -193,7 +193,7 @@ def test_a_cut_off_log_loads_as_unfinished(twin, tmp_path):
     for step in range(3):
         run_ticks(twin, 2)
         writer.step(record(writer, twin, step, note=f"krok {step}"))
-    writer.close(end(code="done", steps=3))
+    writer.close(end(code="done", steps=3), wait=True)
 
     text = log_text(writer.path).splitlines()
     cut = tmp_path / "cut.jsonl"
@@ -214,7 +214,7 @@ def test_a_log_cut_inside_a_character_loads_as_unfinished(twin, tmp_path):
     for step, note in enumerate(("chwytam kostkę", "chwytak złapał")):
         run_ticks(twin, 2)
         writer.step(record(writer, twin, step, note=note))
-    writer.close(end(code="done", steps=2))
+    writer.close(end(code="done", steps=2), wait=True)
 
     data = log_bytes(writer.path)
     cut = tmp_path / "cut.jsonl"
@@ -234,7 +234,7 @@ def test_line_separators_inside_text_stay_inside_their_line(twin, tmp_path):
     writer = EpisodeWriter.create(tmp_path, {**twin_header(twin), "meta": {"ustawienia": odd}}, twin)
     run_ticks(twin, 2)
     writer.step(record(writer, twin, 0, note=odd, decisions=[Decision(question="gdzie kostka?", answer=odd)]))
-    writer.close(end(code="done", steps=1, success=True, reason=odd, note=odd))
+    writer.close(end(code="done", steps=1, success=True, reason=odd, note=odd), wait=True)
 
     log = EpisodeLog.load(writer.path)
     summary = EpisodeLog.summary(writer.path)
@@ -252,7 +252,7 @@ def test_a_broken_line_a_newer_version_or_another_file_are_refused(twin, tmp_pat
     twin.connect("sim", threaded=False)
     writer = observer(twin, tmp_path)
     run_ticks(twin, 3)
-    writer.close(end())
+    writer.close(end(), wait=True)
     text = log_text(writer.path).splitlines()
 
     broken = tmp_path / "broken.jsonl"
@@ -275,24 +275,23 @@ def test_two_logs_with_one_name_get_their_own_files(twin, tmp_path):
     twin.connect("sim", threaded=False)
     first = observer(twin, tmp_path, name="same")
     second = observer(twin, tmp_path, name="same")
-    first.close(end())
-    second.close(end())
+    first.close(end(), wait=True)
+    second.close(end(), wait=True)
 
-    assert first.path.name == "same.jsonl.zst"
-    assert second.path.name == "same-2.jsonl.zst"
-    assert EpisodeLog.load(first.path).header["name"] == "same"
-    assert EpisodeLog.load(second.path).header["name"] == "same-2"
+    assert {first.path.name, second.path.name} == {"same.jsonl.zst", "same-2.jsonl.zst"}
+    assert EpisodeLog.load(first.path).header["name"] == first.path.name.removesuffix(".jsonl.zst")
+    assert EpisodeLog.load(second.path).header["name"] == second.path.name.removesuffix(".jsonl.zst")
 
 
 def test_a_closed_log_stops_growing(twin, tmp_path):
     twin.connect("sim", threaded=False)
     writer = observer(twin, tmp_path)
     run_ticks(twin, 3)
-    writer.close(end())
+    writer.close(end(), wait=True)
     size = writer.path.stat().st_size
 
     run_ticks(twin, 10)
-    writer.close(end(code="error"))
+    writer.close(end(code="error"), wait=True)
     writer.flush()
 
     assert writer.path.stat().st_size == size
@@ -305,7 +304,7 @@ def test_the_summary_reads_the_header_and_the_end(twin, tmp_path):
     for step in range(3):
         run_ticks(twin, 2)
         writer.step(record(writer, twin, step, error=0.25))
-    writer.close(end(code="done", steps=3, success=True, error=0.25))
+    writer.close(end(code="done", steps=3, success=True, error=0.25), wait=True)
 
     summary = EpisodeLog.summary(writer.path)
 
@@ -329,7 +328,7 @@ def test_kept_frames_round_trip_in_both_formats(twin, tmp_path, frame_format, ex
 
     every = observer(twin, tmp_path, name="every", keep_frames_s=0, frame_format=frame_format)
     every.step(record(every, twin, 0, frames={"a": Frame(image, 0.01), "b": None}))
-    every.close(end(steps=1))
+    every.close(end(steps=1), wait=True)
 
     frames = EpisodeLog.load(every.path).steps[0]["frames"]
     kept = tmp_path / frames[0]["file"]
@@ -344,14 +343,14 @@ def test_kept_frames_round_trip_in_both_formats(twin, tmp_path, frame_format, ex
     sparse = observer(twin, tmp_path, name="sparse", keep_frames_s=1.0)
     for step, t in enumerate((0.0, 0.5, 0.95, 1.0, 1.5)):
         sparse.step(record(sparse, twin, step, t=t, frames={"a": Frame(image, 0.01)}))
-    sparse.close(end(steps=5))
+    sparse.close(end(steps=5), wait=True)
 
     files = [step["frames"][0]["file"] for step in EpisodeLog.load(sparse.path).steps]
     assert [file is not None for file in files] == [True, False, False, True, False]
 
     plain = observer(twin, tmp_path, name="plain")
     plain.step(record(plain, twin, 0, frames={"a": Frame(image, 0.01)}))
-    plain.close(end(steps=1))
+    plain.close(end(steps=1), wait=True)
 
     assert EpisodeLog.load(plain.path).steps[0]["frames"][0]["file"] is None
     assert not (tmp_path / "plain.frames").exists()
@@ -922,7 +921,7 @@ def test_observation_without_commands_does_not_count_latency(twin, monkeypatch, 
     for step in range(20):
         run_ticks(twin, 5)
         writer.step(record(writer, twin, step))
-    writer.close(end(steps=20))
+    writer.close(end(steps=20), wait=True)
 
     log = EpisodeLog.load(writer.path)
     result = report(log)
@@ -947,7 +946,7 @@ def test_observation_with_a_foreign_controllers_commands_counts_latency(twin, tm
         twin.set_target(command, owner="obcy")
         writer.step(record(writer, twin, step, intent=command))
         run_ticks(twin, 3)
-    writer.close(end(steps=40))
+    writer.close(end(steps=40), wait=True)
 
     total = report(EpisodeLog.load(writer.path)).latency[0].total
 
@@ -1118,7 +1117,7 @@ def test_zstandard_truncation_recovers_records_and_checksum_corruption_is_report
     writer = observer(twin, tmp_path, name="complete")
     writer.step(record(writer, twin, 0, intent={"j1": 5.0}))
     assert writer.flush(wait=True, timeout=5.0)
-    writer.close(end(code="done", steps=1))
+    writer.close(end(code="done", steps=1), wait=True)
     data = writer.path.read_bytes()
 
     truncated = tmp_path / "cut.jsonl.zst"
@@ -1160,7 +1159,7 @@ def test_queued_images_and_decision_state_are_snapshots(twin, tmp_path, monkeypa
         state["joint"] = 99
     finally:
         release.set()
-        writer.close(end(steps=1))
+        writer.close(end(steps=1), wait=True)
 
     import cv2
 
@@ -1177,7 +1176,7 @@ def test_image_queue_has_a_byte_limit(twin, tmp_path, monkeypatch):
     monkeypatch.setattr(episode, "MAX_PENDING_IMAGE_BYTES", 100)
     writer = observer(twin, tmp_path, keep_frames_s=0)
     writer.step(record(writer, twin, 0, frames={"a": Frame(np.zeros((20, 20, 3), np.uint8), 0.0)}))
-    writer.close(end(steps=1))
+    writer.close(end(steps=1), wait=True)
 
     assert "queue capacity exceeded" in writer.error
     assert EpisodeLog.load(writer.path).end.code == "unfinished"
@@ -1216,3 +1215,310 @@ def test_failed_writer_releases_flush_waiters(twin, tmp_path, monkeypatch):
     assert returned.wait(1.0)
     assert results == [False]
     assert writer.wait(timeout=5.0)
+
+
+@pytest.mark.parametrize("stage", ["create", "serialize", "encode", "flush", "sync", "close"])
+def test_runner_does_not_wait_for_any_storage_stage(twin, tmp_path, monkeypatch, stage):
+    import cv2
+
+    from machinekind_twin import episode
+
+    twin.connect("sim", threaded=False)
+    entered, release = threading.Event(), threading.Event()
+
+    def pause():
+        assert threading.current_thread() is not threading.main_thread()
+        entered.set()
+        assert release.wait(5.0)
+
+    name = {"create": "_open_new", "serialize": "_write", "encode": "imencode",
+            "flush": "_flush", "sync": "fsync"}.get(stage)
+    target = {"create": episode, "serialize": EpisodeWriter, "encode": cv2,
+              "flush": EpisodeWriter, "sync": episode.os}.get(stage)
+    if stage == "close":
+        original = episode._open_new
+
+        class SlowClose:
+            def __init__(self, file):
+                self.file = file
+
+            def __getattr__(self, key):
+                return getattr(self.file, key)
+
+            def close(self):
+                pause()
+                return self.file.close()
+
+        def open_new(folder, stem):
+            path, file = original(folder, stem)
+            return path, SlowClose(file)
+
+        monkeypatch.setattr(episode, "_open_new", open_new)
+    else:
+        original = getattr(target, name)
+
+        def blocked(*args, **kwargs):
+            pause()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(target, name, blocked)
+
+    image = np.zeros((24, 32, 3), np.uint8)
+
+    def look(obs):
+        obs.frames["camera"]
+        return {"j1": float(obs.step)}
+
+    runner = StrategyRunner(twin, Plugin(look), cameras=("camera",),
+                            frame=lambda _: (image, time.monotonic()),
+                            episode=EpisodeOptions(folder=tmp_path, keep_frames_s=0))
+    runner.start(threaded=False)
+    try:
+        assert runner.step_once(0.0)
+        if stage in {"sync", "close"}:
+            runner.stop()
+        assert entered.wait(2.0)
+        if runner.status.running:
+            assert runner.step_once(0.05)
+            run_ticks(twin, 3)
+        runner.stop()
+        assert not runner.status.running
+        assert not runner.wait_for_episode(timeout=0.01)
+        assert runner._episode_writer is not None
+        assert not runner._episode_writer.close(end(), wait=True, timeout=0.01)
+    finally:
+        release.set()
+        runner.stop()
+        assert runner.wait_for_episode(timeout=5.0)
+
+    assert runner.status.episode_error == ""
+    assert runner.status.episode is not None
+    assert EpisodeLog.load(runner.status.episode).end.code == "stopped"
+
+
+def test_close_succeeds_with_a_full_queue_without_waiting_for_capacity(twin, tmp_path, monkeypatch):
+    from machinekind_twin import episode
+
+    twin.connect("sim", threaded=False)
+    writing, release, closed = threading.Event(), threading.Event(), threading.Event()
+    original = EpisodeWriter._write
+
+    def paused(self, line):
+        if line["kind"] == "header":
+            writing.set()
+            assert release.wait(5.0)
+        original(self, line)
+
+    monkeypatch.setattr(episode, "MAX_PENDING", 4)
+    monkeypatch.setattr(EpisodeWriter, "_write", paused)
+    writer = observer(twin, tmp_path)
+    try:
+        assert writing.wait(5.0)
+        run_ticks(twin, 4)
+
+        def close():
+            writer.close(end())
+            closed.set()
+
+        closer = threading.Thread(target=close, daemon=True)
+        closer.start()
+        assert closed.wait(1.0)
+        closer.join(timeout=1.0)
+        assert writer.error == ""
+    finally:
+        release.set()
+        assert writer.wait(timeout=5.0)
+
+    log = EpisodeLog.load(writer.path)
+    assert len(log.loop_t) == 4
+    assert log.end.code == "stopped"
+
+
+def test_contended_enqueue_does_not_wait_or_affect_the_runner(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Plugin(answer({"j1": 5.0})), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    writer = runner._episode_writer
+    assert writer is not None
+    with writer._enqueue_lock:
+        assert runner.step_once(0.0)
+        assert runner.status.running
+        runner.stop()
+        assert "queue is busy" in runner.status.episode_error
+    assert runner.wait_for_episode(timeout=5.0)
+    assert EpisodeLog.load(writer.path).end.code == "unfinished"
+
+
+def test_concurrent_close_writes_exactly_one_end_record(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    writing, release = threading.Event(), threading.Event()
+    original = EpisodeWriter._write
+
+    def paused(self, line):
+        if line["kind"] == "header":
+            writing.set()
+            assert release.wait(5.0)
+        original(self, line)
+
+    monkeypatch.setattr(EpisodeWriter, "_write", paused)
+    writer = observer(twin, tmp_path)
+    barrier = threading.Barrier(8)
+
+    def close(number):
+        barrier.wait(timeout=2.0)
+        writer.close(end(reason=f"caller {number}"))
+
+    closers = [threading.Thread(target=close, args=(i,), daemon=True) for i in range(8)]
+    try:
+        assert writing.wait(5.0)
+        for closer in closers:
+            closer.start()
+        for closer in closers:
+            closer.join(timeout=2.0)
+            assert not closer.is_alive()
+    finally:
+        release.set()
+        writer.close(end(reason="cleanup"))
+        assert writer.wait(timeout=5.0)
+
+    ends = [line for line in lines(writer.path) if line["kind"] == "end"]
+    assert len(ends) == 1
+    assert ends[0]["reason"] in {f"caller {i}" for i in range(8)}
+
+
+def test_stuck_storage_cannot_hold_process_exit(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([
+        str(root / "src"), str(root / "packages" / "machinekind_twin_api"),
+    ]))
+    script = textwrap.dedent('''
+        import threading
+        from types import SimpleNamespace
+        from machinekind_twin import episode
+
+        entered = threading.Event()
+
+        class Twin:
+            clock = SimpleNamespace(now=lambda: 0.0, virtual=True)
+            def add_tick_listener(self, fn): return 1
+            def remove_tick_listener(self, handle): pass
+
+        def blocked(*args, **kwargs):
+            entered.set()
+            threading.Event().wait()
+
+        episode._open_new = blocked
+        writer = episode.EpisodeWriter.create(FOLDER, {"joints": []}, Twin())
+        assert entered.wait(2.0)
+        writer.close(episode.EpisodeEnd("stopped", "exit", 0.0, False, None, None, "", 0, True))
+        assert not writer.wait(timeout=0.01)
+        print("runner exited", flush=True)
+    ''').replace("FOLDER", repr(str(tmp_path)))
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True,
+                            timeout=5.0, check=True)
+    assert result.stdout.strip() == "runner exited"
+
+
+def test_diagnostic_snapshots_do_not_call_plugin_hooks(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    called = []
+
+    class Client:
+        def __repr__(self):
+            called.append("repr")
+            raise AssertionError("must not run on the producer")
+
+    class CustomMapping(dict):
+        def items(self):
+            called.append("items")
+            raise AssertionError("must not run on the producer")
+
+    class CustomDecision:
+        @property
+        def question(self):
+            called.append("property")
+            raise AssertionError("must not run on the producer")
+
+    writer = EpisodeWriter.create(tmp_path, {**twin_header(twin), "meta": {"client": Client()}}, twin)
+    writer.step(record(writer, twin, 0, decisions=(
+        Decision("reach", "yes", state={"client": Client(), "mapping": CustomMapping(x=1)}),
+        CustomDecision(),
+    )))
+    assert writer.close(end(steps=1), wait=True)
+
+    assert called == []
+    log = EpisodeLog.load(writer.path)
+    assert log.header["meta"]["client"] == "<Client>"
+    assert log.steps[0]["decisions"][0]["state"] == {"client": "<Client>", "mapping": "<CustomMapping>"}
+
+
+def test_thread_start_failure_disables_recording_without_failing_the_run(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    listeners = len(twin._listeners)
+    original = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "episode-writer":
+            raise RuntimeError("thread unavailable")
+        return original(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    runner = StrategyRunner(twin, Plugin(answer({"j1": 5.0})), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    assert runner.step_once(0.0)
+    assert runner.status.running
+    assert runner.status.episode is None
+    assert "thread unavailable" in runner.status.episode_error
+    assert len(twin._listeners) == listeners
+    runner.stop()
+
+
+@pytest.mark.parametrize("timeout", [None, math.inf, math.nan, -1])
+def test_explicit_waits_reject_unbounded_or_invalid_timeouts(twin, tmp_path, timeout):
+    writer = observer(twin, tmp_path)
+    try:
+        with pytest.raises(ValueError, match="finite, non-negative"):
+            writer.wait(timeout)
+        with pytest.raises(ValueError, match="finite, non-negative"):
+            writer.flush(wait=True, timeout=timeout)
+    finally:
+        assert writer.close(end(), wait=True)
+
+
+def test_threaded_runner_keeps_acting_while_storage_is_blocked(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    writing, release, progressed = threading.Event(), threading.Event(), threading.Event()
+    original = EpisodeWriter._write
+
+    def blocked(self, line):
+        if line["kind"] == "step":
+            writing.set()
+            assert release.wait(5.0)
+        original(self, line)
+
+    def act(obs):
+        if obs.step >= 4:
+            progressed.set()
+        return {"j1": float(obs.step)}
+
+    monkeypatch.setattr(EpisodeWriter, "_write", blocked)
+    runner = StrategyRunner(twin, Plugin(act), episode=EpisodeOptions(folder=tmp_path))
+    runner.start()
+    try:
+        assert writing.wait(2.0)
+        assert progressed.wait(2.0), "the strategy stopped ticking while the writer was blocked"
+        runner.stop()
+        assert runner.status.step >= 5
+        assert runner.status.episode_error == ""
+    finally:
+        release.set()
+        runner.stop()
+        assert runner.wait_for_episode(timeout=5.0)
+
+    assert runner.status.episode is not None
+    assert EpisodeLog.load(runner.status.episode).end.steps == runner.status.step
