@@ -9,6 +9,9 @@
     twin calib-sim --robot NAZWA     # ... na innym zainstalowanym ramieniu
     twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
     twin export <folder>             # stanowisko jako dane (MJCF + station.json) dla treningu
+    twin episode                     # raport ostatniego przebiegu strategii (opoznienia stawow, dryf chwytaka)
+    twin episode <plik.jsonl>        # ... z tego zapisu
+    twin episode <folder>            # lista przebiegow: koniec, sukces, blad zadania
     twin ui                          # panel w przegladarce: http://localhost:8080
     twin ui --host 0.0.0.0           # ... dostepny z sieci (bez hasla - tylko w zaufanej)
     twin ui --stream-port 8766       # ... plus podglad kamer (MJPEG, tylko odczyt): http://<maszyna>:8766
@@ -32,6 +35,7 @@ import os
 import platform
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _check(_: argparse.Namespace) -> int:
@@ -71,7 +75,7 @@ def _check(_: argparse.Namespace) -> int:
                 line(f"model {spec.title}", f"{m.nbody} cial, {faces} trojkatow ({folder})")
             except Exception as exc:  # noqa: BLE001 - zly model to wiersz raportu, nie wyjatek
                 line(f"model {name}", f"{type(exc).__name__}: {exc}", False)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a broken robot registry is a report line, not a crash
         line("ramiona", f"{type(exc).__name__}: {exc}", False)
 
     try:
@@ -189,6 +193,73 @@ def _export(a: argparse.Namespace) -> int:
     print(f"Stanowisko -> {folder.resolve()}: scene.xml, assets/, station.json "
           f"(ramie {ws.robot}, kamer {sum(c.enabled for c in ws.cameras)})")
     return 0
+
+
+def _episode(a: argparse.Namespace) -> int:
+    """The report of one run's episode log, or one line per run for a folder of them.
+
+    Without a path it reports the newest log next to the workspace file.
+    """
+    from .episode import EpisodeLog, episodes_dir
+    from .episode_report import report
+
+    target = Path(a.target) if a.target else episodes_dir(a.path)
+    if not target.exists():
+        print(f"twin episode: no such path: {target}", file=sys.stderr)
+        return 1
+
+    if target.is_dir():
+        logs = sorted([*target.glob("*.jsonl"), *target.glob("*.jsonl.zst")],
+                      key=lambda path: _natural(path.name.split(".jsonl")[0]), reverse=True)
+        if not logs:
+            print(f"no episode logs in {target}", file=sys.stderr)
+            return 1
+        if a.target:
+            _list_episodes(target, logs)
+            return 0
+        target = logs[0]
+
+    try:
+        log = EpisodeLog.load(target)
+    except (OSError, ValueError) as exc:
+        print(f"twin episode: {exc}", file=sys.stderr)
+        return 1
+
+    offset_m = tuple(value / 1000.0 for value in a.offset_mm)
+    print("\n".join(report(log, gripper=a.gripper, offset_m=offset_m).lines()))
+    return 2 if log.recording.get("telemetry_complete") is False else 0
+
+
+def _list_episodes(folder: Path, logs: list[Path]) -> None:
+    from .episode import EpisodeLog
+
+    print(f"Episodes in {folder} (newest first):")
+    for path in logs:
+        name = path.name.removesuffix(".zst").removesuffix(".jsonl")
+        try:
+            summary = EpisodeLog.summary(path)
+        except (OSError, ValueError) as exc:
+            print(f"  {name:<24} unreadable: {exc}")
+            continue
+
+        end = summary.end
+        success = "-" if end.success is None else ("yes" if end.success else "no")
+        error = "-" if end.error is None else f"{end.error:.3g}"
+        length = "-" if end.t is None else f"{end.t:.2f}"
+        collection = ""
+        if summary.recording.get("telemetry_complete") is False:
+            collection = "  INCOMPLETE TELEMETRY"
+        elif summary.recording and not summary.recording.get("frames_complete"):
+            collection = "  frame gaps"
+        print(f"  {name:<24} {end.code:<13} success {success:<4} task error {error:<9} "
+              f"duration {length:>8} s  steps {end.steps:<6} {end.reason}{collection}")
+
+
+def _natural(name: str) -> list[Any]:
+    """`name` split into text and numbers, so `-10` sorts after `-2`."""
+    import re
+
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
 
 
 #: The example station in simulation: two cameras whose calibrated pose is their true pose in
@@ -429,6 +500,16 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("folder")
     p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_export)
+
+    p = sub.add_parser("episode", help="report an episode or list recordings")
+    p.add_argument("target", nargs="?", default=None, metavar="PATH",
+                   help=".jsonl.zst or .jsonl file (report), or folder (list); defaults to the newest recording")
+    p.add_argument("--path", default=None, help="workspace file (default: workspace/twin.json)")
+    p.add_argument("--gripper", default=None, metavar="LABEL",
+                   help="camera-observed gripper marker label for the drift report")
+    p.add_argument("--offset-mm", nargs=3, type=float, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"),
+                   help="marker position in the TCP frame [mm]")
+    p.set_defaults(fn=_episode)
 
     p = sub.add_parser("ui", help="panel blizniaka w przegladarce (viser)")
     # Panel rusza prawdziwym ramieniem i nie ma hasla, a viser dzieli stan GUI miedzy

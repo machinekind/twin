@@ -32,3 +32,8 @@ MUJOCO_LOG.TXT
 
 # Pliki Claude Code (worktree agentow, launch.json) - lokalne, nie do repozytorium
 .claude/
+
+# Episode recordings, including custom output folders
+*.jsonl.zst
+*.frames/
+**/episodes/

@@ -8,7 +8,7 @@ only numpy: no MuJoCo, viser, torch or OpenCV.
 
 | Module | What is in it |
 |---|---|
-| `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
+| `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `Decision` (a model's answer, for the run's log), `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
 | `machinekind_twin_api.backend` | `BackendContext` (what a backend factory gets), the `BackendPlugin` protocol, the `RobotBackend` base class, `RobotInfo` |
 | `machinekind_twin_api.detector` | `DetectRequest` (one call's frames), `Detection` (one object seen in one frame, in pixels), `DetectorInfo`, the `Detector` protocol |
 | `machinekind_twin_api.entry_points` | `ROBOTS`, `BACKENDS`, `STRATEGIES`, `DETECTORS`: the entry point groups the twin reads |
@@ -112,6 +112,11 @@ class Hold(Strategy[HoldSettings]):
 sets it as `Hold` does. Subclassing also lets a type checker (pyright, mypy) check `act`, `start`
 and `stop` against the contract. At runtime the twin does not need the base class: it requires
 `hz` and `act`, and checks `settings` when the class has one.
+
+### Model decisions
+
+`Action.decisions` carries diagnostic model responses when episode recording is enabled.
+See [episode recording](../../docs/EPISODES.md#model-decisions) for the API example and format.
 
 ## A backend
 
@@ -233,9 +238,10 @@ subclassing `Detector` is optional.
 
 ## Evolving the contract
 
-Plugins pin `machinekind-twin-api>=0.1,<0.2`. Four rules keep every 0.1.x release working for them:
+Plugins pin `machinekind-twin-api>=0.1,<0.2`. Five rules keep every 0.1.x release working for them:
 
 * A new field goes at the end of a frozen dataclass, with a default.
+* What a strategy hands back each tick lives in `Action`, so `act`'s signature never changes.
 * Everything `detect` gets lives in `DetectRequest`, so its signature never changes.
 * What a detector learns once, at start, lives in `DetectorInfo`.
 * Nothing is removed or renamed within 0.x.

@@ -84,6 +84,7 @@ see [the first-session procedure](#galaxea-a1x-first-session) below.
 |---|---|
 | `workspace/twin.json` | Your local robot selection, backend/port, table, scene look, cameras, calibration and measured dynamics; ignored by Git |
 | `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
+| `workspace/episodes/` | Opt-in episode recordings and optional camera images; ignored by Git |
 | `configs/local.yaml` | Your backend, strategy, detector and safety settings; ignored by Git |
 | `examples/twin.sim.json` | Example workstation with two calibrated simulated cameras |
 | `assets/calib/` | Example lens intrinsics and distortion files |
@@ -138,7 +139,7 @@ through the browser's animation loop, which can pause in a background tab.
 | **Mapa** (Map) | Stitched tabletop view, the objects that running detectors track and a tag-on-table reach action |
 | **Dynamika** (Dynamics) | Record supervised excitation, fit servo dynamics and save the result to the workstation |
 | **Detektory** (Detectors) | Choose an installed detector, edit settings, start it and stop running ones. Tracked objects show as text and 3D markers |
-| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run. The strategy gets the tracked objects in `Observation.objects` |
+| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run. The strategy gets the tracked objects in `Observation.objects`. **Record episode** enables logging; **Save camera frames** also saves sampled images. See [episode recording](EPISODES.md) |
 | **Sim-Real** | Real image with simulated edges overlaid using the same camera pose and intrinsics |
 
 The guide (**Przewodnik**, **Teraz**) reports the next action from the current
@@ -307,6 +308,7 @@ For hardware:
 | `twin calib-sim --n 5 --cameras 2` | Calibration against simulated ground truth; optional `--robot` |
 | `twin workspace` | Inspect workstation state; optional `--path` |
 | `twin export workspace/export` | Export scene, assets and station data; optional `--path` |
+| `twin episode [PATH]` | Report the latest recording, report a specified file or list a folder; see [episode recording](EPISODES.md) |
 
 ```bash
 uv run pytest -q
@@ -324,6 +326,8 @@ Control-loop tests use [VirtualClock](../src/machinekind_twin/clock.py) and
 [the test bench](../tests/twinbench.py) to advance simulation deterministically.
 Tests can connect with `threaded=False`, advance `Twin.step(dt)` and call
 `StrategyRunner.step_once` directly. The application uses `WallClock`.
+Episode recording is optional. See [episode recording](EPISODES.md) for configuration,
+file format and latency and drift reports.
 
 ## Calibration and perception notes
 
