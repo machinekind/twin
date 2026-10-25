@@ -2,9 +2,9 @@
 
 Each label gets the twin's old cube tracker (`perception.ObjectTracker`), unchanged. A detector
 thread hands its placed labels to `Tracks.observe`; whoever reads the objects (a running strategy
-through `objects=`, or the panel when idle) calls `Tracks.step`, which feeds each tracker its newest
-measurement once, together with the hand (TCP pose and jaw angles), and publishes one `ObjectPose`
-per label.
+through `objects=`, or the panel when idle) calls `Tracks.step`. A step feeds each tracker the hand
+(TCP pose and jaw angles) and publishes one `ObjectPose` per label. It feeds a tracker its newest
+measurement only when that measurement's call read newer frames than the last one fed.
 
 Every published pose carries `age_s`: seconds since the frames it was measured from were captured,
 0 while it follows the jaws. The tracker's `source` passes through with one bounded rewrite, so the
@@ -14,7 +14,8 @@ word matches the age:
   and `age_s <= fresh_s`; the tracker says "kamery" only on the step that accepts a measurement,
   and a strategy stepping faster than the detector answers would otherwise see it flicker;
 - a "kamery" becomes "ostatnie widziane" once `age_s > fresh_s`, so a measurement that is old on
-  arrival (a language model answering in 20 s) is never presented as what the cameras see now.
+  arrival is never presented as what the cameras see now. A language model's 20 s answer and a
+  repeated answer are both old on arrival.
 
 `fresh_s` is twice the detector's interval, kept within 0.5 to 1.0 s: the cube detector at 0.33 s
 keeps "kamery" within 0.66 s of capture, close to the old panel's 0.5 s. Annotated sources
@@ -100,14 +101,21 @@ class _Answer:
 class _Track:
     tracker: ObjectTracker
     detector: str
-    #: The newest measurement handed in; fed to the tracker once (`used_t`).
+    #: The newest measurement handed in. It is fed when its call read newer frames than `used_t`.
     pending: Located
+    #: The `_read_t` of the last measurement fed from `detector`.
     used_t: float = -math.inf
     #: The last measurement fed to the tracker: what the panel shows about it.
     fed: Located | None = None
     #: Since when the tracker has given no pose; None while it gives one.
     none_since: float | None = None
     view: TrackView | None = field(default=None)
+
+
+def _read_t(loc: Located) -> float:
+    """Roughly when the frames read by the call that gave `loc` were captured. A repeated answer has
+    an old `t` and a new `_read_t`."""
+    return loc.t + loc.age_s
 
 
 class Tracks:
@@ -145,17 +153,27 @@ class Tracks:
 
     # ------------------------------------------------------------------ the detector thread
     def observe(self, detector: str, batch: list[Located], latency_s: float, interval_s: float) -> None:
-        """One detector call's placed labels. The newer capture time wins a label two detectors share."""
+        """One detector call's placed labels. The newer capture time wins a label two detectors share.
+        A detector's latest answer always replaces its own earlier one. A detector that takes over a
+        track has its measurement fed, even if the previous detector's last call read later frames.
+
+        The largest `Located.age_s` in the batch counts as latency, so a repeated answer's pose is
+        held until the next answer. A repeat read from newer frames is fed again. It renews the hold,
+        and its age still counts from its `t`.
+        """
+        age_s = max((loc.age_s for loc in batch), default=0.0)
         with self._lock:
             self._answers[detector] = _Answer(frozenset(loc.label for loc in batch),
-                                              self.hold_s_for(interval_s, latency_s),
+                                              self.hold_s_for(interval_s, latency_s + age_s),
                                               self.fresh_s_for(interval_s))
             for loc in batch:
                 track = self._tracks.get(loc.label)
                 if track is None:
                     self._tracks[loc.label] = _Track(ObjectTracker.for_spec(self._spec), detector, loc)
+                elif detector == track.detector:
+                    track.pending = loc
                 elif loc.t >= track.pending.t:
-                    track.pending, track.detector = loc, detector
+                    track.pending, track.detector, track.used_t = loc, detector, -math.inf
 
     # ------------------------------------------------------------------ the readers
     def step(self, hand: Hand | Callable[[], Hand | None] | None = None) -> dict[str, ObjectPose]:
@@ -224,8 +242,8 @@ class Tracks:
         answer = self._answers.get(track.detector) or _Answer(frozenset(), self.HOLD_S, self.FRESH_MIN_S)
         p = track.pending
         det = None
-        if p.t > track.used_t and p.confidence > self.MIN_CONFIDENCE and now - p.t <= answer.hold_s:
-            track.used_t, track.fed = p.t, p
+        if _read_t(p) > track.used_t and p.confidence > self.MIN_CONFIDENCE and now - p.t <= answer.hold_s:
+            track.used_t, track.fed = _read_t(p), p
             det = CubeDetection(np.asarray(p.pos, float).copy(), np.asarray(p.rot, float).copy(),
                                 area_px=p.confidence, confidence=p.confidence, n_cameras=p.n_cameras, t=p.t)
         tracker = track.tracker

@@ -301,6 +301,16 @@ def test_a_request_built_without_arm_masks_has_none():
         assert request.arm_masks.get("front") is None
         assert len(request.arm_masks) == 0
     assert [f.name for f in dataclasses.fields(DetectRequest)] == ["frames", "step", "arm_masks"]
+def test_a_detection_s_age_defaults_to_0_and_can_be_replaced():
+    d = Detection("cube", "front", (320.0, 240.0))
+
+    assert d.age_s == 0.0
+
+    older = dataclasses.replace(d, age_s=5.0)
+
+    assert older is not d
+    assert older.age_s == 5.0
+    assert (older.label, older.camera, older.pixel) == (d.label, d.camera, d.pixel)
 
 
 # --------------------------------------------------------------------------- backend

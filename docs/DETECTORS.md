@@ -43,12 +43,16 @@ when a camera has none. A request built without masks holds an empty mapping.
 
 Each `Detection` carries a label, a camera and a pixel. The pixel follows the
 OpenCV convention in the frame's own resolution. A detection may also carry a
-box, a confidence, a boolean silhouette `mask`, `height_m`, `size_m` and its own
-pixel error. `height_m` is the height above the table of the point the pixel
-marks, and `size_m` is the object's size. Labels are compared after stripping
+box, a confidence, a boolean silhouette `mask`, `height_m`, `size_m`, its own
+pixel error and `age_s`. `height_m` is the height above the table of the point
+the pixel marks, and `size_m` is the object's size. `age_s` is the age in
+seconds of the frames the detection was made from, relative to this call's
+frames. The default 0 means this call's frames. A detector that repeats an
+earlier answer sets `age_s` to the time between that answer's frame and this
+call's frame from the same camera. Labels are compared after stripping
 whitespace and lower-casing. The twin drops a detection that names an unknown
-camera, has a pixel outside the frame or has a mask of the wrong shape. The
-Detectors tab shows how many it dropped.
+camera, has a pixel outside the frame, has a mask of the wrong shape or has a
+negative or non-finite `age_s`. The Detectors tab shows how many it dropped.
 
 `start(info)` runs once before the first call and may raise to refuse the
 start. `stop(reason)` runs once after a successful start. It may run while
@@ -70,8 +74,11 @@ Polish name of the way it used:
 | one ray (`promien`) | One camera, or rays that disagree | The most confident detection's ray meets the plane at `height_m`. Without `height_m` the plane is at half of `size_m`, and without both it is the table top |
 
 The geometry uses the calibrated camera poses with lens distortion, also in
-simulation. Simulated perception therefore tests the calibration. A placed
-object's `t` is the capture time of the oldest frame used to place it.
+simulation. Simulated perception therefore tests the calibration. A detection's
+date is its frame's capture time minus its `age_s`. A placed object's `t` is the
+oldest date among the detections it was placed from. With one ray, that is the
+most confident detection's date. The silhouette fit masks the arm where it was
+at those dates.
 
 ### The example cube detector
 
@@ -94,14 +101,18 @@ rate.
 
 Each label gets its own copy of the twin's cube tracker,
 `perception.ObjectTracker`. The tracker also follows an object held in the
-gripper. Each measurement is fed to it once, and only when its confidence is
-above 0.4. A track is dropped after `hold_s` without a measurement. `hold_s` is
-the larger of 6 s and three times the sum of the detector's interval and
-latency, so a slow detector's object survives between answers.
+gripper. The tracker takes each measurement once, and only when its confidence
+is above 0.4. A call that reads the same frames again does not renew the track.
+A repeated answer read from newer frames renews it. Its age still counts from
+the frames the answer was made from. A detector's latest answer replaces its own
+earlier one. A track is dropped after `hold_s` without a measurement. `hold_s`
+is the larger of 6 s and three times the sum of the detector's interval, its
+latency and the largest `age_s` in its answer. A slow detector's object
+therefore survives between answers. So does a repeated answer's object.
 
-`age_s` is the time since the capture of the frames the pose comes from. It is
-0 while the object follows the jaws. `source` says what the pose is based on,
-and it takes these Polish values:
+`age_s` is the time since the capture of the frames the pose comes from. A
+detection's own `age_s` adds to it. It is 0 while the object follows the jaws.
+`source` says what the pose is based on, and it takes these Polish values:
 
 - `kamery` (cameras) means the cameras saw the object recently. The value holds
   while the detector's latest answer contains the label and
@@ -113,9 +124,7 @@ and it takes these Polish values:
   latest answer lacks the label. A measurement that is already older than
   `fresh_s` when it arrives gets this value at once. A detector that answers in
   tens of seconds, such as a language model, therefore never publishes
-  `kamery` from a fresh answer. The LLM detector's repeat of an answer for
-  frames that did not change is the one exception (see "LLM detector",
-  "Freshness"). A strategy reads `age_s` to decide whether a pose is too old.
+  `kamery`. A strategy reads `age_s` to decide whether a pose is too old.
 - `w dloni` (in hand) means the gripper holds the object and the pose follows
   the TCP. On a connected arm, the closed jaw position comes from the
   hardware's limit, so an empty closed gripper does not count as a grasp.
@@ -146,8 +155,9 @@ Start a detector in the **Detektory** (Detectors) tab. The config section with
 the detector's name prefills its form. Starting a running detector again
 restarts it with the new settings. Several detectors can run at once. When two
 of them report the same label, the measurement with the newer capture time
-wins. Detectors never move the arm, so STOP leaves them running. Closing the
-panel stops them.
+wins. The winner is fed even when the other detector's last answer was a
+repeat that read later frames. Detectors never move the arm, so STOP leaves
+them running. Closing the panel stops them.
 
 Starting shows `Startuje...` immediately. During each detection call, the panel
 shows `Wywolanie w toku` with elapsed seconds beside Start and in the detector's
@@ -216,8 +226,8 @@ terminal wrapper (a cmux shim), point `executable` at the real binary, e.g.
 | `timeout_s` | 120 | the CLI's process group is killed after this [s], 5 to 900 |
 | `max_side_px` | 1280 | long edge of the images sent [px]; answers are scaled back to each frame |
 | `pixel_error_px` | 25 | how far off the model's pixels may be, in the sent image's pixels |
-| `reuse_if_still` | true | repeat the last answer while no camera's image changed since the frames it was given, and for up to two calls while the scene still moves. The arm moving does not count. See "Cost and rate" |
-| `reuse_max_age_s` | 60 | ask again anyway once the last answer is this old [s], 0 to 3600 |
+| `reuse_if_still` | true | repeat the last answer instead of asking while no camera's image changes, and for up to two calls while the scene still moves. The repeat is as old as its frames. The arm moving does not count. See "Cost and rate" |
+| `reuse_max_age_s` | 60 | longest time after a question that its answer may be repeated [s], 0 to 3600 |
 | `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
 | `min_confidence` | 0.3 | answers the model is less sure of are dropped |
 | `executable` | `""` | the CLI binary; `""` = `cli` on PATH |
@@ -237,8 +247,9 @@ a still one 60. Five things bound it:
 - one question in flight at a time;
 - `interval_s`, at least 2 s;
 - `reuse_if_still`, on by default, repeats the last question's answer while
-  the frames did not change since that question. Each camera's frame is
-  compared as a grey thumbnail 256 px long, with the mean brightness matched.
+  the frames did not change since that question. The repeat is as old as that
+  question's frames. Each camera's frame is compared as a grey thumbnail 256 px
+  long, with the mean brightness matched.
   A pixel counts as changed when it moved by 16 grey levels plus a fifth of its
   distance from the mean. Changed pixels up to 5 px apart in both row and
   column form one blob. An image counts as changed when its largest blob
@@ -293,16 +304,19 @@ at a 10 s interval and a 9 s answer. soarm-lab's policy, which waits for
 LLM's objects reads `age_s` and decides how old is too old. `w dloni` still
 works: the tracker follows an object the gripper closes on.
 
-A repeated answer (`reuse_if_still`) is the exception. It returns at once, and
-the twin stamps it with the capture time of the frames just read, so the object
-publishes `kamery` for `fresh_s` after each repeat. That is what the frames
-say: they match the ones the model answered on to within the check's limits
-above, so the object stands where the model saw it. The pose is as good as the
-model's answer was, no better; `reuse_max_age_s` bounds how long a wrong answer
-can be repeated. A repeat while the scene still moves gets the same stamp,
-though its frames have changed. At most two such repeats come in a row. Turn
-`reuse_if_still` off when a strategy must only ever act on a pose the model has
-just confirmed.
+An answer repeated by `reuse_if_still` is as old as the frames of the question
+it repeats. Each repeated detection's `age_s` is the time between that
+question's frame and this call's frame from its camera. A repeat therefore
+publishes `ostatnie widziane` with that age, at the same position. A repeat
+while the scene still moves carries the same age, though its frames differ. At
+most two such repeats come in a row. The hold is three times the sum of the
+interval, the latency and the age. Each repeat reads new frames, so it renews
+the hold. The object therefore stays published until the next question
+answers. It also survives one answer that misses it. At a 10 s interval and
+the default `reuse_max_age_s` of 60 s, the last repeat is 50 s old and holds
+the pose for 180 s. If the next question fails, the pose stays published until
+the hold runs out, and its age keeps growing. `reuse_max_age_s` bounds how long
+a wrong answer can be repeated.
 
 ### Privacy
 
