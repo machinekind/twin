@@ -18,7 +18,8 @@ the poses older. Strategies never wait for it.
 
 Pixels follow OpenCV: (0, 0) is the centre of the top-left pixel, u grows right, v grows down,
 in the resolution of the frame the detector was given. A detector that works on a resized copy
-maps its answer back.
+maps its answer back. `DetectRequest.arm_masks` can mark where the twin's arm hides the scene, in
+the same pixels.
 
 Labels are compared stripped and lower-cased. One object per label: when one camera reports a
 label twice, the twin keeps the surer detection.
@@ -27,7 +28,7 @@ label twice, the twin keeps the surer detection.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -62,6 +63,12 @@ class DetectRequest:
     frames: Mapping[str, Frame]
     #: Call number since `start`, from 0.
     step: int
+    #: Arm masks by camera name. A mask is a bool image of the frame's shape. It is True where the
+    #: robot arm hides the scene at the capture time of the frame in `frames`. The twin makes a
+    #: mask only when it is read. Reading a mask reads its frame first. `get(name)` returns None
+    #: when the twin has no mask for that camera. Iteration and `len` may list cameras without a
+    #: mask. `[name]` raises KeyError for those. Read masks with `get`. Empty by default.
+    arm_masks: Mapping[str, np.ndarray] = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True, eq=False)

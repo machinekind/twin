@@ -147,7 +147,7 @@ def perception(clock: Clock, frames: Frames):
     p.stop_all("koniec testu")
 
 
-def runner_for(detector, clock, frames, cameras=("a", "b"), sink=None) -> DetectorRunner:
+def runner_for(detector, clock, frames, cameras=("a", "b"), sink=None, occluders=None) -> DetectorRunner:
     info = detection.DetectorInfo(tuple(cameras), BOT, False)
     fed = []
 
@@ -156,7 +156,7 @@ def runner_for(detector, clock, frames, cameras=("a", "b"), sink=None) -> Detect
         return 0
 
     r = DetectorRunner("fake", detector, info=info, cameras=lambda: tuple(cameras), frame=frames,
-                       sink=sink or default_sink, clock=clock)
+                       sink=sink or default_sink, clock=clock, occluders=occluders)
     r.fed = fed  # type: ignore[attr-defined]
     return r
 
@@ -581,6 +581,129 @@ def test_the_occluder_wrapper_swallows_failures(clock: Clock, frames: Frames, ca
     q = Perception(SimpleNamespace(), workspace(), frame=frames, occluders=lambda t: masks, hand=lambda: None,
                    clock=clock)
     assert q._occluders({"a": 1.0}) is masks
+
+
+# ------------------------------------------------------------------ the request's arm masks
+def arm_source(calls: list, kind: str = "mask"):
+    """An occluder source that records the capture times it is asked for. With `kind` "mask" it
+    gives a bool (H, W) mask per camera. "none" gives None, "shape" gives a mask one column too wide,
+    and "raises" raises."""
+    def source(times):
+        calls.append(dict(times))
+        if kind == "none":
+            return None
+        if kind == "raises":
+            raise RuntimeError("renderer closed")
+        shape = (H, W + 1) if kind == "shape" else (H, W)
+        return {name: np.ones(shape, bool) for name in times}
+    return source
+
+
+def test_arm_masks_are_made_only_when_read(clock: Clock, frames: Frames):
+    calls = []
+    runner = runner_for(Scripted([]), clock, frames, occluders=arm_source(calls))
+    runner.start(threaded=False)
+    runner.step_once()
+
+    assert frames.reads == ["a", "b"]
+    assert calls == []
+
+
+def test_an_arm_mask_is_made_for_its_frame_s_capture_time(clock: Clock, frames: Frames):
+    frames.ages = {"a": 0.3, "b": 0.0}
+    calls = []
+    got = []
+
+    def read_a_mask(req):
+        got.append(req.arm_masks["a"])
+        got.append(req.arm_masks.get("a"))
+        return []
+
+    runner = runner_for(Scripted(read_a_mask), clock, frames, occluders=arm_source(calls))
+    runner.start(threaded=False)
+    runner.step_once()
+
+    assert calls == [{"a": pytest.approx(clock.t - 0.3)}]
+    assert got[0].dtype == bool and got[0].shape == (H, W)
+    assert got[1] is got[0]
+    assert frames.reads == ["a"]
+
+
+def test_reading_an_arm_mask_reads_its_frame_first(clock: Clock, frames: Frames):
+    frames.ages = {"a": 0.0, "b": 0.2}
+    calls = []
+
+    def read_b_mask(req):
+        _ = req.arm_masks["b"]
+        return []
+
+    runner = runner_for(Scripted(read_b_mask), clock, frames, occluders=arm_source(calls))
+    runner.start(threaded=False)
+    runner.step_once()
+
+    assert runner.status.failures == 0, runner.status.last_error
+    assert frames.reads == ["b"]
+    assert calls == [{"b": pytest.approx(clock.t - 0.2)}]
+
+
+@pytest.mark.parametrize("kind", ["no frame", "none", "shape", "raises"])
+def test_a_camera_without_a_frame_or_a_usable_mask_has_no_arm_mask(clock: Clock, frames: Frames, kind: str):
+    if kind == "no frame":
+        frames.ages = {"a": None, "b": 0.0}
+    calls = []
+    got = []
+
+    def read_a_mask(req):
+        got.append(req.arm_masks.get("a"))
+        with pytest.raises(KeyError):
+            req.arm_masks["a"]
+        return []
+
+    runner = runner_for(Scripted(read_a_mask), clock, frames,
+                        occluders=arm_source(calls, "mask" if kind == "no frame" else kind))
+    runner.start(threaded=False)
+    runner.step_once()
+
+    assert runner.status.failures == 0, runner.status.last_error
+    assert got == [None]
+    assert len(calls) == (0 if kind == "no frame" else 1)
+
+
+def test_a_runner_without_occluders_offers_no_arm_masks(clock: Clock, frames: Frames):
+    got = []
+
+    def look(req):
+        got.append((len(req.arm_masks), req.arm_masks.get("a")))
+        return []
+
+    runner = runner_for(Scripted(look), clock, frames)
+    runner.start(threaded=False)
+    runner.step_once()
+
+    assert got == [(0, None)]
+
+
+@pytest.mark.parametrize("kind", ["mask", "raises"])
+def test_perception_hands_its_arm_masks_to_detectors(clock: Clock, frames: Frames, kind: str):
+    calls = []
+    got = []
+
+    def look(req):
+        got.append(req.arm_masks.get("a"))
+        return []
+
+    p = Perception(SimpleNamespace(), workspace(), frame=frames, occluders=arm_source(calls, kind),
+                   hand=lambda: None, clock=clock)
+    runner = p.start_detector(plugin(Scripted(look)), {}, threaded=False)
+    runner.step_once()
+    p.stop_all("koniec testu")
+
+    assert runner.status.failures == 0, runner.status.last_error
+    assert calls == [{"a": pytest.approx(clock.t)}]
+    if kind == "mask":
+        assert got[0] is not None and got[0].shape == (H, W) and got[0].all()
+    else:
+        assert got == [None]
 
 
 def test_the_mapper_is_shared_and_rebuilt_only_on_a_camera_change(perception: Perception):

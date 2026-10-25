@@ -13,11 +13,14 @@ from machinekind_twin_api import Detection
 from machinekind_twin_llm import smoke
 from machinekind_twin_llm.answer import MAX_DETECTIONS, parse_answer
 from machinekind_twin_llm.images import (
-    STILL_MAX_CHANGED_PX,
+    BLOB_JOIN_PX,
+    STILL_MAX_BLOB_PX,
     THUMB_LONG_PX,
     SentImage,
-    changed_pixels,
+    arm_thumbnail,
     encode,
+    hide_arm,
+    largest_change_px,
     thumbnail,
     unchanged,
 )
@@ -271,8 +274,8 @@ def test_sensor_noise_and_exposure_drift_do_not_count_as_a_change():
     noisy = np.clip(before.astype(int) + rng.integers(-6, 7, before.shape), 0, 255).astype(np.uint8)
     brighter = np.clip(before.astype(int) + 12, 0, 255).astype(np.uint8)
 
-    assert changed_pixels(thumbnail(before), thumbnail(noisy)) == 0
-    assert changed_pixels(thumbnail(before), thumbnail(brighter)) == 0
+    assert largest_change_px(thumbnail(before), thumbnail(noisy)) == 0
+    assert largest_change_px(thumbnail(before), thumbnail(brighter)) == 0
     assert unchanged({"top": thumbnail(before)}, {"top": thumbnail(noisy)})
 
 
@@ -285,8 +288,8 @@ def test_a_small_object_moving_or_leaving_counts_as_a_change():
     gone = scene(rng)
     gone[600:624, 100:124] = before[600:624, 200:224]
 
-    assert changed_pixels(thumbnail(before), thumbnail(moved)) > STILL_MAX_CHANGED_PX
-    assert changed_pixels(thumbnail(before), thumbnail(gone)) > STILL_MAX_CHANGED_PX
+    assert largest_change_px(thumbnail(before), thumbnail(moved)) > STILL_MAX_BLOB_PX
+    assert largest_change_px(thumbnail(before), thumbnail(gone)) > STILL_MAX_BLOB_PX
     assert not unchanged({"top": thumbnail(before), "side": thumbnail(before)},
                          {"top": thumbnail(moved), "side": thumbnail(before)})
 
@@ -296,15 +299,197 @@ def test_a_few_flickering_pixels_are_not_a_change():
     blink = before.copy()
     blink[10:14, 10:14] = 255                      # a status LED covers 2x2 thumbnail pixels
 
-    assert 0 < changed_pixels(thumbnail(before), thumbnail(blink)) <= STILL_MAX_CHANGED_PX
+    assert 0 < largest_change_px(thumbnail(before), thumbnail(blink)) <= STILL_MAX_BLOB_PX
 
 
 def test_unchanged_needs_the_same_cameras_and_frame_shapes():
     frame = thumbnail(np.full((480, 640, 3), 120, np.uint8))
     other_shape = thumbnail(np.full((640, 480, 3), 120, np.uint8))
 
-    assert changed_pixels(frame, other_shape) == other_shape.size
+    assert largest_change_px(frame, other_shape) == other_shape.size
     assert not unchanged({"top": frame, "side": frame}, {"top": frame})
     assert not unchanged({"top": frame}, {"top": frame, "side": frame})
     assert not unchanged({}, {})
     assert not unchanged({"top": frame}, {"top": other_shape})
+
+
+#: A 3 cm cube and 1 cm at 1 m through a 60 degree lens, in a 1280 px wide frame [px].
+CUBE_PX, CM_PX = 33, 11
+
+
+def table(rng: np.random.Generator, w: int = 1280, h: int = 960) -> np.ndarray:
+    return rng.integers(100, 141, (h, w, 3), dtype=np.uint8)
+
+
+def with_box(img: np.ndarray, x: int, y: int, side: int, shade: int) -> np.ndarray:
+    out = img.copy()
+    out[y:y + side, x:x + side] = shade
+    return out
+
+
+def u8(img: np.ndarray) -> np.ndarray:
+    return np.clip(np.rint(img), 0, 255).astype(np.uint8)
+
+
+def cables(rng: np.random.Generator) -> np.ndarray:
+    """A high-contrast scene of a light table, ten dark cables 1 cm thick and a sheet of white paper."""
+    img = np.full((960, 1280), 160, np.uint8)
+    for _ in range(10):
+        start = (int(rng.integers(0, 1280)), int(rng.integers(0, 960)))
+        end = (int(rng.integers(0, 1280)), int(rng.integers(0, 960)))
+        cv2.line(img, start, end, 20, 12)
+    img[100:430, 130:450] = 245
+    return np.repeat(img[..., None], 3, axis=2)
+
+
+def test_scattered_changed_pixels_are_not_a_change():
+    rng = np.random.default_rng(0)
+    before = thumbnail(np.full((960, 1280, 3), 120, np.uint8))
+    now = before.copy()
+    spots = [(row, col) for row in range(10, 190, 30) for col in range(10, 250, 24)][:60]
+    for row, col in spots:
+        now[row, col] += rng.uniform(60, 120)
+
+    assert len(spots) == 60
+    assert largest_change_px(before, now) <= STILL_MAX_BLOB_PX
+    assert unchanged({"top": before}, {"top": now})
+
+
+def test_a_gain_change_on_a_high_contrast_scene_is_not_a_change():
+    scene_now = cables(np.random.default_rng(0))
+    before = thumbnail(scene_now)
+
+    for gain in (1.15, 1 / 1.15):
+        assert largest_change_px(before, thumbnail(u8(scene_now * gain))) <= STILL_MAX_BLOB_PX
+
+
+def test_a_cube_moving_a_centimetre_or_leaving_counts_with_a_1_5x_margin():
+    base = table(np.random.default_rng(0))
+    before = thumbnail(with_box(base, 402, 301, CUBE_PX, 40))
+    moves = [(CM_PX, 0), (-CM_PX, 0), (0, CM_PX), (0, -CM_PX), (CM_PX, CM_PX)]
+
+    for dx, dy in moves:
+        moved = thumbnail(with_box(base, 402 + dx, 301 + dy, CUBE_PX, 40))
+        assert largest_change_px(before, moved) >= 1.5 * STILL_MAX_BLOB_PX, (dx, dy)
+    assert largest_change_px(before, thumbnail(base)) >= 1.5 * STILL_MAX_BLOB_PX
+
+
+def test_a_blinking_2x2_thumbnail_led_is_not_a_change():
+    base = table(np.random.default_rng(0))
+    before = thumbnail(base)
+
+    for x, y in ((500, 300), (502, 300), (500, 303), (504, 304)):
+        for shade in (255, 0):
+            blink = thumbnail(with_box(base, x, y, 10, shade))
+            assert 0 < largest_change_px(before, blink) <= STILL_MAX_BLOB_PX, (x, y, shade)
+
+
+def test_noise_a_brightness_step_and_a_gain_change_are_not_a_change():
+    rng = np.random.default_rng(0)
+    still = with_box(table(rng), 402, 301, CUBE_PX, 40).astype(float)
+    before = thumbnail(u8(still))
+    noisy_before = thumbnail(u8(still + rng.integers(-20, 21, still.shape)))
+    noisy_now = thumbnail(u8(still + rng.integers(-20, 21, still.shape)))
+
+    assert largest_change_px(noisy_before, noisy_now) <= STILL_MAX_BLOB_PX
+    for changed in (still + 12, still * 1.15, still / 1.15):
+        assert largest_change_px(before, thumbnail(u8(changed))) <= STILL_MAX_BLOB_PX
+
+
+def test_changed_pixels_join_one_blob_up_to_blob_join_px_apart():
+    before = thumbnail(np.full((960, 1280, 3), 120, np.uint8))
+
+    for gap, area in ((BLOB_JOIN_PX, 2), (BLOB_JOIN_PX + 1, 1)):
+        for rows, cols in ((0, gap), (gap, 0), (gap, gap)):
+            now = before.copy()
+            now[50, 50] += 60
+            now[50 + rows, 50 + cols] += 60
+            assert largest_change_px(before, now) == area, (rows, cols)
+
+
+def arm_at(img: np.ndarray, x: int, reach: int = 600) -> tuple[np.ndarray, np.ndarray]:
+    """`img` with a dark arm bar 80 px wide at column `x`, and the bar's bool mask. The bar reaches
+    `reach` px down from the top edge."""
+    mask = np.zeros(img.shape[:2], bool)
+    mask[:reach, x:x + 80] = True
+    out = img.copy()
+    out[mask] = 30
+    return out, mask
+
+
+def test_hide_arm_marks_the_pixels_under_the_mask_as_not_shown():
+    now = thumbnail(table(np.random.default_rng(0)))
+    arm = np.zeros(now.shape, bool)
+    arm[:100, 60:80] = True
+
+    hidden = hide_arm(now, arm)
+
+    assert np.isnan(hidden[arm]).all()
+    np.testing.assert_array_equal(hidden[~arm], now[~arm])
+    assert not np.isnan(now).any()
+
+
+def test_a_place_hidden_before_counts_as_changed_once_shown_and_one_hidden_now_is_left_out():
+    base = thumbnail(table(np.random.default_rng(0)))
+    unseen = base.copy()
+    unseen[:100, 60:80] = np.nan
+
+    assert largest_change_px(unseen, base) > STILL_MAX_BLOB_PX
+    assert largest_change_px(unseen, unseen) == 0
+    assert largest_change_px(base, unseen) == 0
+
+
+def test_the_arm_reaching_further_under_its_mask_is_no_change():
+    base = table(np.random.default_rng(0))
+    near_img, near_arm = arm_at(base, 300, reach=300)
+    far_img, far_arm = arm_at(base, 300)
+    near_thumb, far_thumb = thumbnail(near_img), thumbnail(far_img)
+    near = hide_arm(near_thumb, arm_thumbnail(near_arm, near_thumb.shape))
+    far = hide_arm(far_thumb, arm_thumbnail(far_arm, far_thumb.shape))
+
+    assert largest_change_px(near_thumb, far_thumb) > STILL_MAX_BLOB_PX
+    assert largest_change_px(near, far) == 0
+    assert unchanged({"top": near}, {"top": far})
+
+    cube_before = thumbnail(with_box(base, 1000, 800, CUBE_PX, 40))
+    entering_img, entering_arm = arm_at(with_box(base, 1000 + CM_PX, 800, CUBE_PX, 40), 300)
+    entering = thumbnail(entering_img)
+
+    assert not unchanged({"top": cube_before},
+                         {"top": hide_arm(entering, arm_thumbnail(entering_arm, entering.shape))})
+
+
+def test_the_mean_is_matched_over_the_pixels_both_frames_show():
+    base = table(np.random.default_rng(0))
+    arm = np.zeros(base.shape[:2], bool)
+    arm[:, :256] = True
+    hidden = base.copy()
+    hidden[arm] = 0
+    before, now = thumbnail(base), thumbnail(hidden)
+    mask = arm_thumbnail(arm, now.shape)
+    cube = thumbnail(with_box(hidden, 800, 400, CUBE_PX, 40))
+
+    assert largest_change_px(before, hide_arm(now, mask)) == 0
+    assert largest_change_px(before, hide_arm(cube, mask)) > STILL_MAX_BLOB_PX
+
+
+def test_the_arm_s_edge_and_shadow_beside_its_mask_do_not_count_but_a_cube_further_off_does():
+    base = table(np.random.default_rng(0))
+    shadowed, arm = arm_at(base, 500)
+    shadowed[:600, 580:595] = 70                   # a shadow 3 thumbnail pixels wide
+    before, now = thumbnail(base), thumbnail(shadowed)
+    mask = arm_thumbnail(arm, now.shape)
+    cube = thumbnail(with_box(shadowed, 650, 300, CUBE_PX, 40))
+
+    assert mask.shape == now.shape and mask.dtype == bool
+    assert largest_change_px(before, now) > STILL_MAX_BLOB_PX
+    assert largest_change_px(before, hide_arm(now, mask)) == 0
+    assert largest_change_px(before, hide_arm(cube, mask)) > STILL_MAX_BLOB_PX
+
+
+def test_an_image_wholly_hidden_counts_as_changed():
+    frame = thumbnail(np.full((480, 640, 3), 120, np.uint8))
+    unseen = hide_arm(frame, np.ones(frame.shape, bool))
+
+    assert largest_change_px(frame, unseen) == frame.size
+    assert largest_change_px(unseen, unseen) == frame.size

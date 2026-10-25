@@ -293,6 +293,14 @@ def test_a_detection_with_a_mask_compares_by_identity():
     assert hash(d) == hash(d)
 
 
+def test_a_request_built_without_arm_masks_has_none():
+    by_keyword = DetectRequest(frames={"front": frame()}, step=0)
+    by_position = DetectRequest({"front": frame()}, 1)
+
+    for request in (by_keyword, by_position):
+        assert request.arm_masks.get("front") is None
+        assert len(request.arm_masks) == 0
+    assert [f.name for f in dataclasses.fields(DetectRequest)] == ["frames", "step", "arm_masks"]
 def test_a_detection_s_age_defaults_to_0_and_can_be_replaced():
     d = Detection("cube", "front", (320.0, 240.0))
 
