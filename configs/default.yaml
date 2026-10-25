@@ -44,7 +44,7 @@ robot:
 #   interval_s: 0.33     # seconds between calls
 
 # The LLM detector `llm` (packages/machinekind_twin_llm) asks a vision model through a CLI
-# logged in with your subscription; frames leave the machine. See docs/TWIN.md, "LLM detector".
+# logged in with your subscription; frames leave the machine. See docs/DETECTORS.md, "LLM detector".
 # llm:
 #   cli: codex           # codex or claude
 #   model: gpt-6-astra   # as the CLI names it; "" = the CLI's default
@@ -52,3 +52,5 @@ robot:
 #   effort: low          # low, medium, high, xhigh or max; "" = the CLI's default
 #   objects: "red pen, cube"   # labels to look for; "" = every movable object on the table
 #   interval_s: 10.0     # seconds between questions, at least 2
+#   reuse_if_still: true  # repeat the last answer while no camera's image changes
+#   reuse_max_age_s: 60   # seconds an answer may be repeated after its question

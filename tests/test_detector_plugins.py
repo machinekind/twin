@@ -392,7 +392,7 @@ def test_the_llm_settings_draw_as_str_float_int_and_bool(llm_package):
     assert {name: field.kind for name, field in fields.items()} == {
         "cli": str, "model": str, "effort": str, "objects": str, "cameras": str, "prompt": str,
         "interval_s": float, "timeout_s": float, "max_side_px": int, "pixel_error_px": float,
-        "reuse_if_still": bool, "max_calls_per_hour": int, "min_confidence": float, "executable": str,
+        "reuse_if_still": bool, "reuse_max_age_s": float, "max_calls_per_hour": int, "min_confidence": float, "executable": str,
         "claude_images": str,
     }
     assert not any(field.required for field in fields.values())
