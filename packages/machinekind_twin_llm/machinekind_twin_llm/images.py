@@ -1,8 +1,8 @@
-"""The images a question sends, and the still check that spares a question.
+"""The images a question sends, and the still check.
 
-`encode` writes one JPEG per camera, scaled down from the camera's frame. `thumbnail`, `changed_pixels`
-and `unchanged` tell whether a camera's image changed since the frames the last question was asked
-on, so the detector can repeat that answer instead of asking again.
+`encode` writes one JPEG per camera, scaled down from the camera's frame. `thumbnail`,
+`changed_pixels` and `unchanged` form the still check. It tells whether any camera's image changed
+since the last question.
 """
 
 from __future__ import annotations
@@ -19,15 +19,15 @@ __all__ = ["CHANGED_LEVELS", "JPEG_QUALITY", "STILL_MAX_CHANGED_PX", "THUMB_LONG
 
 #: JPEG quality of the images sent.
 JPEG_QUALITY = 90
-#: Long edge of the grey thumbnails the still check compares [px]. At 256 px a 60 degree lens
-#: gives 4.5 mm per thumbnail pixel at 1 m, and a 3 cm cube covers about 45 pixels.
+#: Long edge of the grey thumbnails the still check compares [px]. Through a 60 degree lens, one
+#: thumbnail pixel spans 4.5 mm at 1 m. A 3 cm cube at 1 m covers about 45 pixels.
 THUMB_LONG_PX = 256
-#: A thumbnail pixel counts as changed when its grey level moved by this much or more, with the
-#: image's mean shift (auto exposure) taken out [grey levels, 0..255]. Area downscaling and the
-#: 3x3 blur leave sensor noise at about one level, so 16 is far above it.
+#: A thumbnail pixel has changed when its grey level moved by this much or more [grey levels, 0..255].
+#: Each image's mean is subtracted first, so auto exposure does not count. Sensor noise in a
+#: thumbnail is about one level.
 CHANGED_LEVELS = 16.0
-#: Changed thumbnail pixels a camera may have while its image still counts as unchanged. A
-#: blinking LED or a flickering pixel stays under it; a 3 cm cube at 1 m moving or leaving is over.
+#: A camera's image counts as unchanged while at most this many thumbnail pixels changed. A
+#: blinking LED stays under it. A 3 cm cube at 1 m that moves or leaves goes over.
 STILL_MAX_CHANGED_PX = 15
 
 
@@ -77,8 +77,8 @@ def encode(call: Path, frames: Sequence[tuple[str, np.ndarray]], max_side_px: in
 
 
 def thumbnail(image: np.ndarray) -> np.ndarray:
-    """A small grey copy of an RGB frame for `changed_pixels`: long edge `THUMB_LONG_PX` (a smaller
-    frame keeps its size), blurred 3x3, float32."""
+    """A grey float32 copy of an RGB frame, blurred 3x3, with a long edge of `THUMB_LONG_PX`. A
+    smaller frame keeps its size."""
     grey = cv2.cvtColor(_rgb(image), cv2.COLOR_RGB2GRAY)
     h, w = grey.shape
     scale = THUMB_LONG_PX / max(w, h)
@@ -89,8 +89,8 @@ def thumbnail(image: np.ndarray) -> np.ndarray:
 
 
 def changed_pixels(before: np.ndarray, now: np.ndarray) -> int:
-    """How many pixels of one camera's thumbnail moved by `CHANGED_LEVELS` or more, after the two
-    images' mean brightness is matched. Thumbnails of different shapes count as changed throughout."""
+    """The number of pixels that differ by `CHANGED_LEVELS` or more between two thumbnails. Each
+    thumbnail's mean is subtracted first. Thumbnails of different shapes differ in every pixel."""
     if before.shape != now.shape:
         return int(now.size)
     diff = np.abs((now - float(now.mean())) - (before - float(before.mean())))
@@ -99,8 +99,8 @@ def changed_pixels(before: np.ndarray, now: np.ndarray) -> int:
 
 def unchanged(before: Mapping[str, np.ndarray], now: Mapping[str, np.ndarray],
               max_changed_px: int = STILL_MAX_CHANGED_PX) -> bool:
-    """True when both hold thumbnails of the same cameras and no camera has more than
-    `max_changed_px` changed pixels."""
+    """True when both maps hold the same cameras and no camera has more than `max_changed_px`
+    changed pixels. An empty `before` gives False."""
     if not before or set(before) != set(now):
         return False
     return all(changed_pixels(before[name], now[name]) <= max_changed_px for name in now)
