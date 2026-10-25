@@ -193,11 +193,16 @@ class Located:
     rot: np.ndarray
     confidence: float
     n_cameras: int
-    #: Capture time of the OLDEST frame used, on the Perception clock (time.monotonic in the panel).
+    #: The oldest date among the detections used, on the Perception clock, which is time.monotonic
+    #: in the panel. A detection's date is its frame's capture time minus its `age_s`. "promien"
+    #: uses only the most confident detection.
     t: float
     size_m: tuple[float, float, float] | None
     #: How it was placed, as the panel shows it: "sylwetka", "triangulacja" or "promien".
     method: str
+    #: The largest `Detection.age_s` among the detections used [s]. `t` already subtracts each
+    #: detection's own age.
+    age_s: float = 0.0
 
 
 # ------------------------------------------------------------------ validation
@@ -244,6 +249,8 @@ def _problem(det: Detection, cameras: Mapping[str, CameraModel],
         return "height_m not finite"
     if det.pixel_error_px is not None and not (_finite(det.pixel_error_px) and det.pixel_error_px >= 0):
         return "pixel_error_px not a finite non-negative number"
+    if not (_finite(det.age_s) and det.age_s >= 0):
+        return "age_s not a finite non-negative number"
     return ""
 
 
@@ -342,7 +349,8 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
     best = dets[0]
     size = None if best.size_m is None else tuple(float(s) for s in best.size_m)
     size3 = None if size is None else (size[0], size[1], size[2])
-    times = {d.camera: float(frames[d.camera][1]) for d in dets}
+    times = {d.camera: float(frames[d.camera][1]) - float(d.age_s) for d in dets}
+    age = max(float(d.age_s) for d in dets)
 
     # The silhouette fit runs on raw masks with each camera's K, so every frame must be full size.
     if (mapper is not None and _is_cube(size3) and size3 is not None
@@ -353,7 +361,7 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
         if fit is None:
             return None
         return Located(label, np.asarray(fit.pos, float), np.asarray(fit.rot, float), float(fit.confidence),
-                       int(fit.n_cameras), min(times.values()), size3, "sylwetka")
+                       int(fit.n_cameras), min(times.values()), size3, "sylwetka", age)
 
     rays = []
     for d in dets:
@@ -375,10 +383,11 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
                                   for (cam, _, err), depth in zip(rays, depths, strict=True)]))
             if gap <= tol and min(depths) >= MIN_RANGE_M and Z_RANGE_M[0] <= p[2] <= Z_RANGE_M[1]:
                 return Located(label, p, np.eye(3), float(np.mean([_conf(d) for d in dets])), len(dets),
-                               min(times.values()), size3, "triangulacja")
+                               min(times.values()), size3, "triangulacja", age)
 
     o, d = rays[0][1]
     p = ray_plane(o, d, _height(best))
     if p is None:
         return None
-    return Located(label, p, np.eye(3), _conf(best), 1, times[best.camera], size3, "promien")
+    return Located(label, p, np.eye(3), _conf(best), 1, times[best.camera], size3, "promien",
+                   float(best.age_s))

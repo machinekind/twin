@@ -186,6 +186,15 @@ def test_step_once_feeds_the_objects(perception: Perception, clock: Clock):
     assert runner.status.cameras == ("a", "b")
 
 
+def test_a_detection_s_age_adds_to_the_published_age(perception: Perception, clock: Clock):
+    runner = perception.start_detector(plugin(Scripted(seen(age_s=5.0))), {}, threaded=False)
+    runner.step_once()
+    obj = perception.objects()["x"]
+
+    assert obj.age_s == pytest.approx(5.0, abs=1e-6)
+    assert obj.source == "ostatnie widziane"
+
+
 def test_frames_are_fetched_only_when_read(clock: Clock, frames: Frames):
     def read_b(req):
         _ = req.frames["b"]
