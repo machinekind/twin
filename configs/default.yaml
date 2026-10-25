@@ -28,7 +28,8 @@ robot:
 
 # Kazda inna sekcja nalezy do backendu albo strategii o tej nazwie. Backend sprawdza swoja sam;
 # sekcja strategii (np. `swing:`) wypelnia formularz jej ustawien w panelu (zakladka Strategie),
-# a nieznany klucz albo zly typ blokuje Uruchom.
+# a nieznany klucz albo zly typ blokuje Uruchom. `twin eval-strategy <nazwa>` czyta ta sama sekcje,
+# a `--set KLUCZ=WARTOSC` nadpisuje jeden klucz.
 
 # Sekcje backendow przychodza z pakietem ramienia (SO-101: `feetech:` i `lerobot:` w pakiecie soarm).
 

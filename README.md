@@ -55,6 +55,7 @@ uv run twin workspace                  # Inspect the workstation
 uv run twin calib-sim --n 5 --cameras 2 # Evaluate calibration in simulation
 uv run twin export workspace/export    # Export scene.xml, assets/ and station.json
 uv run twin episode                    # Report the last strategy run: joint latency, gripper drift
+uv run twin eval-strategy swing --robot arm6 --set joint=base_yaw --episodes 5   # Run a strategy many times in simulation; the scene judges success
 ```
 
 Your workstation is saved in `workspace/twin.json`. For backend and strategy
