@@ -3137,6 +3137,9 @@ class TwinApp:
             try:
                 self.twin.close()
             finally:
+                runner = self.strategies.runner
+                if runner is not None and not runner.wait_for_episode(timeout=5.0):
+                    logger.warning("Episode recording is still pending after shutdown timeout")
                 if self.stream is not None:
                     self._guard("podglad kamer", self.stream.stop)
                 self.server.stop()

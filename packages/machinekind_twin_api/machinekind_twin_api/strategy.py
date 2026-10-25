@@ -108,17 +108,14 @@ class Observation:
 
 @dataclass(frozen=True, eq=False)
 class Decision:
-    """One question a strategy put to a model, with its answer, for the run's log. It never reaches the arm.
+    """Diagnostic model response for optional episode recording. Compared by identity."""
 
-    It compares by identity, like `Detection`: `state` may hold arrays.
-    """
-
-    #: What the strategy asked: the prompt, or its name when the prompt is long.
+    #: The question text or a prompt identifier.
     question: str
     #: The model's answer as received: text, or JSON as text.
     answer: str
-    #: What was sent with the question besides the frames, as JSON values. The log keeps the frames
-    #: the strategy read in that tick; an array put here is logged by its shape.
+    #: Additional JSON context. Images are saved separately when enabled.
+    #: Arrays larger than 64 elements are represented by type and shape.
     state: Mapping[str, Any] = field(default_factory=dict)
     #: The model's confidence, 0..1, when it gives one.
     confidence: float | None = None

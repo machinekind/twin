@@ -1,29 +1,6 @@
-"""The episode log: one JSON Lines file per run, written while the run goes on, and its loader.
+"""Asynchronous episode recording and loaders for JSON Lines and Zstandard logs.
 
-    log = EpisodeLog.load(path)
-    log.end.code, log.end.success, log.end.error      # how the run ended
-    t, readings = log.readings()                        # (R,), (R, n): the arm's readings
-    print("\\n".join(report(log).lines()))             # `episode_report`: latency and drift
-
-Every run of `strategy.StrategyRunner` writes one file, `<folder>/<name>.jsonl`; the folder is
-`episodes/` next to the workspace file (`episodes_dir`). Each line is one JSON object with a
-`kind`: the `header` first, then a `loop` line for every tick of the twin's loop and a `step` line
-for every tick the runner accepted, and the `end` last. A file without an `end` line is a run that
-was cut off. Frames the strategy read can be kept as JPEG files in `<name>.frames/`.
-
-The writer takes loop ticks through `Twin.add_tick_listener`. `EpisodeWriter.on_tick` runs on the
-twin's loop thread and only appends to a deque; `step`, `flush` and `close` drain it into the file
-from one thread at a time, which the runner guarantees with its lock. A log that cannot be written
-stops writing and says why in `EpisodeWriter.error`: it never ends a run.
-
-Every time in the file except `run_t` and the ages is in seconds on the twin's clock (`Twin.clock`)
-since the writer opened, `header.t0` being that moment. Intent, command and readings thus share one
-axis. `run_t` is `Observation.t`, the runner's own time, and `age_s` is a duration, as `Frame` and
-`ObjectPose` give it.
-
-Joints are in app units (degrees, the gripper 0..100), in `header.joints` order, with null for a
-missing joint. Positions are metres and rotations 3x3 rows, in the robot's base frame. The format
-needs nothing but the standard library and numpy to read.
+See docs/EPISODES.md for recording options, the record format and report limitations.
 """
 
 from __future__ import annotations
@@ -35,14 +12,16 @@ import logging
 import math
 import os
 import re
+import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Any, Literal, TextIO
+from typing import Any, BinaryIO, Literal
 
 import machinekind_twin_api
 import numpy as np
+import zstandard as zstd
 from machinekind_twin_api.strategy import Frame, ObjectPose
 
 from . import __version__ as twin_version
@@ -63,13 +42,17 @@ VERSION = 1
 #: The workspace file's default place, as `workspace.DEFAULT_REL` (not imported: `workspace` pulls in MuJoCo).
 DEFAULT_WORKSPACE = Path("workspace") / "twin.json"
 
-#: How a run ended, next to its Polish reason. A log without an end line loads as "unfinished".
+#: Stable termination codes. A log without a complete end record loads as "unfinished".
 EndCode = Literal[
     "done", "gave_up", "time_limit", "disconnected", "stopped", "preempted", "bad_target", "error", "refused",
 ]
 
-#: Quality of the kept JPEG frames: about 17 KB for 640x480.
-JPEG_QUALITY = 85
+#: Default quality for saved camera images.
+FRAME_QUALITY = 85
+#: Maximum queued events per writer, including loop samples and strategy steps.
+MAX_PENDING = 1024
+MAX_PENDING_IMAGE_BYTES = 64 * 1024 * 1024
+FLUSH_INTERVAL_S = 0.25
 #: An array with more elements than this is logged by its type and shape, not its values.
 ARRAY_LIMIT = 64
 
@@ -111,13 +94,15 @@ class EpisodeOptions:
 
     #: Where the file goes; None = `episodes_dir` of the twin's workspace file.
     folder: Path | None = None
-    #: The file's name without `.jsonl`; None = the start time, `20261024-153012`.
+    #: The file's name without `.jsonl.zst`; None = the start time, `20261024-153012`.
     name: str | None = None
     #: The caller's JSON values for the header: the plugin and its settings, a run number, a seed.
     meta: Mapping[str, Any] = field(default_factory=dict)
-    #: None keeps references to frames only. A number keeps at most one JPEG per camera per that
+    #: None saves camera metadata only. A number saves at most one image per camera per that
     #: many seconds; 0 keeps every frame the strategy read.
     keep_frames_s: float | None = None
+    frame_format: Literal["webp", "jpeg"] = "jpeg"
+    frame_quality: int = FRAME_QUALITY
     #: The label of the camera-seen object that marks the gripper, for the drift report.
     gripper: str | None = None
 
@@ -156,7 +141,7 @@ class EpisodeEnd:
 
     #: An `EndCode`, or "unfinished" for a log without an end line.
     code: str
-    #: `RunnerStatus.stopped_because`, in Polish.
+    #: Free-form termination detail from `RunnerStatus.stopped_because`.
     reason: str
     #: The log's clock at the end, which is the run's length; None when unknown.
     t: float | None
@@ -174,216 +159,280 @@ class EpisodeEnd:
 
 
 class EpisodeWriter:
-    """Writes one log. `create` opens it; the runner calls `step` per accepted tick and `close` once."""
+    """Records snapshots on a bounded queue; one worker owns compression and filesystem I/O.
 
-    def __init__(self, path: Path, file: TextIO, twin: Any, t0: float, joints: Sequence[str],
-                 keep_frames_s: float | None):
-        #: The file.
-        self.path = path
-        #: Why the log stopped being written; "" while writing works.
+    `close` queues the end record. Call `wait` when the completed file is needed immediately.
+    Errors disable recording without stopping the strategy. Queue overflow leaves an unfinished log.
+    """
+
+    def __init__(self, folder: Path, header: Mapping[str, Any], twin: Any, name: str,
+                 keep_frames_s: float | None, frame_format: Literal["webp", "jpeg"], frame_quality: int,
+                 on_update: Callable[[EpisodeWriter], None] | None):
+        self.path = folder / f"{name}.jsonl.zst"
         self.error = ""
-
-        self._file = file
+        self.opened = False
         self._twin = twin
         self._clock = twin.clock
-        self._t0 = t0
-        self._joints = tuple(joints)
+        self._t0 = float(self._clock.now())
+        self._joints = tuple(str(joint) for joint in header.get("joints", ()))
         self._keep_frames_s = keep_frames_s
-        self._ticks: collections.deque[tuple[float, dict[str, float], dict[str, float] | None, float,
-                                             tuple[str, ...]]] = collections.deque()
-        self._handle: int | None = None
-        self._closed = False
+        self._frame_format = frame_format
+        self._frame_quality = frame_quality
         self._kept_at: dict[str, float] = {}
+        self._on_update = on_update
+        self._condition = threading.Condition()
+        self._pending: collections.deque[tuple[str, Any]] = collections.deque()
+        self._pending_image_bytes = 0
+        self._flush_waiters: set[threading.Event] = set()
+        self._closed = False
+        self._end: EpisodeEnd | None = None
+        self._file: BinaryIO | None = None
+        self._compressor: Any = None
+        self._handle: int | None = twin.add_tick_listener(self.on_tick)
+        local = time.localtime()
+        own = {
+            "kind": "header", "format": FORMAT, "version": VERSION, "name": name,
+            "started": time.strftime("%Y-%m-%dT%H:%M:%S", local),
+            "clock": "virtual" if getattr(twin.clock, "virtual", False) else "wall", "t0": self._t0,
+        }
+        self._header = {**_HEADER_DEFAULTS, **_clean(header), **own, "joints": list(self._joints),
+                        "keep_frames_s": keep_frames_s, "frame_format": frame_format, "frame_quality": frame_quality,
+                        "versions": {"twin": twin_version, "api": machinekind_twin_api.__version__}}
+        self._thread = threading.Thread(target=self._work, name="episode-writer", daemon=True)
+        self._thread.start()
 
     @classmethod
     def create(cls, folder: str | Path, header: Mapping[str, Any], twin: Any, *, name: str | None = None,
-               keep_frames_s: float | None = None) -> EpisodeWriter:
-        """Opens a new file in `folder`, writes the header and starts taking loop ticks. Raises OSError only.
-
-        `header` holds the fields `twin_header` gives plus the run's own (`mode`, `owner`,
-        `strategy`, `cameras`, `gripper_label`, `meta`); this adds the format, the name, the start
-        time, the clock and the versions. A name taken already gets `-2`, `-3`, ...: nothing is
-        overwritten. A header that cannot be written leaves no file behind.
-        """
-        local = time.localtime()
-        folder = Path(folder)
-        folder.mkdir(parents=True, exist_ok=True)
-        path, file = _open_new(folder, _safe(name) if name else time.strftime("%Y%m%d-%H%M%S", local))
-
-        t0 = float(twin.clock.now())
-        joints = [str(joint) for joint in header.get("joints", ())]
-        writer = cls(path, file, twin, t0, joints, keep_frames_s)
-
-        own = {
-            "kind": "header", "format": FORMAT, "version": VERSION, "name": path.stem,
-            "started": time.strftime("%Y-%m-%dT%H:%M:%S", local),
-            "clock": "virtual" if getattr(twin.clock, "virtual", False) else "wall", "t0": t0,
-        }
-        line = {**own, **_HEADER_DEFAULTS, **header, **own, "joints": joints, "keep_frames_s": keep_frames_s,
-                "versions": {"twin": twin_version, "api": machinekind_twin_api.__version__}}
-        try:
-            writer._write(line)
-            file.flush()
-        except Exception as exc:
-            file.close()
-            path.unlink(missing_ok=True)
-            if isinstance(exc, OSError):
-                raise
-            raise OSError(f"naglowek zapisu: {type(exc).__name__}: {exc}") from exc
-
-        writer._handle = twin.add_tick_listener(writer.on_tick)
-        return writer
+               keep_frames_s: float | None = None, frame_format: Literal["webp", "jpeg"] = "jpeg",
+               frame_quality: int = FRAME_QUALITY,
+               on_update: Callable[[EpisodeWriter], None] | None = None) -> EpisodeWriter:
+        """Start recording without waiting for disk access. `path` is final once `opened` is true."""
+        if keep_frames_s is not None and (not math.isfinite(keep_frames_s) or keep_frames_s < 0):
+            raise ValueError("keep_frames_s must be finite and non-negative")
+        if frame_format not in ("webp", "jpeg"):
+            raise ValueError("frame_format must be webp or jpeg")
+        if isinstance(frame_quality, bool) or not isinstance(frame_quality, int) or not 1 <= frame_quality <= 100:
+            raise ValueError("frame_quality must be an integer between 1 and 100")
+        return cls(Path(folder), header, twin, _safe(name) if name else time.strftime("%Y%m%d-%H%M%S"),
+                   keep_frames_s, frame_format, frame_quality, on_update)
 
     def now(self) -> float:
-        """The log's clock: seconds on the twin's clock since the writer opened."""
+        """Seconds on the twin's clock since recording was requested."""
         return self._clock.now() - self._t0
 
     def on_tick(self, sample: Any) -> None:
-        """The tick listener: runs on the twin's loop thread, so it only appends."""
-        self._ticks.append((sample.t, sample.sent, sample.measured if sample.fresh else None, sample.measured_t,
-                            tuple(self._twin.status.at_limit)))
+        """Capture a loop sample without serializing data or accessing the filesystem."""
+        self._put("loop", (sample.t, dict(sample.sent), dict(sample.measured) if sample.fresh else None,
+                           sample.measured_t, tuple(self._twin.status.at_limit)))
 
     def step(self, record: StepRecord) -> None:
-        """Writes the loop ticks gathered so far, the frames due and the step's line."""
+        """Snapshot an accepted action. Only images due for retention are copied."""
         if self._closed or self.error:
             return
-
         try:
-            self._drain()
-            frames = [self._frame(record, camera, frame) for camera, frame in record.frames.items()]
-            self._write({
-                "kind": "step",
-                "step": int(record.step),
-                "run_t": _rounded(record.run_t, SECOND_DIGITS),
-                "obs_t": _rounded(record.obs_t, SECOND_DIGITS),
-                "t": _rounded(record.t, SECOND_DIGITS),
-                "joints": self._vector(record.joints),
-                "command": self._vector(record.command),
+            frames, images = [], []
+            for camera, frame in record.frames.items():
+                item: dict[str, Any] = {"camera": camera, "age_s": None, "shape": None, "file": None}
+                if frame is not None:
+                    image = np.asarray(frame.image)
+                    item.update(age_s=_rounded(frame.age_s, SECOND_DIGITS), shape=list(image.shape))
+                    every = self._keep_frames_s
+                    previous = self._kept_at.get(camera)
+                    if (every is not None and (previous is None or record.t - previous >= every)
+                            and image.ndim == 3 and image.shape[2] == 3 and image.dtype == np.uint8):
+                        images.append((len(frames), camera, image.copy()))
+                        self._kept_at[camera] = record.t
+                frames.append(item)
+            line = {
+                "kind": "step", "step": int(record.step), "run_t": _rounded(record.run_t, SECOND_DIGITS),
+                "obs_t": _rounded(record.obs_t, SECOND_DIGITS), "t": _rounded(record.t, SECOND_DIGITS),
+                "joints": self._vector(record.joints), "command": self._vector(record.command),
                 "intent": {str(name): _rounded(value, JOINT_DIGITS) for name, value in record.intent.items()},
                 "goal": _rounded(record.goal, METRE_DIGITS),
                 "objects": {str(label): _pose(pose) for label, pose in record.objects.items()},
-                "frames": frames,
-                "done": bool(record.done),
+                "frames": frames, "done": bool(record.done),
                 "success": None if record.success is None else bool(record.success),
-                "error": _rounded(record.error, SECOND_DIGITS),
-                "note": str(record.note),
+                "error": _rounded(record.error, SECOND_DIGITS), "note": str(record.note),
                 "decisions": [_decision(decision) for decision in record.decisions],
-            })
-            self._file.flush()
-        except Exception as exc:  # noqa: BLE001 - a broken log must never end a run or stop the arm
+            }
+            self._put("step", (line, images))
+        except Exception as exc:  # noqa: BLE001 - recording errors must not interrupt control
             self._broken(exc)
 
-    def flush(self) -> None:
-        """Writes the loop ticks gathered so far: for an observer that writes no steps for a while."""
-        if self._closed or self.error:
-            return
+    def flush(self, *, wait: bool = False, timeout: float | None = None) -> bool:
+        """Request a flush; optionally wait for all previously queued events to reach the file."""
+        completed = threading.Event()
+        with self._condition:
+            self._flush_waiters.add(completed)
+        if not self._put("flush", completed):
+            with self._condition:
+                self._flush_waiters.discard(completed)
+            return False
+        if not wait:
+            return True
+        finished = completed.wait(timeout)
+        with self._condition:
+            self._flush_waiters.discard(completed)
+        return finished and not self.error
 
-        try:
-            self._drain()
-            self._file.flush()
-        except Exception as exc:  # noqa: BLE001 - a broken log must never end a run or stop the arm
-            self._broken(exc)
-
-    def close(self, end: EpisodeEnd) -> None:
-        """Stops taking ticks, writes the rest and the end line, and closes the file. Once."""
-        if self._closed:
-            return
-        self._closed = True
+    def close(self, end: EpisodeEnd, *, wait: bool = True) -> None:
+        """Stop accepting events and queue the end record; optionally wait for durable completion."""
+        with self._condition:
+            if not self._closed:
+                self._closed = True
+                self._end = end
+                self._condition.notify()
         self._detach()
+        if wait:
+            self.wait()
 
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for a closed or failed writer. False means the worker is still running."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def _put(self, kind: str, value: Any) -> bool:
+        with self._condition:
+            if self._closed or self.error:
+                return False
+            image_bytes = sum(image.nbytes for _, _, image in value[1]) if kind == "step" else 0
+            if (len(self._pending) < MAX_PENDING
+                    and self._pending_image_bytes + image_bytes <= MAX_PENDING_IMAGE_BYTES):
+                self._pending_image_bytes += image_bytes
+                self._pending.append((kind, value))
+                self._condition.notify()
+                return True
+        self._broken(RuntimeError("episode queue capacity exceeded"))
+        return False
+
+    def _work(self) -> None:
         try:
-            if not self.error:
-                self._drain()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path, self._file = _open_new(self.path.parent, self._header["name"])
+            self._header["name"] = self.path.name.removesuffix(".jsonl.zst")
+            self._compressor = zstd.ZstdCompressor(level=1, write_checksum=True).compressobj()
+            try:
+                self._write(self._header)
+                self._flush()
+            except Exception:
+                self._file.close()
+                self.path.unlink(missing_ok=True)
+                raise
+            self.opened = True
+            self._notify()
+            flushed = time.monotonic()
+            while True:
+                with self._condition:
+                    if not self._pending and not self._closed and not self.error:
+                        self._condition.wait(FLUSH_INTERVAL_S)
+                    if self.error:
+                        break
+                    event = self._pending.popleft() if self._pending else None
+                    if event is not None and event[0] == "step":
+                        self._pending_image_bytes -= sum(image.nbytes for _, _, image in event[1][1])
+                    if event is None and self._closed:
+                        break
+                if event is not None:
+                    kind, value = event
+                    if kind == "loop":
+                        t, sent, measured, measured_t, at_limit = value
+                        self._write({
+                            "kind": "loop", "t": _rounded(t - self._t0, SECOND_DIGITS),
+                            "sent": self._vector(sent) if sent else None,
+                            "measured": None if measured is None else self._vector(measured),
+                            "measured_t": None if measured is None else _rounded(measured_t - self._t0,
+                                                                                 SECOND_DIGITS),
+                            "at_limit": list(at_limit),
+                        })
+                    elif kind == "step":
+                        line, images = value
+                        for index, camera, image in images:
+                            line["frames"][index]["file"] = self._keep(line["step"], camera, image)
+                        self._write(line)
+                    elif kind == "flush":
+                        self._flush()
+                        with self._condition:
+                            self._flush_waiters.discard(value)
+                        value.set()
+                if time.monotonic() - flushed >= FLUSH_INTERVAL_S:
+                    self._flush()
+                    flushed = time.monotonic()
+            end = self._end
+            if not self.error and end is not None:
                 self._write({
-                    "kind": "end",
-                    "t": _rounded(end.t, SECOND_DIGITS),
-                    "code": end.code,
-                    "reason": end.reason,
-                    "done": bool(end.done),
+                    "kind": "end", "t": _rounded(end.t, SECOND_DIGITS), "code": end.code,
+                    "reason": end.reason, "done": bool(end.done),
                     "success": None if end.success is None else bool(end.success),
-                    "error": _rounded(end.error, SECOND_DIGITS),
-                    "note": end.note,
-                    "steps": int(end.steps),
-                    "began": bool(end.began),
+                    "error": _rounded(end.error, SECOND_DIGITS), "note": end.note,
+                    "steps": int(end.steps), "began": bool(end.began),
                     "finished": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 })
-                self._file.flush()
-                os.fsync(self._file.fileno())
-        except Exception as exc:  # noqa: BLE001 - a broken log must never end a run or stop the arm
+            self._file.write(self._compressor.flush())
+            self._file.flush()
+            os.fsync(self._file.fileno())
+        except Exception as exc:  # noqa: BLE001 - recording errors must not interrupt control
             self._broken(exc)
         finally:
-            try:
-                self._file.close()
-            except OSError as exc:
-                self._broken(exc)
+            self._detach()
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except OSError as exc:
+                    self._broken(exc)
+            with self._condition:
+                self._pending.clear()
+                self._pending_image_bytes = 0
+                waiters = tuple(self._flush_waiters)
+                self._flush_waiters.clear()
+            for completed in waiters:
+                completed.set()
+            if self.error:
+                logger.warning("Episode recording %s failed: %s", self.path, self.error)
+            self._notify()
 
-    # ------------------------------------------------------------------ inside
-
-    def _drain(self) -> None:
-        while self._ticks:
-            t, sent, measured, measured_t, at_limit = self._ticks.popleft()
-            self._write({
-                "kind": "loop",
-                "t": _rounded(t - self._t0, SECOND_DIGITS),
-                "sent": self._vector(sent) if sent else None,
-                "measured": None if measured is None else self._vector(measured),
-                "measured_t": None if measured is None else _rounded(measured_t - self._t0, SECOND_DIGITS),
-                "at_limit": list(at_limit),
-            })
+    def _flush(self) -> None:
+        assert self._file is not None
+        self._file.write(self._compressor.flush(zstd.COMPRESSOBJ_FLUSH_BLOCK))
+        self._file.flush()
 
     def _vector(self, values: Mapping[str, float]) -> list[float | None]:
         return [_rounded(values.get(joint), JOINT_DIGITS) for joint in self._joints]
 
-    def _frame(self, record: StepRecord, camera: str, frame: Frame | None) -> dict[str, Any]:
-        if frame is None:
-            return {"camera": camera, "age_s": None, "shape": None, "file": None}
-
-        image = np.asarray(frame.image)
-        return {
-            "camera": camera,
-            "age_s": _rounded(frame.age_s, SECOND_DIGITS),
-            "shape": list(image.shape),
-            "file": self._keep(record, camera, image),
-        }
-
-    def _keep(self, record: StepRecord, camera: str, image: np.ndarray) -> str | None:
-        """Writes the frame as a JPEG when one is due for this camera; its path next to the log."""
-        every = self._keep_frames_s
-        if every is None or image.ndim != 3 or image.shape[2] != 3 or image.dtype != np.uint8:
-            return None
-
-        kept_at = self._kept_at.get(camera)
-        if kept_at is not None and record.t - kept_at < every:
-            return None
-
+    def _keep(self, step: int, camera: str, image: np.ndarray) -> str | None:
         import cv2
 
         bgr = cv2.cvtColor(np.ascontiguousarray(image), cv2.COLOR_RGB2BGR)
-        encoded, jpeg = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        extension = ".webp" if self._frame_format == "webp" else ".jpg"
+        quality_flag = cv2.IMWRITE_WEBP_QUALITY if self._frame_format == "webp" else cv2.IMWRITE_JPEG_QUALITY
+        encoded, data = cv2.imencode(extension, bgr, [int(quality_flag), self._frame_quality])
         if not encoded:
             return None
-
-        folder = self.path.with_suffix(".frames")
+        folder = self.path.parent / (self.path.name.removesuffix(".jsonl.zst") + ".frames")
         folder.mkdir(exist_ok=True)
-        name = f"{record.step:06d}-{_safe(camera)}.jpg"
-        (folder / name).write_bytes(jpeg.tobytes())
-        self._kept_at[camera] = record.t
-
+        name = f"{step:06d}-{_safe(camera)}{extension}"
+        (folder / name).write_bytes(data.tobytes())
         return f"{folder.name}/{name}"
 
     def _write(self, line: Mapping[str, Any]) -> None:
-        text = json.dumps(_clean(line), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        self._file.write(text + "\n")
+        assert self._file is not None
+        data = (json.dumps(_clean(line), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                + "\n").encode("utf-8")
+        self._file.write(self._compressor.compress(data))
 
     def _broken(self, exc: BaseException) -> None:
-        if not self.error:
-            logger.warning("Zapis przebiegu %s przerwany: %s", self.path, exc)
-            self.error = f"zapis przebiegu przerwany: {exc}"
-        self._detach()
-        self._ticks.clear()
+        with self._condition:
+            if not self.error:
+                self.error = f"episode recording failed: {exc}"
+            self._condition.notify()
+        self._notify()
+
+    def _notify(self) -> None:
+        if self._on_update is not None:
+            self._on_update(self)
 
     def _detach(self) -> None:
-        handle, self._handle = self._handle, None
+        with self._condition:
+            handle, self._handle = self._handle, None
         if handle is not None:
             self._twin.remove_tick_listener(handle)
 
@@ -426,7 +475,10 @@ class EpisodeLog:
         gives the code "unfinished".
         """
         path = Path(path)
-        records = _parse(path, path.read_bytes().split(b"\n"))
+        reader = _LogReader(path)
+        records = _parse(path, list(reader))
+        if not reader.complete:
+            records = [record for record in records if record.get("kind") != "end"]
         header = _header(path, records[0] if records else None)
 
         joints = tuple(header["joints"])
@@ -447,28 +499,29 @@ class EpisodeLog:
                           end=_end(ends[-1] if ends else None, steps))
 
     @staticmethod
-    def summary(path: str | Path, tail_bytes: int = 65536) -> EpisodeSummary:
-        """The header and the end of a log, from its first line and its last `tail_bytes`."""
+    def summary(path: str | Path) -> EpisodeSummary:
+        """Stream the header and final status without retaining loop and step records."""
         path = Path(path)
-        with path.open("rb") as file:
-            first = file.readline()
-            size = file.seek(0, os.SEEK_END)
-            file.seek(max(0, size - tail_bytes))
-            tail = file.read().split(b"\n")
-
-        header = _header(path, _loads(first))
-        end_line = None
+        reader = _LogReader(path)
+        header = None
+        last = None
         last_step = []
-        for line in reversed(tail):
-            record = _loads(line) or {}
-            if record.get("kind") == "end":
-                end_line = record
-                break
-            if record.get("kind") == "step":
+        previous_bad = False
+        for number, line in enumerate(reader, 1):
+            if not line.strip():
+                continue
+            if previous_bad:
+                raise ValueError(f"{path}:{number - 1}: corrupt record")
+            record = _loads(line)
+            if header is None:
+                header = _header(path, record)
+            elif record is not None and record.get("kind") == "end":
+                last = record
+            if record is not None and record.get("kind") == "step":
                 last_step = [record]
-                break
-
-        return EpisodeSummary(path, header, _end(end_line, last_step))
+            previous_bad = record is None
+        return EpisodeSummary(path=path, header=_header(path, header),
+                              end=_end(last if reader.complete else None, last_step))
 
     def readings(self) -> tuple[np.ndarray, np.ndarray]:
         """The fresh readings: (R,) their times and (R, n) their values, each reading once."""
@@ -517,11 +570,11 @@ def _safe(name: str) -> str:
     return _UNSAFE.sub("_", name)
 
 
-def _open_new(folder: Path, stem: str) -> tuple[Path, TextIO]:
+def _open_new(folder: Path, stem: str) -> tuple[Path, BinaryIO]:
     for number in itertools.count(1):
-        path = folder / (f"{stem}.jsonl" if number == 1 else f"{stem}-{number}.jsonl")
+        path = folder / (f"{stem}.jsonl.zst" if number == 1 else f"{stem}-{number}.jsonl.zst")
         try:
-            return path, path.open("x", encoding="utf-8", newline="\n")
+            return path, path.open("xb")
         except FileExistsError:
             continue
     raise AssertionError("unreachable")
@@ -609,6 +662,35 @@ def _placeholder(value: Any) -> str:
     return f"<{type(value).__name__}>"
 
 
+class _LogReader:
+    """Stream complete JSON lines; track whether a compressed file has its final checksum."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.complete = True
+
+    def __iter__(self) -> Iterator[bytes]:
+        decoder = zstd.ZstdDecompressor().decompressobj() if self.path.suffix == ".zst" else None
+        pending = b""
+        with self.path.open("rb") as file:
+            while data := file.read(65536):
+                try:
+                    if decoder is not None:
+                        if decoder.eof:
+                            raise ValueError(f"{self.path}: unexpected data after Zstandard frame")
+                        data = decoder.decompress(data)
+                        if decoder.unused_data:
+                            raise ValueError(f"{self.path}: unexpected data after Zstandard frame")
+                except zstd.ZstdError as exc:
+                    raise ValueError(f"{self.path}: corrupt Zstandard log: {exc}") from exc
+                parts = (pending + data).split(b"\n")
+                pending = parts.pop()
+                yield from parts
+        self.complete = decoder is None or decoder.eof
+        if pending:
+            yield pending
+
+
 def _loads(line: bytes) -> dict[str, Any] | None:
     """One line as a record; None for a line that is not a JSON object, or not UTF-8.
 
@@ -631,9 +713,9 @@ def _parse(path: Path, lines: list[bytes]) -> list[dict[str, Any]]:
         if record is not None:
             records.append(record)
         elif index == 0:
-            raise ValueError(f"{path}: to nie jest zapis przebiegu blizniaka")
+            raise ValueError(f"{path}: not an episode log")
         elif index < len(numbered) - 1:
-            raise ValueError(f"{path}:{number}: uszkodzona linia")
+            raise ValueError(f"{path}:{number}: corrupt record")
 
     return records
 
@@ -642,9 +724,9 @@ def _header(path: Path, record: dict[str, Any] | None) -> dict[str, Any]:
     record = record or {}
     version = record.get("version")
     if record.get("kind") != "header" or record.get("format") != FORMAT or not isinstance(version, int):
-        raise ValueError(f"{path}: to nie jest zapis przebiegu blizniaka")
+        raise ValueError(f"{path}: not an episode log")
     if version > VERSION:
-        raise ValueError(f"{path}: zapis w wersji {version} - ten blizniak czyta do {VERSION}")
+        raise ValueError(f"{path}: log version {version} is newer than supported version {VERSION}")
 
     return {**_HEADER_DEFAULTS, **record, "joints": [str(joint) for joint in record.get("joints") or ()]}
 

@@ -54,8 +54,10 @@ Useful commands:
 uv run twin workspace                  # Inspect the workstation
 uv run twin calib-sim --n 5 --cameras 2 # Evaluate calibration in simulation
 uv run twin export workspace/export    # Export scene.xml, assets/ and station.json
-uv run twin episode                    # Report the last strategy run: joint latency, gripper drift
+uv run twin episode                    # Report the latest recorded episode
 ```
+
+Episode recording is opt-in; see [recording and reports](docs/EPISODES.md).
 
 Your workstation is saved in `workspace/twin.json`. For backend and strategy
 settings, copy `configs/default.yaml` to `configs/local.yaml`, then launch with:

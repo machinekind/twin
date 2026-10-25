@@ -16,6 +16,7 @@ dependencies = [
     # two OpenCV wheels write the same cv2/ directory and overwrite each other.
     "opencv-contrib-python>=4.8",
     "numpy>=1.24",
+    "zstandard>=0.25,<1",
     "PyYAML>=6.0",
     # The plugin contracts, packages/machinekind_twin_api in this repository. They are not on PyPI;
     # `uv sync` installs them from the clone ([tool.uv.sources]).

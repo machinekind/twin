@@ -14,9 +14,8 @@ A handle in the 3D view gives the strategy its goal, `Observation.goal` in the b
 tick, also while it runs. The twin only reports where the handle is: what the goal means and how
 the arm gets there is the strategy's business.
 
-Every run leaves an episode log next to the workspace file (`episode`), with the strategy's name,
-package and settings in its header; the status line names the file. A checkbox keeps the camera
-frames the strategy read, at most one per camera per second.
+Recording is opt-in. An enabled recording includes plugin settings and can retain camera frames
+at one frame per camera per second.
 """
 
 from __future__ import annotations
@@ -87,11 +86,13 @@ class StrategyTab:
             self.confirm = gui.add_checkbox(
                 "Prawdziwe ramie: rozumiem, ze sie ruszy", False,
                 hint="Prawdziwe ramie: potwierdzenie przed kazdym Uruchom (gasnie po starcie). W sim niepotrzebne.")
+            self.record_episode = gui.add_checkbox(
+                "Record episode", False, hint="Save this run for later inspection. Logs are kept until deleted.")
             self.keep_frames = gui.add_checkbox(
-                "Zapisuj klatki kamer", False,
-                hint="Zapis przebiegu (workspace/episodes) dostaje co najwyzej jedna klatke JPEG na kamere na "
-                     "sekunde, z kamer, ktore strategia czytala (ok. 17 KB na 640x480). Wylaczone: tylko "
-                     "odwolania do klatek.")
+                "Save camera frames", False, disabled=True,
+                hint="Save up to one image per camera per second, from frames read by the strategy.")
+            self.frame_format = gui.add_dropdown(
+                "Frame format", options=("JPEG", "WebP"), initial_value="JPEG", disabled=True)
             self.goal_on = gui.add_checkbox(
                 "Cel z uchwytu 3D", False,
                 hint="Uchwyt w widoku 3D, postawiony na koncowce, podaje strategii cel (obs.goal, uklad "
@@ -109,6 +110,17 @@ class StrategyTab:
 
         self.goal_handle = self.app.server.scene.add_transform_controls(
             "/cel_strategii", scale=0.1, disable_rotations=True, visible=False)
+
+        @self.record_episode.on_update
+        def _(event):
+            self.keep_frames.disabled = not self.record_episode.value
+            self.frame_format.disabled = not (self.record_episode.value and self.keep_frames.value)
+            if not self.record_episode.value:
+                self.keep_frames.value = False
+
+        @self.keep_frames.on_update
+        def _(event):
+            self.frame_format.disabled = not (self.record_episode.value and self.keep_frames.value)
 
         @self.goal_on.on_update
         def _(event):
@@ -220,7 +232,9 @@ class StrategyTab:
 
         self._check_arm()
         strategy, meta = self._create()
-        episode = EpisodeOptions(meta=meta, keep_frames_s=1.0 if self.keep_frames.value else None)
+        episode = (EpisodeOptions(meta=meta, keep_frames_s=1.0 if self.keep_frames.value else None,
+                                  frame_format="webp" if self.frame_format.value == "WebP" else "jpeg")
+                   if self.record_episode.value else None)
         runner = StrategyRunner(app.twin, strategy, goal=self.goal, cameras=self._cameras(),
                                 objects=app.perception.objects, episode=episode)
 

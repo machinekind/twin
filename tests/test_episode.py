@@ -1,4 +1,4 @@
-"""The episode log: its writer and loader, every `StrategyRunner` run writing one, and the observation mode.
+"""The episode log: its writer and loader, opt-in strategy recording, and the observation mode.
 
 Everything in simulated time: the twin's loop without a thread (`connect(threaded=False)` +
 `Twin.step`) and the runner without a thread (`start(threaded=False)` + `step_once`), as in
@@ -11,12 +11,14 @@ from __future__ import annotations
 import collections
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pytest
+import zstandard as zstd
 
 pytest.importorskip("mujoco")
 
@@ -86,9 +88,20 @@ def run_ticks(twin: Twin, count: int) -> None:
         twin.step(TWIN_PERIOD)
 
 
+def log_bytes(path: Path) -> bytes:
+    if path.suffix == ".zst":
+        with path.open("rb") as file, zstd.ZstdDecompressor().stream_reader(file) as reader:
+            return reader.read()
+    return path.read_bytes()
+
+
+def log_text(path: Path) -> str:
+    return log_bytes(path).decode("utf-8")
+
+
 def lines(path: Path) -> list[dict]:
     """The log's records; only "\\n" ends a line, as in `EpisodeLog.load`."""
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]
+    return [json.loads(line) for line in log_text(path).split("\n") if line]
 
 
 # --------------------------------------------------------------------------- the file
@@ -113,7 +126,7 @@ def test_a_log_round_trips_through_its_loader(twin, tmp_path):
 
     log = EpisodeLog.load(writer.path)
 
-    assert writer.path == tmp_path / "run.jsonl"
+    assert writer.path == tmp_path / "run.jsonl.zst"
     assert log.header["format"] == FORMAT
     assert log.header["robot"] == BOT
     assert log.header["mode"] == "observation"
@@ -163,7 +176,7 @@ def test_every_line_is_strict_json_with_constant_keys(twin, tmp_path):
     def refuse(constant):
         raise ValueError(constant)
 
-    parsed = [json.loads(line, parse_constant=refuse) for line in writer.path.read_text().splitlines()]
+    parsed = [json.loads(line, parse_constant=refuse) for line in log_text(writer.path).splitlines()]
     steps = [line for line in parsed if line["kind"] == "step"]
 
     assert steps[0]["error"] is None
@@ -182,7 +195,7 @@ def test_a_cut_off_log_loads_as_unfinished(twin, tmp_path):
         writer.step(record(writer, twin, step, note=f"krok {step}"))
     writer.close(end(code="done", steps=3))
 
-    text = writer.path.read_text(encoding="utf-8").splitlines()
+    text = log_text(writer.path).splitlines()
     cut = tmp_path / "cut.jsonl"
     cut.write_text("\n".join(text[:-2] + [text[-2][: len(text[-2]) // 2]]), encoding="utf-8")
 
@@ -203,7 +216,7 @@ def test_a_log_cut_inside_a_character_loads_as_unfinished(twin, tmp_path):
         writer.step(record(writer, twin, step, note=note))
     writer.close(end(code="done", steps=2))
 
-    data = writer.path.read_bytes()
+    data = log_bytes(writer.path)
     cut = tmp_path / "cut.jsonl"
     cut.write_bytes(data[: data.rindex("ł".encode()) + 1])
 
@@ -240,21 +253,21 @@ def test_a_broken_line_a_newer_version_or_another_file_are_refused(twin, tmp_pat
     writer = observer(twin, tmp_path)
     run_ticks(twin, 3)
     writer.close(end())
-    text = writer.path.read_text(encoding="utf-8").splitlines()
+    text = log_text(writer.path).splitlines()
 
     broken = tmp_path / "broken.jsonl"
     broken.write_text("\n".join([text[0], "{nie json", *text[1:]]), encoding="utf-8")
-    with pytest.raises(ValueError, match=r"broken.jsonl:2: uszkodzona linia"):
+    with pytest.raises(ValueError, match=r"broken.jsonl:2: corrupt record"):
         EpisodeLog.load(broken)
 
     newer = tmp_path / "newer.jsonl"
     newer.write_text("\n".join([json.dumps({**json.loads(text[0]), "version": 2}), *text[1:]]), encoding="utf-8")
-    with pytest.raises(ValueError, match="w wersji 2"):
+    with pytest.raises(ValueError, match="version 2"):
         EpisodeLog.load(newer)
 
     other = tmp_path / "other.jsonl"
     other.write_text('{"kind": "header", "format": "cos innego"}\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="to nie jest zapis przebiegu"):
+    with pytest.raises(ValueError, match="not an episode log"):
         EpisodeLog.load(other)
 
 
@@ -265,8 +278,8 @@ def test_two_logs_with_one_name_get_their_own_files(twin, tmp_path):
     first.close(end())
     second.close(end())
 
-    assert first.path.name == "same.jsonl"
-    assert second.path.name == "same-2.jsonl"
+    assert first.path.name == "same.jsonl.zst"
+    assert second.path.name == "same-2.jsonl.zst"
     assert EpisodeLog.load(first.path).header["name"] == "same"
     assert EpisodeLog.load(second.path).header["name"] == "same-2"
 
@@ -301,19 +314,20 @@ def test_the_summary_reads_the_header_and_the_end(twin, tmp_path):
     assert summary.end.succeeded
 
     unfinished = tmp_path / "unfinished.jsonl"
-    unfinished.write_text("\n".join(writer.path.read_text(encoding="utf-8").splitlines()[:-1]), encoding="utf-8")
+    unfinished.write_text("\n".join(log_text(writer.path).splitlines()[:-1]), encoding="utf-8")
 
     assert EpisodeLog.summary(unfinished).end.code == "unfinished"
     assert EpisodeLog.summary(unfinished).end.steps == 3
 
 
-def test_kept_frames_are_jpegs_next_to_the_log(twin, tmp_path):
+@pytest.mark.parametrize("frame_format, extension", [("webp", ".webp"), ("jpeg", ".jpg")])
+def test_kept_frames_round_trip_in_both_formats(twin, tmp_path, frame_format, extension):
     cv2 = pytest.importorskip("cv2")
     twin.connect("sim", threaded=False)
     image = np.zeros((48, 64, 3), np.uint8)
     image[:, :, 0] = 200
 
-    every = observer(twin, tmp_path, name="every", keep_frames_s=0)
+    every = observer(twin, tmp_path, name="every", keep_frames_s=0, frame_format=frame_format)
     every.step(record(every, twin, 0, frames={"a": Frame(image, 0.01), "b": None}))
     every.close(end(steps=1))
 
@@ -323,6 +337,7 @@ def test_kept_frames_are_jpegs_next_to_the_log(twin, tmp_path):
     assert frames[0]["shape"] == [48, 64, 3]
     assert frames[1] == {"camera": "b", "age_s": None, "shape": None, "file": None}
     assert kept.parent == tmp_path / "every.frames"
+    assert kept.suffix == extension
     assert cv2.imread(str(kept)).shape == (48, 64, 3)
     assert cv2.imread(str(kept))[0, 0, 2] > 150
 
@@ -376,6 +391,7 @@ def test_a_run_of_the_test_strategy_leaves_a_log_whose_report_shows_latency_on_e
     runner.start(threaded=False)
     drive(twin, runner, 10.0)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
     result = report(log)
@@ -402,7 +418,7 @@ def test_a_run_of_the_test_strategy_leaves_a_log_whose_report_shows_latency_on_e
     text = result.lines()
     for joint in log.joints:
         assert any(line.split()[:1] == [joint] for line in text), joint
-    assert any("odczyty - kamery" in line for line in text)
+    assert any("measured - cameras" in line for line in text)
 
 
 def test_a_fake_arms_delay_shows_as_servo_latency(twin, monkeypatch, tmp_path):
@@ -419,6 +435,7 @@ def test_a_fake_arms_delay_shows_as_servo_latency(twin, monkeypatch, tmp_path):
     drive(twin, runner, 10.0)
 
     assert runner.status.stopped_code == "done"
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
     result = report(log)
@@ -439,6 +456,7 @@ def test_a_single_move_has_its_latency(twin, tmp_path):
     drive(twin, runner, 3.0)
 
     assert runner.status.stopped_code == "done"
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     j1 = next(joint for joint in report(EpisodeLog.load(runner.status.episode)).latency if joint.joint == "j1")
 
@@ -453,6 +471,7 @@ def test_readings_at_a_limit_are_logged_and_flagged(twin, tmp_path):
     drive(twin, runner, 3.0)
     runner.stop()
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
     result = report(log)
@@ -463,7 +482,7 @@ def test_readings_at_a_limit_are_logged_and_flagged(twin, tmp_path):
     assert not np.delete(log.at_limit, column, axis=1).any()
     assert isinstance(j1.actuator, DelayFit), j1.actuator
     assert j1.actuator.at_limit_share > AT_LIMIT_FLAG
-    assert any(line.startswith("  j1 ") and "odczytow na limicie" in line for line in result.lines())
+    assert any(line.startswith("  j1 ") and "samples at a joint limit" in line for line in result.lines())
 
 
 def test_joints_whose_target_copies_the_readings_get_no_delay(twin, tmp_path):
@@ -479,6 +498,7 @@ def test_joints_whose_target_copies_the_readings_get_no_delay(twin, tmp_path):
     drive(twin, runner, 6.0)
     runner.stop()
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     latency = {joint.joint: joint for joint in report(EpisodeLog.load(runner.status.episode)).latency}
 
@@ -495,6 +515,7 @@ def test_the_log_holds_every_accepted_tick(twin, tmp_path):
     runner.start(threaded=False)
     drive(twin, runner, 10.0)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
     kinds = [line["kind"] for line in lines(runner.status.episode)]
@@ -573,6 +594,7 @@ def test_every_end_leaves_a_closed_log_with_its_code(twin, tmp_path, monkeypatch
         return StrategyRunner(twin, strategy, episode=EpisodeOptions(folder=tmp_path), **kw)
 
     runner = ends(code, twin, runner_for, monkeypatch)
+    assert runner.wait_for_episode(timeout=5.0)
     status = runner.status
 
     assert not status.running
@@ -597,6 +619,7 @@ def test_a_failed_claim_leaves_no_file(twin, tmp_path):
     with pytest.raises(RuntimeError, match="aktywny STOP"):
         runner.start(threaded=False)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is None
     assert not (tmp_path / "runs").exists()
 
@@ -615,6 +638,7 @@ def test_a_late_act_writes_no_step(twin, tmp_path):
     runner.start(threaded=False)
     drive(twin, runner, 0.5)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
 
@@ -632,10 +656,12 @@ def test_the_log_stops_growing_once_the_run_ends(twin, tmp_path):
     drive(twin, runner, 0.3)
     runner.stop()
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     size = runner.status.episode.stat().st_size
     run_ticks(twin, 20)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode.stat().st_size == size
 
 
@@ -661,6 +687,7 @@ def test_frames_the_strategy_read_are_referenced_not_fetched(twin, tmp_path):
         drive(twin, runner, 2.5)
         runner.stop()
         assert fetched == ["a"] * runner.status.step
+        assert runner.wait_for_episode(timeout=5.0)
         assert runner.status.episode is not None
         return EpisodeLog.load(runner.status.episode)
 
@@ -713,6 +740,7 @@ def test_a_decision_goes_into_the_log_of_its_tick(twin, tmp_path):
     runner.start(threaded=False)
     drive(twin, runner, 0.5)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
     decisions = [step["decisions"] for step in log.steps]
@@ -740,8 +768,9 @@ def test_the_log_is_strict_json(twin, tmp_path):
     def refuse(constant):
         raise ValueError(constant)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
-    parsed = [json.loads(line, parse_constant=refuse) for line in runner.status.episode.read_text().splitlines()]
+    parsed = [json.loads(line, parse_constant=refuse) for line in log_text(runner.status.episode).splitlines()]
 
     assert parsed[0]["meta"] == {"limit": None}
     assert all(line["error"] is None for line in parsed if line["kind"] in ("step", "end"))
@@ -755,9 +784,10 @@ def test_two_runs_with_one_name_get_their_own_files(twin, tmp_path):
         runner.start(threaded=False)
         drive(twin, runner, 0.2)
         runner.stop()
+        assert runner.wait_for_episode(timeout=5.0)
         paths.append(runner.status.episode)
 
-    assert paths == [tmp_path / "same.jsonl", tmp_path / "same-2.jsonl"]
+    assert paths == [tmp_path / "same.jsonl.zst", tmp_path / "same-2.jsonl.zst"]
     assert [EpisodeLog.load(path).end.code for path in paths] == ["stopped", "stopped"]
 
 
@@ -766,10 +796,12 @@ def test_a_run_goes_next_to_its_workspace(twin, tmp_path):
     try:
         for each in (placed, twin):
             each.connect("sim", threaded=False)
-            runner = StrategyRunner(each, Plugin(answer({})))
+            runner = StrategyRunner(each, Plugin(answer({})), episode=EpisodeOptions())
             runner.start(threaded=False)
             runner.stop()
+            assert runner.wait_for_episode(timeout=5.0)
             assert runner.status.episode is not None
+            assert runner.wait_for_episode(timeout=5.0)
             assert runner.status.episode.parent == episodes_dir(each.workspace.path)
     finally:
         placed.close()
@@ -788,8 +820,10 @@ def test_a_log_that_cannot_open_does_not_stop_the_run(twin, tmp_path):
     drive(twin, runner, 3.0)
 
     assert runner.status.stopped_code == "done"
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is None
-    assert runner.status.episode_error.startswith("nie zapisze przebiegu")
+    assert runner.wait_for_episode(timeout=5.0)
+    assert runner.status.episode_error.startswith("episode recording failed")
 
 
 def test_a_log_that_breaks_mid_run_does_not_stop_the_run(twin, tmp_path, monkeypatch):
@@ -800,6 +834,9 @@ def test_a_log_that_breaks_mid_run_does_not_stop_the_run(twin, tmp_path, monkeyp
     drive(twin, runner, 0.2)
     assert runner.status.running
 
+    assert runner._run is not None and runner._run.log is not None
+    assert runner._run.log.flush(wait=True, timeout=5.0)
+
     def full_disk(self, line):
         raise OSError("brak miejsca na dysku")
 
@@ -807,7 +844,9 @@ def test_a_log_that_breaks_mid_run_does_not_stop_the_run(twin, tmp_path, monkeyp
     drive(twin, runner, 3.0)
 
     assert runner.status.stopped_code == "done"
+    assert runner.wait_for_episode(timeout=5.0)
     assert "brak miejsca na dysku" in runner.status.episode_error
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     monkeypatch.undo()
     assert EpisodeLog.load(runner.status.episode).end.code == "unfinished"
@@ -841,7 +880,9 @@ def test_a_value_the_log_cannot_read_costs_only_that_value(twin, tmp_path):
     drive(twin, runner, 0.5)
 
     assert runner.status.stopped_code == "done"
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode_error == ""
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
 
@@ -864,7 +905,9 @@ def test_a_log_whose_header_cannot_be_written_leaves_no_file_and_does_not_stop_t
     drive(twin, runner, 3.0)
 
     assert runner.status.stopped_code == "done"
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is None
+    assert runner.wait_for_episode(timeout=5.0)
     assert "zly naglowek" in runner.status.episode_error
     assert list(tmp_path.iterdir()) == []
 
@@ -923,6 +966,7 @@ def finished_run(twin: Twin, folder: Path | None, name: str, code: str = "done")
     drive(twin, runner, 0.5 if code == "stopped" else 3.0)
     runner.stop()
     assert runner.status.stopped_code == code
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     return runner.status.episode
 
@@ -951,8 +995,8 @@ def test_twin_episode_lists_a_folder_newest_first(twin, tmp_path, capsys):
     rows = capsys.readouterr().out.splitlines()[1:]
     assert [row.split()[0] for row in rows] == ["run-10", "run-2", "broken"]
     assert "stopped" in rows[0]
-    assert "done" in rows[1] and "sukces tak" in rows[1]
-    assert "nieczytelny" in rows[2]
+    assert "done" in rows[1] and "success yes" in rows[1]
+    assert "unreadable" in rows[2]
 
 
 def test_twin_episode_without_a_path_reports_the_newest_log_next_to_the_workspace(twin, tmp_path, capsys):
@@ -963,21 +1007,212 @@ def test_twin_episode_without_a_path_reports_the_newest_log_next_to_the_workspac
     assert twin_cli(["episode"]) == 0
 
     out = capsys.readouterr().out
-    assert out.startswith("Przebieg b ")
-    assert str(tmp_path / "workspace" / "episodes" / "b.jsonl") in out
+    assert out.startswith("Episode b ")
+    assert str(tmp_path / "workspace" / "episodes" / "b.jsonl.zst") in out
 
 
 def test_twin_episode_says_what_is_missing(tmp_path, capsys):
     assert twin_cli(["episode", str(tmp_path / "nie-ma.jsonl")]) == 1
-    assert "nie ma" in capsys.readouterr().err
+    assert "no such path" in capsys.readouterr().err
 
     assert twin_cli(["episode", "--path", str(tmp_path / "twin.json")]) == 1
-    assert "nie ma" in capsys.readouterr().err
+    assert "no such path" in capsys.readouterr().err
 
     (tmp_path / "episodes").mkdir()
     assert twin_cli(["episode", "--path", str(tmp_path / "twin.json")]) == 1
-    assert "brak zapisow przebiegow" in capsys.readouterr().err
+    assert "no episode logs" in capsys.readouterr().err
 
     (tmp_path / "other.jsonl").write_text('{"kind": "header"}\n', encoding="utf-8")
     assert twin_cli(["episode", str(tmp_path / "other.jsonl")]) == 1
-    assert "to nie jest zapis przebiegu" in capsys.readouterr().err
+    assert "not an episode log" in capsys.readouterr().err
+
+
+def test_recording_is_disabled_unless_requested(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Plugin(answer({})))
+    runner.start(threaded=False)
+    drive(twin, runner, 0.2)
+    runner.stop()
+
+    assert runner.wait_for_episode(timeout=1.0)
+    assert runner.status.episode is None
+    assert runner.status.episode_error == ""
+    assert not (tmp_path / "workspace" / "episodes").exists()
+
+
+def test_disk_writes_do_not_block_steps_or_stopping(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    writing, release, stopped = threading.Event(), threading.Event(), threading.Event()
+    original = EpisodeWriter._write
+
+    def slow_write(self, line):
+        assert threading.current_thread() is not threading.main_thread()
+        if line["kind"] == "step":
+            writing.set()
+            assert release.wait(5.0)
+        original(self, line)
+
+    monkeypatch.setattr(EpisodeWriter, "_write", slow_write)
+    runner = StrategyRunner(twin, Plugin(answer({"j1": 5.0})), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    try:
+        assert runner.step_once(0.0)
+        assert writing.wait(5.0)
+        assert runner.step_once(0.05)
+
+        def stop():
+            runner.stop()
+            stopped.set()
+
+        stopper = threading.Thread(target=stop)
+        stopper.start()
+        assert stopped.wait(1.0), "stop waited for the blocked disk writer"
+        stopper.join()
+        assert not runner.status.running
+        assert not runner.wait_for_episode(timeout=0.01)
+    finally:
+        release.set()
+        runner.stop()
+        assert runner.wait_for_episode(timeout=5.0)
+
+    assert runner.status.episode is not None
+    log = EpisodeLog.load(runner.status.episode)
+    assert len(log.steps) == 2
+    assert log.end.code == "stopped"
+
+
+def test_queue_overflow_stops_recording_without_stopping_the_strategy(twin, tmp_path, monkeypatch):
+    from machinekind_twin import episode
+
+    twin.connect("sim", threaded=False)
+    writing, release = threading.Event(), threading.Event()
+    original = EpisodeWriter._write
+
+    def paused(self, line):
+        if line["kind"] == "header":
+            writing.set()
+            assert release.wait(5.0)
+        original(self, line)
+
+    monkeypatch.setattr(episode, "MAX_PENDING", 4)
+    monkeypatch.setattr(EpisodeWriter, "_write", paused)
+    runner = StrategyRunner(twin, Plugin(answer({"j1": 5.0})), episode=EpisodeOptions(folder=tmp_path))
+    runner.start(threaded=False)
+    try:
+        assert writing.wait(5.0)
+        run_ticks(twin, 20)
+        assert runner.step_once(0.0)
+        assert runner.status.running
+        assert "queue capacity exceeded" in runner.status.episode_error
+    finally:
+        release.set()
+        runner.stop()
+        assert runner.wait_for_episode(timeout=5.0)
+
+    assert runner.status.episode is not None
+    assert EpisodeLog.load(runner.status.episode).end.code == "unfinished"
+
+
+def test_zstandard_truncation_recovers_records_and_checksum_corruption_is_reported(twin, tmp_path):
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path, name="complete")
+    writer.step(record(writer, twin, 0, intent={"j1": 5.0}))
+    assert writer.flush(wait=True, timeout=5.0)
+    writer.close(end(code="done", steps=1))
+    data = writer.path.read_bytes()
+
+    truncated = tmp_path / "cut.jsonl.zst"
+    truncated.write_bytes(data[:-4])
+    log = EpisodeLog.load(truncated)
+    assert log.end.code == "unfinished"
+    assert len(log.steps) == 1
+    assert EpisodeLog.summary(truncated).end.code == "unfinished"
+
+    corrupt = tmp_path / "corrupt.jsonl.zst"
+    corrupt.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    with pytest.raises(ValueError, match="corrupt Zstandard log"):
+        EpisodeLog.load(corrupt)
+    with pytest.raises(ValueError, match="corrupt Zstandard log"):
+        EpisodeLog.summary(corrupt)
+
+
+def test_queued_images_and_decision_state_are_snapshots(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    writing, release = threading.Event(), threading.Event()
+    original = EpisodeWriter._write
+
+    def paused(self, line):
+        if line["kind"] == "header":
+            writing.set()
+            assert release.wait(5.0)
+        original(self, line)
+
+    monkeypatch.setattr(EpisodeWriter, "_write", paused)
+    writer = observer(twin, tmp_path, keep_frames_s=0)
+    image = np.zeros((48, 64, 3), np.uint8)
+    image[:, :, 0] = 200
+    state = {"joint": 1}
+    try:
+        assert writing.wait(5.0)
+        writer.step(record(writer, twin, 0, frames={"a": Frame(image, 0.0)},
+                           decisions=(Decision("reach", "yes", state=state),)))
+        image[:] = 0
+        state["joint"] = 99
+    finally:
+        release.set()
+        writer.close(end(steps=1))
+
+    import cv2
+
+    log = EpisodeLog.load(writer.path)
+    saved = cv2.imread(str(tmp_path / log.steps[0]["frames"][0]["file"]))
+    assert saved[0, 0, 2] > 150
+    assert log.steps[0]["decisions"][0]["state"] == {"joint": 1}
+
+
+def test_image_queue_has_a_byte_limit(twin, tmp_path, monkeypatch):
+    from machinekind_twin import episode
+
+    twin.connect("sim", threaded=False)
+    monkeypatch.setattr(episode, "MAX_PENDING_IMAGE_BYTES", 100)
+    writer = observer(twin, tmp_path, keep_frames_s=0)
+    writer.step(record(writer, twin, 0, frames={"a": Frame(np.zeros((20, 20, 3), np.uint8), 0.0)}))
+    writer.close(end(steps=1))
+
+    assert "queue capacity exceeded" in writer.error
+    assert EpisodeLog.load(writer.path).end.code == "unfinished"
+
+
+@pytest.mark.parametrize("options", [
+    {"keep_frames_s": -1}, {"keep_frames_s": math.inf},
+    {"frame_quality": 0}, {"frame_quality": 101}, {"frame_quality": True},
+    {"frame_format": "png"},
+])
+def test_invalid_recording_options_are_rejected(twin, tmp_path, options):
+    with pytest.raises(ValueError):
+        observer(twin, tmp_path, **options)
+    assert not list(tmp_path.iterdir())
+
+
+def test_failed_writer_releases_flush_waiters(twin, tmp_path, monkeypatch):
+    twin.connect("sim", threaded=False)
+    writer = observer(twin, tmp_path)
+    assert writer.flush(wait=True, timeout=5.0)
+
+    def broken(self, line):
+        raise OSError("disk disconnected")
+
+    monkeypatch.setattr(EpisodeWriter, "_write", broken)
+    writer.step(record(writer, twin, 0))
+    returned = threading.Event()
+    results = []
+
+    def flush():
+        results.append(writer.flush(wait=True))
+        returned.set()
+
+    waiter = threading.Thread(target=flush, daemon=True)
+    waiter.start()
+    assert returned.wait(1.0)
+    assert results == [False]
+    assert writer.wait(timeout=5.0)

@@ -236,7 +236,7 @@ def test_drift_is_readings_minus_the_cameras(tmp_path, tcp):
     assert drift.angle_max_deg == pytest.approx(0.0, abs=0.01)
     assert drift.at_rest_samples == np.sum(SEEN_T - 0.03 - SPEED_HALF_S >= SWEEP_S)
     assert drift.at_rest_rms_m == pytest.approx(np.linalg.norm(OFFSET), abs=1e-5)
-    assert any("odczyty - kamery" in line for line in result.lines())
+    assert any("measured - cameras" in line for line in result.lines())
 
 
 def test_the_marker_offset_is_in_the_tcp_frame(tmp_path, tcp):
@@ -258,7 +258,7 @@ def test_twin_episode_takes_the_gripper_label_and_the_marker_offset(tmp_path, tc
 
     def drift_lines(*flags: str) -> list[str]:
         assert twin_cli(["episode", str(path), *flags]) == 0
-        return [line for line in capsys.readouterr().out.splitlines() if "odczyty - kamery" in line]
+        return [line for line in capsys.readouterr().out.splitlines() if "measured - cameras" in line]
 
     named = drift_lines("--gripper", "chwytak", "--offset-mm", *(f"{value * 1000:g}" for value in MARKER))
 
@@ -305,7 +305,7 @@ def test_an_identity_rotation_means_position_only(tmp_path, tcp):
 
     assert result.drift is not None
     assert result.drift.angle_median_deg is None
-    assert "  obrot: kamery podaja tylko polozenie" in result.lines()
+    assert "  rotation: position-only camera poses" in result.lines()
 
 
 def test_each_pair_measures_its_own_link_of_the_chain(tmp_path):

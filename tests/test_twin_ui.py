@@ -139,7 +139,9 @@ def app(shared_app):
     a.arm_engage.value = False
     a.tcp_gizmo_on.value = False
     a.strategies.goal_on.value = False
+    a.strategies.record_episode.value = False
     a.strategies.keep_frames.value = False
+    a.strategies.frame_format.value = "JPEG"
     for owner in (a.twin.owner,):
         if owner is not None:
             a.twin.release(owner)
@@ -753,7 +755,9 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
 
     app.twin.connect("sim", threaded=False)
     tab = choose_strategy(app, swing, joint="j1", period_s=1.0)
+    tab.record_episode.value = True
     tab.keep_frames.value = True
+    tab.frame_format.value = "WebP"
 
     tab.start()
 
@@ -779,6 +783,7 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
     tab.tick()
     assert "zatrzymana z panelu" in tab.run_md.content
 
+    assert tab.runner.wait_for_episode(timeout=5.0)
     episode = tab.runner.status.episode
     assert episode is not None
     assert episode.parent == Path(app.ws.path).parent / "episodes"
@@ -788,6 +793,7 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
     assert log.header["meta"]["strategy"] == swing
     assert log.header["meta"]["settings"]["period_s"] == 1.0
     assert log.header["keep_frames_s"] == 1.0
+    assert log.header["frame_format"] == "webp"
 
 
 def test_a_wrong_key_in_the_strategys_config_section_is_refused_before_start(app, swing, tmp_path, monkeypatch):

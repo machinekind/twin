@@ -205,13 +205,14 @@ def _episode(a: argparse.Namespace) -> int:
 
     target = Path(a.target) if a.target else episodes_dir(a.path)
     if not target.exists():
-        print(f"twin episode: nie ma {target}", file=sys.stderr)
+        print(f"twin episode: no such path: {target}", file=sys.stderr)
         return 1
 
     if target.is_dir():
-        logs = sorted(target.glob("*.jsonl"), key=lambda path: _natural(path.stem), reverse=True)
+        logs = sorted([*target.glob("*.jsonl"), *target.glob("*.jsonl.zst")],
+                      key=lambda path: _natural(path.name.split(".jsonl")[0]), reverse=True)
         if not logs:
-            print(f"brak zapisow przebiegow w {target}", file=sys.stderr)
+            print(f"no episode logs in {target}", file=sys.stderr)
             return 1
         if a.target:
             _list_episodes(target, logs)
@@ -220,7 +221,7 @@ def _episode(a: argparse.Namespace) -> int:
 
     try:
         log = EpisodeLog.load(target)
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         print(f"twin episode: {exc}", file=sys.stderr)
         return 1
 
@@ -232,20 +233,21 @@ def _episode(a: argparse.Namespace) -> int:
 def _list_episodes(folder: Path, logs: list[Path]) -> None:
     from .episode import EpisodeLog
 
-    print(f"Przebiegi w {folder} (najnowsze pierwsze):")
+    print(f"Episodes in {folder} (newest first):")
     for path in logs:
+        name = path.name.removesuffix(".zst").removesuffix(".jsonl")
         try:
             summary = EpisodeLog.summary(path)
         except (OSError, ValueError) as exc:
-            print(f"  {path.stem:<24} nieczytelny: {exc}")
+            print(f"  {name:<24} unreadable: {exc}")
             continue
 
         end = summary.end
-        success = "-" if end.success is None else ("tak" if end.success else "nie")
+        success = "-" if end.success is None else ("yes" if end.success else "no")
         error = "-" if end.error is None else f"{end.error:.3g}"
         length = "-" if end.t is None else f"{end.t:.2f}"
-        print(f"  {path.stem:<24} {end.code:<13} sukces {success:<4} blad zadania {error:<9} "
-              f"czas {length:>8} s  krokow {end.steps:<6} {end.reason}")
+        print(f"  {name:<24} {end.code:<13} success {success:<4} task error {error:<9} "
+              f"duration {length:>8} s  steps {end.steps:<6} {end.reason}")
 
 
 def _natural(name: str) -> list[Any]:
@@ -494,14 +496,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_export)
 
-    p = sub.add_parser("episode", help="zapis przebiegu strategii: raport albo lista przebiegow")
+    p = sub.add_parser("episode", help="report an episode or list recordings")
     p.add_argument("target", nargs="?", default=None, metavar="PATH",
-                   help="plik .jsonl (raport) albo folder (lista); domyslnie najnowszy zapis obok stanowiska")
-    p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
-    p.add_argument("--gripper", default=None, metavar="ETYKIETA",
-                   help="etykieta obiektu widzianego przez kamery, ktory oznacza chwytak (dryf odczyty - kamery)")
+                   help=".jsonl.zst or .jsonl file (report), or folder (list); defaults to the newest recording")
+    p.add_argument("--path", default=None, help="workspace file (default: workspace/twin.json)")
+    p.add_argument("--gripper", default=None, metavar="LABEL",
+                   help="camera-observed gripper marker label for the drift report")
     p.add_argument("--offset-mm", nargs=3, type=float, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"),
-                   help="gdzie ten znacznik siedzi w ukladzie TCP [mm]")
+                   help="marker position in the TCP frame [mm]")
     p.set_defaults(fn=_episode)
 
     p = sub.add_parser("ui", help="panel blizniaka w przegladarce (viser)")

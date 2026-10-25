@@ -84,7 +84,7 @@ see [the first-session procedure](#galaxea-a1x-first-session) below.
 |---|---|
 | `workspace/twin.json` | Your local robot selection, backend/port, table, scene look, cameras, calibration and measured dynamics; ignored by Git |
 | `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
-| `workspace/episodes/*.jsonl` | One file per strategy run, plus `<name>.frames/` when frames are kept; ignored by Git |
+| `workspace/episodes/` | Opt-in episode recordings and optional camera images; ignored by Git |
 | `configs/local.yaml` | Your backend, strategy, detector and safety settings; ignored by Git |
 | `examples/twin.sim.json` | Example workstation with two calibrated simulated cameras |
 | `assets/calib/` | Example lens intrinsics and distortion files |
@@ -139,7 +139,7 @@ through the browser's animation loop, which can pause in a background tab.
 | **Mapa** (Map) | Stitched tabletop view, the objects that running detectors track and a tag-on-table reach action |
 | **Dynamika** (Dynamics) | Record supervised excitation, fit servo dynamics and save the result to the workstation |
 | **Detektory** (Detectors) | Choose an installed detector, edit settings, start it and stop running ones. Tracked objects show as text and 3D markers |
-| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run. The strategy gets the tracked objects in `Observation.objects`. The status names the run's episode log after `zapis:` (log:); **Zapisuj klatki kamer** (Save camera frames) keeps the frames the strategy read |
+| **Strategie** (Strategies) | Choose an installed strategy, edit settings, provide an optional 3D goal, start/stop the run. The strategy gets the tracked objects in `Observation.objects`. **Record episode** enables logging; **Save camera frames** also saves sampled images. See [episode recording](EPISODES.md) |
 | **Sim-Real** | Real image with simulated edges overlaid using the same camera pose and intrinsics |
 
 The guide (**Przewodnik**, **Teraz**) reports the next action from the current
@@ -308,9 +308,7 @@ For hardware:
 | `twin calib-sim --n 5 --cameras 2` | Calibration against simulated ground truth; optional `--robot` |
 | `twin workspace` | Inspect workstation state; optional `--path` |
 | `twin export workspace/export` | Export scene, assets and station data; optional `--path` |
-| `twin episode` | Report the newest strategy run's episode log next to the workstation; optional `--path` |
-| `twin episode <file.jsonl>` | Report one log: latency per joint, gripper drift with `--gripper LABEL` and `--offset-mm X Y Z` |
-| `twin episode <folder>` | One line per run, newest first: end code, success, task error, length, steps and reason |
+| `twin episode [PATH]` | Report the latest recording, report a specified file or list a folder; see [episode recording](EPISODES.md) |
 
 ```bash
 uv run pytest -q
@@ -328,242 +326,8 @@ Control-loop tests use [VirtualClock](../src/machinekind_twin/clock.py) and
 [the test bench](../tests/twinbench.py) to advance simulation deterministically.
 Tests can connect with `threaded=False`, advance `Twin.step(dt)` and call
 `StrategyRunner.step_once` directly. The application uses `WallClock`.
-Every strategy run writes an episode log, and an autouse fixture in
-`tests/conftest.py` sends the default folder into each test's own `tmp_path`.
-
-## Episode log
-
-Every run through `StrategyRunner` leaves an episode log. It is one JSON Lines
-file that the runner writes while the run goes on. It holds every tick of the
-twin's loop, every tick the runner accepted and how the run ended. `twin
-episode` turns it into a report of each joint's latency and of the gripper's
-drift against the cameras. The format lives in
-[`episode.py`](../src/machinekind_twin/episode.py) and the report in
-[`episode_report.py`](../src/machinekind_twin/episode_report.py). Reading a log
-needs only the standard library and NumPy.
-
-### What a run leaves
-
-- The runner opens the file before the strategy's `start`, so a refused run
-  leaves a file too.
-- It closes the file once, when the run ends, whatever ends it.
-- A start refused before the run begins leaves no file. That happens under an
-  active STOP, when the arm is busy, or when STOP, Home or Connect was pressed
-  while the strategy loaded.
-- The file is `episodes/<name>.jsonl` next to the workspace file, so
-  `workspace/episodes/` by default. Git ignores it. Nothing prunes the folder.
-- The name is the start time, such as `20261024-153012`. A name already taken
-  gets `-2`, `-3` and so on, so no file is overwritten.
-- Kept frames are JPEG files in `<name>.frames/`, named `<step>-<camera>.jpg`.
-  The panel's **Zapisuj klatki kamer** (Save camera frames) keeps at most one
-  per camera per second, about 17 KB for 640x480. Only frames the strategy read
-  are kept. The log never fetches a frame itself, so a strategy without vision
-  renders nothing.
-- A log that cannot be opened or written costs the run only its log. The run
-  goes on, and `RunnerStatus.episode_error` says why. The Strategie tab shows
-  it under the file's name.
-- The test robot's 1.6 s test run writes about 25 KB, so about 1 MB per minute
-  without frames.
-
-### The record
-
-Each line is one JSON object with a `kind`. The `header` comes first and the
-`end` last. A file without an `end` line is a run that was cut off, for example
-by a killed process; it loads with the code `unfinished`. The file is strict
-JSON: a NaN or an infinity becomes `null`. A missing value is `null`, never a
-missing key.
-
-Every time except `run_t` and the ages is in seconds on the twin's clock, since
-the file opened. `header.t0` holds that moment. Intent, command and readings
-thus share one axis. Joints are in app units, degrees and the gripper's 0 to
-100, as arrays in `header.joints` order. Positions are metres and rotations are
-3x3 rows, both in the robot's base frame.
-
-| `header` field | Holds |
-|---|---|
-| `format`, `version` | `machinekind-twin-episode` and 1; a newer version is refused |
-| `name`, `started` | The file's name and the local start time |
-| `mode` | `strategy`, or `observation` without a runner |
-| `clock`, `t0` | `wall` or `virtual`, and the twin's clock when the file opened |
-| `robot`, `folder`, `joints`, `gripper`, `limits`, `max_vel`, `simulated` | The robot as the run saw it |
-| `backend`, `loop_hz`, `owner` | The backend, the loop's rate and the arm's owner |
-| `strategy` | `class` as `module:QualName`, `hz` and `time_limit_s`; `null` in observation mode |
-| `cameras`, `keep_frames_s`, `gripper_label` | The cameras offered, the frame keeping and the gripper's label |
-| `workspace`, `versions`, `meta` | The workspace file and preset, the twin and API versions, and the caller's JSON |
-
-| `loop` field | Holds |
-|---|---|
-| `t` | The loop tick's time |
-| `sent` | What went to the servos after the supervisor; `null` when nothing went |
-| `measured`, `measured_t` | The fresh reading and its time; `null` when the tick read nothing new |
-| `at_limit` | The joints the supervisor held at a limit |
-
-| `step` field | Holds |
-|---|---|
-| `step`, `run_t` | `Observation.step` and `Observation.t` |
-| `obs_t`, `t` | The clock just before the observation was built, and right after the target went to the twin |
-| `joints`, `command` | The readings and the supervisor's command the strategy saw |
-| `intent` | The checked target; `{}` means the arm keeps driving to the previous one |
-| `goal`, `objects` | The goal and exactly the objects the strategy received; the log never steps the trackers |
-| `frames` | The cameras the strategy read: `camera`, `age_s`, `shape` and the kept `file` or `null` |
-| `done`, `success`, `error`, `note`, `decisions` | The action's fields |
-
-| `end` field | Holds |
-|---|---|
-| `t` | The clock at the end, which is the run's length |
-| `code`, `reason` | The stable code and `RunnerStatus.stopped_because` in Polish |
-| `done`, `success`, `error`, `note` | From the last accepted action |
-| `steps`, `began`, `finished` | The accepted ticks, whether `start` returned, and the local end time |
-
-### End codes
-
-`RunnerStatus.stopped_code` holds the same code as the log's `end` line.
-
-| Code | Polish reason | When |
-|---|---|---|
-| `done` | `zadanie wykonane` (task done) | The action is done and successful |
-| `gave_up` | `strategia skonczyla` (strategy finished) | The action is done without success |
-| `time_limit` | `limit czasu` (time limit) | The time limit ran out |
-| `disconnected` | `ramie rozlaczone` (arm disconnected) | The arm was disconnected at a tick |
-| `stopped` | `zatrzymana` (stopped), or the caller's text | `stop()` was called, for example from the panel |
-| `preempted` | `przerwana: ...` (interrupted) | The twin took the arm: STOP, Home, reconnect, a fault |
-| `bad_target` | `zly cel strategii: ...` (bad target) | A target named an unknown joint or was not a finite number |
-| `error` | `<Type>: <message>` | `act` raised |
-| `refused` | `strategia odmowila: ...` (strategy refused) | `start` raised |
-
-### Latency
-
-The report gives three delays per joint:
-
-| Pair | Polish column | What it measures |
-|---|---|---|
-| intent to readings | `zamiar->odczyt` | The whole latency, from the strategy's decision to the motion |
-| intent to command | `zamiar->rozkaz` | The supervisor's ramp at `max_vel`, which grows with the length of the move |
-| command to readings | `rozkaz->odczyt` | The servo itself: the hardware number |
-
-Each delay is the time shift that best lays the earlier signal over the later
-one. The earlier signal is held from each of its values to the next, and before
-its first value it holds where the joint started. At a sample's time it holds
-the last value set strictly before. Within one loop tick the twin reads the
-servos before it sends, so one tick of that ordering is part of every delay.
-The scan runs from 0 to 1 s in 5 ms steps. A sample counts only when the
-reference moved within the 1.25 s before it, the scan's length plus 0.25 s, so
-every shift is judged on the same samples.
-
-Next to each delay the report gives the error without a shift (`blad RMS`),
-the error left at the best shift (`reszta`) and their median offset (`stale`,
-bias). The band in brackets holds the shifts whose error is within 5 % or
-0.05 units of the best. The report flags a delay at the end of the scan, a
-shift that explains less than half of the error, and readings at a limit
-more than 5 % of the time. A joint that never moved, or that the strategy
-never named, gets a reason instead of a delay. So does a pair whose target
-follows the motion instead of leading it: `cel idzie za ruchem, nie przed nim`
-(the target follows the motion). That happens when a strategy copies the
-readings into its target to keep a joint where it is, and the joint creeps.
-The scan cannot go below 0, so it would otherwise show 0 ms. The report gives
-this reason when no positive shift fits better than none and a negative one
-does.
-
-On the test robot in simulation, the test strategy's tour gives 140 to 220 ms
-from intent to readings, 80 to 160 ms for the supervisor and 45 to 65 ms for
-the simulated servo. A fake arm whose readings lag 60 ms gives 65 ms for the
-servo on every joint. The grid is 5 ms, a loop tick 20 ms and a real arm reads
-its servos every 40 ms, so bands of 15 to 35 ms are normal.
-
-### Gripper drift
-
-Drift is readings minus cameras for the gripper. It needs a camera-seen object
-that marks the gripper, named by its label: `twin episode --gripper ETYKIETA`
-(label), or `EpisodeOptions.gripper` for the run. `--offset-mm X Y Z` says where
-that marker sits in the TCP frame. Only steps where the label's `source` is
-`kamery` (cameras) count. A pose `w dloni` (in hand) is the forward kinematics
-times the grasp offset, so its drift is zero by construction. A pose
-`ostatnie widziane` (last seen) is stale. Both are skipped and counted.
-
-For each camera pose the report takes the capture time, `obs_t` minus `age_s`.
-It interpolates the readings to that time and computes the TCP with the
-robot's forward kinematics. The difference is in metres, in the base frame. The
-report gives its mean, RMS and maximum. It also gives the RMS while the TCP
-moved slower than 10 mm/s, where timing errors vanish; on hardware that is the
-cleanest number. When the cameras give an orientation, the report adds the
-angle between the two rotations. The kinematics need the robot's package and
-MuJoCo, so a log copied elsewhere reports latency but not drift.
-
-Nothing in the twin locates the gripper from the cameras yet. The cube
-silhouette fit pins an object to the table, and `tagbody.locate` is not wired
-into perception. Drift therefore appears once some perception publishes a
-`kamery` pose under a label the operator names. The format already carries the
-objects, so that needs no change to it.
-
-### Without an intent or a camera pose
-
-The report says in one plain Polish sentence what it cannot count:
-
-- `Opoznien napedow nie licze: w zapisie nie ma ani zamiaru, ani rozkazu do serw.`
-  (No intent and no command: no latency.)
-- `Brak zamiaru w zapisie (nikt nie podawal celu): licze tylko rozkaz->odczyt.`
-  (No intent: only command to readings.)
-- `Rozkaz do serw nie przechodzi przez blizniaka: licze tylko zamiar->odczyt.`
-  (The command does not pass through the twin: only intent to readings.)
-- `Dryf chwytaka wzgledem kamer: nie licze - ...` (No drift, and why: no
-  label, no camera pose, no robot description or no readings around the frames.)
-
-### Model decisions
-
-A strategy that asks a model returns the question, the answer, what it sent,
-the confidence and the response time as `Decision`s in `Action.decisions`. The
-log writes them into the line of the tick they came back with, and the runner
-never acts on them. A plain mapping answer carries none. A decision made in
-`start` goes with the first action, and one that arrives in `stop` is lost.
-The API's README has an example. The report counts the decisions and gives the
-median and maximum response time and the mean confidence.
-
-### Observation mode
-
-An arm driven by a foreign controller (#175) has no runner. An observer opens
-the log itself:
-`EpisodeWriter.create(folder, {**twin_header(twin), "mode": "observation", "strategy": None}, twin)`.
-Loop lines then fill on their own. At its own rate the observer writes
-`StepRecord`s with `run_t` null and the foreign controller's command as the
-intent, or `{}` without one. When it writes no steps, it calls `flush()` every
-half second. It ends with `close(EpisodeEnd(...))`. A read-only backend sends
-nothing, so every loop line has `sent: null`. Without a foreign command, the
-report says it does not count latency.
-
-The observer takes the objects from `Perception.snapshot()`, which never steps
-the trackers. The snapshot gives `TrackView`s, while a step holds `ObjectPose`s
-by label. Each view's age was taken at the last tracker step, so the observer
-adds the time since that step. Without it, an age is short by up to about
-0.15 s while only the panel steps the trackers. The drift report then takes
-the frames' capture time too late, and a moving gripper shows drift that is
-not there.
-
-```python
-since = perception.clock() - perception.tracks.last_step()
-objects = {view.label: ObjectPose(view.pos, view.rot, view.source, view.age_s + since)
-           for view in perception.snapshot()}
-now = writer.now()
-writer.step(StepRecord(step=k, run_t=None, obs_t=now, t=now, objects=objects, ...))
-```
-
-### For evaluation runs
-
-A headless evaluation (#163) gives each run its own file and its own data:
-`StrategyRunner(twin, strategy, episode=EpisodeOptions(folder=campaign, name=f"{i:03d}", meta={"run": i, "seed": seed}))`.
-After the run, `status.stopped_code`, `status.success`, `status.error` and
-`status.episode` say how it ended and where the file is. `EpisodeLog.summary`
-reads one file's header and end without the lines between them, and
-`twin episode <folder>` lists every run of a campaign.
-
-### Limits
-
-- The ages in a frame or an object pose are measured on `time.monotonic`, and
-  the log's times on the twin's clock. Both are monotonic in the application.
-  On a `VirtualClock` in tests, only ages a test injects are meaningful.
-- The runner writes each step under its lock: a few lines and a flush per tick,
-  plus about 0.6 ms per kept 640x480 JPEG.
-- A strategy package that returns `Decision`s pins
-  `machinekind-twin-api>=0.1.3,<0.2`. Older strategies keep working unchanged.
+Episode recording is optional. See [episode recording](EPISODES.md) for configuration,
+file format and latency and drift reports.
 
 ## Calibration and perception notes
 

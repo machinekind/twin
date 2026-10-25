@@ -341,6 +341,7 @@ def test_a_swing_run_leaves_a_log(swing, twin, tmp_path):
     runner.start(threaded=False)
     drive(twin, runner, 6.0)
 
+    assert runner.wait_for_episode(timeout=5.0)
     assert runner.status.episode is not None
     log = EpisodeLog.load(runner.status.episode)
     result = report(log)
@@ -354,7 +355,7 @@ def test_a_swing_run_leaves_a_log(swing, twin, tmp_path):
     for joint in ("j2", "gripper"):
         assert latency[joint].total == NOT_NAMED
         assert latency[joint].actuator == STILL_JOINT
-        assert f"  {joint} zamiar->odczyt: {NOT_NAMED}" in text
+        assert f"  {joint} target->measured: {NOT_NAMED}" in text
 
 
 def test_a_joint_the_robot_does_not_have_refuses_the_run(swing, twin):

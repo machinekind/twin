@@ -1,26 +1,6 @@
-"""What an episode log says about the arm: the latency of every joint and the gripper's drift against the cameras.
+"""Joint delay estimates and camera-relative gripper drift from episode recordings.
 
-    log = EpisodeLog.load(path)
-    print("\\n".join(report(log, gripper="chwytak").lines()))
-
-Latency. A log holds three signals per joint on one clock: the intent (the strategy's target, per
-step), the command (what the supervisor sent to the servos, per loop tick) and the readings. For
-each pair `delay_fit` finds the time shift that best lays the earlier signal over the later one.
-Intent to readings is the whole actuator latency, from a decision to the motion. Intent to
-command is the supervisor's ramp at `max_vel`, so it grows with the length of the move. Command
-to readings is the servo itself. Within one loop tick the twin reads before it sends, so one tick
-of that ordering is part of every delay measured here, in simulation and on hardware. A target
-that follows the motion instead of leading it, as when a strategy copies the readings into its
-target, gives no delay.
-
-Drift. A label the operator names marks the gripper among the objects the cameras see
-(`--gripper ETYKIETA`). Where the cameras saw it (source "kamery"), the report compares its
-position with the TCP that the forward kinematics give for the readings at the frames' capture
-time: readings minus cameras, in the robot's base frame. A pose "w dloni" (in the gripper) is
-the kinematics times a fixed offset, so it is no evidence and is skipped.
-
-Without an intent, a command or a camera pose, the report says so in one sentence instead. The
-latency needs only numpy; the drift needs the robot's package and MuJoCo for the kinematics.
+See docs/EPISODES.md for signal definitions, fitting assumptions and required camera evidence.
 """
 
 from __future__ import annotations
@@ -57,21 +37,21 @@ SPEED_HALF_S = 0.05
 
 #: The source of a pose the cameras measured (`ObjectPose.source`).
 CAMERAS = "kamery"
-DEGREES = "st."
-GRIPPER_UNITS = "jedn."
+DEGREES = "deg"
+GRIPPER_UNITS = "units"
 
-STILL = "staw nie ruszal sie"
-FOLLOWS = "cel idzie za ruchem, nie przed nim - opoznienia nie licze"
-NOT_NAMED = "strategia nie podawala celu temu stawowi"
-NOTHING_SENT = "nic nie poszlo do serw"
-NO_INTENT = "brak zamiaru w zapisie"
+STILL = "joint did not move"
+FOLLOWS = "target follows measured motion; delay unavailable"
+NOT_NAMED = "no strategy target for this joint"
+NOTHING_SENT = "no actuator commands"
+NO_INTENT = "no strategy targets in the log"
 
-NO_LOOP = "Brak taktow petli w zapisie: opoznien nie licze."
-NEITHER = "Opoznien napedow nie licze: w zapisie nie ma ani zamiaru, ani rozkazu do serw."
-ONLY_ACTUATOR = "Brak zamiaru w zapisie (nikt nie podawal celu): licze tylko rozkaz->odczyt."
-ONLY_TOTAL = "Rozkaz do serw nie przechodzi przez blizniaka: licze tylko zamiar->odczyt."
+NO_LOOP = "No control-loop samples; delay unavailable."
+NEITHER = "No targets or actuator commands; delay unavailable."
+ONLY_ACTUATOR = "No strategy targets; reporting command-to-measured delay only."
+ONLY_TOTAL = "No actuator commands; reporting target-to-measured delay only."
 
-DRIFT = "Dryf chwytaka wzgledem kamer"
+DRIFT = "Gripper drift relative to cameras"
 
 
 @dataclass(frozen=True)
@@ -145,7 +125,7 @@ class DecisionStats:
 
 @dataclass(frozen=True, eq=False)
 class EpisodeReport:
-    """The report on one log; `lines` gives it as Polish text."""
+    """Computed results and their text report."""
 
     log: EpisodeLog
     latency: tuple[JointLatency, ...]
@@ -164,25 +144,25 @@ class EpisodeReport:
         header = log.header
         strategy = header.get("strategy")
         if isinstance(strategy, dict):
-            mode = f"strategia {strategy.get('class', '?')} {_short(strategy.get('hz'))} Hz"
+            mode = f"strategy {strategy.get('class', '?')} {_short(strategy.get('hz'))} Hz"
         else:
-            mode = "obserwacja"
-        where = "symulacja" if header.get("simulated") else "sprzet"
+            mode = "observation"
+        where = "simulation" if header.get("simulated") else "hardware"
         length = "?" if end.t is None else f"{end.t:.2f}"
 
         if end.code == "unfinished":
-            ending = "Koniec: zapis urwany [unfinished]"
+            ending = "End: incomplete recording [unfinished]"
         else:
-            ending = f"Koniec: {end.reason} [{end.code}]"
-        success = "-" if end.success is None else ("tak" if end.success else "nie")
-        ending += f", sukces: {success}"
+            ending = f"End: {end.reason} [{end.code}]"
+        success = "-" if end.success is None else ("yes" if end.success else "no")
+        ending += f", success: {success}"
         if end.error is not None:
-            ending += f", blad zadania {end.error:.3g}"
+            ending += f", task error {end.error:.3g}"
 
         return [
-            f"Przebieg {header.get('name', '?')} ({log.path})",
-            (f"{header.get('robot', '?')}, {where}, {mode}, {length} s, krokow: {len(log.steps)}, "
-             f"taktow petli: {len(log.loop_t)}"),
+            f"Episode {header.get('name', '?')} ({log.path})",
+            (f"{header.get('robot', '?')}, {where}, {mode}, {length} s, steps: {len(log.steps)}, "
+             f"loop samples: {len(log.loop_t)}"),
             ending,
         ]
 
@@ -193,10 +173,10 @@ class EpisodeReport:
         if not self.latency:
             return lines
 
-        lines.append("Opoznienie (zamiar->odczyt = calosc; zamiar->rozkaz = rampa nadzoru, rosnie z dlugoscia "
-                     "ruchu; rozkaz->odczyt = naped):")
-        lines.append(f"  {'staw':<14}{'zamiar->odczyt':<20}{'zamiar->rozkaz':<20}{'rozkaz->odczyt':<20}"
-                     f"{'blad RMS':<13}{'reszta':<13}stale")
+        lines.append("Delay (target->measured = total; target->command = supervisor ramp; "
+                     "command->measured = actuator):")
+        lines.append(f"  {'joint':<14}{'target->measured':<20}{'target->command':<20}{'command->measured':<20}"
+                     f"{'RMS error':<13}{'residual':<13}bias")
         notes = []
         for joint in self.latency:
             main = next((fit for fit in (joint.total, joint.actuator) if isinstance(fit, DelayFit)), None)
@@ -215,33 +195,33 @@ class EpisodeReport:
         if drift is None:
             return [self.drift_note]
 
-        lines = [(f"{DRIFT} ('{drift.label}', pomiarow: {drift.samples}, wiek kamer mediana "
+        lines = [(f"{DRIFT} ('{drift.label}', samples: {drift.samples}, median pose age "
                   f"{drift.median_age_s * 1000:.0f} ms):")]
         mean = ", ".join(f"{round(value * 1000, 1) + 0.0:+.1f}" for value in drift.mean_m)
         if drift.at_rest_rms_m is None:
-            rest = "w spoczynku: brak pomiarow"
+            rest = "at rest: no samples"
         else:
-            rest = f"w spoczynku: RMS {drift.at_rest_rms_m * 1000:.1f} mm (pomiarow: {drift.at_rest_samples})"
-        lines.append(f"  odczyty - kamery: srednio [{mean}] mm, RMS {drift.rms_m * 1000:.1f} mm, "
+            rest = f"at rest: RMS {drift.at_rest_rms_m * 1000:.1f} mm (samples: {drift.at_rest_samples})"
+        lines.append(f"  measured - cameras: mean [{mean}] mm, RMS {drift.rms_m * 1000:.1f} mm, "
                      f"max {drift.max_m * 1000:.1f} mm; {rest}")
         if drift.angle_median_deg is None or drift.angle_max_deg is None:
-            lines.append("  obrot: kamery podaja tylko polozenie")
+            lines.append("  rotation: position-only camera poses")
         else:
-            lines.append(f"  obrot: mediana {drift.angle_median_deg:.1f} st., max {drift.angle_max_deg:.1f} st.")
+            lines.append(f"  rotation: median {drift.angle_median_deg:.1f} deg, max {drift.angle_max_deg:.1f} deg")
         if drift.skipped:
             skipped = ", ".join(f"{why} {count}" for why, count in sorted(drift.skipped.items()))
-            lines.append(f"  pominiete: {skipped}")
+            lines.append(f"  skipped: {skipped}")
         return lines
 
     def _decision_line(self) -> str:
         stats = self.decisions
-        line = f"Decyzje modelu: {stats.count}"
+        line = f"Model decisions: {stats.count}"
         if stats.response_median_s is not None and stats.response_max_s is not None:
-            line += f", czas odpowiedzi mediana {stats.response_median_s:.2f} s, max {stats.response_max_s:.2f} s"
+            line += f", median response time {stats.response_median_s:.2f} s, max {stats.response_max_s:.2f} s"
         if stats.confidence_mean is not None:
-            line += f", pewnosc srednio {stats.confidence_mean:.2f}"
+            line += f", mean confidence {stats.confidence_mean:.2f}"
         if stats.without_confidence:
-            line += f", bez pewnosci: {stats.without_confidence}"
+            line += f", without confidence: {stats.without_confidence}"
         return line
 
 
@@ -291,7 +271,7 @@ def delay_fit(ref_t: Any, ref_v: Any, prior: float, sample_t: Any, sample_v: Any
     active = _active(ref_t, ref_v, prior, sample_t, max_delay_s + active_window_s)
     count = int(active.sum())
     if count < MIN_SAMPLES:
-        return f"za malo odczytow w ruchu ({count})"
+        return f"too few samples during motion ({count})"
 
     times, values = sample_t[active], sample_v[active]
     shifts = np.arange(round(max_delay_s / grid_s) + 1) * grid_s
@@ -414,7 +394,7 @@ def _cell(fit: DelayFit | str) -> str:
     if not isinstance(fit, DelayFit):
         return "-"
     if fit.at_bound:
-        return f">= {fit.lag_s * 1000:.0f} ms (poza zakresem)"
+        return f">= {fit.lag_s * 1000:.0f} ms (scan limit)"
     low, high = fit.band_s
     return f"{fit.lag_s * 1000:.0f} ms ({low * 1000:.0f}-{high * 1000:.0f})"
 
@@ -423,18 +403,18 @@ def _joint_notes(joint: JointLatency, said: str) -> list[str]:
     """Why a pair has no delay, and the flags of those that have one; `said` is a reason the
     latency note gave already."""
     notes = []
-    for pair, fit in (("zamiar->odczyt", joint.total), ("zamiar->rozkaz", joint.supervisor),
-                      ("rozkaz->odczyt", joint.actuator)):
+    for pair, fit in (("target->measured", joint.total), ("target->command", joint.supervisor),
+                      ("command->measured", joint.actuator)):
         if not isinstance(fit, DelayFit):
             if fit != said:
                 notes.append(f"  {joint.joint} {pair}: {fit}")
             continue
         # The supervisor ramps where the intent steps: no shift explains a ramp, so that pair is not flagged.
-        if pair != "zamiar->rozkaz" and fit.error_rms > 0 and fit.residual_rms / fit.error_rms > RESIDUAL_FLAG:
-            notes.append(f"  {joint.joint} {pair}: przesuniecie tlumaczy mniej niz polowe bledu - serwo "
-                         "wolniejsze niz rozkaz, przeszkoda albo chwytak na obiekcie")
+        if pair != "target->command" and fit.error_rms > 0 and fit.residual_rms / fit.error_rms > RESIDUAL_FLAG:
+            notes.append(f"  {joint.joint} {pair}: delay explains less than half the error; possible slow actuator, "
+                         "obstruction or object contact")
         if fit.at_limit_share > AT_LIMIT_FLAG:
-            notes.append(f"  {joint.joint} {pair}: {fit.at_limit_share * 100:.0f}% odczytow na limicie")
+            notes.append(f"  {joint.joint} {pair}: {fit.at_limit_share * 100:.0f}% samples at a joint limit")
     return notes
 
 
@@ -451,7 +431,7 @@ def _short(value: Any) -> str:
 
 def _drift(log: EpisodeLog, label: str | None, offset: np.ndarray) -> tuple[GripperDrift | None, str]:
     if not label:
-        return None, f"{DRIFT}: nie licze - nie wskazano etykiety chwytaka (--gripper ETYKIETA)."
+        return None, f"{DRIFT}: unavailable; specify a marker with --gripper LABEL."
 
     skipped: collections.Counter[str] = collections.Counter()
     seen = []
@@ -462,31 +442,31 @@ def _drift(log: EpisodeLog, label: str | None, offset: np.ndarray) -> tuple[Grip
 
         source = str(pose.get("source", ""))
         if source != CAMERAS:
-            skipped[source or "bez zrodla"] += 1
+            skipped[source or "missing source"] += 1
             continue
 
         position = _array(pose.get("position"), (3,))
         rotation = _array(pose.get("rotation"), (3, 3))
         obs_t, age = _finite(step.get("obs_t")), _finite(pose.get("age_s"))
         if position is None or rotation is None or obs_t is None or age is None:
-            skipped["niepelna poza"] += 1
+            skipped["incomplete pose"] += 1
             continue
 
         seen.append((obs_t - age, position, rotation, age))
 
     if not seen:
-        return None, f"{DRIFT}: nie licze - kamery nie widzialy obiektu '{label}' (zrodlo '{CAMERAS}')."
+        return None, f"{DRIFT}: unavailable; no camera observations of '{label}' (source '{CAMERAS}')."
 
     robot = str(log.header.get("robot") or "?")
     kinematics = _kinematics(log)
     if kinematics is None:
-        return None, f"{DRIFT}: nie licze - brak opisu ramienia {robot}."
+        return None, f"{DRIFT}: unavailable; robot kinematics not found for {robot}."
 
     reading_t, readings = log.readings()
     complete = np.isfinite(readings).all(axis=1)
     reading_t, readings = reading_t[complete], readings[complete]
     if len(reading_t) < 2:
-        return None, f"{DRIFT}: nie licze - za malo odczytow ramienia."
+        return None, f"{DRIFT}: unavailable; too few joint readings."
 
     def tcp_at(t: float) -> np.ndarray | None:
         if not reading_t[0] <= t <= reading_t[-1]:
@@ -499,7 +479,7 @@ def _drift(log: EpisodeLog, label: str | None, offset: np.ndarray) -> tuple[Grip
     for captured, position, rotation, age in seen:
         tcp = tcp_at(captured)
         if tcp is None:
-            skipped["poza odczytami"] += 1
+            skipped["outside reading times"] += 1
             continue
 
         differences.append(tcp[:3, :3] @ offset + tcp[:3, 3] - position)
@@ -510,7 +490,7 @@ def _drift(log: EpisodeLog, label: str | None, offset: np.ndarray) -> tuple[Grip
         speeds.append(_speed(tcp_at, captured, offset))
 
     if not differences:
-        return None, f"{DRIFT}: nie licze - zadna klatka nie wypada miedzy odczytami ramienia."
+        return None, f"{DRIFT}: unavailable; camera times fall outside joint readings."
 
     difference = np.array(differences)
     distance = np.linalg.norm(difference, axis=1)

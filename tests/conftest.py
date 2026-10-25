@@ -76,8 +76,7 @@ def _no_config_from_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _episodes_in_tmp(tmp_path, monkeypatch):
-    """Every strategy run writes an episode log next to its workspace file, or under the default
-    `workspace/` when the workspace has no file: that default goes to the test's own folder."""
+    """Keep explicitly enabled recordings under the test's temporary directory."""
     from machinekind_twin import episode
 
     monkeypatch.setattr(episode, "data_path", lambda rel: tmp_path / rel)
