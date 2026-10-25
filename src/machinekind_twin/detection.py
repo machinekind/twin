@@ -156,11 +156,12 @@ class _LazyRequestFrames(Mapping[str, Frame]):
 
 
 class _LazyArmMasks(Mapping[str, np.ndarray]):
-    """`DetectRequest.arm_masks`: one camera's arm mask made on first read, for its frame's capture time.
+    """`DetectRequest.arm_masks`. Each mask is made on first read, for its frame's capture time.
 
-    Iteration and `len` follow the frames. Reading a mask reads its frame first. A camera without
-    a frame, or whose source gives no mask, or one of another shape than the frame, has none:
-    `get` gives None and `[]` raises KeyError. Each camera's result is made once.
+    Iteration and `len` follow the frames. Reading a mask reads its frame first. A camera has no
+    mask when it has no frame, when the source gives none, or when the mask's shape differs from
+    the frame's. Then `get` returns None and `[]` raises KeyError. Each camera is looked up once,
+    even when it has no mask.
     """
 
     def __init__(self, frames: _LazyRequestFrames, source: OccluderSource):
@@ -225,7 +226,7 @@ class DetectorRunner:
                  cameras: Callable[[], tuple[str, ...]], frame: FrameSource, sink: Sink,
                  clock: Callable[[], float], wait: Callable[[float], bool] | None = None,
                  occluders: OccluderSource | None = None):
-        """`occluders`: arm masks for `DetectRequest.arm_masks`; None = requests carry none."""
+        """`occluders` gives the arm masks for `DetectRequest.arm_masks`. Without it, requests carry none."""
         self.name = name
         self.detector = detector
         self.info = info
@@ -477,8 +478,8 @@ class Perception:
 
     `frame` defaults to the twin's cameras (`twin.cameras.frame_t`); the panel injects a reader of
     its cached frames. Both stamp on `time.monotonic`, the default `clock`. `occluders` gives arm
-    masks for the silhouette fit and for detectors (`DetectRequest.arm_masks`); it is optional and
-    its failures cost only the occlusion handling of one call. `hand` defaults to the twin's
+    masks to the silhouette fit and to detectors through `DetectRequest.arm_masks`. It is optional
+    and its failures cost only the occlusion handling of one call. `hand` defaults to the twin's
     gripper; pass `lambda: None` for none.
     """
 

@@ -216,14 +216,13 @@ captured.
 frame's own resolution. Labels are compared after stripping whitespace and lower-casing, and each
 label holds one object.
 
-`request.arm_masks` holds, per camera, a bool mask of the frame's shape, True where the robot arm
-hides the scene. The twin makes a mask only when it is read, for the capture time of that camera's
-frame in the same request; reading it reads the frame. `arm_masks.get(name)` is None when the twin
-has no mask for that camera. Iteration and `len` list every offered camera, as for `frames`, while
-`arm_masks[name]` raises `KeyError` for a camera without a mask. Read masks one camera at a time
-with `get`: `items()` or `dict(arm_masks)` fail when one camera has none, and render every camera's
-mask. A detector that ignores the arm needs no change: the field defaults to an empty mapping.
-Added in 0.1.3.
+`request.arm_masks` holds a bool mask per camera in the shape of its frame. A mask is True where
+the robot arm hides the scene. The twin makes a mask only when it is read, for the capture time of
+that camera's frame in `frames`. Reading a mask reads its frame. `arm_masks.get(name)` returns None
+when the twin has no mask for that camera. Iteration and `len` list every offered camera, like
+`frames`. `arm_masks[name]` raises `KeyError` for a camera without a mask. Read masks one camera at
+a time with `get`. `items()` and `dict(arm_masks)` make every camera's mask. They fail when a
+camera has none. The field defaults to an empty mapping. It was added in 0.1.3.
 
 `Detector` supplies these defaults:
 

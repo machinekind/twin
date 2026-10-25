@@ -155,8 +155,8 @@ def test_a_still_scene_repeats_the_answer_and_the_object_stays_seen(perception: 
 
 
 class ArmScene:
-    """A grey table whose frames show the arm's dark bar at the column `column(capture time)` gives,
-    reaching `reach(capture time)` px down, stamped on the test clock, and the arm masks of that bar
+    """A grey table with the arm as a dark bar, stamped on the test clock. At capture time t the bar
+    stands at column `column(t)` and reaches `reach(t)` px down. `occluders` gives the bar's masks
     for the times asked."""
 
     def __init__(self, clock: Clock, column, reach=lambda t: 300):

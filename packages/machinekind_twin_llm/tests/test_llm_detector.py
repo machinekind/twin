@@ -99,15 +99,15 @@ def request(step: int = 0, arms: Mapping[str, np.ndarray] | None = None, **offer
 
 
 def with_dark_box(x: int) -> np.ndarray:
-    """`image()` with a dark 40 px box at column `x`: frames that differ for each `x` 60 px apart."""
+    """`image()` with a dark 40 px box at column `x`. Columns 60 px apart give frames that differ."""
     img = image()
     img[600:640, x:x + 40] = (40, 40, 40)
     return img
 
 
 def with_arm(x: int, reach: int = 500) -> tuple[np.ndarray, np.ndarray]:
-    """`image()` with a dark arm bar 80 px wide at column `x`, reaching `reach` px down from the top
-    edge, and its bool mask."""
+    """`image()` with a dark arm bar 80 px wide at column `x`, and the bar's bool mask. The bar
+    reaches `reach` px down from the top edge."""
     mask = np.zeros((H, W), bool)
     mask[:reach, x:x + 80] = True
     img = image()
@@ -414,7 +414,7 @@ def test_without_an_answer_yet_a_moving_scene_is_asked_about(fake: Fake, monkeyp
     det.stop("test")
 
 
-def test_an_old_answer_is_asked_again_while_the_scene_moves(fake: Fake):
+def test_a_moving_scene_is_asked_about_once_the_last_answer_is_old(fake: Fake):
     det = started(fake)
     det.detect(request(0, top=with_dark_box(100), side=image()))
     det._last_t -= det.config.reuse_max_age_s + 1
@@ -425,7 +425,7 @@ def test_an_old_answer_is_asked_again_while_the_scene_moves(fake: Fake):
     det.stop("test")
 
 
-def test_a_still_frame_restarts_the_count_of_repeats_for_motion(fake: Fake):
+def test_frames_matching_the_last_question_restart_the_count_of_repeats(fake: Fake):
     det = started(fake)
     counts = []
 
@@ -475,8 +475,8 @@ def test_the_arm_reaching_further_under_its_mask_repeats_the_answer(fake: Fake):
 
 
 def arm_calls(fake: Fake, det: LlmDetector, columns: tuple[int, ...], start: int = 0) -> list[int]:
-    """Calls `det` with the arm at each of `columns` in turn, nothing else moving; the questions
-    asked so far after each call."""
+    """Calls `det` with the arm at each of `columns` in turn and nothing else moving. Returns the
+    number of questions asked after each call."""
     counts = []
     for k, x in enumerate(columns, start):
         img, mask = with_arm(x)
@@ -485,7 +485,7 @@ def arm_calls(fake: Fake, det: LlmDetector, columns: tuple[int, ...], start: int
     return counts
 
 
-def test_the_arm_leaving_its_place_at_the_question_is_asked_about_once_it_settles(fake: Fake):
+def test_the_arm_leaving_where_it_was_at_the_question_is_asked_about_once_it_settles(fake: Fake):
     det = started(fake)
 
     assert arm_calls(fake, det, (100, 600, 600)) == [1, 1, 2]
@@ -501,7 +501,7 @@ def test_the_arm_moving_over_the_table_after_a_question_without_it_repeats_the_a
 
 
 def test_a_place_the_arm_hid_at_the_question_is_asked_about_once_it_shows(fake: Fake):
-    """Whatever lay there before the arm came, the answer was given without seeing it."""
+    """The last answer never saw that place, whatever lay there before the arm came."""
     det = started(fake)
     no_arm = np.zeros((H, W), bool)
     arm = np.zeros((H, W), bool)
@@ -555,7 +555,7 @@ def test_a_mask_of_the_wrong_shape_is_ignored(fake: Fake):
 
 
 class RecordingMasks(Mapping[str, np.ndarray]):
-    """Arm masks for every camera that record which cameras were read and hold no mask."""
+    """Lists both cameras but holds no mask. Records each camera read."""
 
     def __init__(self) -> None:
         self.read: list[str] = []

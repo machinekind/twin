@@ -576,8 +576,9 @@ def test_the_occluder_wrapper_swallows_failures(clock: Clock, frames: Frames, ca
 
 # ------------------------------------------------------------------ the request's arm masks
 def arm_source(calls: list, kind: str = "mask"):
-    """An occluder source recording the capture times it is asked for. `kind`: "mask" gives a
-    bool (H, W) mask per camera, "none" gives None, "shape" a mask one column too wide, "raises" raises."""
+    """An occluder source that records the capture times it is asked for. With `kind` "mask" it
+    gives a bool (H, W) mask per camera. "none" gives None, "shape" gives a mask one column too wide,
+    and "raises" raises."""
     def source(times):
         calls.append(dict(times))
         if kind == "none":

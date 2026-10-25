@@ -3,13 +3,13 @@ what is where, in each frame's pixels.
 
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory.
-With `reuse_if_still` it repeats the last answer instead while no camera's image changed since the
-frames of the last question. It also repeats it while the scene still moves: frames that changed
-since the last question and since the previous call wait, for up to `SETTLE_MAX_SKIPS` calls, so a
-hand passing through is not asked about mid-motion. Pixels the twin's arm masks hide are left out,
-so the arm moving over a table the last question saw is no change, while a place the arm hid when
-that question was asked counts as changed once it shows. A question over the hourly cap fails. `stop`
-cancels a running question: the CLI's process group is killed within 0.2 s.
+With `reuse_if_still` it repeats the last answer while no camera's image changed since the last
+question. It also repeats it while the scene still moves, for up to `SETTLE_MAX_SKIPS` calls. The
+scene still moves when the frames changed since both the last question and the previous call.
+Pixels the twin's arm masks hide are left out. The arm moving over a table the last question saw
+does not count as a change. A place the arm hid at the last question counts as changed once it
+shows. A question over the hourly cap fails. `stop` cancels a running question: the CLI's process
+group is killed within 0.2 s.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 #: The window `max_calls_per_hour` counts questions in [s].
 CALL_WINDOW_S = 3600.0
-#: Consecutive calls a moving scene may repeat the last answer for before it is asked about anyway.
+#: Most calls in a row that repeat the last answer while the scene still moves.
 SETTLE_MAX_SKIPS = 2
 
 
@@ -60,9 +60,9 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
-        #: The still check, by camera: thumbnails of the frames of the last question and of the
-        #: previous call, NaN where the arm hid the scene (`images.hide_arm`); then the calls
-        #: repeated in a row while the scene moved, and the last answer and when it was asked.
+        #: The still check's state. `_ref` and `_prev` hold each camera's thumbnail at the last
+        #: question and at the previous call, NaN where the arm hid the scene. `_moving` counts the
+        #: calls repeated in a row while the scene moved. `_last` is the last answer, asked at `_last_t`.
         self._ref: dict[str, np.ndarray] = {}
         self._prev: dict[str, np.ndarray] = {}
         self._moving = 0
@@ -157,8 +157,8 @@ class LlmDetector(Detector[LlmSettings]):
         return list(dets)
 
     def _views(self, request: DetectRequest, frames: list[tuple[str, np.ndarray]]) -> dict[str, np.ndarray]:
-        """The thumbnail of each camera's frame, NaN where its arm mask hides the scene. A mask of
-        another shape than its frame is ignored."""
+        """Each camera's thumbnail, NaN where its arm mask hides the scene. A mask whose shape
+        differs from its frame's is ignored."""
         views: dict[str, np.ndarray] = {}
         for name, image in frames:
             thumb = thumbnail(image)
@@ -169,9 +169,9 @@ class LlmDetector(Detector[LlmSettings]):
         return views
 
     def _repeat_reason(self, views: dict[str, np.ndarray], now: float) -> str:
-        """Why this call repeats the last answer instead of asking; "" = ask. An answer, or frames
-        that match the last question's, restarts the count of repeats for motion; a failed question
-        does not, so the runner's backoff holds while the scene moves."""
+        """Why this call repeats the last answer, or "" when it asks. An answer resets the count of
+        repeats while the scene moves. Frames that match the last question's reset it too. A failed
+        question does not, so the runner's backoff holds while the scene moves."""
         if not views or now - self._last_t >= self.config.reuse_max_age_s:
             return ""
         if unchanged(self._ref, views):

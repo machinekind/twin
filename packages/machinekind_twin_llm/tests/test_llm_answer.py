@@ -313,7 +313,7 @@ def test_unchanged_needs_the_same_cameras_and_frame_shapes():
     assert not unchanged({"top": frame}, {"top": other_shape})
 
 
-#: A 3 cm cube at 1 m through a 60 degree lens in a 1280 px wide frame [px]; 1 cm is 11 px.
+#: A 3 cm cube and 1 cm at 1 m through a 60 degree lens, in a 1280 px wide frame [px].
 CUBE_PX, CM_PX = 33, 11
 
 
@@ -332,7 +332,7 @@ def u8(img: np.ndarray) -> np.ndarray:
 
 
 def cables(rng: np.random.Generator) -> np.ndarray:
-    """A high-contrast scene: a light table, ten dark cables 1 cm thick and a sheet of white paper."""
+    """A high-contrast scene of a light table, ten dark cables 1 cm thick and a sheet of white paper."""
     img = np.full((960, 1280), 160, np.uint8)
     for _ in range(10):
         start = (int(rng.integers(0, 1280)), int(rng.integers(0, 960)))
@@ -408,8 +408,8 @@ def test_changed_pixels_join_one_blob_up_to_blob_join_px_apart():
 
 
 def arm_at(img: np.ndarray, x: int, reach: int = 600) -> tuple[np.ndarray, np.ndarray]:
-    """`img` with a dark arm bar 80 px wide at column `x`, reaching `reach` px down from the top
-    edge, and its bool mask."""
+    """`img` with a dark arm bar 80 px wide at column `x`, and the bar's bool mask. The bar reaches
+    `reach` px down from the top edge."""
     mask = np.zeros(img.shape[:2], bool)
     mask[:reach, x:x + 80] = True
     out = img.copy()

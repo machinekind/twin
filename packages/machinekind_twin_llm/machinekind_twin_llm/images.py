@@ -1,19 +1,19 @@
 """The images a question sends, and the still check that spares a question.
 
 `encode` writes one JPEG per camera, scaled down from the camera's frame. `thumbnail`,
-`largest_change_px` and `unchanged` tell whether a camera's image changed since other frames, so
-the detector can repeat an answer instead of asking again.
+`largest_change_px` and `unchanged` tell whether a camera's image changed since earlier frames.
+When no camera's image changed, the detector repeats an answer instead of asking again.
 
-The check compares grey thumbnails with their mean brightness matched, so auto exposure does not
-count. A pixel's change must also exceed a share of its contrast to the mean, so a gain change does
-not count on a high-contrast scene. What decides is the largest blob of changed pixels, not their
-total: an object moving changes one patch, while noise, banding and a flickering camera change
-isolated pixels or small groups.
+The check compares grey thumbnails with their mean brightness matched. This keeps auto exposure
+out. A pixel's change must also exceed a share of its distance from the mean. This keeps a gain
+change out on a high-contrast scene. The largest blob of changed pixels decides whether an image
+changed. A moving object changes one patch. Noise, banding and a flickering camera change single
+pixels or small groups.
 
-The arm moving is no change either. `arm_thumbnail` shrinks the twin's arm mask to the thumbnail
-and widens it over the arm's edge and shadow, and `hide_arm` marks the pixels under it as not shown.
-A pixel hidden now is left out. A pixel hidden in the frames the last question was asked on counts
-as changed once it shows: the answer was given without seeing it, whatever lay there before.
+The arm moving does not count either. `arm_thumbnail` shrinks the twin's arm mask to the thumbnail
+and widens it over the arm's edge and shadow. `hide_arm` marks the pixels under it as not shown. A
+pixel hidden now is left out. A pixel hidden at the last question counts as changed once it shows.
+The last answer never saw it.
 """
 
 from __future__ import annotations
@@ -38,23 +38,22 @@ THUMB_LONG_PX = 256
 #: image's mean shift (auto exposure) taken out [grey levels, 0..255]. Area downscaling and the
 #: 3x3 blur leave sensor noise at about one level, so 16 is far above it.
 CHANGED_LEVELS = 16.0
-#: Share of a pixel's distance from the mean that its change may add on top of `CHANGED_LEVELS`,
-#: so a gain change does not count. A 1.15 gain on a scene of a 160 table, dark cables and white
-#: paper makes blobs of 250 to 2200 thumbnail pixels without it and 0 with it.
+#: Share of a pixel's distance from the mean added to its change threshold, `CHANGED_LEVELS`. A
+#: gain change then does not count. On a 160 table with dark cables and white paper, a 1.15 gain
+#: makes blobs of 250 to 2200 thumbnail pixels without it. With it, the gain makes none.
 GAIN_TOLERANCE = 0.2
-#: Two changed pixels belong to one blob when neither their rows nor their columns lie more than
-#: this far apart [thumbnail px], so the leading and trailing edges of a moving object count
-#: together. 5 px is 2.3 cm at 1 m.
+#: Changed pixels this close in both row and column form one blob [thumbnail px]. The two edges
+#: of a moving object then count together. 5 px is 2.3 cm at 1 m.
 BLOB_JOIN_PX = 5
-#: Largest blob of changed thumbnail pixels a camera may have while its image counts as unchanged.
-#: Measured at 320 to 1920 px wide frames on a 100..140 table: a 3 cm cube 80 levels darker at
-#: 1 m moving 1 cm makes at least 39, leaving at least 49; a blinking 2x2 thumbnail pixel LED makes
-#: at most 14; noise of +-20 levels per pixel, a +12 step and a 1.15 gain make none. Every 1 cm
-#: move along an axis counts once the cube is 39 to 64 levels from the table, depending on the
-#: frame width and where its edges fall on the thumbnail pixels.
+#: Largest blob of changed thumbnail pixels in an image that counts as unchanged. Measured on 320
+#: to 1920 px wide frames of a 100..140 table. A 3 cm cube 80 levels darker at 1 m makes at least
+#: 39 when it moves 1 cm, and at least 49 when it leaves. A blinking LED of 2x2 thumbnail pixels
+#: makes at most 14. Noise of +-20 levels per pixel, a +12 step and a 1.15 gain make none. Every
+#: 1 cm move along an axis counts once the cube is 39 to 64 levels from the table. The figure
+#: depends on the frame width and on where the cube's edges fall on the thumbnail pixels.
 STILL_MAX_BLOB_PX = 24
-#: The arm mask is widened by this much on the thumbnail [px], over the arm's edge and shadow:
-#: about 2.3 cm at 1 m.
+#: How far the arm mask is widened on the thumbnail [px]. This covers the arm's edge and shadow.
+#: 5 px is 2.3 cm at 1 m.
 ARM_DILATE_PX = 5
 
 
@@ -112,8 +111,8 @@ def _thumb_size(h: int, w: int) -> tuple[int, int]:
 
 
 def thumbnail(image: np.ndarray) -> np.ndarray:
-    """A small grey copy of an RGB frame for `largest_change_px`: long edge `THUMB_LONG_PX` (a
-    smaller frame keeps its size), blurred 3x3, float32."""
+    """A small grey float32 copy of an RGB frame for `largest_change_px`, blurred 3x3. Its long
+    edge is `THUMB_LONG_PX`. A smaller frame keeps its size."""
     grey = cv2.cvtColor(_rgb(image), cv2.COLOR_RGB2GRAY)
     h, w = grey.shape
     size = _thumb_size(h, w)
@@ -123,8 +122,8 @@ def thumbnail(image: np.ndarray) -> np.ndarray:
 
 
 def arm_thumbnail(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
-    """A bool arm mask of a frame shrunk to the thumbnail `shape`, True wherever the arm covers part
-    of a thumbnail pixel, then widened by `ARM_DILATE_PX`."""
+    """A frame's bool arm mask shrunk to the thumbnail `shape`, then widened by `ARM_DILATE_PX`.
+    Before widening, a thumbnail pixel is True when the arm covers any part of it."""
     h, w = shape[:2]
     small = cv2.resize(np.asarray(mask, bool).astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_AREA) > 0
     side = 2 * ARM_DILATE_PX + 1
@@ -133,8 +132,8 @@ def arm_thumbnail(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
 
 
 def hide_arm(thumb: np.ndarray, arm: np.ndarray) -> np.ndarray:
-    """A copy of `thumb` with NaN wherever the thumbnail-sized arm mask `arm` is True: pixels the
-    frame does not show."""
+    """A copy of `thumb` with NaN where the thumbnail-sized arm mask `arm` is True. NaN marks a
+    pixel the frame does not show."""
     hidden = thumb.copy()
     hidden[arm] = np.nan
     return hidden
@@ -144,12 +143,13 @@ def largest_change_px(before: np.ndarray, now: np.ndarray) -> int:
     """The area of the largest blob of changed pixels between two thumbnails of one camera
     [thumbnail px].
 
-    A NaN pixel is one the frame does not show (`hide_arm`). One that is NaN in `now` is left out;
-    one that is NaN only in `before` counts as changed. The mean brightness of the pixels both show
-    is matched first. Such a pixel counts as changed when it moved by `CHANGED_LEVELS` plus
-    `GAIN_TOLERANCE` of its smaller distance from the mean. Changed pixels up to `BLOB_JOIN_PX` apart
-    along both axes form one blob, and only changed pixels count towards its area. Thumbnails of
-    different shapes, and an image with no pixel shown, count as changed throughout.
+    NaN marks a pixel the frame does not show. A pixel that is NaN in `now` is left out. A pixel
+    that is NaN only in `before` counts as changed. The mean brightness is matched over the pixels
+    both thumbnails show. A pixel both show counts as changed when it moved by `CHANGED_LEVELS`
+    plus `GAIN_TOLERANCE` times its smaller distance from the mean. Changed pixels up to
+    `BLOB_JOIN_PX` apart in both row and column form one blob. Only changed pixels count towards a
+    blob's area. Thumbnails of different shapes count as changed throughout. So does a `now` with
+    no pixel shown.
     """
     if before.shape != now.shape:
         return int(now.size)
