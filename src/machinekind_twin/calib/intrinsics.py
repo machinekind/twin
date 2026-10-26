@@ -44,14 +44,54 @@ DICT = cv2.aruco.DICT_5X5_100
 
 
 @dataclass(frozen=True)
+class Layout:
+    """A ChArUco board as printed: its squares, the ArUco dictionary of its markers and the marker's share of
+    a square. The square's size in metres is measured on the print and comes from the panel or the CLI."""
+    squares: tuple[int, int]
+    dictionary: int
+    marker_ratio: float
+    #: What the panel and the sheet say about it.
+    label: str
+
+
+#: The boards the detector knows, by name. `9x6` is the twin's own sheet (`twin board`, the panel's download).
+#: `7x5` is the sample board of OpenCV's ChArUco tutorial, found on many desks already: a print of it needs no new
+#: sheet, only its square measured.
+LAYOUTS: dict[str, Layout] = {
+    "9x6": Layout((9, 6), DICT, 0.75, "9x6, ArUco 5x5 - szachownica blizniaka"),
+    "7x5": Layout((7, 5), cv2.aruco.DICT_6X6_250, 0.6, "7x5, ArUco 6x6 - przykladowa tablica OpenCV"),
+}
+DEFAULT_LAYOUT = "9x6"
+
+
+@dataclass(frozen=True)
 class Board:
     #: Kwadraty (kolumny, wiersze) i ich bok [m]; znacznik zajmuje `marker` boku kwadratu.
     squares: tuple[int, int] = (9, 6)
     square: float = 0.028
     marker: float = 0.021
+    #: The ArUco dictionary of the markers, a `cv2.aruco.DICT_*` id.
+    dictionary: int = DICT
+    #: The layout's name in `LAYOUTS`, for the sheet's caption and the panel.
+    name: str = DEFAULT_LAYOUT
+
+    @classmethod
+    def of(cls, name: str, square: float) -> Board:
+        """The board of layout `name` with squares of `square` metres, as measured on the print."""
+        try:
+            lay = LAYOUTS[name]
+        except KeyError:
+            raise ValueError(f"nieznana tablica {name!r}; znane: {', '.join(LAYOUTS)}") from None
+        return cls(lay.squares, square, lay.marker_ratio * square, lay.dictionary, name)
+
+    @property
+    def label(self) -> str:
+        lay = LAYOUTS.get(self.name)
+        return lay.label if lay is not None else f"{self.squares[0]}x{self.squares[1]}"
 
     def cv(self) -> cv2.aruco.CharucoBoard:
-        return cv2.aruco.CharucoBoard(self.squares, self.square, self.marker, cv2.aruco.getPredefinedDictionary(DICT))
+        return cv2.aruco.CharucoBoard(self.squares, self.square, self.marker,
+                                      cv2.aruco.getPredefinedDictionary(self.dictionary))
 
     @property
     def size(self) -> tuple[float, float]:
@@ -69,7 +109,7 @@ class Board:
         b = self.board_image(px_per_m)
         y0, x0 = (H - b.shape[0]) // 2, (W - b.shape[1]) // 2
         sheet[y0:y0 + b.shape[0], x0:x0 + b.shape[1]] = b
-        text = (f"ChArUco {self.squares[0]}x{self.squares[1]}, kwadrat {self.square * 1000:.1f} mm - "
+        text = (f"ChArUco {self.label}, kwadrat {self.square * 1000:.1f} mm - "
                 f"drukuj w skali 100% i ZMIERZ kwadrat linijka")
         cv2.putText(sheet, text, (x0, max(40, y0 - 25)), cv2.FONT_HERSHEY_SIMPLEX, dpi / 300.0, 0, 2)
         return sheet

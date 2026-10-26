@@ -206,7 +206,9 @@ precedence for that hardware.
 2. **Add cameras.** Use **Szukaj kamer USB** (Find USB cameras) and **Dodaj kamerę
    USB** (Add USB camera). Confirm each camera delivers live, unmirrored frames.
 3. **Calibrate each lens.** In **Kalibracja**, step 1, download the ChArUco board,
-   print at 100%, measure the square size and enter it. Show the board across the
+   print at 100%, measure the square size and enter it. A print of OpenCV's sample
+   board (7 by 5 squares, 6x6 markers) works too: pick it in the **Tablica**
+   dropdown and measure its square. Show the board across the
    image, at different distances and tilts. The session requires coverage and
    rotation diversity; a parallel board alone cannot determine focal length
    reliably. Compute/save the result, then repeat for the next camera. A saved
@@ -303,7 +305,7 @@ For hardware:
 | `twin demo` | Example workstation; supports `--robot`, `--path` and explicit `--force` |
 | `twin ui` | Browser panel; supports `--workspace`, `--port`, `--arm` and `--detector NAME` |
 | `twin card --tag-mm 50` | Printable calibration card |
-| `twin board --square-mm 28` | Printable ChArUco board |
+| `twin board --square-mm 28` | Printable ChArUco board; `--layout 7x5` for OpenCV's sample board |
 | `twin calib-sim --n 5 --cameras 2` | Calibration against simulated ground truth; optional `--robot` |
 | `twin workspace` | Inspect workstation state; optional `--path` |
 | `twin export workspace/export` | Export scene, assets and station data; optional `--path` |
@@ -329,7 +331,8 @@ Tests can connect with `threaded=False`, advance `Twin.step(dt)` and call
 
 Fixed-camera calibration jointly estimates camera poses relative to the robot
 base and the card's mount in the gripper. Each real camera needs trusted
-intrinsics first. The card uses AprilTag 36h11; the ChArUco board uses ArUco 5x5.
+intrinsics first. The card uses AprilTag 36h11; the twin's ChArUco board uses ArUco
+5x5, and the 7 by 5 layout of OpenCV's sample board uses ArUco 6x6.
 The solver rejects outlier observations and refits while retaining enough
 observations per camera. See [the calibration tests](../tests/test_twin_calib.py).
 

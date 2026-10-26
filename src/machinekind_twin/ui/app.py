@@ -36,7 +36,7 @@ import viser
 from .. import scene as sc
 from ..calib.card import Card
 from ..calib import intrinsics as intr
-from ..calib.intrinsics import Board
+from ..calib.intrinsics import DEFAULT_LAYOUT, LAYOUTS, Board
 from ..detection import Perception
 from ..kinematics import inverse, pose
 from ..perception import TableMapper
@@ -1922,6 +1922,11 @@ class TwinApp:
         self._render_cameras()
 
     # ============================================================= kalibracja
+    def _board(self) -> Board:
+        """The ChArUco board step 1 looks for: the layout chosen in the panel with the measured square."""
+        name = next((n for n, lay in LAYOUTS.items() if lay.label == self.board_layout.value), DEFAULT_LAYOUT)
+        return Board.of(name, self.board_mm.value / 1000)
+
     def _build_calibration(self) -> None:
         """Zakladka Kalibracja dla kogos, kto nie zna slow "intrynsyki" i "fala": po co to jest,
         kamery z plakietkami OBIEKTYW i POLOZENIE, linia "Teraz", dwa kroki z ponumerowana instrukcja.
@@ -1946,11 +1951,18 @@ class TwinApp:
                 "4. Pokazuj szachownice kamerze, az licznik dojdzie do 12, potem **Gotowe**.")
             self.intr_sheet_box = g.add_folder(None)
             with self.intr_sheet_box:
+                # The board to look for: the twin's own sheet, or a layout already lying around (OpenCV's sample
+                # board), so a lens can be measured without a new print.
+                self.board_layout = g.add_dropdown(
+                    "Tablica", tuple(lay.label for lay in LAYOUTS.values()),
+                    initial_value=LAYOUTS[DEFAULT_LAYOUT].label,
+                    hint="Ktora szachownice pokazujesz. Masz juz wydruk przykladowej tablicy OpenCV (7x5, "
+                         "wieksze kody)? Wybierz ja i zmierz jej kwadrat - nowy wydruk nie jest potrzebny.")
                 sheet = g.add_button("Pobierz szachownice do druku (A4)", icon=viser.Icon.DOWNLOAD, color="gray",
-                                     hint="Plik PNG z szachownica ChArUco. Drukuj w skali 100%.")
+                                     hint="Plik PNG z wybrana szachownica ChArUco. Drukuj w skali 100%.")
                 self.board_mm = g.add_number("Bok kwadratu na wydruku [mm]", 28.0, min=5.0, max=100.0, step=0.1,
                                              hint="Zmierzony linijka bok jednego kwadratu szachownicy (nominalnie 28 "
-                                                  "mm - drukarka potrafi zmienic skale).")
+                                                  "mm na tablicy blizniaka - drukarka potrafi zmienic skale).")
             self.intr_cam = g.add_dropdown("Kamera", ("-",), initial_value="-",
                                            hint="Kamera, ktorej obiektyw teraz mierzysz. Na starcie: pierwsza, "
                                                 "ktora tego jeszcze nie ma.")
@@ -2026,7 +2038,7 @@ class TwinApp:
         @sheet.on_click
         @self._safe
         def _(event):
-            img = Board(square=self.board_mm.value / 1000, marker=0.75 * self.board_mm.value / 1000).image()
+            img = self._board().image()
             ok, buf = cv2.imencode(".png", img)
             event.client.send_file_download("szachownica.png", buf.tobytes())
 
@@ -2049,7 +2061,7 @@ class TwinApp:
                 raise RuntimeError("kamera symulowana nie potrzebuje kroku 1")
             if self.calib_job.running:
                 raise RuntimeError("ramie pokazuje karte - poczekaj na koniec albo Zatrzymaj")
-            board = Board(square=self.board_mm.value / 1000, marker=0.75 * self.board_mm.value / 1000)
+            board = self._board()
             solve_evt = threading.Event()
             self.intr_job.start(lambda job: jobs.run_intrinsics(job, self.twin.cameras, name, board,
                                                                  (rec.width, rec.height), solve=solve_evt))
