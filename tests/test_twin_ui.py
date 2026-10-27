@@ -273,7 +273,7 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
     class Res:
         K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
         dist = np.zeros(5)
-        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+        rms_px, n_views, coverage, trusted, reason, dropped = 0.3, 14, 0.7, True, "", []
 
     for n in ("kam1", "kam2"):
         app.ws.add_camera(CameraRecord(n, "sim"))
@@ -497,7 +497,7 @@ def test_after_saving_one_lens_the_calibration_tab_moves_on_to_the_next_camera(a
     class Res:
         K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
         dist = np.zeros(5)
-        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+        rms_px, n_views, coverage, trusted, reason, dropped = 0.3, 14, 0.7, True, "", []
 
     for n, src in (("u1", "5"), ("u2", "6")):
         app.ws.add_camera(CameraRecord(n, src))

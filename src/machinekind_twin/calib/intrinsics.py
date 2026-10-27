@@ -25,6 +25,12 @@ Samo przesuwanie tablicy po kadrze to za malo: tablica zawsze rownolegla do
 matrycy nie odroznia ogniskowej od odleglosci. Dlatego `solve` wymaga rozrzutu
 POCHYLEN tablicy, a gdy kadr jest juz pokryty, `add` przyjmuje tylko kadry,
 ktore ten rozrzut poszerzaja.
+
+A live camera adds two traps a rendered session does not have. A frame taken while the
+board moves is smeared, and a few such frames pull the fit off by a pixel or more. With
+`still_px` set, `add` takes a view only when the board's corners moved less than that since
+the previous frame, so the operator sets the board, holds it, and moves on. `solve` then
+leaves out the few views that still disagree with the rest (`outlier_factor`) and fits again.
 """
 
 from __future__ import annotations
@@ -136,6 +142,8 @@ class Result:
     size: tuple[int, int]
     trusted: bool
     reason: str = ""
+    #: Views left out of the fit: (index in the session, its error [px] when it was left out).
+    dropped: list[tuple[int, float]] = field(default_factory=list)
 
 
 def read_file(path: str | Path) -> Result:
@@ -201,7 +209,8 @@ def read_file(path: str | Path) -> Result:
 class Collector:
     def __init__(self, board: Board, size: tuple[int, int], *, min_corners: int = 12, min_move: float = 0.08,
                  min_tilt_deg: float = 8.0, grid: tuple[int, int] = (8, 6), min_tilt_spread: float = 35.0,
-                 prefer_tilt_after: int = 6, prefer_tilt_coverage: float = 0.55):
+                 prefer_tilt_after: int = 6, prefer_tilt_coverage: float = 0.55, still_px: float | None = None,
+                 outlier_factor: float = 2.0):
         self.board = board
         self.cv_board = board.cv()
         self.detector = cv2.aruco.CharucoDetector(self.cv_board)
@@ -213,6 +222,14 @@ class Collector:
         #: Po tylu kadrach i takim pokryciu kadru, dopoki brakuje pochylen, przyjmujemy tylko
         #: kadry, ktore je poszerzaja - samo przesuwanie tablicy nic juz nie wnosi.
         self.prefer_tilt_after, self.prefer_tilt_coverage = prefer_tilt_after, prefer_tilt_coverage
+        #: Largest median shift [px] of the corners since the previous frame for the board to count as
+        #: standing still; None takes every frame (rendered sessions, tests).
+        self.still_px = still_px
+        #: `solve` leaves out a view whose error is above this many times the session's median.
+        self.outlier_factor = outlier_factor
+        #: Whether the last frame was refused because the board moved (the panel colours the dots).
+        self.moving = False
+        self._prev: dict[tuple[int, int], np.ndarray] | None = None
         self.grid = grid
         self.views: list[View] = []
         self.hits = np.zeros(grid[::-1], bool)
@@ -258,24 +275,51 @@ class Collector:
     def add(self, img: np.ndarray, force: bool = False) -> tuple[bool, str]:
         det = self.detect(img)
         if det is None:
+            self._prev, self.moving = None, False
             return False, f"tablica niewidoczna albo mniej niz {self.min_corners} rogow"
+        if self.still_px is not None and not force:
+            shift = self._shift(*det)
+            self.moving = shift is None or shift > self.still_px
+            if self.moving:
+                return False, "tablica w ruchu - zatrzymaj ja na chwile"
         v = self._view(*det)
         why = None if force else self.novelty(v)
         if why:
             return False, why
         self.views.append(v)
+        self.hits[self._cells(v)] = True
+        return True, f"kadr {len(self.views)}: {len(v.obj)} rogow"
+
+    def _shift(self, obj: np.ndarray, pts: np.ndarray) -> float | None:
+        """Median shift [px] of the corners seen now and in the previous frame; None without a previous
+        frame or with fewer than `min_corners` corners in both. This frame becomes the previous one."""
+        keys = [tuple(k) for k in np.round(obj[:, :2] / self.board.square).astype(int)]
+        now = dict(zip(keys, pts))
+        prev, self._prev = self._prev, now
+        common = [k for k in keys if prev is not None and k in prev]
+        if len(common) < self.min_corners:
+            return None
+        return float(np.median([np.linalg.norm(now[k] - prev[k]) for k in common]))
+
+    def _cells(self, v: View) -> tuple[np.ndarray, np.ndarray]:
+        """(rows, columns) of the coverage grid the view's corners fall in."""
         gx = np.clip((v.img[:, 0] / self.size[0] * self.grid[0]).astype(int), 0, self.grid[0] - 1)
         gy = np.clip((v.img[:, 1] / self.size[1] * self.grid[1]).astype(int), 0, self.grid[1] - 1)
-        self.hits[gy, gx] = True
-        return True, f"kadr {len(self.views)}: {len(v.obj)} rogow"
+        return gy, gx
 
     @property
     def coverage(self) -> float:
         return float(self.hits.mean())
 
-    def tilt_spread(self, extra: View | None = None) -> tuple[float, float]:
+    def _coverage_of(self, views: list[View]) -> float:
+        hits = np.zeros(self.grid[::-1], bool)
+        for v in views:
+            hits[self._cells(v)] = True
+        return float(hits.mean())
+
+    def tilt_spread(self, extra: View | None = None, views: list[View] | None = None) -> tuple[float, float]:
         """Rozrzut pochylen tablicy [st.]: wokol osi poziomej i pionowej kadru (max - min)."""
-        views = self.views + ([extra] if extra is not None else [])
+        views = (self.views if views is None else views) + ([extra] if extra is not None else [])
         if not views:
             return 0.0, 0.0
         n = np.array([v.normal for v in views], float)
@@ -288,20 +332,27 @@ class Collector:
               min_tilt_spread: float | None = None) -> Result:
         if len(self.views) < 4:
             raise RuntimeError(f"za malo kadrow ({len(self.views)}) - potrzeba co najmniej 4, zalecane {min_views}+")
-        obj = [v.obj.astype(np.float32) for v in self.views]
-        pts = [v.img.astype(np.float32) for v in self.views]
-        # Przy malej liczbie kadrow trzeci wspolczynnik radialny tylko dopasowuje szum.
-        flags = cv2.CALIB_FIX_K3 if len(self.views) < 15 else 0
-        out = cv2.calibrateCameraExtended(obj, pts, self.size, None, None, flags=flags)
-        rms, K, dist = out[0], out[1], out[2]
-        per_view = [float(e) for e in np.asarray(out[7]).ravel()]
+        keep = list(range(len(self.views)))
+        rms, K, dist, per_view = self._fit(keep)
+        # A smeared or misread view sits far above the rest. Leave the worst one out and fit again,
+        # but never below `min_views` or three quarters of the session.
+        floor = max(min_views, int(np.ceil(0.75 * len(self.views))))
+        dropped: list[tuple[int, float]] = []
+        while len(keep) > floor:
+            worst = int(np.argmax(per_view))
+            if per_view[worst] <= max(self.outlier_factor * float(np.median(per_view)), max_rms):
+                break
+            dropped.append((keep.pop(worst), per_view[worst]))
+            rms, K, dist, per_view = self._fit(keep)
+        views = [self.views[i] for i in keep]
+        coverage = self._coverage_of(views)
         reasons = []
         if rms > max_rms:
             reasons.append(f"residuum {rms:.2f} px > {max_rms} px")
-        if len(self.views) < min_views:
-            reasons.append(f"tylko {len(self.views)} kadrow, zalecane {min_views}")
-        if self.coverage < min_coverage:
-            reasons.append(f"tablica pokryla {self.coverage:.0%} kadru, potrzeba {min_coverage:.0%} - pokaz ja w rogach")
+        if len(views) < min_views:
+            reasons.append(f"tylko {len(views)} kadrow, zalecane {min_views}")
+        if coverage < min_coverage:
+            reasons.append(f"tablica pokryla {coverage:.0%} kadru, potrzeba {min_coverage:.0%} - pokaz ja w rogach")
         # Plaska tablica zawsze rownolegla do matrycy to przypadek zdegenerowany: ogniskowa
         # i odleglosc wymieniaja sie jedna za druga, a residuum zostaje ~0,2 px. Zmierzone na
         # syntetycznych rogach (fx 610, szum 0,15 px, 14 kadrow): pochylenia do 2 st. dawaly
@@ -309,7 +360,7 @@ class Collector:
         # (wystarczy pochylanie wokol jednej osi): ~21 st. - fx do 3-5% obok, ~32 st. - do 2%,
         # >= 40 st. - ponizej 1%. Stad bramka na lacznym rozrzucie.
         min_spread = self.min_tilt_spread if min_tilt_spread is None else min_tilt_spread
-        sx, sy = self.tilt_spread()
+        sx, sy = self.tilt_spread(views=views)
         if np.hypot(sx, sy) < min_spread:
             reasons.append(f"tablica prawie zawsze rownolegla do kamery (rozrzut pochylen {sx:.0f} st. "
                            f"gora-dol, {sy:.0f} st. lewo-prawo, potrzeba lacznie {min_spread:.0f}) - "
@@ -322,8 +373,17 @@ class Collector:
         if not (0.5 * f0 <= fx <= 2.0 * f0 and 0.5 * f0 <= fy <= 2.0 * f0) or abs(fx / fy - 1.0) > 0.1:
             reasons.append(f"nieprawdopodobna ogniskowa fx {fx:.0f}, fy {fy:.0f} px "
                            f"(oczekiwane okolo {f0:.0f} px) - zbierz kadry od nowa")
-        return Result(np.asarray(K, float), np.asarray(dist, float).ravel(), float(rms), per_view, len(self.views),
-                      self.coverage, self.size, not reasons, "; ".join(reasons))
+        return Result(np.asarray(K, float), np.asarray(dist, float).ravel(), float(rms), per_view, len(views),
+                      coverage, self.size, not reasons, "; ".join(reasons), dropped)
+
+    def _fit(self, keep: list[int]) -> tuple[float, np.ndarray, np.ndarray, list[float]]:
+        """(rms, K, dist, per-view errors) of the views `keep` (indices into `views`)."""
+        obj = [self.views[i].obj.astype(np.float32) for i in keep]
+        pts = [self.views[i].img.astype(np.float32) for i in keep]
+        # Przy malej liczbie kadrow trzeci wspolczynnik radialny tylko dopasowuje szum.
+        flags = cv2.CALIB_FIX_K3 if len(keep) < 15 else 0
+        out = cv2.calibrateCameraExtended(obj, pts, self.size, None, None, flags=flags)
+        return float(out[0]), out[1], out[2], [float(e) for e in np.asarray(out[7]).ravel()]
 
 
 # ------------------------------------------------------------ symulacja

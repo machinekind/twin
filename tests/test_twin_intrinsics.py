@@ -45,3 +45,82 @@ def test_board_held_parallel_to_the_camera_is_not_trusted():
     res = _synthetic_session(30.0, 0).solve()
     assert res.trusted, res.reason
     assert abs(res.K[0, 0] - 610.0) < 6.0
+    assert res.dropped == []
+
+
+def test_views_that_disagree_with_the_rest_are_left_out():
+    """Two smeared views (4 px noise) pull the fit above 0.6 px; left out, K is back within 1%."""
+    col = _synthetic_session(30.0, 0)
+    rng = np.random.default_rng(1)
+    for i in (3, 7):
+        col.views[i].img = col.views[i].img + rng.normal(0, 4.0, col.views[i].img.shape)
+    res = col.solve()
+    assert res.trusted, res.reason
+    assert sorted(i for i, _ in res.dropped) == [3, 7]
+    assert res.n_views == len(col.views) - 2 and len(res.per_view_px) == res.n_views
+    assert abs(res.K[0, 0] - 610.0) < 6.0
+    col.outlier_factor = float("inf")                   # the same session, nothing left out
+    res = col.solve()
+    assert not res.trusted and "residuum" in res.reason and res.dropped == []
+
+
+def test_a_board_is_taken_only_once_it_stands_still():
+    """A live camera: a view is taken from a frame whose corners barely moved since the previous one."""
+    board = Board()
+    obj = np.asarray(board.cv().getChessboardCorners(), float)
+    K = np.array([[600.0, 0, 320], [0, 600.0, 240], [0, 0, 1]])
+    px = cv2.projectPoints(obj, np.zeros(3), np.array([-0.126, -0.084, 0.4]), K, None)[0].reshape(-1, 2)
+    col = Collector(board, (640, 480), still_px=2.0)
+    frames = iter([px, px + 0.5, px + 20.0, px + 20.4])
+    col.detect = lambda img: (obj, next(frames))
+    ok, why = col.add(None)                             # first sighting: nothing to compare with
+    assert not ok and "ruchu" in why and col.moving
+    ok, why = col.add(None)                             # held still
+    assert ok and not col.moving
+    ok, why = col.add(None)                             # moved 28 px
+    assert not ok and "ruchu" in why and col.moving
+    ok, why = col.add(None)                             # still again, but the same view as before
+    assert not ok and "ruchu" not in why and not col.moving
+    col.detect = lambda img: None                       # out of view: the next sighting starts over
+    assert not col.add(None)[0] and not col.moving
+    col.detect = lambda img: (obj, px)
+    assert "ruchu" in col.add(None)[1]
+
+
+def test_the_lens_job_keeps_the_frames_it_took_and_the_fit(tmp_path, monkeypatch):
+    import json
+    import threading
+    import time
+
+    from machinekind_twin.calib import intrinsics
+    from machinekind_twin.ui import jobs
+
+    board = Board.of("7x5", 0.024)
+    sheet = board.board_image(3000)                     # head-on, about 500 x 360 px
+    frame = np.full((480, 640), 255, np.uint8)
+    y0, x0 = (480 - sheet.shape[0]) // 2, (640 - sheet.shape[1]) // 2
+    frame[y0:y0 + sheet.shape[0], x0:x0 + sheet.shape[1]] = sheet
+    frame = np.dstack([frame] * 3)
+
+    class Hub:
+        def frame(self, name):
+            return frame.copy()                         # a new frame each time, as from a camera
+
+    fit = intrinsics.Result(np.eye(3), np.zeros(5), 0.4, [0.3, 0.5], 2, 0.3, (640, 480), False, "za malo",
+                            [(1, 2.5)])
+    monkeypatch.setattr(intrinsics.Collector, "solve", lambda self: fit)
+    out = tmp_path / "kam1-sesja"
+    solve = threading.Event()
+    job = jobs.Job("intrynsyki")
+    job.start(lambda j: jobs.run_intrinsics(j, Hub(), "kam1", board, (640, 480), period=0.01, solve=solve,
+                                            save_to=out))
+    deadline = time.monotonic() + 5.0
+    while not (out / "kadr-00.png").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    solve.set()
+    assert job.wait(5.0) and job.state == jobs.DONE and job.result is fit
+    assert cv2.imread(str(out / "kadr-00.png")).shape == (480, 640, 3)
+    data = json.loads((out / "sesja.json").read_text())
+    assert data["board"]["name"] == "7x5" and data["board"]["square_m"] == pytest.approx(0.024)
+    assert [(v["view"], v["px"], v["left_out"]) for v in data["views"]] == [(0, 0.3, False), (1, 2.5, True),
+                                                                          (2, 0.5, False)]

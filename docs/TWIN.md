@@ -211,7 +211,12 @@ precedence for that hardware.
    dropdown and measure its square. Show the board across the
    image, at different distances and tilts. The session requires coverage and
    rotation diversity; a parallel board alone cannot determine focal length
-   reliably. Compute/save the result, then repeat for the next camera. A saved
+   reliably. A frame is taken only while the board stands still: set it, hold it,
+   move on (the dots turn orange while it moves). Views that disagree with the rest
+   are left out of the fit. Each session's frames and per-view errors are kept in
+   `workspace/intrinsics/<camera>-<time>/`. Turn autofocus off first: a lens that
+   refocuses changes its focal length between frames. Compute/save the result,
+   then repeat for the next camera. A saved
    lens file can be loaded only at its matching resolution. Untrusted intrinsics
    block camera-pose calibration.
 4. **Locate the fixed cameras.** Print the tagged card, measure the **black tag
