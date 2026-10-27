@@ -383,6 +383,7 @@ class Twin:
         # stworzyl. Blokada brana DOPIERO tam - czekanie na watek renderujacy
         # z blokada w reku zakleszczyloby sie z renderem, ktory czeka na blokade.
         cfg = self.workspace.scene_config(**self.extras)
+        self.spec = cfg.robot                           # the same arm, maybe with new servo zero offsets
 
         def job():
             new = sc.build(cfg)

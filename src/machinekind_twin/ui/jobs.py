@@ -270,6 +270,8 @@ def _dump_wave(twin, session, fit, error: str = "") -> None:
                               "rogi": np.asarray(o.corners, float).round(3).tolist()}
                              for o in session.obs]
         out["montaze"] = {n: np.asarray(T, float).round(6).tolist() for n, T in fit.mounts.items()}
+        out["poprawki_zer"] = {"stawy": {n: round(v, 3) for n, v in fit.joint_offsets.items()},
+                               "uwaga": fit.offsets_note, "juz_w_ramieniu": dict(ws.joint_offsets)}
         out["intrynsyki"] = {n: {"K": np.asarray(K, float).tolist(), "dist": None if d is None else np.asarray(d, float).tolist()}
                              for n, (K, d) in session.intrinsics.items()}
         # Obok stanowiska, NIE w workspace/calib: tam panel szuka zestawow polozen kamer (presetow)

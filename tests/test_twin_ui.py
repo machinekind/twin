@@ -335,6 +335,35 @@ def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
         app.calib_job.result, app.calib_job.data = None, {}
 
 
+@pytest.mark.render
+def test_a_fit_with_servo_zero_offsets_turns_them_on_when_saved_and_the_panel_resets_them(app):
+    """Saved, the offsets reach the twin and the panel's own kinematics; reset, they go and the pose is distrusted."""
+    from machinekind_twin.calib.handeye import CameraFit, Fit
+    from machinekind_twin.workspace import CameraRecord
+
+    app.ws.add_camera(CameraRecord("front", "sim"))
+    try:
+        T = np.eye(4)
+        T[:3, 3] = [0.5, 0.0, 0.3]
+        app.calib_job.result = Fit({"front": CameraFit(T, 0.2, 0.5, 30, 20.0, trusted=True)},
+                                   joint_offsets={"j2": 2.0}, offsets_note="poprawki zer serw: residuum 3.00 -> 0.40 px")
+        app.calib_job.data = {"tag_size": app.tag_mm.value / 1000}
+        assert app._apply_calibration() == ["front"]
+        assert app.ws.joint_offsets == {"j2": 2.0} and "Poprawki zer serw" in app.calib_md.content
+        assert app.twin.spec.joint_offsets == {"j2": 2.0} and app._kin_gizmo.spec.joint_offsets == {"j2": 2.0}
+        app._render_calibration()
+        assert app.offsets_box.visible and "J2 +2.00 st." in app.offsets_md.content
+        _click(app, "Wyzeruj poprawki zer serw")
+        assert app.ws.joint_offsets == {} and app.twin.spec.joint_offsets == {}
+        assert not app.ws.camera("front").calibration["trusted"]
+        app._render_calibration()
+        assert not app.offsets_box.visible
+    finally:
+        app.ws.joint_offsets = {}
+        app.ws.remove_camera("front")
+        app.calib_job.result, app.calib_job.data = None, {}
+
+
 def _click(app, label: str) -> _Event:
     """Przycisk panelu bez przegladarki - te same callbacki, co klikniecie."""
     hs = [h for h in app.server.gui._gui_input_handle_from_uuid.values() if getattr(h, "label", None) == label]
