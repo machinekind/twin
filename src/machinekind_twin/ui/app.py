@@ -34,9 +34,9 @@ import numpy as np
 import viser
 
 from .. import scene as sc
-from ..calib.card import Card
+from ..calib.card import MIN_WHITE, Card
 from ..calib import intrinsics as intr
-from ..calib.intrinsics import Board
+from ..calib.intrinsics import DEFAULT_LAYOUT, LAYOUTS, Board
 from ..detection import Perception
 from ..kinematics import inverse, pose
 from ..perception import TableMapper
@@ -1905,8 +1905,9 @@ class TwinApp:
                 lines.append(f"intrynsyki {ii['reason']}, {ii.get('n_views', 0)} kadrow"
                              + (f", residuum {rms:.2f} px" if rms else ""))
             else:
-                lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow, "
-                             f"pokrycie {ii.get('coverage', 0):.0%}"
+                lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow"
+                             + (f" (pominiete {ii['dropped']})" if ii.get("dropped") else "")
+                             + f", pokrycie {ii.get('coverage', 0):.0%}"
                              f"{'' if ii.get('trusted') else ' - ' + ii.get('reason', '')}")
         sh = self.watch.shift.get(rec.name)
         if sh is not None:
@@ -1922,6 +1923,26 @@ class TwinApp:
         self._render_cameras()
 
     # ============================================================= kalibracja
+    def _card(self) -> Card:
+        """The card step 2 waves: tag and protrusion from the panel, width and length derived (`Card.sized`)."""
+        now = self.ws.card_obj()
+        return Card.sized(self.tag_mm.value / 1000, self.card_out_mm.value / 1000, thickness=now.thickness,
+                          ids=now.ids)
+
+    def _show_card(self) -> None:
+        c = self._card()
+        text = (f"Karta {c.width * 1000:.0f} x {c.length * 1000:.0f} mm (szerokosc x dlugosc, z tego bryla "
+                f"kolizyjna), bialy margines przy szczekach {c.white_margin * 1000:.0f} mm.")
+        if c.white_margin < MIN_WHITE - 1e-6:           # 110 mm out, 100 mm tag: 4.999... mm, not too little
+            text += (f" **Za malo bieli** - wysun karte do co najmniej {(c.tag_size + 2 * MIN_WHITE) * 1000:.0f} mm, "
+                     f"inaczej kamera gubi krawedz kodu przy szczekach.")
+        self.card_md.content = text
+
+    def _board(self) -> Board:
+        """The ChArUco board step 1 looks for: the layout chosen in the panel with the measured square."""
+        name = next((n for n, lay in LAYOUTS.items() if lay.label == self.board_layout.value), DEFAULT_LAYOUT)
+        return Board.of(name, self.board_mm.value / 1000)
+
     def _build_calibration(self) -> None:
         """Zakladka Kalibracja dla kogos, kto nie zna slow "intrynsyki" i "fala": po co to jest,
         kamery z plakietkami OBIEKTYW i POLOZENIE, linia "Teraz", dwa kroki z ponumerowana instrukcja.
@@ -1946,11 +1967,18 @@ class TwinApp:
                 "4. Pokazuj szachownice kamerze, az licznik dojdzie do 12, potem **Gotowe**.")
             self.intr_sheet_box = g.add_folder(None)
             with self.intr_sheet_box:
+                # The board to look for: the twin's own sheet, or a layout already lying around (OpenCV's sample
+                # board), so a lens can be measured without a new print.
+                self.board_layout = g.add_dropdown(
+                    "Tablica", tuple(lay.label for lay in LAYOUTS.values()),
+                    initial_value=LAYOUTS[DEFAULT_LAYOUT].label,
+                    hint="Ktora szachownice pokazujesz. Masz juz wydruk przykladowej tablicy OpenCV (7x5, "
+                         "wieksze kody)? Wybierz ja i zmierz jej kwadrat - nowy wydruk nie jest potrzebny.")
                 sheet = g.add_button("Pobierz szachownice do druku (A4)", icon=viser.Icon.DOWNLOAD, color="gray",
-                                     hint="Plik PNG z szachownica ChArUco. Drukuj w skali 100%.")
+                                     hint="Plik PNG z wybrana szachownica ChArUco. Drukuj w skali 100%.")
                 self.board_mm = g.add_number("Bok kwadratu na wydruku [mm]", 28.0, min=5.0, max=100.0, step=0.1,
                                              hint="Zmierzony linijka bok jednego kwadratu szachownicy (nominalnie 28 "
-                                                  "mm - drukarka potrafi zmienic skale).")
+                                                  "mm na tablicy blizniaka - drukarka potrafi zmienic skale).")
             self.intr_cam = g.add_dropdown("Kamera", ("-",), initial_value="-",
                                            hint="Kamera, ktorej obiektyw teraz mierzysz. Na starcie: pierwsza, "
                                                 "ktora tego jeszcze nie ma.")
@@ -1990,6 +2018,15 @@ class TwinApp:
                                            min=10.0, max=120.0, step=0.1,
                                            hint="Zmierzony linijka bok kwadratowego kodu (czarna ramka) na karcie. "
                                                 "Zmieniony po pomiarze blokuje zapis wyniku.")
+                self.card_out_mm = g.add_number("Karta wystaje za szczeki [mm]", float(self.ws.card_obj().out * 1000),
+                                                min=20.0, max=200.0, step=1.0,
+                                                hint="Ile karty wystaje za koncowki szczek, zmierzone linijka. Z tego "
+                                                     "i z boku kodu liczy sie szerokosc i dlugosc karty, a z nich - "
+                                                     "gdzie karta zahaczylaby o stol.")
+                self.card_md = g.add_markdown("")
+                for box in (self.tag_mm, self.card_out_mm):
+                    box.on_update(lambda _: self._show_card())
+                self._show_card()
             self.wave_box, self.wave_btn = self._big_button(
                 "Start", icon=viser.Icon.WAVE_SINE, color="green",
                 hint="RUSZA ramieniem: ok. 20 miejsc z karta nad stolem, potem ramie wraca na miejsce. Prawdziwe "
@@ -2026,14 +2063,14 @@ class TwinApp:
         @sheet.on_click
         @self._safe
         def _(event):
-            img = Board(square=self.board_mm.value / 1000, marker=0.75 * self.board_mm.value / 1000).image()
+            img = self._board().image()
             ok, buf = cv2.imencode(".png", img)
             event.client.send_file_download("szachownica.png", buf.tobytes())
 
         @card.on_click
         @self._safe
         def _(event):
-            sheet_img = Card(tag_size=self.tag_mm.value / 1000).sheet(dpi=300)
+            sheet_img = self._card().sheet(dpi=300)
             ok, buf = cv2.imencode(".png", sheet_img[..., ::-1])
             event.client.send_file_download("karta_kalibracyjna.png", buf.tobytes())
 
@@ -2049,10 +2086,12 @@ class TwinApp:
                 raise RuntimeError("kamera symulowana nie potrzebuje kroku 1")
             if self.calib_job.running:
                 raise RuntimeError("ramie pokazuje karte - poczekaj na koniec albo Zatrzymaj")
-            board = Board(square=self.board_mm.value / 1000, marker=0.75 * self.board_mm.value / 1000)
+            board = self._board()
             solve_evt = threading.Event()
+            save_to = self._lens_session_dir(name)
             self.intr_job.start(lambda job: jobs.run_intrinsics(job, self.twin.cameras, name, board,
-                                                                 (rec.width, rec.height), solve=solve_evt))
+                                                                 (rec.width, rec.height), solve=solve_evt,
+                                                                 save_to=save_to))
             self._intr_solve = solve_evt
             self.intr_md.content = ""
             self.calib_ask.reset()
@@ -2167,7 +2206,7 @@ class TwinApp:
         rec.intrinsics_from = "szachownica"
         self._simreal_px.pop(rec.name, None)            # nowe K - Sim-Real do sprawdzenia od nowa
         rec.intrinsics_info = {"rms_px": res.rms_px, "n_views": res.n_views, "coverage": res.coverage,
-                               "trusted": res.trusted, "reason": res.reason,
+                               "trusted": res.trusted, "reason": res.reason, "dropped": len(res.dropped),
                                "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
         if rec.calibrated:
             rec.calibration["reason"] = "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
@@ -2175,6 +2214,12 @@ class TwinApp:
         self._save()
         self.twin.rebuild()
         self._refresh_cameras()
+
+    def _lens_session_dir(self, name: str) -> Path | None:
+        """Where step 1 keeps a session's frames: `<workspace>/intrinsics/<camera>-<time>/`."""
+        if self.ws.path is None:
+            return None
+        return self.ws.path.parent / "intrinsics" / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}"
 
     def _lens_files(self) -> list[str]:
         """Nazwy plikow z gotowym obiektywem w `LENS_DIR` (posortowane)."""
@@ -2435,7 +2480,10 @@ class TwinApp:
         # odmowa z powodem (wczesniej trzy watki pisaly cel na zmiane i ramie skakalo).
         # Odebranie ramienia (Dom, STOP, polaczenie) przerywa fale przez `calib_job.stop`.
         self._take_arm(jobs.CALIB_OWNER, preempt=self.calib_job.stop, mark=mark)
-        self.ws.card["tag_size"] = self.tag_mm.value / 1000
+        # The wave keeps the card off the table with these sizes, so they come from the fields as typed.
+        card = self._card()
+        self.ws.card.update(tag_size=card.tag_size, out=card.out, width=card.width, length=card.length)
+        self._save()
         self._calib_pending = False
         self.calib_md.content = ""
         try:
@@ -2490,15 +2538,18 @@ class TwinApp:
                 vis = img.copy()
                 det = ij.data.get("last_det")
                 if det is not None:
+                    # Orange while the board moves: no frame is taken until it stands still.
+                    colour = (255, 140, 0) if col is not None and col.moving else (0, 255, 0)
                     for u, v in det[1]:
-                        cv2.circle(vis, (int(u), int(v)), 3, (0, 255, 0), -1)
+                        cv2.circle(vis, (int(u), int(v)), 3, colour, -1)
                 self.intr_img.image = thumb(vis, 480)
             if col is not None:
                 self.intr_md.content = (
-                    f"**Trzymaj szachownice przed kamera {ij.data.get('camera', '')} i powoli nia ruszaj:** w kazdym "
-                    f"rogu obrazu, blisko i daleko, pochylona w lewo, w prawo, w gore i w dol. Zdjecia robia sie "
-                    f"same (zielone kropki = szachownica widoczna).\n\n"
-                    f"Zdjecia: **{len(col.views)} z 12** - pokrycie obrazu: **{col.coverage:.0%} z 55%**")
+                    f"**Pokazuj szachownice kamerze {ij.data.get('camera', '')}: ustaw, zatrzymaj na chwile, "
+                    f"przestaw.** W kazdym rogu obrazu, blisko i daleko, pochylona w lewo, w prawo, w gore i w dol. "
+                    f"Zdjecie robi sie samo, gdy tablica stoi (zielone kropki; pomaranczowe = tablica w ruchu).\n\n"
+                    f"Zdjecia: **{len(col.views)} z 12** - pokrycie obrazu: **{col.coverage:.0%} z 55%**"
+                    + (f"  \n{ij.message}" if ij.message else ""))
         elif ij.state == jobs.DONE and ij.result is not None and ij.data.get("saved") is not ij.result:
             res = ij.result
             ij.data["saved"] = res
@@ -2511,9 +2562,12 @@ class TwinApp:
                 self.intr_md.content = f"**Kamery {name} juz nie ma** - nic nie zapisano"
                 return
             self._set_lens(rec, res)
-            self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze." if res.trusted else
-                                    f"Obiektyw **{name}**: wynik niepewny ({res.reason}). Zmierz jeszcze raz - "
-                                    f"wiecej pochylen i rogow obrazu.")
+            left_out = (f" Pominiete ujecia (odstawaly od reszty): {len(res.dropped)} z "
+                        f"{res.n_views + len(res.dropped)}." if res.dropped else "")
+            where = f"  \nKadry tej sesji: `{ij.data['save_to']}`" if ij.data.get("save_to") else ""
+            self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze.{left_out}{where}" if res.trusted else
+                                    f"Obiektyw **{name}**: wynik niepewny ({res.reason}).{left_out} Zmierz jeszcze "
+                                    f"raz - wiecej pochylen i rogow obrazu.{where}")
             todo = self._lens_todo()
             if todo and self.intr_cam.value not in todo:
                 self.intr_cam.value = todo[0]           # nastepna kamera bez obiektywu

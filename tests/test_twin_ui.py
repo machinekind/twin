@@ -273,7 +273,7 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
     class Res:
         K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
         dist = np.zeros(5)
-        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+        rms_px, n_views, coverage, trusted, reason, dropped = 0.3, 14, 0.7, True, "", []
 
     for n in ("kam1", "kam2"):
         app.ws.add_camera(CameraRecord(n, "sim"))
@@ -288,6 +288,29 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         for n in ("kam1", "kam2"):
             app.ws.remove_camera(n)
         app.intr_job.state = jobs.IDLE
+
+
+def test_the_wave_takes_the_card_size_from_the_tag_and_how_far_it_sticks_out(app, monkeypatch):
+    """A 100 mm tag 110 mm out: the wave keeps THAT card off the table, not the default 70 x 110 mm one."""
+    monkeypatch.setattr(jobs, "run_card_calibration", lambda job, twin, cameras, quick: None)
+    before = dict(app.ws.card)
+    app.twin.connect("sim", threaded=False)
+    try:
+        app.tag_mm.value, app.card_out_mm.value = 100.0, 110.0
+        app._start_card_calibration(None, ["front"], quick=True)
+        assert app.calib_job.wait(5.0)
+        card = app.ws.card_obj()
+        assert (card.tag_size, card.out) == (pytest.approx(0.100), pytest.approx(0.110))
+        assert (card.width, card.length) == (pytest.approx(0.1325), pytest.approx(0.150))
+        app._show_card()
+        assert "x 150 mm" in app.card_md.content and "Za malo bieli" not in app.card_md.content
+        app.card_out_mm.value = 105.0                   # 2.5 mm of white by the jaws
+        app._show_card()
+        assert "Za malo bieli" in app.card_md.content
+    finally:
+        app.twin.release(jobs.CALIB_OWNER)
+        app.ws.card = before
+        app.tag_mm.value, app.card_out_mm.value = before["tag_size"] * 1000, before["out"] * 1000
 
 
 @pytest.mark.render
@@ -497,7 +520,7 @@ def test_after_saving_one_lens_the_calibration_tab_moves_on_to_the_next_camera(a
     class Res:
         K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
         dist = np.zeros(5)
-        rms_px, n_views, coverage, trusted, reason = 0.3, 14, 0.7, True, ""
+        rms_px, n_views, coverage, trusted, reason, dropped = 0.3, 14, 0.7, True, "", []
 
     for n, src in (("u1", "5"), ("u2", "6")):
         app.ws.add_camera(CameraRecord(n, src))
@@ -531,14 +554,18 @@ def test_fixed_texts_written_at_creation_reach_the_browser(app):
         h.remove()
 
 
-@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt",))
+@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt", "logitech_c920_640x480_calib.txt",
+                                      "usb_camera_wide_640x480_calib.txt"))
 def test_shipped_lens_files_parse(filename):
     """Pliki z obiektywami w assets/calib czyta ten sam parser, co przycisk w panelu."""
     from machinekind_twin.calib import intrinsics as intr
     from machinekind_twin.ui.app import LENS_DIR
 
     res = intr.read_file(LENS_DIR / filename)
-    assert res.K.shape == (3, 3) and res.K[0, 0] > 500 and res.dist.shape == (5,)
+    W, H = res.size
+    # A plausible webcam lens at the file's own resolution: 28 to 90 degrees of horizontal view.
+    assert res.K.shape == (3, 3) and 0.5 * W < res.K[0, 0] < 2 * W and res.dist.shape == (5,)
+    assert 0 < res.K[0, 2] < W and 0 < res.K[1, 2] < H
     assert res.trusted and res.reason == f"z pliku {filename}"
 
 

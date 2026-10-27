@@ -6,11 +6,13 @@ je czyta w swojej petli, wiec zaden przycisk nie blokuje interfejsu.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -281,7 +283,7 @@ def _dump_wave(twin, session, fit, error: str = "") -> None:
 
 
 def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], period: float = 0.25,
-                   solve: threading.Event | None = None) -> Any:
+                   solve: threading.Event | None = None, save_to: Path | None = None) -> Any:
     """Zbiera kadry tablicy ChArUco z kamery, dopoki panel nie powie `solve`, potem liczy K.
 
     `job.cancel` PRZERYWA bez liczenia (wynik None, zadanie "przerwane"). Wczesniej
@@ -289,17 +291,36 @@ def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], per
     (rozmazane kadry, zla tablica) nadpisywala dobre K i uniewazniala kalibracje polozenia.
     Kamera, dla ktorej zbierano, jest w `job.data["camera"]` - wynik trafia do niej,
     a nie do kamery wybranej w panelu w chwili konca.
+
+    A frame is taken only once the board stands still (`STILL_PX`): smeared corners spoil K.
+    With `save_to`, each frame taken goes there as `kadr-NN.png` and the fit as `sesja.json`,
+    so a session that came out untrusted can be looked at afterwards.
     """
+    import cv2
+
     from ..calib.intrinsics import Collector
 
     solve = solve if solve is not None else threading.Event()
     job.data["camera"] = camera
-    col = Collector(board, size)
+    col = Collector(board, size, still_px=STILL_PX)
     job.data["collector"] = col
+    if save_to is not None:
+        try:
+            save_to.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("Kadry obiektywu nie beda zapisane (%s): %s", save_to, exc)
+            save_to = None
+    job.data["save_to"] = save_to
+    last = None
     while not (job.cancel.is_set() or solve.is_set()):
         img = hub.frame(camera)
-        if img is not None:
+        # The same frame twice would show a moving board as standing still.
+        if img is not None and img is not last:
+            last = img
             ok, why = col.add(img)
+            if ok and save_to is not None:
+                bgr = img[..., ::-1] if img.ndim == 3 else img
+                cv2.imwrite(str(save_to / f"kadr-{len(col.views) - 1:02d}.png"), np.ascontiguousarray(bgr))
             job.data["last"] = img
             job.data["last_det"] = col.detect(img)
             job.message = why
@@ -309,7 +330,32 @@ def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], per
         job.message = "przerwane - K bez zmian"
         return None
     job.message = "liczenie K"
-    return col.solve()
+    res = col.solve()
+    if save_to is not None:
+        _save_lens_session(save_to, board, size, res)
+    return res
+
+
+#: Largest median corner shift [px] between two frames `run_intrinsics` reads (0.25 s apart) for the
+#: board to count as still. 2 px in 0.25 s smears a corner by about 0.3 px in a 30 fps exposure.
+STILL_PX = 2.0
+
+
+def _save_lens_session(folder: Path, board, size: tuple[int, int], res) -> None:
+    """`sesja.json` next to the frames of a lens session: the board, the fit and every view's error."""
+    left_out = dict(res.dropped)
+    kept = iter(res.per_view_px)
+    views = [{"view": i, "px": left_out[i], "left_out": True} if i in left_out else
+             {"view": i, "px": next(kept), "left_out": False} for i in range(res.n_views + len(left_out))]
+    data = {"board": {"name": board.name, "squares": list(board.squares), "square_m": board.square,
+                      "marker_m": board.marker, "dictionary": board.dictionary},
+            "size": list(size), "rms_px": res.rms_px, "trusted": res.trusted, "reason": res.reason,
+            "coverage": res.coverage, "K": np.asarray(res.K).tolist(), "dist": np.asarray(res.dist).ravel().tolist(),
+            "views": views}
+    try:
+        (folder / "sesja.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Nie udalo sie zapisac %s: %s", folder / "sesja.json", exc)
 
 
 def run_sysid(job: Job, twin) -> Any:
