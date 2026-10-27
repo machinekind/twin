@@ -531,14 +531,18 @@ def test_fixed_texts_written_at_creation_reach_the_browser(app):
         h.remove()
 
 
-@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt",))
+@pytest.mark.parametrize("filename", ("logitech_brio_4k_calib.txt", "logitech_c920_640x480_calib.txt",
+                                      "usb_camera_wide_640x480_calib.txt"))
 def test_shipped_lens_files_parse(filename):
     """Pliki z obiektywami w assets/calib czyta ten sam parser, co przycisk w panelu."""
     from machinekind_twin.calib import intrinsics as intr
     from machinekind_twin.ui.app import LENS_DIR
 
     res = intr.read_file(LENS_DIR / filename)
-    assert res.K.shape == (3, 3) and res.K[0, 0] > 500 and res.dist.shape == (5,)
+    W, H = res.size
+    # A plausible webcam lens at the file's own resolution: 28 to 90 degrees of horizontal view.
+    assert res.K.shape == (3, 3) and 0.5 * W < res.K[0, 0] < 2 * W and res.dist.shape == (5,)
+    assert 0 < res.K[0, 2] < W and 0 < res.K[1, 2] < H
     assert res.trusted and res.reason == f"z pliku {filename}"
 
 
