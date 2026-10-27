@@ -93,6 +93,9 @@ class RobotKinematics:
         self.base_id = m.body(prefix + spec.base_body).id
         self._approach = np.asarray(spec.tcp_approach, float)
         self._closing = np.asarray(spec.tcp_closing, float)
+        #: Servo zero offsets [rad] per joint in description order (`RobotSpec.joint_offsets`); none on the gripper.
+        self.offset = np.array([0.0 if name == spec.gripper else np.radians(spec.joint_offsets.get(name, 0.0))
+                                for name in spec.joints])
         #: Stawy sprzezone (`spec.mirror_joints`): (indeks stawu opisu, adres qpos, przelozenie).
         #: Wpisuje je `write_qpos` - przy kazdym zapisie pozy, nie tylko tutaj.
         self.mirror: list[tuple[int, int, float]] = [
@@ -112,7 +115,8 @@ class RobotKinematics:
         the joint's MJCF range: the jaw travel the real servo makes, not the whole MJCF range. On the
         SO-101 the whole range is -10..100 degrees and the servo covers only -5..55 on 0..100,
         so mapping onto it showed the jaw 1.8 times wider open than on the arm. Missing joints
-        take their value from the rest pose.
+        take their value from the rest pose. A servo whose zero is off (`RobotSpec.joint_offsets`)
+        gets its offset added here and taken off in `from_q`: the only place the two meet.
         """
         q = np.empty(len(self.spec.joints))
         for k, name in enumerate(self.spec.joints):
@@ -120,7 +124,7 @@ class RobotKinematics:
             if name == self.spec.gripper:
                 q[k] = self._grip_to_q(k, value)
             else:
-                q[k] = np.radians(value)
+                q[k] = np.radians(value) + self.offset[k]
         return q
 
     def _grip_to_q(self, k: int, value: float) -> float:
@@ -144,7 +148,7 @@ class RobotKinematics:
             if name == self.spec.gripper:
                 out[name] = self._grip_from_q(k, float(q[k]))
             else:
-                out[name] = float(np.degrees(q[k]))
+                out[name] = float(np.degrees(q[k] - self.offset[k]))
         return out
 
     def clip(self, joints: Mapping[str, float]) -> dict[str, float]:

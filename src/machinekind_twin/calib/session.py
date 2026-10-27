@@ -33,13 +33,14 @@ from typing import Protocol
 
 import time
 
+import cv2
 import numpy as np
 
 from ..collision import CollisionChecker
 from ..kinematics import RobotKinematics
 from ..robots import RobotSpec
 from .card import Card
-from .handeye import Fit, Observation, _median_T, judge, rotation_spread_R, solve
+from .handeye import Fit, Observation, _median_T, judge, rotation_spread_R, solve, solve_offsets
 from .tags import detect, tag_pose
 
 
@@ -114,12 +115,32 @@ class WaveConfig:
     search_bearing: tuple[float, float] = (-1.8, 1.8)
     search_height: tuple[float, float] = (0.05, 0.5)
     search_centre: tuple[float, float, float] = (0.2, 0.0, 0.05)
+    #: Fit the zero offsets of the servos the cameras can tell apart (`offset_joints`) with the
+    #: cameras. Kept when the residual drops by at least `offset_gain` of itself and 0.3 px; an offset
+    #: over `max_offset` [app units] is not a servo's zero and leaves them all out. On the SO-101 stand
+    #: (2026-10-27) offsets of 1.8-2.5 deg took one camera from 7.3 to 4.4 px.
+    fit_offsets: bool = True
+    offset_gain: float = 0.15
+    max_offset: float = 4.0
 
     @classmethod
     def for_spec(cls, spec: RobotSpec) -> WaveConfig:
         """Nastawy fali w skali stolu tego ramienia (`spec.desk`); dla SO-101 = domyslne."""
         d = spec.desk
         return replace(cls(), radius=d.wave_radius, search_centre=d.search_centre, search_dist=d.search_dist)
+
+
+def offset_joints(spec: RobotSpec) -> list[str]:
+    """Joints whose servo zero a wave can tell, in description (chain) order.
+
+    A zero shows only through a joint after it in the chain that turns during the wave (`wave_ranges`,
+    and the roll the wave aims with). So not the last such joint: its zero is the same as the card
+    sitting turned in the jaws. And not the base's turn: that is the same as every camera standing
+    elsewhere around the arm. On the SO-101: shoulder_lift, elbow_flex, wrist_flex.
+    """
+    arm = [n for n in spec.joints if n != spec.gripper]
+    moving = set(spec.wave_ranges) | {spec.roll_joint}
+    return [n for k, n in enumerate(arm) if k > 0 and any(m in moving for m in arm[k + 1:])]
 
 
 @dataclass
@@ -413,7 +434,8 @@ class Session:
                 # karty zakladala, ze oba tagi maja DOKLADNIE ten sam srodek plecami do siebie; dwa
                 # wydruki sklejone recznie z przesunieciem kilku mm dawaly 7-10 px residuum na obu
                 # kamerach naraz (kazda widziala inna strone; 2026-09-26).
-                self.obs.append(Observation(T_tcp, np.eye(4), corners, tid, f"tag{tid}", cam, self.index))
+                self.obs.append(Observation(T_tcp, np.eye(4), corners, tid, f"tag{tid}", cam, self.index,
+                                            joints=dict(measured)))
                 p.obs += 1
                 # Gdzie jest kamera, wedlug tej jednej detekcji i nominalnej karty.
                 # Pierwsza wystarczy, zeby celowac; mediana kolejnych - zeby
@@ -443,7 +465,31 @@ class Session:
         fit = solve(self.obs, {c: self.intrinsics[c] for c in cams}, self.card.tag_size,
                     self.mounts_nominal(), max_px=self.cfg.max_px, min_keep=self.cfg.min_obs)
         judge(fit, self.cfg.max_px, self.cfg.min_spread, self.cfg.min_obs)
-        return fit
+        return self._with_offsets(fit, cams)
+
+    def _with_offsets(self, fit: Fit, cams: list[str]) -> Fit:
+        """`fit` again with servo zero offsets, when they bring the residual down (`WaveConfig.fit_offsets`)."""
+        cfg, names = self.cfg, offset_joints(self.kin.spec)
+        if not cfg.fit_offsets or not names or fit.n_obs < cfg.min_obs:
+            return fit
+        try:
+            new = solve_offsets(fit, self.obs, {c: self.intrinsics[c] for c in cams}, self.card.tag_size,
+                                self.kin.tcp, names)
+        except (ValueError, np.linalg.LinAlgError, cv2.error) as exc:
+            fit.offsets_note = f"poprawki zer serw: nie policzone ({exc})"
+            return fit
+        worst = max(names, key=lambda n: abs(new.joint_offsets[n]))
+        if abs(new.joint_offsets[worst]) > cfg.max_offset:
+            fit.offsets_note = (f"poprawki zer serw pominiete: {worst} {new.joint_offsets[worst]:+.1f} st. to wiecej "
+                                f"niz {cfg.max_offset:g} st. - to nie zero serwa, raczej karta albo kamera")
+            return fit
+        if fit.rms_px - new.rms_px < max(0.3, cfg.offset_gain * fit.rms_px):
+            fit.offsets_note = (f"poprawki zer serw pominiete: residuum {fit.rms_px:.2f} -> {new.rms_px:.2f} px, "
+                                f"za malo, zeby ruszac zera")
+            return fit
+        judge(new, cfg.max_px, cfg.min_spread, cfg.min_obs)
+        new.offsets_note = f"poprawki zer serw: residuum {fit.rms_px:.2f} -> {new.rms_px:.2f} px"
+        return new
 
     def run(self, on_step: Callable[[StepReport], None] | None = None) -> Fit:
         while not self.done:

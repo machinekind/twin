@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,21 @@ DEFAULT_PATH = data_path(DEFAULT_REL)
 def default_path() -> Path:
     """Domyslny plik stanowiska liczony w chwili uzycia (katalog biezacy moze sie zmienic)."""
     return data_path(DEFAULT_REL)
+
+
+#: (robot, offsets) -> (the description they were added to, the description with them).
+_OFFSET_SPECS: dict[tuple[str, tuple[tuple[str, float], ...]], tuple[RobotSpec, RobotSpec]] = {}
+
+
+def _spec_with_offsets(robot: str, offsets: tuple[tuple[str, float], ...]) -> RobotSpec:
+    """`get_spec(robot)` with `offsets`: one object per description and offsets, a new one when either changes."""
+    base = get_spec(robot)
+    if not offsets:
+        return base
+    hit = _OFFSET_SPECS.get((robot, offsets))
+    if hit is None or hit[0] is not base:
+        hit = _OFFSET_SPECS[(robot, offsets)] = (base, replace(base, joint_offsets=dict(offsets)))
+    return hit[1]
 
 #: Poziome pole widzenia typowej kamerki internetowej - tylko do nominalnych
 #: intrynsyk, zanim kamera zobaczy szachownice.
@@ -191,11 +206,30 @@ class Workspace:
     #: Wgrany zestaw polozen kamer - nazwa pliku z `workspace/calib/` bez `.json`;
     #: None = nie wybrano, `load` wgrywa najnowszy.
     calib_preset: str | None = None
+    #: Zero offsets of this arm's servos [app units] from calibration step 2 (`RobotSpec.joint_offsets`).
+    #: The camera poses were fitted with them, so they come and go together (`apply_fit`, presets).
+    joint_offsets: dict[str, float] = field(default_factory=dict)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
     def spec(self) -> RobotSpec:
-        return get_spec(self.robot)
+        """The arm's description with this workstation's servo zero offsets. The same object while the
+        offsets stay the same: the arm mask rebuilds its kinematics when the description changes."""
+        return _spec_with_offsets(self.robot, tuple(sorted((k, float(v)) for k, v in self.joint_offsets.items())))
+
+    def reset_joint_offsets(self, reason: str) -> list[str]:
+        """Back to the servos' own zeros. Camera poses fitted with the offsets stop being trusted (`reason`);
+        returns their names."""
+        self.joint_offsets = {}
+        return self._distrust_poses(reason)
+
+    def _distrust_poses(self, reason: str, keep: tuple[str, ...] = ()) -> list[str]:
+        names = []
+        for rec in self.cameras:
+            if rec.calibrated and rec.name not in keep and rec.calibration.get("trusted"):
+                rec.calibration["trusted"], rec.calibration["reason"] = False, reason
+                names.append(rec.name)
+        return names
 
     def card_obj(self) -> Card:
         data = dict(self.card)
@@ -322,6 +356,14 @@ class Workspace:
                 rec.calibration["K"] = np.asarray(K, float).tolist()
                 rec.calibration["dist"] = None if dist is None else np.asarray(dist, float).ravel().tolist()
             updated.append(name)
+        # The poses above were fitted with these offsets on top of the old ones; any other camera's pose
+        # was fitted with the old ones and no longer matches the arm.
+        delta = {n: float(v) for n, v in (getattr(fit, "joint_offsets", None) or {}).items() if v}
+        if delta:
+            for n, v in delta.items():
+                self.joint_offsets[n] = round(self.joint_offsets.get(n, 0.0) + v, 3)
+            self._distrust_poses("poprawki zer serw zmienione po tym pomiarze - zrob krok 2 jeszcze raz",
+                                 keep=tuple(updated))
         return updated
 
     # ------------------------------------------------------- zestawy polozen
@@ -347,7 +389,9 @@ class Workspace:
         times = [c["calibration"].get("time") for c in cams.values()]
         stamp = max(t for t in times if t) if any(times) else time.strftime("%Y-%m-%dT%H:%M:%S")
         name = stamp.replace("-", "").replace(":", "").replace("T", "-")
-        body = json.dumps({"time": stamp, "tag_size": self.card.get("tag_size"), "cameras": cams},
+        # The servo zero offsets the poses were fitted with go along; a set without any keeps its old form.
+        offsets = {"joint_offsets": dict(self.joint_offsets)} if self.joint_offsets else {}
+        body = json.dumps({"time": stamp, "tag_size": self.card.get("tag_size"), "cameras": cams, **offsets},
                           indent=2, ensure_ascii=False)
         d = self.presets_dir()
         d.mkdir(parents=True, exist_ok=True)
@@ -373,6 +417,11 @@ class Workspace:
                 continue
             rec.T_cam2base, rec.calibration = entry["T_cam2base"], dict(entry["calibration"])
             done.append(cam_name)
+        # The set's poses hold only with the servo zero offsets they were fitted with (none in an older set).
+        offsets = {k: float(v) for k, v in data.get("joint_offsets", {}).items()}
+        if offsets != self.joint_offsets:
+            self.joint_offsets = offsets
+            self._distrust_poses(f"poprawki zer serw z zestawu {name} - zrob krok 2 dla tej kamery", keep=tuple(done))
         self.calib_preset = name
         return done
 

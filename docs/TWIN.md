@@ -229,6 +229,13 @@ precedence for that hardware.
    the table, then targets cameras needing more observations. Review each
    camera's trust verdict and reason before saving. Changing tag size after the
    measurement prevents saving that result. Remove the card afterwards.
+   The fit also estimates the servos' zero offsets for the joints the cameras can
+   tell apart (on the SO-101: shoulder lift, elbow, wrist flex). It keeps them
+   only when they cut the residual clearly and stay within 4 degrees. Saving the
+   result turns them on: the twin's model then stands where the real arm stands,
+   while sliders, limits and home stay in the servos' own units. They are saved
+   with the camera poses, and **Wyzeruj poprawki zer serw** goes back to the
+   servos' zeros.
 5. **Check Sim-Real alignment.** For every fixed camera, compare rendered arm and
    table edges with the real image. A median mismatch above about 3 px is a cue
    to recheck tag size, lens calibration, table geometry and camera poses.
