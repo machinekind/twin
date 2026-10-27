@@ -221,7 +221,9 @@ precedence for that hardware.
    block camera-pose calibration.
 4. **Locate the fixed cameras.** Print the tagged card, measure the **black tag
    square** (excluding its white border), fold it and hold the free end in the
-   gripper with about 70 mm protruding. In calibration step 2, start the wave and
+   gripper with about 70 mm protruding. In calibration step 2, enter the black
+   square and how far the card sticks out beyond the jaw tips: the card's width and
+   length follow from them, and the wave keeps that card off the table. Start the wave and
    confirm the card is in place and the table clear. A second click within the
    confirmation window starts hardware motion. The arm searches both sides of
    the table, then targets cameras needing more observations. Review each

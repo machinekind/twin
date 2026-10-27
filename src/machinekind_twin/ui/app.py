@@ -34,7 +34,7 @@ import numpy as np
 import viser
 
 from .. import scene as sc
-from ..calib.card import Card
+from ..calib.card import MIN_WHITE, Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import DEFAULT_LAYOUT, LAYOUTS, Board
 from ..detection import Perception
@@ -1923,6 +1923,21 @@ class TwinApp:
         self._render_cameras()
 
     # ============================================================= kalibracja
+    def _card(self) -> Card:
+        """The card step 2 waves: tag and protrusion from the panel, width and length derived (`Card.sized`)."""
+        now = self.ws.card_obj()
+        return Card.sized(self.tag_mm.value / 1000, self.card_out_mm.value / 1000, thickness=now.thickness,
+                          ids=now.ids)
+
+    def _show_card(self) -> None:
+        c = self._card()
+        text = (f"Karta {c.width * 1000:.0f} x {c.length * 1000:.0f} mm (szerokosc x dlugosc, z tego bryla "
+                f"kolizyjna), bialy margines przy szczekach {c.white_margin * 1000:.0f} mm.")
+        if c.white_margin < MIN_WHITE - 1e-6:           # 110 mm out, 100 mm tag: 4.999... mm, not too little
+            text += (f" **Za malo bieli** - wysun karte do co najmniej {(c.tag_size + 2 * MIN_WHITE) * 1000:.0f} mm, "
+                     f"inaczej kamera gubi krawedz kodu przy szczekach.")
+        self.card_md.content = text
+
     def _board(self) -> Board:
         """The ChArUco board step 1 looks for: the layout chosen in the panel with the measured square."""
         name = next((n for n, lay in LAYOUTS.items() if lay.label == self.board_layout.value), DEFAULT_LAYOUT)
@@ -2003,6 +2018,15 @@ class TwinApp:
                                            min=10.0, max=120.0, step=0.1,
                                            hint="Zmierzony linijka bok kwadratowego kodu (czarna ramka) na karcie. "
                                                 "Zmieniony po pomiarze blokuje zapis wyniku.")
+                self.card_out_mm = g.add_number("Karta wystaje za szczeki [mm]", float(self.ws.card_obj().out * 1000),
+                                                min=20.0, max=200.0, step=1.0,
+                                                hint="Ile karty wystaje za koncowki szczek, zmierzone linijka. Z tego "
+                                                     "i z boku kodu liczy sie szerokosc i dlugosc karty, a z nich - "
+                                                     "gdzie karta zahaczylaby o stol.")
+                self.card_md = g.add_markdown("")
+                for box in (self.tag_mm, self.card_out_mm):
+                    box.on_update(lambda _: self._show_card())
+                self._show_card()
             self.wave_box, self.wave_btn = self._big_button(
                 "Start", icon=viser.Icon.WAVE_SINE, color="green",
                 hint="RUSZA ramieniem: ok. 20 miejsc z karta nad stolem, potem ramie wraca na miejsce. Prawdziwe "
@@ -2046,7 +2070,7 @@ class TwinApp:
         @card.on_click
         @self._safe
         def _(event):
-            sheet_img = Card(tag_size=self.tag_mm.value / 1000).sheet(dpi=300)
+            sheet_img = self._card().sheet(dpi=300)
             ok, buf = cv2.imencode(".png", sheet_img[..., ::-1])
             event.client.send_file_download("karta_kalibracyjna.png", buf.tobytes())
 
@@ -2456,7 +2480,10 @@ class TwinApp:
         # odmowa z powodem (wczesniej trzy watki pisaly cel na zmiane i ramie skakalo).
         # Odebranie ramienia (Dom, STOP, polaczenie) przerywa fale przez `calib_job.stop`.
         self._take_arm(jobs.CALIB_OWNER, preempt=self.calib_job.stop, mark=mark)
-        self.ws.card["tag_size"] = self.tag_mm.value / 1000
+        # The wave keeps the card off the table with these sizes, so they come from the fields as typed.
+        card = self._card()
+        self.ws.card.update(tag_size=card.tag_size, out=card.out, width=card.width, length=card.length)
+        self._save()
         self._calib_pending = False
         self.calib_md.content = ""
         try:

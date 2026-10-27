@@ -290,6 +290,29 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.intr_job.state = jobs.IDLE
 
 
+def test_the_wave_takes_the_card_size_from_the_tag_and_how_far_it_sticks_out(app, monkeypatch):
+    """A 100 mm tag 110 mm out: the wave keeps THAT card off the table, not the default 70 x 110 mm one."""
+    monkeypatch.setattr(jobs, "run_card_calibration", lambda job, twin, cameras, quick: None)
+    before = dict(app.ws.card)
+    app.twin.connect("sim", threaded=False)
+    try:
+        app.tag_mm.value, app.card_out_mm.value = 100.0, 110.0
+        app._start_card_calibration(None, ["front"], quick=True)
+        assert app.calib_job.wait(5.0)
+        card = app.ws.card_obj()
+        assert (card.tag_size, card.out) == (pytest.approx(0.100), pytest.approx(0.110))
+        assert (card.width, card.length) == (pytest.approx(0.1325), pytest.approx(0.150))
+        app._show_card()
+        assert "x 150 mm" in app.card_md.content and "Za malo bieli" not in app.card_md.content
+        app.card_out_mm.value = 105.0                   # 2.5 mm of white by the jaws
+        app._show_card()
+        assert "Za malo bieli" in app.card_md.content
+    finally:
+        app.twin.release(jobs.CALIB_OWNER)
+        app.ws.card = before
+        app.tag_mm.value, app.card_out_mm.value = before["tag_size"] * 1000, before["out"] * 1000
+
+
 @pytest.mark.render
 def test_saving_a_card_fit_refuses_a_tag_size_changed_since_the_wave(app):
     from machinekind_twin.calib.handeye import CameraFit, Fit

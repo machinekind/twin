@@ -27,6 +27,12 @@ import numpy as np
 from ..robots import RobotSpec
 from .tags import MARKER_FRACTION, render
 
+#: Card held between the jaws [m] and card width beyond the tag's plate [m], for `Card.sized`.
+JAW_DEPTH = 0.040
+SIDE_MARGIN = 0.0075
+#: Less white than this between the black square and the jaws, and the detector may lose that edge [m].
+MIN_WHITE = 0.005
+
 
 @dataclass(frozen=True)
 class Card:
@@ -42,6 +48,19 @@ class Card:
     #: Grubosc (tektura + dwie warstwy papieru) [m].
     thickness: float = 0.002
     ids: tuple[int, int] = (0, 1)
+
+    @classmethod
+    def sized(cls, tag_size: float, out: float, **kw) -> Card:
+        """The card for a tag with a `tag_size` black square sticking `out` beyond the jaw tips: wide
+        enough for the tag's plate with a margin (`SIDE_MARGIN`), and `JAW_DEPTH` held between the jaws.
+        The defaults give the default card, 70 x 110 mm for a 50 mm tag 70 mm out."""
+        width = tag_size / MARKER_FRACTION + SIDE_MARGIN
+        return cls(tag_size=tag_size, out=out, width=width, length=out + JAW_DEPTH, **kw)
+
+    @property
+    def white_margin(self) -> float:
+        """White left between the black square and the jaw tips [m], with the tag centred on `out`."""
+        return (self.out - self.tag_size) / 2
 
     @property
     def plate(self) -> float:
