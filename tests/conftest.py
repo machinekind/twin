@@ -143,7 +143,8 @@ class CubeScene:
     """A demo-like stand in the twin: two trusted sim cameras, a 3 cm cube free on the table, the arm.
 
     The cameras' calibrated pose is their true pose (`T_cam2base = sim_pose`), so the perception
-    is judged against the physics. Built like so-arm101's `test_lift_from_cameras.py`.
+    is judged against the physics. Built like so-arm101's `test_lift_from_cameras.py`. `half` gives
+    another box instead of the cube: half its sides along its own x, y and z [m], z up.
     """
 
     #: Half the cube's edge [m].
@@ -152,7 +153,7 @@ class CubeScene:
     K = ((560.0, 0.0, 322.0), (0.0, 560.0, 236.0), (0.0, 0.0, 1.0))
     EYES = (("a", (0.55, -0.45, 0.45)), ("b", (0.5, 0.5, 0.5)))
 
-    def __init__(self):
+    def __init__(self, half: tuple[float, float, float] = (HALF, HALF, HALF)):
         from machinekind_twin import scene as sc
         from machinekind_twin.calib.simulate import look_at
         from machinekind_twin.clock import VirtualClock
@@ -167,13 +168,14 @@ class CubeScene:
                                             calibration={"trusted": True}))
         self.cameras = tuple(name for name, _ in self.EYES)
         self.twin = Twin(self.ws, clock=VirtualClock(t0=0.0))
-        h = self.HALF
-        self.twin.configure(objects=[sc.Box("cube", (h, h, h), (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0))],
+        hx, hy, hz = half
+        self.half = (float(hx), float(hy), float(hz))
+        self.twin.configure(objects=[sc.Box("cube", self.half, (0.2, 0.0), rgba=(0.85, 0.25, 0.2, 1.0))],
                             grasp_sensors=["cube"])
         self.twin.connect("sim", threaded=False)
 
     def place(self, x: float, y: float, yaw_deg: float = 0.0) -> None:
-        """The cube resting on the table at (x, y) in the base frame, turned by `yaw_deg` about z."""
+        """The box resting on the table at (x, y) in the base frame, turned by `yaw_deg` about z."""
         import mujoco
 
         with self.twin.lock:
@@ -187,7 +189,7 @@ class CubeScene:
             qb, qw = np.zeros(4), np.zeros(4)
             mujoco.mju_mat2Quat(qb, T[:3, :3].ravel())
             mujoco.mju_mulQuat(qw, qb, q_base)
-            d.qpos[a:a + 3] = T[:3, :3] @ np.array([x, y, self.HALF]) + T[:3, 3]
+            d.qpos[a:a + 3] = T[:3, :3] @ np.array([x, y, self.half[2]]) + T[:3, 3]
             d.qpos[a + 3:a + 7] = qw
             v = m.jnt_dofadr[m.body_jntadr[b]]
             d.qvel[v:v + 6] = 0.0
