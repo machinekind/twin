@@ -75,9 +75,9 @@ def frames(t_a: float = 1.0, t_b: float = 2.0, size=(W, H)) -> dict:
     return {"a": (size, t_a), "b": (size, t_b)}
 
 
-def run(dets, *, pixel_error_px: float = 3.0, fr=None, mapper=None, occluders=None, cube=None):
-    return locate(dets, CAMS, frames() if fr is None else fr, pixel_error_px=pixel_error_px,
-                  mapper=mapper, occluders=occluders, cube=cube or (lambda side: pytest.fail("no fit expected")))
+def run(dets, *, pixel_error_px: float = 3.0, fr=None, mapper=None, occluders=None, box=None):
+    return locate(dets, CAMS, frames() if fr is None else fr, pixel_error_px=pixel_error_px, mapper=mapper,
+                  occluders=occluders, box=box or (lambda size: pytest.fail("no fit expected")))
 
 
 # ------------------------------------------------------------------ camera models
@@ -268,7 +268,7 @@ def test_a_point_behind_a_camera_is_not_triangulated():
     hit = triangulate([pixel_ray(A, *project(A, P), (W, H)), pixel_ray(C, *project(C, behind), (W, H))])
     assert hit is not None and np.linalg.norm(hit[0] - behind) < 1e-6 and hit[1] < 1e-6
     (obj,), _ = locate(dets, cams, {"a": ((W, H), 1.0), "c": ((W, H), 1.0)}, pixel_error_px=3.0,
-                       mapper=None, occluders=None, cube=lambda side: pytest.fail("no fit expected"))
+                       mapper=None, occluders=None, box=lambda size: pytest.fail("no fit expected"))
     assert obj.method == "promien"
     np.testing.assert_allclose(obj.pos, P, atol=1e-6)
 
@@ -331,11 +331,11 @@ class FakeCube:
 
     calls: ClassVar[list] = []
 
-    def __init__(self, side: float, answer: CubeDetection | None):
-        self.side, self.answer = side, answer
+    def __init__(self, size: tuple[float, float, float], answer: CubeDetection | None):
+        self.size, self.answer = size, answer
 
     def fit_masks(self, masks, mapper, occluders=None, t=0.0):
-        FakeCube.calls.append((self.side, masks, mapper, occluders, t))
+        FakeCube.calls.append((self.size, masks, mapper, occluders, t))
         return self.answer
 
 
@@ -359,33 +359,45 @@ def test_masks_of_a_cube_go_to_the_silhouette_fit():
         return occ
 
     dets = _masks()
-    (obj,), dropped = run(dets, mapper=mapper, occluders=occluders, cube=lambda side: FakeCube(side, answer))
+    (obj,), dropped = run(dets, mapper=mapper, occluders=occluders, box=lambda size: FakeCube(size, answer))
     assert dropped == 0
     assert obj.method == "sylwetka" and obj.n_cameras == 2 and obj.confidence == 0.88
     np.testing.assert_allclose(obj.pos, answer.pos)
     np.testing.assert_allclose(obj.rot, yaw)
     assert obj.t == 1.0 and obj.size_m == (0.03, 0.03, 0.03)
     assert seen_times == [{"a": 1.0, "b": 2.0}]
-    (side, masks, used_mapper, used_occ, t), = FakeCube.calls
-    assert side == pytest.approx(0.03) and used_mapper is mapper and used_occ is occ and t == 1.0
+    (size, masks, used_mapper, used_occ, t), = FakeCube.calls
+    assert size == (0.03, 0.03, 0.03) and used_mapper is mapper and used_occ is occ and t == 1.0
     assert masks["a"] is dets[0].mask and masks["b"] is dets[1].mask
 
 
 def test_a_gated_out_fit_places_nothing():
     mapper = mapper_for(CAMS, get_spec(BOT).desk)
-    placed, dropped = run(_masks(), mapper=mapper, cube=lambda side: FakeCube(side, None))
+    placed, dropped = run(_masks(), mapper=mapper, box=lambda size: FakeCube(size, None))
     assert placed == [] and dropped == 0
 
 
-@pytest.mark.parametrize("why", ["no mapper", "not a cube", "a mask missing", "a resized frame"])
+def test_masks_of_a_cuboid_go_to_the_silhouette_fit_with_its_three_sides():
+    FakeCube.calls = []
+    answer = CubeDetection(np.array([0.2, 0.01, 0.0125]), np.eye(3), 1.0, 0.97, n_cameras=2)
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+
+    (obj,), dropped = run(_masks(size=(0.05, 0.025, 0.025)), mapper=mapper,
+                          box=lambda size: FakeCube(size, answer))
+
+    assert dropped == 0 and obj.method == "sylwetka" and obj.confidence == 0.97
+    assert obj.size_m == (0.05, 0.025, 0.025)
+    (size, *_), = FakeCube.calls
+    assert size == (0.05, 0.025, 0.025)
+
+
+@pytest.mark.parametrize("why", ["no mapper", "a mask missing", "a resized frame"])
 def test_without_everything_the_fit_needs_the_point_paths_place_the_object(why):
     mapper = mapper_for(CAMS, get_spec(BOT).desk)
     dets = _masks()
     fr = None
     if why == "no mapper":
         mapper = None
-    elif why == "not a cube":
-        dets = _masks(size=(0.03, 0.03, 0.06))
     elif why == "a mask missing":
         dets[1] = Detection("cube", "b", dets[1].pixel, size_m=(0.03, 0.03, 0.03))
     else:
