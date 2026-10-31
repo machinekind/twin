@@ -20,6 +20,9 @@ dependencies = [
     "opencv-contrib-python>=4.8",
 ]
 
+[project.entry-points."machinekind_twin.detectors"]
+seeded = "machinekind_twin_seeded:SeededDetector"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
 

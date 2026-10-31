@@ -30,6 +30,8 @@ SWING = EXAMPLES / "strategies" / "swing"
 CUBE = EXAMPLES / "detectors" / "cube"
 #: The LLM detector's package: frames to the claude or codex CLI.
 LLM = Path(__file__).resolve().parents[1] / "packages" / "machinekind_twin_llm"
+#: The seeded detector's package: the LLM detector's seeds followed by colour.
+SEEDED = Path(__file__).resolve().parents[1] / "packages" / "machinekind_twin_seeded"
 
 
 def write_dist(site: Path, name: str, entry_points: dict[str, dict[str, str]],
@@ -137,6 +139,13 @@ def llm_package(install_dist, monkeypatch):
     """The LLM detector (`packages/machinekind_twin_llm`), installed."""
     install_example(install_dist, monkeypatch, LLM)
     return "llm"
+
+
+@pytest.fixture
+def seeded_package(install_dist, monkeypatch):
+    """The seeded detector (`packages/machinekind_twin_seeded`), installed."""
+    install_example(install_dist, monkeypatch, SEEDED)
+    return "seeded"
 
 
 class CubeScene:
