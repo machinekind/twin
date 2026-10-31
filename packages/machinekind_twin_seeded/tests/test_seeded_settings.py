@@ -7,15 +7,8 @@ from typing import Any
 
 import pytest
 from machinekind_twin_llm import LlmSettings
-from machinekind_twin_seeded import SeededSettings
-from machinekind_twin_seeded.settings import (
-    DEFAULT_HSV,
-    DEFAULT_SIZES,
-    llm_settings,
-    parse_hsv,
-    parse_sizes,
-    validate,
-)
+from machinekind_twin_seeded import SeededDetector, SeededSettings
+from machinekind_twin_seeded.settings import DEFAULT_HSV, DEFAULT_SIZES, llm_settings, parse_hsv, parse_sizes
 
 LABELS = ("cube", "cuboid5", "cuboid85", "cylinder")
 
@@ -63,10 +56,12 @@ def test_labels_are_keyed_as_the_twin_keys_them_and_empty_entries_are_skipped():
     ({"lost_after_s": -1.0}, "seeded: lost_after_s must be 0 s or more"),
     ({"min_area_px": 0}, "seeded: min_area_px must be at least 1 px"),
     ({"max_blob_ratio": 0.5}, "seeded: max_blob_ratio must be at least 1"),
+    ({"cli": "gemini"}, "llm: cli must be one of codex, claude"),
+    ({"timeout_s": 4.0}, r"llm: timeout_s must be in \[5, 900\]"),
 ])
 def test_settings_the_detector_cannot_work_with_are_refused(kw: dict[str, Any], problem: str):
     with pytest.raises(ValueError, match=problem):
-        validate(SeededSettings(**kw))
+        SeededDetector(SeededSettings(**kw))
 
 
 def test_the_llm_settings_mirror_the_seeded_ones():
@@ -84,7 +79,20 @@ def test_the_llm_settings_mirror_the_seeded_ones():
                               executable="/bin/claude", claude_images="read")
 
 
-def test_the_defaults_are_valid():
-    sizes, hsv = validate(SeededSettings())
+def test_the_contract_attributes_come_from_the_settings():
+    det = SeededDetector(SeededSettings(interval_s=0.5))
 
-    assert sorted(sizes) == sorted(hsv) == list(LABELS)
+    assert det.interval_s == 0.5
+    assert det.pixel_error_px == 6.0
+    assert SeededDetector.settings is SeededSettings
+    assert det._llm.interval_s == 10.0
+    assert det._llm.config.objects == "cube, cuboid5, cuboid85, cylinder"
+    assert det._llm.config.reuse_if_still is False
+
+
+def test_the_defaults_are_valid():
+    det = SeededDetector()
+
+    assert det.config == SeededSettings()
+    assert det.interval_s == 0.2
+    assert det._labels == LABELS
