@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "machinekind-twin-seeded"
+version = "0.1.0"
+description = "The digital twin's seeded detector: colour tracks grown from the pixels of the LLM detector, with the block's size for the twin's box fit"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+# The LLM detector asks the model; this package follows its answers by colour. Never the twin.
+dependencies = [
+    "machinekind-twin-api>=0.1.2,<0.2",
+    "machinekind-twin-llm>=0.1.0,<0.2",
+    "numpy>=1.24",
+    # contrib (a superset of opencv-python) keeps existing environments on one OpenCV package:
+    # two OpenCV wheels write the same cv2/ directory and overwrite each other.
+    "opencv-contrib-python>=4.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["machinekind_twin_seeded*"]
+
+[tool.setuptools.package-data]
+machinekind_twin_seeded = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
