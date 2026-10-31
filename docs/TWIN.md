@@ -638,6 +638,156 @@ The tests never ask a model. One real question runs only on request:
 MACHINEKIND_TWIN_LLM=codex uv run pytest -q packages/machinekind_twin_llm/tests/test_llm_real.py
 ```
 
+## Seeded detector
+
+[`machinekind-twin-seeded`](../packages/machinekind_twin_seeded), installed by
+`uv sync`, registers the detector `seeded`. It follows blocks by colour at the
+twin's call rate after the LLM detector has said which blob is which block. A
+vision model behind the `claude` or `codex` CLI names the blocks every
+`seed_interval_s`, 10 s by default. Between its answers the detector grows
+each block from the model's pixel by colour and follows the blob. For every
+block it sees, it returns the block's mask and size, so the silhouette fit
+places the block with its yaw five times a second.
+
+The panel never starts it by itself. Start it in the **Detektory** tab or with
+`twin ui --detector seeded`, after filling a `seeded:` section in the config
+(`configs/default.yaml` has a commented example). The package README has the
+details.
+
+### Threads
+
+| Thread | Rate | Does |
+|---|---|---|
+| `detektor:seeded`, the runner | `interval_s`, 0.2 s | Takes the model's latest answer, hands the worker a copy of the frames when a question is due, grows every track in the current frames |
+| `detektor-seed:<cli>`, the worker | at most every `seed_interval_s` | Asks the LLM detector about the copied frames, one question at a time |
+
+A track is one label in one camera. A fresh seed takes the blob of the
+label's colour whose box lies within the seed's pixel error. A blob longer
+than `max_blob_ratio` times the model's box is two touching blocks and is not
+taken. From then on the track follows the blob nearest its last centroid,
+within `track_error_px`. A followed track outranks a new seed, which only
+confirms it. A track the model leaves out of three answers in a row is
+dropped.
+
+### Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `cli` | `codex` | `codex` or `claude`, as for the LLM detector |
+| `model` | `gpt-6-astra` | the model as the CLI names it; `""` = the CLI's default |
+| `effort` | `low` | reasoning effort passed to the CLI |
+| `labels_sizes` | the four blocks | per label the block's box as it rests on the table, `LxWxH` [m] |
+| `labels_hsv` | the four blocks | per label the OpenCV HSV ranges of its colour |
+| `cameras` | `""` | cameras to track and to send, comma-separated; `""` = every camera offered |
+| `prompt` | `""` | extra instructions appended to the LLM's prompt |
+| `interval_s` | 0.2 | shortest time between two colour-tracking calls [s], at least 0.1 |
+| `seed_interval_s` | 10 | shortest time between the starts of two LLM questions [s], at least 2 |
+| `seed_error_px` | 25 | how far off the model's pixel may be, in the sent image's pixels [px] |
+| `track_error_px` | 40 | how far a followed blob may move between two calls, in frame pixels [px], 1 to 500 |
+| `lost_after_s` | 3 | a track without a blob for this long is dropped [s] |
+| `min_area_px` | 30 | smallest patch of the colour that counts as a blob [px] |
+| `max_blob_ratio` | 2 | a blob longer than this times the model's box is not one block; at least 1 |
+| `timeout_s` | 120 | the CLI's process group is killed after this [s] |
+| `max_side_px` | 1280 | long edge of the images sent [px] |
+| `max_calls_per_hour` | 0 | cap on questions per hour; 0 = no cap |
+| `min_confidence` | 0.3 | seeds the model is less sure of are dropped |
+| `executable` | `""` | the CLI binary; `""` = `cli` on PATH |
+| `claude_images` | `stream` | claude only: `stream` or `read` |
+
+The settings the LLM detector also has go to it unchanged. `seed_interval_s`
+becomes its `interval_s`, `seed_error_px` its `pixel_error_px`, and the labels
+its `objects`.
+
+### The label tables
+
+Both tables name the same labels, one entry per label, entries separated by
+`;`. `labels_sizes` gives `label=LxWxH` in metres; `labels_hsv` gives
+`label=H0-H1,S0-S1,V0-V1` in OpenCV's HSV (H 0..180, S and V 0..255), with
+several ranges of one label joined by `|`. The defaults are the four Classic
+World blocks with so-arm101's placeholder sizes and the simulation's colours:
+
+| Label | Size | HSV ranges |
+|---|---|---|
+| `cube` | `0.025x0.025x0.025` | `0-12,120-255,70-255\|170-180,120-255,70-255` (red) |
+| `cuboid5` | `0.05x0.025x0.025` | `20-35,100-255,90-255` (yellow) |
+| `cuboid85` | `0.085x0.025x0.025` | `40-85,80-255,60-255` (green) |
+| `cylinder` | `0.05x0.025x0.025` | `135-165,60-255,60-255` (purple) |
+
+The size table lists each block as it rests on the table, `H` being its
+height above the table. A lying cylinder is listed as its bounding box. A block
+stood on its end with its lying size listed does not fit the box and its
+label shows `ostatnie widziane` until it is laid down.
+
+### What it returns
+
+For every followed blob, per camera, a `Detection` with the blob's `mask`, its
+`box`, its centroid as `pixel`, the label's `size_m`, confidence 1 and
+`pixel_error_px` 6. The twin fits a box of `size_m` to the masks of every
+camera that sees the label, which gives the position, the yaw and the fit's
+IoU as confidence.
+
+`pixel` is the colour blob's centroid: with `size_m` the twin reads it as the
+centre at half the object's height (`height_m`'s rule), which the silhouette
+centroid approximates; the silhouette path never reads it. The model's own
+pixel, the footprint's centre, only anchors a fresh seed.
+
+### Freshness
+
+`fresh_s` is 0.5 s at `interval_s` 0.2. A reader sees the pose aged by the
+frame's age at the call (the panel's frame cache refreshes every 0.2 s), the
+time since the call (up to `interval_s`) and the fit (about 10 to 40 ms per
+label). That comes to about 0.55 s with four labels in the panel, so the
+source may read `ostatnie widziane` for the tail of a cycle. A strategy treats
+`ostatnie widziane` under about 1 s as the current pose. Headless perception
+reads its frames live, so its poses stay under about 0.25 s old.
+
+### Lost blobs and failed questions
+
+A label whose blob is not found is left out of that call: the twin shows the
+last pose as `ostatnie widziane` and drops it after `hold_s`, 6 s. The
+detector drops a track without a blob for `lost_after_s` and waits for the
+next seed. For a seed that never found its blob, the time counts from the
+answer's arrival.
+
+A failed question (a timeout, a non-zero exit, a subscription limit) is
+logged, and the next one goes out after `seed_interval_s`. While any block is
+followed, the detector keeps returning it and raises nothing. With nothing to
+follow, the call after a failed answer raises `seeded: <the error>`. The
+panel shows it and calls again after a wait that doubles with each failure,
+which also paces the questions.
+
+`stop` returns at once. It cancels a running question and wakes the worker,
+which ends by itself: within 0.2 s when the CLI obeys SIGTERM, and after the
+CLI's 2 s grace and SIGKILL otherwise. Only the runner's own join waits.
+
+Do not run `llm` and `seeded` on the same labels at once. Two detectors that
+report one label compete for it, and the newer capture time wins: every LLM
+answer would replace the followed pose with a point without yaw.
+
+### Privacy
+
+The frames leave the machine every `seed_interval_s`, as for the LLM detector:
+JPEGs of at most `max_side_px` go to OpenAI (codex) or Anthropic (claude)
+under the terms of the subscription the CLI is logged in with. The colour
+tracking runs on the machine.
+
+### Calibrating the colours on the stand
+
+The default ranges match the simulation. Painted blocks under the stand's lamp
+need their own ranges, or every blob is missed and no label appears. Take a
+still from each camera, find a block's pixel (u, v) and read the HSV values
+around it:
+
+```python
+import cv2
+hsv = cv2.cvtColor(cv2.imread("still.png"), cv2.COLOR_BGR2HSV)
+print(hsv[v - 3:v + 4, u - 3:u + 4].reshape(-1, 3))
+```
+
+Take H about 8 either side of what you see, and S and V from about two thirds
+of the lowest values up to 255. Check the shaded side of the block too. Red
+lies near both H = 0 and H = 180 and needs one range on each side.
+
 ## Cameras on the arm
 
 A camera that rides on the arm, such as a wrist camera, belongs to the arm's
