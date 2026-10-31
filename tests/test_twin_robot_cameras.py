@@ -268,3 +268,42 @@ def test_with_a_real_arm_and_no_workspace_camera_of_that_name_the_tab_leaves_it_
     panel.twin.connect("testbot", threaded=False)
 
     assert WRIST not in panel.strategies._cameras()
+
+
+# ------------------------------------------------------------------ calibration and the guide
+#: A station camera whose lens and pose are both trusted.
+STATION_K = [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]]
+
+
+def a_station_and_a_wrist_camera(panel) -> None:
+    """The physical wrist camera and a trusted station camera `kam`, both enabled and streaming."""
+    panel.ws.add_camera(CameraRecord(WRIST, source="5"))
+    panel.ws.add_camera(CameraRecord("kam", source="6", K=STATION_K, intrinsics_from="szachownica",
+                                     intrinsics_info={"trusted": True}, T_cam2base=WAVED_POSE,
+                                     calibration={"trusted": True, "reason": ""}))
+    panel.twin.cameras.sync()
+
+
+def test_the_calibration_wave_skips_the_camera_on_the_arm(panel):
+    a_station_and_a_wrist_camera(panel)
+
+    assert sorted(panel._grab()) == ["kam", WRIST]
+    assert panel._wave_cameras() == ["kam"]
+    assert panel._moved_cameras() == []
+    panel._render_calibration()
+    assert panel.pose_title.content.endswith("gotowe")     # the untrusted wrist camera is not waited for
+
+
+def test_the_guide_ignores_the_camera_on_the_arm(panel):
+    from machinekind_twin.ui import guide as gd
+
+    snap = gd.GuideSnapshot(simulated=False, cameras=(gd.CameraSnap("kam", False),
+                                                      gd.CameraSnap(WRIST, False, on_arm=True)))
+
+    assert [c.name for c in gd._relevant(snap)] == ["kam"]
+    assert gd._step_poses(snap).detail == "kam: do ustalenia"
+
+    a_station_and_a_wrist_camera(panel)
+    by_name = {c.name: c for c in panel._guide_snapshot().cameras}
+
+    assert by_name[WRIST].on_arm and not by_name["kam"].on_arm

@@ -869,6 +869,7 @@ class TwinApp:
         now = time.monotonic()
         with self.frame_lock:
             live = set(self.frames)
+        on_arm = self._arm_cameras()
         cams = []
         for c in self.ws.cameras:
             problem = c.intrinsics_problem()
@@ -880,7 +881,7 @@ class TwinApp:
                 c.name, c.simulated, c.enabled, has_frame=now - seen < GUIDE_FRAME_LOST, intrinsics_ok=not problem,
                 intrinsics_problem=problem, calibrated=c.calibrated, trusted=c.trusted,
                 reason=str(c.calibration.get("reason", "") or ""), moved=self.watch.moved(c.name),
-                simreal_px=self._simreal_px.get(c.name)))
+                simreal_px=self._simreal_px.get(c.name), on_arm=c.name in on_arm))
         jobs_on = (("kalibracja kamer", self.calib_job.running), ("pomiar obiektywu", self.intr_job.running),
                    ("identyfikacja", self.sysid_job.running))
         dyn = self.ws.dynamics
@@ -2145,15 +2146,25 @@ class TwinApp:
             self._render_calibration()
 
     # ---------------------------------------------------- kalibracja: stan
+    def _arm_cameras(self) -> set[str]:
+        """Names of the cameras on the arm (robot.yaml `cameras`). A workspace camera of such a name is
+        the physical one riding on the arm: it has no pose in the base frame, so the calibration wave
+        and the guide skip it."""
+        return set(self.ws.spec().cameras)
+
     def _wave_cameras(self) -> list[str]:
         """Kamery, ktore wezma udzial w kroku 2: wlaczone i z kadrem w ostatnim odczycie petli (`_grab`).
-        Nie `cameras.frame` - ten renderuje kazda symulowana od nowa, a to jest wolane co takt."""
+        Nie `cameras.frame` - ten renderuje kazda symulowana od nowa, a to jest wolane co takt.
+        Cameras on the arm are left out (`_arm_cameras`)."""
         with self.frame_lock:
             live = set(self.frames)
-        return [c.name for c in self.ws.cameras if c.enabled and c.name in live]
+        on_arm = self._arm_cameras()
+        return [c.name for c in self.ws.cameras if c.enabled and c.name in live and c.name not in on_arm]
 
     def _moved_cameras(self) -> list[str]:
-        return [c.name for c in self.ws.cameras if c.enabled and c.calibrated and self.watch.moved(c.name)]
+        on_arm = self._arm_cameras()
+        return [c.name for c in self.ws.cameras
+                if c.enabled and c.calibrated and c.name not in on_arm and self.watch.moved(c.name)]
 
     def _truth_cameras(self) -> list[CameraRecord]:
         """Symulowane, ktorym skrot "pomin" cos da: nieskalibrowane, niepewne albo poruszone."""
@@ -2291,7 +2302,8 @@ class TwinApp:
             # --- krok 2
             cams = self._wave_cameras()
             moved = self._moved_cameras()
-            enabled = [c for c in self.ws.cameras if c.enabled]
+            on_arm = self._arm_cameras()
+            enabled = [c for c in self.ws.cameras if c.enabled and c.name not in on_arm]
             poses_done = bool(enabled) and not moved and all(c.trusted and not c.intrinsics_problem()
                                                              for c in enabled)
             idle = not cj.running and not self._calib_pending

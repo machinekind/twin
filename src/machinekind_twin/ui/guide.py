@@ -102,6 +102,8 @@ class CameraSnap:
     #: Najlepsza mediana rozjazdu krawedzi w Sim-Real [px] od ostatniej zmiany pozy/stolu/K;
     #: None = nie mierzono, NaN = render bez krawedzi (nic do porownania).
     simreal_px: float | None = None
+    #: The camera rides on the arm (robot.yaml `cameras`): the calibration wave and the guide skip it.
+    on_arm: bool = False
 
 
 @dataclass(frozen=True)
@@ -159,8 +161,11 @@ class Guide:
 
 # ------------------------------------------------------------------ kroki
 def _relevant(s: GuideSnapshot) -> list[CameraSnap]:
-    """Kamery tego trybu: w symulacji symulowane, na prawdziwym ramieniu prawdziwe (wlaczone)."""
-    return [c for c in s.cameras if c.enabled and c.simulated == s.simulated]
+    """Kamery tego trybu: w symulacji symulowane, na prawdziwym ramieniu prawdziwe (wlaczone).
+
+    A camera on the arm is never one of them: it has no pose in the base frame to calibrate.
+    """
+    return [c for c in s.cameras if c.enabled and not c.on_arm and c.simulated == s.simulated]
 
 
 def _pose_ok(c: CameraSnap) -> bool:
