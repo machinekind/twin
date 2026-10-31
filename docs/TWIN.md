@@ -346,12 +346,13 @@ centres can be biased by lighting and shadows.
 The tabletop map warps frames from trusted cameras onto the table plane. It
 draws the objects that the running detectors find, as described in
 [Detectors and objects](#detectors-and-objects). For a detector that reports
-cube silhouettes, the twin fits the cube across camera views, masks arm
-occlusions as unknown and rejects poor fits. Near the gripper, a single view can
-confuse a held object with one lying on the table, so the tracker applies extra
-checks. When grasp evidence is present, the tracker follows the object with the
-TCP using its last relative pose. Detections retain their capture timestamps, and
-stale or repeated frames do not extend tracking lifetime.
+silhouettes and the object's size, the twin fits a box of that size across
+camera views, masks arm occlusions as unknown and rejects poor fits. Near the
+gripper, a single view can confuse a held object with one lying on the table,
+so the tracker applies extra checks. When grasp evidence is present, the
+tracker follows the object with the TCP using its last relative pose.
+Detections retain their capture timestamps, and stale or repeated frames do not
+extend tracking lifetime.
 
 ## Detectors and objects
 
@@ -405,13 +406,21 @@ Polish name of the way it used:
 
 | Path | When | Result |
 |---|---|---|
-| silhouette (`sylwetka`) | Every camera gave a mask of a full-size frame, and `size_m` is a cube | The cube silhouette fit across all masks. It gives the position, the yaw and the fit's IoU as confidence |
+| silhouette (`sylwetka`) | Every camera gave a mask of a full-size frame, and `size_m` is given | A box of `size_m` resting on the table, fitted to all masks at once. It gives the position, the yaw (`rotation[:, 0]` along `size_m[0]`) and the fit's IoU as confidence |
 | triangulation (`triangulacja`) | Two or more cameras whose rays pass within the detectors' pixel error, scaled by depth | The point nearest to all rays. It must lie in front of every camera and between 3 cm below and 60 cm above the table |
 | one ray (`promien`) | One camera, or rays that disagree | The most confident detection's ray meets the plane at `height_m`. Without `height_m` the plane is at half of `size_m`, and without both it is the table top |
 
 The geometry uses the calibrated camera poses with lens distortion, also in
 simulation. Simulated perception therefore tests the calibration. A placed
 object's `t` is the capture time of the oldest frame used to place it.
+
+Only the silhouette path gives yaw, so a detector that knows an object's size
+should send it with a mask, whatever the object's shape. The fit takes
+`size_m` as the box's x, y and z sides, z being its height above the table. The
+yaw is folded by the footprint's symmetry: into [-45, 45) degrees for a square
+footprint such as a cube, into [-90, 90) otherwise. A 50x25x25 mm block lies
+within 0.5 mm and 1 degree of its true pose on synthetic masks from two cameras
+at about 45 degrees, and within 1.3 mm and 1 degree in the simulated stand.
 
 ### The example cube detector
 
@@ -506,7 +515,16 @@ panel shows a plugin's exception text verbatim after a Polish label such as
 - Detectors only get cameras fixed to the base. A camera on the arm is never
   offered.
 - An object placed by triangulation or by one ray has no orientation, so its
-  rotation is the identity. Only the cube silhouette fit gives yaw.
+  rotation is the identity. Only the silhouette fit gives yaw; it needs a mask
+  and `size_m` from every camera that saw the label.
+- The box is fitted resting on the table in the pose `size_m` describes:
+  `size_m[2]` is its height above the table. A cuboid stood on its end, or a
+  cylinder on its end, with the lying size listed is gated out (IoU below
+  0.75) and the label shows `ostatnie widziane`. List the size as the block
+  rests.
+- A cylinder is fitted as its bounding box. Lying on its side, it fits worse
+  than a box (IoU 0.74-0.82 at the true pose from 45-degree cameras) and may
+  fail the 0.75 gate at some yaws.
 - Each label holds one object. Two red pens need two labels.
 
 ## LLM detector
