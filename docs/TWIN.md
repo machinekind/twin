@@ -706,7 +706,9 @@ leaves it out. The camera rides on the arm and is not fixed to the base. Its
 whether the pose came from a wave or from a saved preset of that name.
 The fixed-camera calibration procedure does not estimate its body-relative
 mount. That transform comes from `robot.yaml`; calibrating its intrinsics in
-step 1 still makes sense.
+step 1 still makes sense. The calibration wave and the guide skip it: step 2
+reads `gotowe` without its pose, and the guide neither lists it nor asks for
+its lens.
 
 A simulated workspace camera may not take the name of a camera on the arm,
 because the scene renders both by name. Adding such a camera fails. Building
