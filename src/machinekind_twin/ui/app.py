@@ -37,6 +37,7 @@ from .. import scene as sc
 from ..calib.card import MIN_WHITE, Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import DEFAULT_LAYOUT, LAYOUTS, Board
+from ..camera_controls import CameraControls
 from ..detection import Perception
 from ..kinematics import inverse, pose
 from ..perception import TableMapper
@@ -284,6 +285,8 @@ GIZMO_OFF = ("Uchwyt 3D: wyl.", "gray", viser.Icon.ARROWS_MOVE)
 GIZMO_ESTOP = ("Uchwyt 3D: STOP aktywny", "gray", viser.Icon.ARROWS_MOVE)
 CAM_ON = ("Wlaczona - kliknij, by wylaczyc", "green", viser.Icon.EYE)
 CAM_OFF = ("Wylaczona - kliknij, by wlaczyc", "gray", viser.Icon.EYE_OFF)
+#: Camera control choices in the panel: leave the camera's own setting, on, off.
+CTL_CHOICES = ("bez zmian", "wl.", "wyl.")
 MOVE_ON = ("Przesuwanie w 3D: wl. - ciagnij uchwyt", "blue", viser.Icon.ARROWS_MOVE)
 MOVE_OFF = ("Przesuwaj w 3D", "gray", viser.Icon.ARROWS_MOVE)
 #: Tyle [s] czeka pytanie na przycisku z potwierdzeniem drugim kliknieciem (`_TwoClick`).
@@ -490,6 +493,15 @@ class _TwoClick:
     def reset(self) -> None:
         with self._lock:
             self._key = None
+
+
+def _controls_text(c: CameraControls) -> str:
+    """The controls for the camera's details line, such as ", autofokus wyl., ostrosc 30"; "" without."""
+    parts = [(c.autofocus, f"autofokus {'wl.' if c.autofocus else 'wyl.'}"),
+             (c.focus_absolute, f"ostrosc {c.focus_absolute}"),
+             (c.auto_exposure, f"auto ekspozycja {'wl.' if c.auto_exposure else 'wyl.'}"),
+             (c.exposure_absolute, f"ekspozycja {c.exposure_absolute}")]
+    return "".join(f", {text}" for value, text in parts if value is not None)
 
 
 def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240)) -> np.ndarray:
@@ -702,6 +714,7 @@ class TwinApp:
                                       hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne. "
                                            "Ramie samo nie rusza - potem UZBROJ, zeby sterowac.")
         self.status_md = g.add_markdown("", visible=False)
+        self.stand_html = g.add_html(self._stand_html())
         # Przewodnik: gdzie operator jest w procedurze (docs/TWIN.md, kroki 0-5) i jedna nastepna
         # akcja. Logika w `guide.py`, tu tylko wyswietlanie. Widoczna zawsze tylko linia "Teraz";
         # uwagi i lista krokow zwiniete - rozwiniete zabieraly ok. 190-400 px nad kazda zakladka.
@@ -723,6 +736,26 @@ class TwinApp:
             # zwykly callback czekal w tej samej puli 32 watkow co reszta panelu - za
             # przebudowami sceny z przeciagania kamery STOP potrafil ruszyc po kilkudziesieciu s.
             threading.Thread(target=self._emergency_stop, args=(event,), name="STOP", daemon=True).start()
+
+    def _stand_html(self) -> str:
+        """The stand folder the workspace writes back to; an obsolete or missing one in red."""
+        if not self.ws.stand:
+            return ""
+        from ..stand import StandError
+        from ..stand import load as load_stand
+
+        box = ('<div style="margin:0 var(--mantine-spacing-xs);padding:.35em .6em;border-radius:4px;'
+               'background:var(--mantine-color-red-9);color:#fff;font-weight:700">{}</div>')
+        try:
+            stand = load_stand(self.ws.stand)
+        except StandError as exc:
+            return box.format(_html.escape(f"Folder stanowiska nie dziala: {exc}"))
+        if stand.obsolete is not None:
+            logger.warning("%s", stand.obsolete_text())
+            return box.format(_html.escape(f"UWAGA: {stand.obsolete_text()}. Pomiary moga nie pasowac do "
+                                           "rzeczywistosci."))
+        return (f'<div style="margin:0 var(--mantine-spacing-xs);opacity:.8">Stanowisko <b>{_html.escape(stand.name)}'
+                f'</b> - zapisy wracaja do jego folderu</div>')
 
     def _emergency_stop(self, event=None) -> None:
         """STOP: najpierw nadzor (ramie staje w zmierzonej pozie), dopiero potem sprzatanie watkow."""
@@ -1578,6 +1611,22 @@ class TwinApp:
                 remember = g.add_button("Zapamietaj kadr odniesienia", icon=viser.Icon.PHOTO_CHECK,
                                         hint="Biezacy kadr jako odniesienie: od niego straznik liczy przestawienie "
                                              "kamery (co 2 s, prog 3 px). Po zapisie kalibracji robi sie samo.")
+            self.cam_ctl_box = g.add_folder("Ustawienia kamery (ostrosc, ekspozycja)", expand_by_default=False)
+            with self.cam_ctl_box:
+                self.cam_af = g.add_dropdown("Autofokus", CTL_CHOICES, initial_value=CTL_CHOICES[0],
+                                             hint="Wylacz przed krokiem 1: obiektyw, ktory sam sie ostrzy, zmienia "
+                                                  "ogniskowa miedzy kadrami.")
+                self.cam_focus = g.add_text("Ostrosc", "", hint="Stala ostrosc (focus_absolute) w jednostkach kamery, "
+                                                               "czesto 0-255; puste = bez zmian. Wylacza autofokus.")
+                self.cam_ae = g.add_dropdown("Auto ekspozycja", CTL_CHOICES, initial_value=CTL_CHOICES[0],
+                                             hint="Automatyczny czas naswietlania kamery.")
+                self.cam_exposure = g.add_text("Ekspozycja", "", hint="Staly czas naswietlania (exposure_absolute) "
+                                                                     "w 100 us; puste = bez zmian. Wylacza auto "
+                                                                     "ekspozycje.")
+                ctl_apply = g.add_button("Zastosuj i zapisz", icon=viser.Icon.DEVICE_FLOPPY,
+                                         hint="Ustawia kamere teraz i przy kazdym otwarciu (Linux, V4L2). Zapisane w "
+                                              "stanowisku - skrypt ustawiajacy ostrosc przed startem nie jest potrzebny.")
+                self.cam_ctl_md = g.add_markdown("")
         g.add_divider()
         g.add_markdown("**Dodaj kamere**")
         add_front = g.add_button("Dodaj symulowana przed ramieniem", icon=viser.Icon.CAMERA_PLUS,
@@ -1600,6 +1649,19 @@ class TwinApp:
         self.cam_gizmo = self.server.scene.add_transform_controls("/uchwyt_kamery", scale=0.1, visible=False)
         self._found_usb: list[dict] = []
         self.cam_ask = _TwoClick()
+        self._ctl_cam: str | None = None                # the camera whose controls the fields show
+
+        @ctl_apply.on_click
+        @self._safe
+        def _(event):
+            rec = self._cam()
+            if rec is None or rec.simulated:
+                raise RuntimeError("ustawienia dotycza prawdziwej kamery")
+            rec.controls = self._controls_from_fields()
+            self._save()
+            done = self.twin.cameras.apply_controls(rec.name)
+            self.cam_ctl_md.content = done.text() if not rec.controls.empty else "bez ustawien - kamera zostaje, jak jest"
+            self._notify(event, "Ustawienia kamery", f"{rec.name}: {self.cam_ctl_md.content}", error=bool(done.failed))
 
         @self.cam_pick.on_update
         def _(event):
@@ -1704,6 +1766,37 @@ class TwinApp:
             x = np.cross(z, [0, 0, 1.0])
             x /= np.linalg.norm(x)
             self._add_sim_camera(self.T_b2w @ pose(np.column_stack([x, np.cross(z, x), z]), eye))
+
+    def _controls_from_fields(self) -> CameraControls:
+        def flag(value: str) -> bool | None:
+            return None if value == CTL_CHOICES[0] else value == CTL_CHOICES[1]
+
+        def number(text: str, label: str) -> int | None:
+            text = text.strip()
+            if not text:
+                return None
+            if not text.isdigit():
+                raise RuntimeError(f"{label}: liczba calkowita >= 0 albo puste, jest {text!r}")
+            return int(text)
+
+        try:
+            return CameraControls(flag(self.cam_af.value), number(self.cam_focus.value, "ostrosc"),
+                                  flag(self.cam_ae.value), number(self.cam_exposure.value, "ekspozycja"))
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+
+    def _fill_controls(self, rec: CameraRecord) -> None:
+        """The selected camera's controls in the fields, and what the twin last did with them."""
+        def choice(value: bool | None) -> str:
+            return CTL_CHOICES[0] if value is None else CTL_CHOICES[1] if value else CTL_CHOICES[2]
+
+        c = rec.controls
+        self.cam_af.value, self.cam_ae.value = choice(c.autofocus), choice(c.auto_exposure)
+        self.cam_focus.value = "" if c.focus_absolute is None else str(c.focus_absolute)
+        self.cam_exposure.value = "" if c.exposure_absolute is None else str(c.exposure_absolute)
+        done = None if c.empty else self.twin.cameras.controls_applied(rec.name)
+        self.cam_ctl_md.content = done.text() if done is not None else ""
+        self._ctl_cam = rec.name
 
     def _viewer_pose(self, event) -> np.ndarray:
         cam = event.client.camera
@@ -2016,6 +2109,9 @@ class TwinApp:
             self.cam_gizmo.visible = False
             return
         self.cam_enabled.value = rec.enabled
+        set_if(self.cam_ctl_box, "visible", not rec.simulated)
+        if rec.name != self._ctl_cam:
+            self._fill_controls(rec)
         if not rec.simulated and self.cam_move.value:
             self.cam_move.value = False                 # prawdziwej nie przestawia sie z panelu
         set_if(self.cam_sim_box, "visible", rec.simulated)
@@ -2043,7 +2139,7 @@ class TwinApp:
             info += f"  \n**blad kamery:** {err}"
         self.cam_info.content = info
         K, dist = rec.intrinsics()
-        lines = [f"zrodlo `{rec.source}`, {rec.width}x{rec.height}",
+        lines = [f"zrodlo `{rec.source}`, {rec.width}x{rec.height}" + _controls_text(rec.controls),
                  f"K ({rec.intrinsics_from}): fx {K[0, 0]:.0f} fy {K[1, 1]:.0f} cx {K[0, 2]:.0f} cy {K[1, 2]:.0f}"]
         if rec.intrinsics_info:
             ii = rec.intrinsics_info

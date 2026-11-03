@@ -85,6 +85,7 @@ see [the first-session procedure](#galaxea-a1x-first-session) below.
 | `workspace/twin.json` | Your local robot selection, backend/port, table, other robots, scene look, cameras, calibration and measured dynamics; ignored by Git |
 | `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
 | `workspace/episodes/` | Opt-in episode recordings and optional camera images; ignored by Git |
+| `<stands repo>/<stand>/` | A physical stand and its measurement history, outside this repository; see [Stands](#stands) |
 | `configs/local.yaml` | Your backend, strategy, detector and safety settings; ignored by Git |
 | `examples/twin.sim.json` | Example workstation with two calibrated simulated cameras |
 | `assets/calib/` | Example lens intrinsics and distortion files |
@@ -124,7 +125,8 @@ a saved port. With multiple adapters, choose the correct one explicitly.
 Saving camera positions creates a new preset in `workspace/calib/`. The panel
 loads the selected preset, or the newest when none is selected. Trust is
 reassessed against the current lens calibration. Older presets remain available
-in the panel.
+in the panel. A workspace loaded from a stand folder keeps its presets in that
+folder instead ([Stands](#stands)).
 
 ## Browser panel
 
@@ -216,7 +218,9 @@ precedence for that hardware.
    move on (the dots turn orange while it moves). Views that disagree with the rest
    are left out of the fit. Each session's frames and per-view errors are kept in
    `workspace/intrinsics/<camera>-<time>/`. Turn autofocus off first: a lens that
-   refocuses changes its focal length between frames. Compute/save the result,
+   refocuses changes its focal length between frames. In **Kamery**, folder
+   **Ustawienia kamery**, set autofocus off and a fixed focus; the twin sets them
+   whenever it opens the camera ([Camera controls](#camera-controls)). Compute/save the result,
    then repeat for the next camera. A saved
    lens file can be loaded only at its matching resolution. Untrusted intrinsics
    block camera-pose calibration.
@@ -328,6 +332,7 @@ For hardware:
 | `twin workspace` | Inspect workstation state; optional `--path` |
 | `twin export workspace/export` | Export scene, assets and station data; optional `--path` |
 | `twin episode [PATH]` | Report the latest recording, report a specified file or list a folder; see [episode recording](EPISODES.md) |
+| `twin stand save/load/export/list/obsolete` | Stand folders; see [Stands](#stands) |
 
 ```bash
 uv run pytest -q
@@ -862,6 +867,130 @@ results. For example, the following lighting can be combined with
   "headlight": {"ambient": 0.3, "diffuse": 0.6, "specular": 0.0}
 }
 ```
+
+## Stands
+
+A stand folder describes one physical stand and everything measured on it.
+Stand folders live in their own repository, one folder per stand. The twin
+knows only the format and the commands.
+
+```text
+<stand>/
+  stand.json                        the setup
+  calib/poses/<time>.json           camera poses and servo zero offsets (the pose preset format)
+  calib/lens/<camera>/<time>.json   one camera's K and distortion, with the resolution they belong to
+  calib/dynamics/<time>.json        identified servo dynamics
+  station/                          `twin export` of the stand, for training
+```
+
+Calibration entries are never overwritten. A new result becomes a new dated
+file, and `calib` in `stand.json` names the current entry of each kind. An
+entry identical to an existing one is not written again.
+
+### `stand.json`
+
+```json
+{
+  "format": 1,
+  "name": "dgx-biurko",
+  "description": "SO-101 on the DGX desk, two Logitech C920 cameras",
+  "obsolete": false,
+  "robots": [
+    {"robot": "so101", "read_only": false, "backend": "feetech", "port": "/dev/ttyACM0",
+     "home": {"shoulder_pan": 0.0, "shoulder_lift": -100.0, "elbow_flex": 95.0}},
+    {"name": "lewe", "robot": "so101", "read_only": true, "xyz": [0.0, 0.19, 0.0], "yaw_deg": 0.0,
+     "backend": "feetech", "port": "/dev/ttyACM1"}
+  ],
+  "cameras": [
+    {"name": "kamera1", "source": "/dev/v4l/by-id/usb-046d_C920_A1B2C3-video-index0",
+     "width": 1280, "height": 720, "fps": 30, "enabled": true,
+     "controls": {"autofocus": false, "focus_absolute": 30}}
+  ],
+  "table": {"size": [0.9, 0.6], "height": 0.75, "base_xy": [-0.35, 0.0], "base_yaw": 0.0,
+            "rgba": [0.55, 0.5, 0.44, 1.0]},
+  "card": {"tag_size": 0.0492, "out": 0.07, "width": 0.069, "length": 0.11, "thickness": 0.002, "ids": [0, 1]},
+  "look": {"lights": [{"pos": [0.0, 0.0, 1.8], "dir": [0.0, 0.0, -1.0], "directional": true}],
+           "headlight": {"ambient": 0.3, "diffuse": 0.6, "specular": 0.0}},
+  "wave": {"keepout": [{"name": "statyw", "x": [0.25, 0.35], "y": [-0.3, -0.2], "z": [0.0, 0.5]}],
+           "base_turn": [-90.0, 60.0]},
+  "calib": {"poses": "20261028-140211", "lens": {"kamera1": "20261028-135000"},
+            "dynamics": "20261029-101500"}
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `format` | Format version, currently 1. A newer version than the twin knows is refused |
+| `name`, `description` | What the stand is; `name` is required |
+| `obsolete` | `false`, or `{"reason": "...", "date": "YYYY-MM-DD"}` for a stand that no longer matches reality (both keys optional; `true` also works) |
+| `robots` | Exactly one driven arm (`read_only: false`): `robot`, `backend`, `port`, optional `home`. It is the origin of the stand and has no name or pose. Other robots (`read_only: true`) have `name`, `robot`, `xyz` [m], `yaw_deg`, `backend`, `port` and, without a backend, a fixed pose in `joints`, as in [Other robots](#other-robots-in-the-scene) |
+| `cameras` | `name`, `source` (prefer the stable `/dev/v4l/by-id/...` path), `width`, `height`, `fps`, `enabled`, optional `controls`, and `sim_pose` for a simulated camera |
+| `table`, `card`, `look` | As in `twin.json` |
+| `wave` | The calibration wave's keep-out boxes and base turn range, as in [Calibration wave](#calibration-wave). Optional; without it the wave keeps only the arm's own limits |
+| `calib` | The current entries: `poses`, `lens` per camera, `dynamics`. A missing entry means none |
+
+Loading checks every key and the entries `calib` names. A broken file fails with
+the file, the key and the reason, for example
+`stand.json: cameras[0] (kamera1).width: oczekiwano liczby calkowitej >= 1, jest 0`.
+A lens entry must have the camera's resolution. Unknown keys are errors.
+
+### Commands
+
+```bash
+uv run twin stand save ~/stands/dgx-biurko --name dgx-biurko --description "..."
+uv run twin stand load ~/stands/dgx-biurko
+uv run twin ui --stand ~/stands/dgx-biurko
+uv run twin stand export ~/stands/dgx-biurko
+uv run twin stand list ~/stands
+uv run twin stand obsolete ~/stands/dgx-biurko --reason "kamera2 przestawiona"
+```
+
+- `save` writes the workspace (`--path`, default `workspace/twin.json`) into
+  the folder, creating it if needed. Current calibration becomes new entries
+  only where it differs from existing ones. A workspace not yet bound to that
+  stand brings its pose preset history along, except presets for none of its
+  cameras; `--no-history` takes only the current poses. `station/` is exported
+  too.
+- `load` writes the stand into the workspace file. A workspace file with a
+  different setup is first copied to `twin.json.<time>.bak`.
+- `ui --stand` does `load`, then starts the panel.
+- `export` exports `station/` again, for example after a twin update.
+- `list` prints the stands in a folder. Obsolete stands come last, marked
+  `NIEAKTUALNE`. Broken ones are listed with their error.
+- `obsolete` marks a stand obsolete (today, unless `--date`). `--clear` makes
+  it current again.
+
+Loading an obsolete stand prints a warning, and the panel shows it in red above
+the tabs.
+
+After `save` or `load`, the workspace is bound to the stand (`"stand"` in
+`twin.json`). Its pose presets are the stand's `calib/poses/`, and every save
+writes the stand back: `stand.json`, new calibration entries and `station/`.
+Saves from the panel do this too: a calibration result, a lens, dynamics, a
+camera setting or a table change. A connection in `sim` does not replace the
+stand's backend and port, so a rehearsal leaves the real arm's settings alone.
+A live robot's last joint reading is not saved to the stand. A workspace
+without `"stand"` works as before. To experiment without touching a stand,
+work on a copy of its folder.
+
+### Camera controls
+
+A camera record can carry `controls`. The twin sets them on a V4L2 camera
+whenever it opens one, and again on **Zastosuj i zapisz** in the panel. A
+script that sets focus before the twin starts is no longer needed.
+
+| Control | Value |
+|---|---|
+| `autofocus` | `true` or `false` |
+| `focus_absolute` | Fixed focus in the camera's units, often 0-255; turns autofocus off |
+| `auto_exposure` | `true` (aperture priority, the UVC auto mode) or `false` (manual) |
+| `exposure_absolute` | Exposure time in 100 µs units; turns auto exposure off |
+
+A control left out keeps the camera's own setting. The twin uses the
+`VIDIOC_S_CTRL` ioctl on the device node, so it needs Linux and a `/dev/...`
+source or a camera index. Elsewhere, for example on macOS, nothing is set. A
+control the camera refuses is logged, and the panel shows it under the camera's
+settings.
 
 ## Historical notes
 
