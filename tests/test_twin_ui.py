@@ -533,7 +533,7 @@ def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
         monkeypatch.setattr(app.watch, "moved", lambda name: name == "kam1")
         monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam1"])
         app._render_calibration()
-        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)"
+        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 2 min)"
         assert app.reloc_box.visible and app.reloc_btn.label == label
         assert "PORUSZONA" in app.calib_html.content
         _click(app, label)

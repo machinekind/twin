@@ -2032,7 +2032,8 @@ class TwinApp:
                 self._show_card()
             self.wave_box, self.wave_btn = self._big_button(
                 "Start", icon=viser.Icon.WAVE_SINE, color="green",
-                hint="RUSZA ramieniem: ok. 20 miejsc z karta nad stolem, potem ramie wraca na miejsce. Prawdziwe "
+                hint="RUSZA ramieniem: najpierw pokazuje karte w calej przestrzeni roboczej i w kazdym kierunku, "
+                     "potem celuje w znalezione kamery (ok. 3-6 min), na koniec wraca na miejsce. Prawdziwe "
                      "ramie: drugie klikniecie potwierdza, ze karta jest w chwytaku, a stol pusty.")
             self.reloc_box, self.reloc_btn = self._big_button(
                 "Kamera poruszona", icon=viser.Icon.CURRENT_LOCATION, color="orange",
@@ -2384,12 +2385,13 @@ class TwinApp:
             set_if(self.pose_title, "content", "**Krok 2 z 2: ustal, gdzie stoja kamery**" + (
                 " - gotowe" if poses_done else ""))
             if sim:
-                help_ = ("Ramie samo pokaze kamerom karte z kodem w ok. 20 miejscach nad stolem (ok. 2-3 min); "
-                         "z tego program liczy, gdzie stoi kazda kamera. W symulacji karta jest w chwytaku sama - "
-                         "kliknij **Start**. Szybciej: **Symulacja: pomin** nizej.")
+                help_ = ("Ramie samo obejrzy z karta z kodem cala przestrzen robocza, znajdzie kamery i pokaze im karte "
+                         "z wielu stron (ok. 3-6 min); z tego program liczy, gdzie stoi kazda kamera. W symulacji "
+                         "karta jest w chwytaku sama - kliknij **Start**. Szybciej: **Symulacja: pomin** nizej.")
             else:
-                help_ = ("Ramie samo pokaze kamerom karte z kodem w ok. 20 miejscach nad stolem (ok. 2-3 min); "
-                         "z tego program liczy, gdzie stoi kazda kamera. Wszystkie kamery naraz.\n\n"
+                help_ = ("Ramie samo obejrzy z karta z kodem cala przestrzen robocza, znajdzie kamery i pokaze im karte "
+                         "z wielu stron (ok. 3-6 min); z tego program liczy, gdzie stoi kazda kamera. Wszystkie "
+                         "kamery naraz.\n\n"
                          "1. Pobierz karte i wydrukuj ja w skali **100%**.\n"
                          "2. Zmierz linijka bok kwadratowego kodu (czarna ramka) i wpisz go nizej.\n"
                          "3. Zegnij karte na linii; wolny koniec wloz w szczeki chwytaka - ok. **7 cm** ma wystawac.\n"
@@ -2417,7 +2419,7 @@ class TwinApp:
                     look = (f"Karta w chwytaku, stol pusty? Kliknij jeszcze raz - ramie pokaze karte {moved[0]}",
                             "orange", viser.Icon.ALERT_TRIANGLE)
                 else:
-                    look = (f"Kamera {moved[0]} zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)",
+                    look = (f"Kamera {moved[0]} zostala poruszona - pokaz jej karte jeszcze raz (ok. 2 min)",
                             "orange", viser.Icon.CURRENT_LOCATION)
                 _Toggle._show(self.reloc_btn, *look, disabled=bool(why))
             notes = []
@@ -2427,6 +2429,9 @@ class TwinApp:
                 notes.append(f"Kamera {moved[0]} przesunela sie od kalibracji. " +
                              ("" if sim else "Wloz karte w chwytak i ") + "kliknij pomaranczowy przycisk - "
                              "ramie pokaze karte tylko tej kamerze.")
+            limits = self.ws.wave.describe()
+            if idle and limits:
+                notes.append(f"Fala omija: {limits} (twin.json, sekcja wave).")
             set_if(self.wave_md, "content", "  \n".join(notes))
             set_if(self.wave_md, "visible", bool(notes))
             set_if(self.truth_btn, "visible", idle and sim and bool(self._truth_cameras()))
@@ -2548,12 +2553,15 @@ class TwinApp:
         if j.running:
             self.calib_bar.value = 100 * j.progress
             prog = j.data.get("progress", {})
-            rows = [f"- {c}: widziala karte {o} razy" for c, (o, p, s) in prog.items()]
+            status = j.data.get("status") or {}
+            rows = [f"- {c}: {status[c]}" if c in status else f"- {c}: widziala karte {o} razy"
+                    for c, (o, p, s) in prog.items()]
             self.calib_md.content = ("**Ramie pokazuje karte kamerom - nie wchodz w jego zasieg.**\n\n"
-                                     + "\n".join(rows))
+                                     + (f"{j.message}\n\n" if j.message else "") + "\n".join(rows))
         elif j.state == jobs.DONE and j.result is not None and not self._calib_pending and \
                 j.data.get("shown") is not j.result:
             fit = j.result
+            explain = j.data.get("explain") or {}
             rows = ["**Wynik** - kliknij Zapisz wynik:", "", "| kamera | wynik |", "|---|---|"]
             for n, c in fit.cameras.items():
                 extra = ""
@@ -2568,7 +2576,13 @@ class TwinApp:
                 bad = c.reason if not c.trusted else k_problem
                 verdict = (f"**zle** - {bad}; popraw ustawienie kamery i zrob krok 2 jeszcze raz" if bad else
                            f"**dobrze** (dokladnosc {c.rms_px:.2f} px){extra}")
+                if bad and n in explain:
+                    verdict += f". {explain[n].split(': ', 1)[-1]}"
                 rows.append(f"| {n} | {verdict} |")
+            # A camera that never saw the card has no fit: it says so instead of missing from the table.
+            for n in j.data.get("cameras", []):
+                if n not in fit.cameras:
+                    rows.append(f"| {n} | **zle** - {explain.get(n, 'nie widziala karty').split(': ', 1)[-1]} |")
             if fit.joint_offsets:
                 rows += ["", (f"**Poprawki zer serw:** {self._offsets_text(fit.joint_offsets)} "
                               f"({fit.offsets_note.split(': ', 1)[-1]}). Zapisz wynik wlaczy je razem z polozeniem kamer.")]
