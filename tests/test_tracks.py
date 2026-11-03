@@ -364,3 +364,89 @@ def test_resting_gives_each_block_but_the_one_in_the_hand(tracks: Tracks, clock:
     grip(tracks, clock, tcp)
     assert tracks.step(hand_at(tcp, SQUEEZE, 0.0))["cube"].source == "w dloni"
     assert list(tracks.resting()) == ["base"]
+
+
+# ------------------------------------------------------------------ several blocks of one label
+#: A second cube of the label, 10 cm from the first along y.
+OTHER = np.array([0.20, 0.10, 0.015])
+
+
+def observe(tracks: Tracks, clock: Clock, *where, label: str = "cube") -> None:
+    tracks.observe("cube", [located(clock.t, label, pos) for pos in where], latency_s=0.05,
+                   interval_s=CUBE_INTERVAL)
+
+
+def test_a_second_block_of_a_label_gets_a_numbered_key_and_keys_follow_positions(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST, OTHER)
+    objects = tracks.step(None)
+    assert set(objects) == {"cube", "cube 2"}
+    np.testing.assert_allclose(objects["cube"].position, REST)
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER)
+
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER + [0.005, 0.0, 0.0], REST + [0.0, 0.005, 0.0])   # listed the other way round
+    objects = tracks.step(None)
+    np.testing.assert_allclose(objects["cube"].position, REST + [0.0, 0.005, 0.0])
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER + [0.005, 0.0, 0.0])
+    assert {v.label: v.source for v in tracks.snapshot()} == {"cube": "kamery", "cube 2": "kamery"}
+    assert {label: r.label for label, r in tracks.resting().items()} == {"cube": "cube", "cube 2": "cube"}
+
+
+def test_a_block_moved_far_keeps_its_key_and_the_other_is_untouched(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST, OTHER)
+    tracks.step(None)
+    far = np.array([0.30, -0.10, 0.015])
+    clock.advance(0.2)
+    observe(tracks, clock, far, OTHER)
+    objects = tracks.step(None)
+    assert set(objects) == {"cube", "cube 2"}
+    np.testing.assert_allclose(objects["cube"].position, far)
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER)
+
+
+def test_one_block_and_one_measurement_pair_however_far(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST)
+    tracks.step(None)
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER)
+    assert set(tracks.step(None)) == {"cube"}
+
+
+def test_a_new_block_takes_the_lowest_free_key(tracks: Tracks, clock: Clock):
+    third = np.array([0.30, 0.0, 0.015])
+    observe(tracks, clock, REST, OTHER, third)
+    assert set(tracks.step(None)) == {"cube", "cube 2", "cube 3"}
+    # "cube" leaves the cameras and expires; the others stay in view.
+    for _ in range(int(Tracks.HOLD_S / 0.5) + 2):
+        clock.advance(0.5)
+        observe(tracks, clock, OTHER, third)
+        objects = tracks.step(None)
+    assert set(objects) == {"cube 2", "cube 3"}
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER, third, REST + [0.0, -0.1, 0.0])
+    objects = tracks.step(None)
+    assert set(objects) == {"cube", "cube 2", "cube 3"}
+    np.testing.assert_allclose(objects["cube"].position, REST + [0.0, -0.1, 0.0])
+
+
+def test_a_block_carried_and_put_down_elsewhere_keeps_its_key(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST, OTHER)
+    tcp = REST + [0.0, 0.0, 0.01]
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    # Carried 15 cm across, past the other block, out of the cameras' sight.
+    put = np.array([0.30, 0.15, 0.015])
+    for k in range(1, 6):
+        clock.advance(0.05)
+        at = REST + (put - REST) * k / 5 + [0.0, 0.0, 0.03]
+        objects = tracks.step(hand_at(at + [0.0, 0.0, 0.01], SQUEEZE, 0.0))
+        assert objects["cube"].source == "w dloni" and objects["cube 2"].source != "w dloni"
+    clock.advance(0.05)
+    tracks.step(hand_at(put + [0.0, 0.0, 0.04], OPEN, OPEN))
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER, put)                         # the cameras see both again
+    objects = tracks.step(hand_at(put + [0.0, 0.0, 0.1], OPEN, OPEN))
+
+    np.testing.assert_allclose(objects["cube"].position, put)
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER)
+    assert objects["cube"].source == objects["cube 2"].source == "kamery"

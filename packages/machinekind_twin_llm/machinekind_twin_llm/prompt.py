@@ -16,7 +16,8 @@ __all__ = ["IMAGE_REFS", "SCHEMA", "build_prompt", "normalise_label"]
 
 _NUM: dict[str, Any] = {"type": "number"}
 
-#: The answer: one entry per object per image it is seen in, in that image's pixels.
+#: The answer: one entry per object per image it is seen in, in that image's pixels. Several
+#: objects may share a label.
 SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False, "required": ["objects"],
     "properties": {"objects": {"type": "array", "items": {
@@ -60,20 +61,24 @@ def build_prompt(sent: Sequence[SentImage], objects: Sequence[str] = (), extra: 
         lines.append(f'- camera "{s.camera}": {w}x{h} px, {where}')
     wanted = list(dict.fromkeys(label for label in map(normalise_label, objects) if label))
     if wanted:
-        lines.append(f"Find these objects: {', '.join(wanted)}. Report only these, with exactly these labels.")
+        lines.append(f"Find these objects: {', '.join(wanted)}. Report only these, with exactly these labels. "
+                     "There may be several objects of one label: report each of them.")
     else:
         lines.append(
             "Find every movable object on the table: not the robot arm, not the table, not the cameras, "
             "not things fixed to the table. Label each with a short lowercase English name, colour plus "
-            'noun, e.g. "red pen", the same name in every image.')
+            'noun, e.g. "red pen", the same name in every image. Objects that look alike share a name; '
+            "report each of them.")
     lines += [
         "For every object, in every image where you can see it, give one entry:",
         "- label; camera: the camera name of that image",
         "- u, v: the pixel at the centre of where the object rests on the table (for an object held in "
         "the gripper, its centre), in that image's own pixels: u from the left edge (0..width-1), "
         "v from the top edge (0..height-1)",
-        "- box: its bounding box in the same pixels, or null",
+        "- box: its own bounding box in the same pixels; null only when you cannot tell where it ends",
         "- confidence: 0..1",
+        ("Two objects with one label are two entries per image, also when they touch or one stands on "
+         "the other. Do not number the labels."),
         "An object you cannot see in an image gets no entry for that image. Do not guess positions.",
         "If you find nothing, return an empty list. Answer only with the JSON.",
     ]

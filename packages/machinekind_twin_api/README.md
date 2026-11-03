@@ -49,7 +49,7 @@ cube = "cube_detector:ColourCube"                # a class following Detector, b
   like the detector. It calls `detect` on a dedicated thread with a `DetectRequest`, which holds
   the frames by camera name. The detector returns `Detection`s, each giving what it sees in one
   image and where, in pixels. The twin places and tracks the objects, and strategies read them as
-  `Observation.objects[label]`.
+  `Observation.objects[key]`: the label, or `<label> 2`, `<label> 3` for further objects of it.
 
 String settings can declare dropdown choices without importing the twin:
 
@@ -208,21 +208,24 @@ ways:
 * It takes the point nearest to the rays of two or more cameras.
 * It takes the point where one ray meets the plane at the object's height.
 
-The twin then tracks each label and publishes it with `age_s`, the seconds since the frames were
+The twin then tracks each object and publishes it with `age_s`, the seconds since the frames were
 captured.
 
 `request.frames` lists the cameras offered in this call. A frame is fetched only when read.
 `frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second.
 `frames[name]` raises `KeyError` when it has none. Pixels follow the OpenCV convention in the
-frame's own resolution. Labels are compared after stripping whitespace and lower-casing, and each
-label holds one object.
+frame's own resolution. Labels are compared after stripping whitespace and lower-casing. Several
+objects may share a label: report each in its own detection. The twin pairs them across cameras
+by geometry and keys them `red cube`, `red cube 2`, ... in `Observation.objects`; a key keeps
+naming one object while it is tracked. `base_label(key)` gives the label back, and
+`instance_key(label, n)` builds a key.
 
 `Detector` supplies these defaults:
 
 * `settings` is None.
 * `interval_s` is 1.0, the shortest time between the starts of two calls.
 * `pixel_error_px` is 3.0, how far off the pixels may be. The twin pairs the rays of two cameras
-  for one label only when they pass this close.
+  for one object only when they pass this close.
 * `start` and `stop` do nothing.
 
 The twin reads `interval_s` and `pixel_error_px` from the instance, so a detector can set them
