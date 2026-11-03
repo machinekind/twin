@@ -1,0 +1,20 @@
+# camera calibration (Logitech C920, 640x480) from the twin's lens step, 2026-10-27T17:45:29
+# ChArUco 7x5 (OpenCV sample, ArUco 6x6), 24 mm squares; source /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_FA63BD4F-video-index0; autofocus off, focus 0
+
+image_size (w h): 640 480
+rms_reprojection_error: 0.3057805248492986
+num_views: 13
+
+# intrinsics
+fx: 667.042443
+fy: 667.344090
+cx: 356.164202
+cy: 237.747213
+
+# camera_matrix (3x3, row-major)
+667.042443 0.000000 356.164202
+0.000000 667.344090 237.747213
+0.000000 0.000000 1.000000
+
+# dist_coeffs (5: k1 k2 p1 p2 k3)
+0.11229953 -0.11948873 -0.00939337 0.02400268 0.00000000

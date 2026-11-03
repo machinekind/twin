@@ -1,0 +1,20 @@
+# camera calibration (USB Camera EP.20CC54K01, wide angle, 640x480) from the twin's lens step, 2026-10-27T17:48:21
+# ChArUco 7x5 (OpenCV sample, ArUco 6x6), 24 mm squares; source /dev/v4l/by-path/platform-NVDA8000:00-usb-0:1.2:1.0-video-index0; port by-path, not by-id: both USB Cameras share one by-id link
+
+image_size (w h): 640 480
+rms_reprojection_error: 0.5133923778371147
+num_views: 15
+
+# intrinsics
+fx: 451.121249
+fy: 451.702664
+cx: 341.506371
+cy: 250.793290
+
+# camera_matrix (3x3, row-major)
+451.121249 0.000000 341.506371
+0.000000 451.702664 250.793290
+0.000000 0.000000 1.000000
+
+# dist_coeffs (5: k1 k2 p1 p2 k3)
+-0.40453485 0.26259615 0.00029018 -0.00124278 -0.10770845

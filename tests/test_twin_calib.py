@@ -187,6 +187,16 @@ def test_a_move_that_does_not_arrive_costs_one_pose_not_the_session(spec_name):
         world.close()
 
 
+def test_card_size_follows_the_tag_and_how_far_it_sticks_out():
+    from machinekind_twin.calib.card import Card
+
+    small, default = Card.sized(0.050, 0.070), Card()
+    assert (small.width, small.length) == (pytest.approx(default.width), pytest.approx(default.length))
+    big = Card.sized(0.100, 0.110)
+    assert big.width == pytest.approx(0.100 / 0.8 + 0.0075) and big.length == pytest.approx(0.150)
+    assert big.white_margin == pytest.approx(0.005)
+
+
 def test_solver_drops_outlier_frames_and_reports_them():
     """Fala z dobrymi kadrami i kilkoma zlapanymi w ruchu wychodzila 6,9 px dla calej kamery.
     Odstajace obserwacje (3 x mediana) odpadaja przed koncowym dopasowaniem, a werdykt mowi ile."""
