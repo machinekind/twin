@@ -346,3 +346,64 @@ def test_the_start_from_the_top_face_turns_the_long_side_along_x():
     start = cube._from_mask(_top_face(CUBE_HALF, 60.0, top), top)
     assert start is not None
     assert abs(yaw_deg(start.rot) - -30.0) <= 3.0
+
+
+# ------------------------------------------------------------------ blocks on blocks
+#: Where the stacked cube rests: on a 29 mm cube [m].
+ON_CUBE = 0.029
+
+
+def stacked(half, x: float, y: float, yaw_deg_: float, base: float) -> np.ndarray:
+    """A box's corners resting `base` above the table."""
+    return box_points(half, x, y, np.radians(yaw_deg_)) + [0.0, 0.0, base]
+
+
+@pytest.mark.parametrize("half, base", [(CUBE_HALF, ON_CUBE), (CUBOID_HALF, ON_CUBE), (CUBE_HALF, 0.014)])
+def test_with_the_base_searched_a_box_resting_on_another_is_placed_at_its_height(half, base):
+    x, y, yaw = 0.21, 0.02, 25.0
+    masks = masks_of(stacked(half, x, y, yaw, base))
+
+    got = fit(CubeDetector(half_size=half, max_base_z=0.15), masks)
+
+    assert got is not None and got.n_cameras == 2
+    assert np.linalg.norm(got.pos - [x, y, base + half[2]]) <= 0.0015
+    period = 90.0 if half[0] == half[1] else 180.0
+    assert turn_apart_deg(yaw_deg(got.rot), yaw, period) <= 2.0
+    # Without the search the box on the table cannot cover both cameras' masks.
+    legacy = fit(CubeDetector(half_size=half), masks)
+    assert legacy is None or np.linalg.norm(legacy.pos - got.pos) > 0.01
+
+
+@pytest.mark.parametrize("x, y, yaw", POSES)
+def test_with_the_base_searched_a_box_on_the_table_stays_on_the_table(x, y, yaw):
+    masks = masks_of(box_points(CUBE_HALF, x, y, np.radians(yaw)))
+
+    got = fit(CubeDetector(half_size=CUBE_HALF, max_base_z=0.15), masks)
+
+    assert got is not None and got.pos[2] == CUBE_HALF[2]
+    assert np.linalg.norm(got.pos - [x, y, CUBE_HALF[2]]) <= 0.001
+
+
+def test_one_camera_cannot_tell_the_height_so_base_z_gives_it():
+    x, y, yaw = 0.21, 0.02, 25.0
+    masks = {"a": masks_of(stacked(CUBE_HALF, x, y, yaw, ON_CUBE))["a"]}
+    truth = [x, y, ON_CUBE + CUBE_HALF[2]]
+
+    on_table = fit(CubeDetector(half_size=CUBE_HALF, max_base_z=0.15), masks)
+    on_cube = fit(CubeDetector(half_size=CUBE_HALF, max_base_z=0.15, base_z=ON_CUBE), masks)
+
+    assert on_table is None or np.linalg.norm(on_table.pos - truth) > 0.02
+    assert on_cube is not None and on_cube.n_cameras == 1
+    assert np.linalg.norm(on_cube.pos - truth) <= 0.003
+
+
+def test_masks_of_two_blocks_one_per_camera_make_no_box_in_the_air():
+    masks = {"a": masks_of(box_points(CUBE_HALF, 0.24, 0.04, 0.0))["a"],
+             "b": masks_of(box_points(CUBE_HALF, 0.18, -0.03, 0.0))["b"]}
+
+    ungated = fit(CubeDetector(half_size=CUBE_HALF, max_base_z=0.15, lift_iou=0.0), masks)
+    got = fit(CubeDetector(half_size=CUBE_HALF, max_base_z=0.15), masks)
+
+    # The rays meet in the air, where a box covers both masks only partly.
+    assert ungated is not None and ungated.pos[2] > 0.03 and ungated.confidence < 0.85
+    assert got is None

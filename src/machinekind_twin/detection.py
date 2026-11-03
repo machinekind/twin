@@ -41,7 +41,7 @@ from machinekind_twin_api.strategy import Frame, ObjectPose
 from . import strategy
 from .detectors import DetectorPlugin
 from .kinematics import RobotKinematics
-from .objects import CameraModel, camera_key, camera_models, locate, mapper_for
+from .objects import MAX_BASE_M, CameraModel, camera_key, camera_models, locate, mapper_for
 from .perception import CubeDetector, TableMapper
 from .tracks import Hand, Tracks, TrackView
 from .workspace import Workspace
@@ -561,12 +561,15 @@ class Perception:
             value = getattr(detector, "pixel_error_px", 3.0)
             pixel_error_px = float(value) if _finite_non_negative(value) else 3.0
             placed, dropped = locate(dets, models.cameras, read, pixel_error_px=pixel_error_px,
-                                     mapper=models.mapper, occluders=self._occluders, box=_box)
+                                     mapper=models.mapper, occluders=self._occluders, box=_box,
+                                     tracked=self.tracks.resting())
             self.tracks.observe(name, placed, latency_s, interval_s)
             return dropped
         return sink
 
 
-def _box(size: tuple[float, float, float]) -> CubeDetector:
-    """The silhouette fit for a box of this size resting on the table."""
-    return CubeDetector(half_size=(size[0] / 2.0, size[1] / 2.0, size[2] / 2.0))
+def _box(size: tuple[float, float, float], base: float = 0.0) -> CubeDetector:
+    """The silhouette fit for a box of this size resting `base` [m] above the table, or on any
+    surface up to `MAX_BASE_M` when two cameras see it."""
+    return CubeDetector(half_size=(size[0] / 2.0, size[1] / 2.0, size[2] / 2.0), base_z=base,
+                        max_base_z=MAX_BASE_M)

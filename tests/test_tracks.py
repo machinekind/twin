@@ -295,3 +295,72 @@ def test_snapshot_never_steps(tracks: Tracks, clock: Clock):
     view = tracks.snapshot()[0]
     assert (view.label, view.source, view.age_s, view.n_cameras, view.method) == ("cube", "kamery", 0.0, 2, "sylwetka")
     assert view.size_m == (0.03, 0.03, 0.03) and view.confidence == 0.9
+
+
+# ------------------------------------------------------------------ blocks on blocks
+#: A second 3 cm cube on the table, 6 cm from the first along x.
+BASE = np.array([0.26, 0.0, 0.015])
+#: Where a 3 cm cube rests on top of it.
+ON_BASE = BASE + [0.0, 0.0, 0.03]
+
+
+def grip(tracks: Tracks, clock: Clock, tcp) -> None:
+    """The jaw closes at `tcp` and stops on the object there: held from the second step."""
+    for _ in range(2):
+        clock.advance(0.05)
+        tracks.step(hand_at(tcp, SQUEEZE, 0.0))
+
+
+def test_a_block_released_over_another_rests_on_it_and_the_lower_one_is_never_taken(tracks: Tracks,
+                                                                                    clock: Clock):
+    tcp = REST + [0.0, 0.0, 0.01]
+    tracks.observe("cube", [located(clock.t), located(clock.t, "base", BASE)], latency_s=0.05,
+                   interval_s=CUBE_INTERVAL)
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    clock.advance(0.05)
+    above = ON_BASE + [0.0, 0.0, 0.015]      # over its rest on the base; the TCP 5.5 cm over the base
+    objects = tracks.step(hand_at(above + [0.0, 0.0, 0.01], SQUEEZE, 0.0))
+    assert objects["cube"].source == "w dloni"
+    assert objects["base"].source != "w dloni"
+
+    clock.advance(0.05)
+    objects = tracks.step(hand_at(above + [0.0, 0.0, 0.01], OPEN, OPEN))
+
+    assert objects["cube"].source == "ostatnie widziane (upuszczona)"
+    np.testing.assert_allclose(objects["cube"].position, ON_BASE, atol=1e-9)
+    np.testing.assert_allclose(objects["base"].position, BASE, atol=1e-9)
+
+
+def test_a_block_taken_off_a_stack_and_dropped_rests_on_the_table(tracks: Tracks, clock: Clock):
+    tcp = ON_BASE + [0.0, 0.0, 0.01]
+    tracks.observe("cube", [located(clock.t, "cube", ON_BASE), located(clock.t, "base", BASE)],
+                   latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    clock.advance(0.05)
+    away = REST + [0.0, 0.0, 0.05]
+    assert tracks.step(hand_at(away, SQUEEZE, 0.0))["cube"].source == "w dloni"
+
+    clock.advance(0.05)
+    cube = tracks.step(hand_at(away, OPEN, OPEN))["cube"]
+
+    assert cube.source == "ostatnie widziane (upuszczona)"
+    np.testing.assert_allclose(cube.position, REST, atol=1e-9)
+
+
+def test_resting_gives_each_block_but_the_one_in_the_hand(tracks: Tracks, clock: Clock):
+    tracks.observe("cube", [located(clock.t, "cube", ON_BASE),
+                            located(clock.t, "base", BASE + [0.0, 0.0, 0.002])],
+                   latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+
+    blocks = tracks.resting()
+    assert {label: r.base for label, r in blocks.items()} == pytest.approx({"cube": 0.03, "base": 0.002})
+    assert blocks["base"].holds(blocks["cube"])
+
+    tcp = ON_BASE + [0.0, 0.0, 0.01]
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    assert tracks.step(hand_at(tcp, SQUEEZE, 0.0))["cube"].source == "w dloni"
+    assert list(tracks.resting()) == ["base"]

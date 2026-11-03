@@ -83,8 +83,9 @@ class Detection:
     #: Height above the table top [m] of the point `pixel` marks; None = on the table (0), or
     #: half the object's height when `size_m` is given. One camera alone cannot tell depth; this fixes it.
     height_m: float | None = None
-    #: The object's size [m] as (x, y, z) of a box resting on the table; None = unknown. With a
-    #: `mask` the twin fits a box of this size to the masks of every camera, which also gives yaw.
+    #: The object's size [m] as (x, y, z) of a box as it rests, z its height; None = unknown. With a
+    #: `mask` the twin fits a box of this size, resting on the table or on another object, to the
+    #: masks of every camera, which also gives yaw.
     size_m: tuple[float, float, float] | None = None
     #: How far off `pixel` may be, in THIS frame's pixels; None = the detector's `pixel_error_px`.
     #: A detector that answers on a resized copy scales its error back with the pixel.

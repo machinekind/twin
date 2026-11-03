@@ -22,6 +22,11 @@ keeps "kamery" within 0.66 s of capture, close to the old panel's 0.5 s. Annotat
 
 The tracker's thresholds on the jaw (`still` in particular) are per update, so they depend on who
 steps the tracks and how often, as they did with the policy's own rate before.
+
+Blocks may rest on blocks. A closing jaw takes only the object nearest the TCP, never the block
+under it (`ObjectTracker.may_grab`). An object that leaves the jaws comes to rest on the highest
+other tracked block under it, or on the table (`ObjectTracker.rest_on`). `resting` gives where
+each block is, for the box fit: its height when the cameras cannot tell it, and what holds whom.
 """
 
 from __future__ import annotations
@@ -31,12 +36,13 @@ import math
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 import numpy as np
 from machinekind_twin_api.strategy import ObjectPose
 
 from .kinematics import pose
-from .objects import Located
+from .objects import Located, Resting
 from .perception import CubeDetection, ObjectTracker
 from .robots import RobotSpec
 
@@ -121,6 +127,10 @@ class Tracks:
     FRESH_MIN_S, FRESH_MAX_S = 0.5, 1.0
     #: A second `step` sooner than this after the previous one gets its result [s].
     MIN_STEP_S = 0.01
+    #: How far past a block's footprint a dropped object still lands on it [m].
+    REST_MARGIN_M = 0.005
+    #: How far below a block's top a dropped object's bottom may be and still land on it [m].
+    REST_SLACK_M = 0.01
 
     def __init__(self, spec: RobotSpec, clock: Callable[[], float]):
         self._spec = spec
@@ -171,9 +181,11 @@ class Tracks:
                 return dict(self._result)
             self._last_step = now
             h = self._hand(hand) if self._tracks else FAR_HAND
+            nearest = self._nearest(h)
             result: dict[str, ObjectPose] = {}
             for label in sorted(self._tracks):
                 track = self._tracks[label]
+                track.tracker.may_grab = label == nearest
                 if self._step_track(label, track, h, now):
                     del self._tracks[label]
                 elif track.view is not None:
@@ -191,6 +203,18 @@ class Tracks:
         """The published objects of the last step, by label. Never steps."""
         with self._lock:
             return [t.view for _, t in sorted(self._tracks.items()) if t.view is not None]
+
+    def resting(self) -> dict[str, Resting]:
+        """Per label with a size, where its block is: the published pose, or the newest measurement
+        before the first step. A block in the hand rests on nothing and is left out."""
+        with self._lock:
+            out = {}
+            for label, track in self._tracks.items():
+                v = track.view if track.view is not None else track.pending
+                if v.size_m is None or (track.view is not None and track.view.source == "w dloni"):
+                    continue
+                out[label] = Resting(np.array(v.pos, float), np.array(v.rot, float), v.size_m)
+            return out
 
     def clear(self, detector: str | None = None) -> None:
         """Forget every track, or only those following `detector`."""
@@ -219,6 +243,38 @@ class Tracks:
                 hand = None
         return hand if hand is not None else FAR_HAND
 
+    def _nearest(self, hand: Hand) -> str | None:
+        """The label in the hand, else the one whose last pose lies nearest the TCP; None without
+        poses."""
+        for name, track in self._tracks.items():
+            if track.tracker.in_hand is not None:
+                return name
+        tcp = hand.T_tcp[:3, 3]
+        best, label = math.inf, None
+        for name, track in self._tracks.items():
+            last = track.tracker.last
+            if last is not None and (d := float(np.linalg.norm(last[0] - tcp))) < best:
+                best, label = d, name
+        return label
+
+    def _rest_on(self, label: str, half_h: float, p: np.ndarray) -> float:
+        """The centre height of `label`'s box, `half_h` half its height, come to rest under `p`: on
+        the highest other published block whose footprint holds p's xy and whose top is below the
+        box, else on the table."""
+        top = 0.0
+        for other, track in self._tracks.items():
+            v = track.view
+            if other == label or v is None or v.size_m is None or v.source == "w dloni":
+                continue
+            local = v.rot.T @ (np.asarray(p, float) - v.pos)
+            hx, hy, hz = (s / 2 for s in v.size_m)
+            m = self.REST_MARGIN_M
+            other_top = float(v.pos[2]) + hz
+            below = other_top <= p[2] - half_h + self.REST_SLACK_M
+            if abs(local[0]) <= hx + m and abs(local[1]) <= hy + m and below:
+                top = max(top, other_top)
+        return top + half_h
+
     def _step_track(self, label: str, track: _Track, hand: Hand, now: float) -> bool:
         """One tracker update; True when the track is to be deleted."""
         answer = self._answers.get(track.detector) or _Answer(frozenset(), self.HOLD_S, self.FRESH_MIN_S)
@@ -231,6 +287,8 @@ class Tracks:
         tracker = track.tracker
         # A slow detector's pose must outlive the wait for its next answer.
         tracker.hold_s = answer.hold_s
+        size = track.fed.size_m if track.fed is not None else None
+        tracker.rest_on = None if size is None else partial(self._rest_on, label, size[2] / 2)
         got = tracker.update(det, hand.T_tcp, hand.grip_q, hand.grip_cmd, hand.grip_closed, now)
         if got is None or track.fed is None:
             track.view = None

@@ -7,11 +7,18 @@ three ways:
 
 - "sylwetka": every camera gave a mask and the object's size is known. The box fit
   (`CubeDetector.fit_masks`) gives position and yaw from all masks at once, for a box of that size
-  resting on the table.
+  resting on the table or on another block. A block another one partly hides is fitted again with
+  the other labels' masks as pixels it may be hidden behind.
 - "triangulacja": two or more cameras saw the label and their rays pass close enough to each
   other for the detectors' pixel error. The point nearest to all rays.
 - "promien": one camera, or rays that disagree. The surest detection's ray meets the plane at
   the height the detection gives (`height_m`, else half of `size_m`, else the table top).
+
+A box fit off the table counts only when the block rests on another placed or tracked block
+(`_supported`). One camera cannot tell a block on the table from one on top of a stack along the
+same ray, so a block one camera places, with no tracked pose yet, is left out while it could rest
+on another block: its mask touches another label's (`_touches`), or its ray passes over another
+block (`_could_rest_higher`). Two cameras place it.
 
 The geometry only ever uses the CALIBRATED pose, never `sim_pose`, so simulated perception tests
 the calibration just as `TableMapper` does.
@@ -35,11 +42,15 @@ from .workspace import Workspace
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "MAX_BASE_M",
     "MIN_RANGE_M",
     "MIN_RAY_GAP_M",
+    "SUPPORT_MARGIN_M",
+    "SUPPORT_TOL_M",
     "Z_RANGE_M",
     "CameraModel",
     "Located",
+    "Resting",
     "camera_key",
     "camera_models",
     "locate",
@@ -52,6 +63,15 @@ __all__ = [
 
 #: A triangulated point outside these heights above the table is not an object on the table [m].
 Z_RANGE_M = (-0.03, 0.6)
+#: The highest surface the box fit looks for a block resting on [m]: a stack of a few blocks.
+MAX_BASE_M = 0.15
+#: A block rests on another when its bottom is this close to the other's top, and on the table
+#: when its bottom is this close to the table [m].
+SUPPORT_TOL_M = 0.006
+#: How far past a block's footprint the centre of a block resting on it may lie [m].
+SUPPORT_MARGIN_M = 0.005
+#: Masks this close in an image touch [px].
+TOUCH_PX = 3
 #: Floor under the ray-pairing tolerance [m].
 MIN_RAY_GAP_M = 0.01
 #: A point closer than this in front of a camera is not something the camera sees [m].
@@ -199,6 +219,39 @@ class Located:
     method: str
 
 
+@dataclass(frozen=True, eq=False)
+class Resting:
+    """A block as stacking sees it: its centre and rotation in the base frame and its size [m]."""
+
+    pos: np.ndarray
+    rot: np.ndarray
+    size_m: tuple[float, float, float]
+
+    @property
+    def base(self) -> float:
+        """Its bottom's height above the table [m]."""
+        return float(self.pos[2]) - self.size_m[2] / 2
+
+    @property
+    def top(self) -> float:
+        """Its top's height above the table [m]."""
+        return float(self.pos[2]) + self.size_m[2] / 2
+
+    def under(self, p: np.ndarray, margin: float = SUPPORT_MARGIN_M) -> bool:
+        """Whether its footprint, widened by `margin`, lies under the point `p`."""
+        local = np.asarray(self.rot, float).T @ (np.asarray(p, float) - np.asarray(self.pos, float))
+        return abs(local[0]) <= self.size_m[0] / 2 + margin and abs(local[1]) <= self.size_m[1] / 2 + margin
+
+    def holds(self, other: Resting) -> bool:
+        """Whether `other` rests on this block."""
+        return abs(other.base - self.top) <= SUPPORT_TOL_M and self.under(other.pos)
+
+
+def _resting(loc: Located) -> Resting | None:
+    return None if loc.size_m is None else Resting(np.asarray(loc.pos, float), np.asarray(loc.rot, float),
+                                                   loc.size_m)
+
+
 # ------------------------------------------------------------------ validation
 _warned: set[str] = set()
 
@@ -289,14 +342,17 @@ def locate(dets: Sequence[Detection], cameras: Mapping[str, CameraModel],
            frames: Mapping[str, tuple[tuple[int, int], float]], *, pixel_error_px: float,
            mapper: TableMapper | None,
            occluders: Callable[[dict[str, float]], dict[str, np.ndarray] | None] | None,
-           box: Callable[[tuple[float, float, float]], CubeDetector]) -> tuple[list[Located], int]:
+           box: Callable[[tuple[float, float, float], float], CubeDetector],
+           tracked: Mapping[str, Resting] | None = None) -> tuple[list[Located], int]:
     """Places one detector call's detections in the base frame.
 
     `cameras` are the models the call may use; `frames[camera]` is ((width, height), capture time)
     of the frame the detector read. `pixel_error_px` is the detector's own, used for a detection
     that gives none. `mapper` (over `cameras`) enables the silhouette fit, `occluders` gives the arm
-    masks for the capture times of the cameras used, and `box(size_m)` the fit for a box of that size.
-    Returns the placed objects and the number of detections dropped as invalid.
+    masks for the capture times of the cameras used, and `box(size_m, base)` the fit for a box of
+    that size resting `base` [m] above the table. `tracked[label]` is where a tracked block is
+    now: its base is the fit's base for that label when the cameras cannot tell its height, and it
+    may hold other blocks. Returns the placed objects and the number of detections dropped as invalid.
     """
     dropped = 0
     by_label: dict[str, dict[str, Detection]] = {}
@@ -312,28 +368,135 @@ def locate(dets: Sequence[Detection], cameras: Mapping[str, CameraModel],
         if kept is None or _conf(det) > _conf(kept):
             per_cam[det.camera] = det
 
+    # Every label's mask per camera: what may hide a block resting under or behind another.
+    masks: dict[str, dict[str, np.ndarray]] = {}
+    for label, per_cam in by_label.items():
+        for camera, det in per_cam.items():
+            if det.mask is not None:
+                masks.setdefault(camera, {})[label] = det.mask
+    tracked = tracked or {}
     out = []
     for label, per_cam in by_label.items():
+        others = {camera: [m for other, m in by.items() if other != label] for camera, by in masks.items()}
+        base = tracked[label].base if label in tracked else 0.0
+        base = base if base > SUPPORT_TOL_M else 0.0
         try:
             placed = _place(label, list(per_cam.values()), cameras, frames, pixel_error_px, mapper,
-                            occluders, box)
+                            occluders, box, others, base)
         except Exception:  # one bad label never costs the others
             logger.exception("placing %r failed", label)
             placed = None
         if placed is not None:
             out.append(placed)
-    return out, dropped
+    out = _supported(out, tracked)
+    blocks = {loc.label: r for loc in out if (r := _resting(loc)) is not None}
+    blocks |= {label: r for label, r in tracked.items() if label not in blocks}
+    kept = []
+    for loc in out:
+        seen = list(by_label[loc.label])
+        origins = [cameras[camera].T_cam2base[:3, 3] for camera in seen]
+        if loc.label not in tracked and (
+                (len(seen) < 2 and _touches(loc.label, seen, masks))
+                or (loc.n_cameras < 2 and _could_rest_higher(loc, origins, blocks))):
+            logger.debug("%r: one camera, and it may rest on another block; waiting for two", loc.label)
+            continue
+        kept.append(loc)
+    return kept, dropped
+
+
+def _supported(placed: list[Located], tracked: Mapping[str, Resting]) -> list[Located]:
+    """`placed` without the box fits that rest on nothing: a fit off the table needs a block under
+    it, one on the table, a tracked one this call did not place, or one resting on those."""
+    ground = {label: r for label, r in tracked.items() if label not in {loc.label for loc in placed}}
+    waiting: dict[str, Resting] = {}
+    for loc in placed:
+        r = _resting(loc)
+        if r is None:
+            continue
+        if loc.method == "sylwetka" and r.base > SUPPORT_TOL_M:
+            waiting[loc.label] = r
+        else:
+            ground[loc.label] = r
+    while True:
+        found = [label for label, r in waiting.items()
+                 if any(other != label and s.holds(r) for other, s in ground.items())]
+        if not found:
+            break
+        for label in found:
+            ground[label] = waiting.pop(label)
+    for label in waiting:
+        logger.debug("%r: off the table on no block; left out", label)
+    return [loc for loc in placed if loc.label not in waiting]
+
+
+def _touches(label: str, cams: list[str], masks: Mapping[str, Mapping[str, np.ndarray]]) -> bool:
+    """Whether the label's mask in one of `cams` touches another label's mask there."""
+    for camera in cams:
+        by = masks.get(camera, {})
+        own = by.get(label)
+        if own is None:
+            continue
+        v, u = np.nonzero(own)
+        if len(u) == 0:
+            continue
+        k = TOUCH_PX
+        y0, y1 = max(int(v.min()) - k, 0), int(v.max()) + k + 1
+        x0, x1 = max(int(u.min()) - k, 0), int(u.max()) + k + 1
+        kernel = np.ones((2 * k + 1, 2 * k + 1), np.uint8)
+        near = cv2.dilate(np.asarray(own[y0:y1, x0:x1], np.uint8), kernel) > 0
+        for other, m in by.items():
+            if other != label and m.shape == own.shape and (near & np.asarray(m[y0:y1, x0:x1], bool)).any():
+                return True
+    return False
+
+
+def _could_rest_higher(loc: Located, origins: list[np.ndarray], blocks: Mapping[str, Resting]) -> bool:
+    """Whether a block placed from one camera could rest on another block instead: a camera's ray
+    through it passes over that block at the height it would rest there."""
+    r = _resting(loc)
+    if r is None:
+        return False
+    for label, s in blocks.items():
+        # A block standing on this one, or one it already rests on, is no other place to be.
+        if label == loc.label or (s.base >= r.top - SUPPORT_TOL_M and r.under(s.pos)) \
+                or abs(s.top - r.base) <= SUPPORT_TOL_M:
+            continue
+        z = s.top + r.size_m[2] / 2
+        for o in origins:
+            d = r.pos - o
+            if abs(d[2]) < 1e-9:
+                continue
+            if s.under(o + (z - o[2]) / d[2] * d):
+                return True
+    return False
 
 
 def _conf(det: Detection) -> float:
     return min(1.0, max(0.0, float(det.confidence)))
 
 
+def _hidden(masks: Mapping[str, np.ndarray], occ: Mapping[str, np.ndarray] | None,
+            others: Mapping[str, list[np.ndarray]]) -> dict[str, np.ndarray] | None:
+    """The arm masks widened by the other labels' masks, per camera of `masks`; None when no other
+    label has a mask there."""
+    out: dict[str, np.ndarray] = {}
+    for camera, mask in masks.items():
+        hide = [m for m in others.get(camera, []) if m.shape == mask.shape]
+        if occ is not None and camera in occ:
+            hide.append(np.asarray(occ[camera], bool))
+        if hide:
+            out[camera] = np.logical_or.reduce(hide)
+    if not any(others.get(camera) for camera in masks):
+        return None
+    return out
+
+
 def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel],
            frames: Mapping[str, tuple[tuple[int, int], float]], pixel_error_px: float,
            mapper: TableMapper | None,
            occluders: Callable[[dict[str, float]], dict[str, np.ndarray] | None] | None,
-           box: Callable[[tuple[float, float, float]], CubeDetector]) -> Located | None:
+           box: Callable[[tuple[float, float, float], float], CubeDetector],
+           others: Mapping[str, list[np.ndarray]] | None = None, base: float = 0.0) -> Located | None:
     dets = sorted(dets, key=_conf, reverse=True)
     best = dets[0]
     size = None if best.size_m is None else tuple(float(s) for s in best.size_m)
@@ -345,7 +508,14 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
             and all(d.mask is not None for d in dets) and _full_size(dets, cameras, frames)):
         masks = {d.camera: d.mask for d in dets if d.mask is not None}
         occ = occluders(dict(times)) if occluders is not None else None
-        fit = box(size3).fit_masks(masks, mapper, occ, t=min(times.values()))
+        fitter = box(size3, min(max(base, 0.0), MAX_BASE_M))
+        fit = fitter.fit_masks(masks, mapper, occ, t=min(times.values()))
+        if fit is None:
+            # Partly hidden by another block (one resting on it, or one in front): the other
+            # labels' pixels say nothing about this one.
+            hidden = _hidden(masks, occ, others or {})
+            if hidden is not None:
+                fit = fitter.fit_masks(masks, mapper, hidden, t=min(times.values()))
         if fit is None:
             return None
         return Located(label, np.asarray(fit.pos, float), np.asarray(fit.rot, float), float(fit.confidence),

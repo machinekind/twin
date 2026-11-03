@@ -489,7 +489,7 @@ Polish name of the way it used:
 
 | Path | When | Result |
 |---|---|---|
-| silhouette (`sylwetka`) | Every camera gave a mask of a full-size frame, and `size_m` is given | A box of `size_m` resting on the table, fitted to all masks at once. It gives the position, the yaw (`rotation[:, 0]` along `size_m[0]`) and the fit's IoU as confidence |
+| silhouette (`sylwetka`) | Every camera gave a mask of a full-size frame, and `size_m` is given | A box of `size_m` resting on the table or on another block, fitted to all masks at once. It gives the position, the yaw (`rotation[:, 0]` along `size_m[0]`) and the fit's IoU as confidence |
 | triangulation (`triangulacja`) | Two or more cameras whose rays pass within the detectors' pixel error, scaled by depth | The point nearest to all rays. It must lie in front of every camera and between 3 cm below and 60 cm above the table |
 | one ray (`promien`) | One camera, or rays that disagree | The most confident detection's ray meets the plane at `height_m`. Without `height_m` the plane is at half of `size_m`, and without both it is the table top |
 
@@ -504,6 +504,38 @@ yaw is folded by the footprint's symmetry: into [-45, 45) degrees for a square
 footprint such as a cube, into [-90, 90) otherwise. A 50x25x25 mm block lies
 within 0.5 mm and 1 degree of its true pose on synthetic masks from two cameras
 at about 45 degrees, and within 1.3 mm and 1 degree in the simulated stand.
+
+### Blocks on blocks
+
+The fit first places the box where the label last rested: on the table, or on
+the block it was last seen on. When that fit is not clearly good (IoU under
+0.93, or one camera), it also searches the height of the surface under the box,
+up to 15 cm, starting where the cameras' mask centroids meet. The searched fit
+wins when two cameras see the box and its IoU is higher by 0.02, and, off the
+table, at least 0.85. A height within 4 mm of the table is the table.
+
+A box fitted off the table must rest on another block: its bottom within 6 mm
+of that block's top and its centre over that block. The block under it is
+placed in the same detector call, or tracked. Otherwise nothing is placed. One
+label's masks from two different blocks can otherwise meet in a box in the air.
+
+One camera cannot tell the height. A tracked block seen by one camera keeps the
+height it last rested at. A new block seen by one camera is not placed while it
+could rest on another block: its mask touches another label's mask, or the
+camera's ray through it passes over another block. It is placed when two
+cameras see it.
+
+A block partly hidden by another one, such as the lower block of a stack, does
+not cover its own mask in every camera. When its fit fails, the twin fits it
+again with the other labels' masks in that camera treated like the arm: pixels
+it may be hidden behind.
+
+The tracker knows stacks too. A closing jaw takes only the object nearest the
+TCP, never the block under it. An object that leaves the jaws is put on the
+highest other tracked block under it, else on the table.
+
+In the simulated stand, cubes and cuboids stacked two and three high are
+placed within 3 mm and 5 degrees of the physics (`tests/test_stacked_blocks.py`).
 
 ### The example cube detector
 
@@ -600,8 +632,8 @@ panel shows a plugin's exception text verbatim after a Polish label such as
 - An object placed by triangulation or by one ray has no orientation, so its
   rotation is the identity. Only the silhouette fit gives yaw; it needs a mask
   and `size_m` from every camera that saw the label.
-- The box is fitted resting on the table in the pose `size_m` describes:
-  `size_m[2]` is its height above the table. A cuboid stood on its end, or a
+- The box is fitted resting on the table or on a block in the pose `size_m`
+  describes: `size_m[2]` is its height. A cuboid stood on its end, or a
   cylinder on its end, with the lying size listed is gated out (IoU below
   0.75) and the label shows `ostatnie widziane`. List the size as the block
   rests.
@@ -609,6 +641,8 @@ panel shows a plugin's exception text verbatim after a Polish label such as
   than a box (IoU 0.74-0.82 at the true pose from 45-degree cameras) and may
   fail the 0.75 gate at some yaws.
 - Each label holds one object. Two red pens need two labels.
+- A block resting on a block that no detector places, such as bare wood on a
+  wooden table, gets no pose.
 
 ## LLM detector
 
