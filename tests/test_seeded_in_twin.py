@@ -247,7 +247,7 @@ def test_a_hidden_block_ages_to_last_seen_and_expires(perception: Perception, cl
 
     clock.advance(2.5)                      # 3.1 s since the last sighting
     runner.step_once()
-    assert runner.detector._tracks == {}  # type: ignore[attr-defined]
+    assert runner.detector._tracks == []  # type: ignore[attr-defined]
     assert LABEL in perception.objects()
     clock.advance(3.0)                      # 6.1 s: past hold_s
     runner.step_once()

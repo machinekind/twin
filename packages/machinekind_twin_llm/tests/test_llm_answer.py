@@ -126,6 +126,24 @@ def test_with_wanted_labels_only_those_are_reported_under_the_wanted_name():
     assert sorted((d.label, d.camera) for d in got) == [("cube", "top"), ("red pen", "side"), ("red pen", "top")]
 
 
+def test_several_objects_of_one_label_stay_apart_and_a_number_on_a_label_is_dropped():
+    got = parse(item(label="red cube", u=100.0), item(label="Red Cube 2", u=300.0),
+                item(label="red cube", camera="side", u=50.0), wanted=["red cube"])
+
+    assert [(d.label, d.camera) for d in got] == [("red cube", "top"), ("red cube", "top"), ("red cube", "side")]
+    assert sorted(d.pixel[0] for d in got if d.camera == "top") == pytest.approx([100.5 * 1.5 - 0.5, 300.5 * 1.5 - 0.5])
+    (d,) = parse(item(label="green cuboid 3"))
+    assert d.label == "green cuboid"
+
+
+def test_the_prompt_asks_for_every_object_of_a_label_with_a_box_each():
+    for text in (build_prompt(SENT), build_prompt(SENT, ["red cube"])):
+        assert "Two objects with one label are two entries per image" in text
+        assert "Do not number the labels." in text
+        assert "- box: its own bounding box in the same pixels" in text
+    assert "There may be several objects of one label: report each of them." in build_prompt(SENT, ["red cube"])
+
+
 def test_the_longest_wanted_name_wins():
     (d,) = parse(item(label="big red pen"), wanted=["pen", "red pen"])
 

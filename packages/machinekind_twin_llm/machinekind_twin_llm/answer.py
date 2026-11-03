@@ -3,6 +3,8 @@
 The model answers in the pixels of the image it was sent. A frame scaled down by `encode` maps back
 with pixel centres kept: `u' = (u + 0.5) * W / w - 0.5`. An item that is malformed, names a camera
 that was not sent, lies outside its image or is less sure than asked is dropped, never guessed at.
+Several items may share a label, one per object; a number the model appends to a label ("red cube
+2") is dropped, as the twin numbers the objects itself.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from machinekind_twin_api.detector import Detection
+from machinekind_twin_api.detector import Detection, base_label
 
 from .images import SentImage
 from .prompt import normalise_label
@@ -90,7 +92,7 @@ def _detection(item: Any, exact: Mapping[str, SentImage], folded: Mapping[str, S
     if not isinstance(item, Mapping):
         return "not an object", None
     label = item.get("label")
-    label = normalise_label(label) if isinstance(label, str) else ""
+    label = base_label(label) if isinstance(label, str) else ""
     if not label or len(label) > MAX_LABEL:
         return "bad label", None
     camera = item.get("camera")

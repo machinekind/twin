@@ -20,6 +20,7 @@ from machinekind_twin_seeded.settings import (
     parse_hsv,
     parse_sizes,
     resolve,
+    shape_word,
 )
 
 #: A paint of each colour word, RGB.
@@ -58,6 +59,14 @@ def test_labels_without_a_known_shape_or_colour_resolve_to_nothing():
     assert resolve("red pen", {}, {}) is None
     assert resolve("purple cube", {}, {}) is None
     assert resolve("cube", {}, {}) is None
+
+
+def test_a_trailing_instance_number_is_not_part_of_the_label():
+    assert resolve("red cube 2", {}, {}) == resolve("red cube", {}, {})
+    assert resolve("Light Blue Cuboid 3", {"light blue cuboid": (0.05, 0.02, 0.01)}, {}) == \
+        resolve("light blue cuboid", {"light blue cuboid": (0.05, 0.02, 0.01)}, {})
+    assert shape_word("red cube 2") == ("red", "cube")
+    assert SeededDetector(SeededSettings(labels="red cube 2, red cube"))._labels == ("red cube",)
 
 
 def test_overrides_go_by_label_then_by_shape_or_colour_word():
@@ -143,6 +152,7 @@ def test_the_naming_line_lists_every_colour_and_shape():
     line = naming_prompt()
 
     assert all(word in line for word in (*COLOURS, *SHAPES))
+    assert "Several blocks may share a name: give each block its own entry and box" in line
 
 
 def test_the_contract_attributes_come_from_the_settings():

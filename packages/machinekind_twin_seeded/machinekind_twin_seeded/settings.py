@@ -16,7 +16,8 @@ HSV ranges (`COLOURS`). Two override tables, entries separated by `;`, take prec
   ranges of one name joined by `|` (red wraps around H = 0 and needs two).
 
 `name` is a whole label, which wins, or a shape or colour word. Labels are keyed as the twin keys
-them: inner whitespace collapsed, stripped, lower-cased.
+them: inner whitespace collapsed, stripped, lower-cased, and without a trailing instance number
+("red cube 2" is a red cube, `machinekind_twin_api.base_label`).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from machinekind_twin_api import base_label
 from machinekind_twin_llm.prompt import normalise_label
 from machinekind_twin_llm.settings import CLIS, MODELS, LlmSettings, names
 
@@ -150,7 +152,7 @@ class Tables:
 def shape_word(label: str) -> tuple[str, str]:
     """(the words before the shape, the shape) of a label, the shape being the last word naming one;
     ("label", "") without one."""
-    words = normalise_label(label).split()
+    words = base_label(label).split()
     for i in range(len(words) - 1, -1, -1):
         shape = SHAPE_WORDS.get(words[i])
         if shape:
@@ -236,7 +238,7 @@ _COLOUR_RANGES = parse_hsv(";".join(f"{name}={ranges}" for name, ranges in COLOU
 def resolve(label: str, sizes: dict[str, Size], hsv: dict[str, tuple[HsvRange, ...]]) -> Block | None:
     """The block a label names: an override for the whole label, else for its shape or colour word,
     else the built-in shape and colour. None when the size or the colour stays unknown."""
-    label = normalise_label(label)
+    label = base_label(label)
     phrase, shape = shape_word(label)
     colour = colour_word(phrase)
     size = sizes.get(label) or sizes.get(shape) or SHAPES.get(shape)
@@ -252,7 +254,8 @@ def naming_prompt() -> str:
     shapes = ", ".join(SHAPES)
     return (f'The objects are wooden blocks. Name each block "<colour> <shape>": colour one of {colours} '
             f'("wooden" for bare wood), shape one of {shapes}. A cuboid is a flat bar; a cylinder lies '
-            "on its side. Several blocks may share a name.")
+            "on its side. Several blocks may share a name: give each block its own entry and box, also "
+            "when blocks touch or one stands on another.")
 
 
 def _at_least(value: float, lo: float) -> bool:
@@ -284,7 +287,7 @@ def validate(settings: SeededSettings) -> Tables:
             if not all(a <= b for a, b in zip(lo, hi)):
                 raise ValueError(f"seeded: labels_hsv: {key}: a range must run from low to high, got "
                                  f"{lo} above {hi}")
-    labels = tuple(dict.fromkeys(normalise_label(label) for label in names(s.labels)))
+    labels = tuple(dict.fromkeys(base_label(label) for label in names(s.labels)))
     for label in labels:
         if not (label in sizes or shape_word(label)[1]):
             raise ValueError(f"seeded: labels: {label!r} names no shape ({', '.join(SHAPES)}) and "

@@ -27,18 +27,31 @@ A label is `<colour> <shape>`, as the model names a block: `red cube`, `light bl
 [The blocks](#the-blocks)). A label with no known shape or colour, and no override for it, is not
 followed.
 
-A track is one label in one camera:
+A track is one block in one camera; several blocks may share a label:
 
-1. A fresh seed is the model's pixel for that label in that camera. The track takes the blob of
+1. A fresh seed is the model's pixel for one block in that camera. The track takes the blob of
    the label's colour whose box lies within the seed's pixel error (`seed_error_px`, scaled from
-   the sent image to the frame). A blob whose box's long side exceeds `max_blob_ratio` times the
-   long side of the model's box is not one block and is not taken: two touching blocks of one
-   colour, or a block the colour of the table. Without a box from the model, the seed's search
-   diameter stands in for it.
+   the sent image to the frame).
 2. From then on the track follows the blob nearest its last centroid, within `track_error_px`.
-3. A track that is being followed outranks a new seed: the model's next answer only confirms it.
-   A track the model leaves out of three answers in a row is dropped.
-4. A track without a blob for `lost_after_s` is dropped and waits for the next seed. For a seed
+3. The model's seeds of a label in a camera go to that label's tracks there by distance, closest
+   first, whatever order the model lists them in. A seed near a followed track only confirms it; a
+   seed no track is near starts a new track. One seed and one track of a label always pair. A
+   track the model leaves out of three answers in a row is dropped.
+4. A blob several tracks reach holds several blocks: blocks of one colour that touch, or one
+   standing on another. Its pixels are shared out, each to the nearest track's centre. The centres
+   settle on the blocks' pixels unless that moves one more than half way to its neighbour (the cut
+   would then run along a flat block lying on another); then they stay where they are. While
+   tracks share a blob, their centres move with it. A blob with fewer than three quarters of the
+   pixels its tracks had when last seen cannot hold them all (a block left, and its track reached
+   the neighbour): the track nearest the blob keeps it.
+5. The model answers about frames some seconds old. A new seed that would share a blob a seen
+   track follows must still find, in its box, three quarters of the colour it had in the frame the
+   model saw. Otherwise its block has left since, and the seed is dropped until the next answer.
+6. A blob, or a share of one, whose box's long side exceeds `max_blob_ratio` times the long side
+   of the model's box is not one block and is not followed: a block the colour of the table, or
+   two touching blocks of one colour while the model has named only one. Without a box from the
+   model, the seed's search diameter stands in for it.
+7. A track without a blob for `lost_after_s` is dropped and waits for the next seed. For a seed
    that never found its blob, the time counts from the answer's arrival.
 
 ## Settings
@@ -116,21 +129,25 @@ labels_hsv: wooden=10-20,30-90,150-255
 ```
 
 A block stood on end does not fit its lying box and its label shows `ostatnie widziane` until it
-is laid down. Several blocks the model names alike (two `red cube`s) share one label: the twin
-keeps one object per label, and each camera's surest seed.
+is laid down. Several blocks the model names alike (two `red cube`s) share one label. The model is
+asked for one entry and box per block; the twin pairs each block's detections across the cameras
+and keys the blocks `red cube`, `red cube 2`, and so on. A label with a trailing number (`red cube
+2`) takes its size and colour from the words before it.
 
 ## What `detect` returns
 
-For every followed blob, per camera, a `Detection` with:
+For every followed block, per camera, a `Detection` with:
 
-- `mask`: the blob's pixels, a bool image of the frame's shape;
-- `box`: the blob's first and last pixel column and row;
-- `pixel`: the blob's centroid;
+- `mask`: the block's blob, or its share of a blob it shares, a bool image of the frame's shape;
+- `box`: the mask's first and last pixel column and row;
+- `pixel`: the mask's centroid;
 - `size_m`: the block's size;
 - `confidence` 1.0 and `pixel_error_px` 6.
 
-`pixel` is the colour blob's centroid, which marks the centre at half the object's height as the
-twin reads a `size_m` pixel; the twin's box fit uses the mask and never the pixel. The model's own
+`pixel` is the mask's centroid, which marks the centre at half the object's height as the twin
+reads a `size_m` pixel; the twin pairs a block's cameras by it, and its box fit uses the mask.
+Where blocks touch, the twin fits their boxes to the masks together, so the line the detector
+draws between two blocks of one colour need not be exact. The model's own
 pixel, the footprint's centre, only anchors a fresh seed.
 
 A label is left out of a call when its blob is not found, and before the first answer arrives.

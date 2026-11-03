@@ -284,14 +284,18 @@ def test_labels_are_compared_stripped_and_lower_cased():
     assert obj.label == "red pen" and obj.method == "triangulacja"
 
 
-def test_per_camera_the_surer_detection_of_a_label_wins():
+def test_per_camera_one_object_reported_twice_counts_once_and_objects_apart_are_two():
+    # Several objects may share a label: the label reported at two spots is two pens, and the
+    # repeat at one spot keeps its surer report.
     far = np.array([0.1, -0.1, 0.0])
     dets = [Detection("pen", "a", project(A, far), confidence=0.3),
             Detection("pen", "a", project(A, P), confidence=0.8, height_m=float(P[2])),
             Detection("pen", "a", project(A, far), confidence=0.5)]
-    (obj,), dropped = run(dets)
-    assert dropped == 0 and obj.n_cameras == 1 and obj.confidence == 0.8
-    np.testing.assert_allclose(obj.pos, P, atol=1e-6)
+    placed, dropped = run(dets)
+    assert dropped == 0 and sorted(obj.confidence for obj in placed) == [0.5, 0.8]
+    near = next(obj for obj in placed if obj.confidence == 0.8)
+    assert near.n_cameras == 1
+    np.testing.assert_allclose(near.pos, P, atol=1e-6)
 
 
 def test_confidence_is_clipped_to_zero_to_one():
@@ -339,6 +343,10 @@ class FakeCube:
 
     def fit_masks(self, masks, mapper, occluders=None, t=0.0):
         FakeCube.calls.append((self.size, masks, mapper, occluders, t))
+        return self.answer
+
+    def fit_silhouette(self, masks, cameras, start, occluders=None):
+        """The fit again from a start, for blocks whose masks touch: the same answer."""
         return self.answer
 
 
@@ -407,6 +415,9 @@ class HiddenCube:
         self.calls.append(occluders)
         hidden = occluders is not None and "a" in occluders and bool(occluders["a"][self.other].all())
         return self.answer if hidden else None
+
+    def fit_silhouette(self, masks, cameras, start, occluders=None):
+        return self.answer
 
 
 def test_a_block_another_label_hides_is_fitted_again_with_that_label_s_mask_as_hidden():
@@ -574,3 +585,146 @@ def test_a_resized_frame_is_logged_once_per_camera(caplog, monkeypatch):
     warned = [r.getMessage() for r in caplog.records if "its record says" in r.getMessage()]
     assert warned == [f"camera 'b' delivers {W // 2}x{H // 2} frames, its record says {W}x{H}: "
                       "no silhouette fit (no yaw) from it until the sizes match"]
+
+
+# ------------------------------------------------------------------ several objects of one label
+Q = np.array([0.30, -0.05, 0.02])
+
+
+def test_assign_finds_the_cheapest_pairs_within_the_gate():
+    # Cheapest first would take (0, 0) and leave (1, 1) at 10; the best pairs cost 3.5 in all.
+    assert objects.assign(np.array([[1.0, 2.0], [1.5, 10.0]]), 20.0) == [(0, 1), (1, 0)]
+    assert objects.assign(np.array([[1.0, 2.0], [1.5, 10.0]]), 1.8) == [(0, 0)]
+    assert objects.assign(np.array([[0.1, 9.0, 0.2]]), 1.0) == [(0, 0)]
+    assert objects.assign(np.zeros((0, 2)), 1.0) == []
+    assert objects.assign(np.array([[np.nan, 0.5]]), 1.0) == [(0, 1)]
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_two_objects_of_one_label_pair_by_their_rays_whatever_the_order(swap: bool):
+    in_b = [Detection("pen", "b", project(B, Q), confidence=0.6), Detection("pen", "b", project(B, P), confidence=0.7)]
+    dets = [Detection("pen", "a", project(A, P), confidence=0.9), Detection("pen", "a", project(A, Q), confidence=0.8),
+            *(in_b[::-1] if swap else in_b)]
+    placed, dropped = run(dets)
+    assert dropped == 0 and len(placed) == 2
+    for obj in placed:
+        assert obj.label == "pen" and obj.method == "triangulacja" and obj.n_cameras == 2
+    got = sorted((obj.pos for obj in placed), key=lambda p: p[0])
+    np.testing.assert_allclose(got[0], P, atol=5e-4)
+    np.testing.assert_allclose(got[1], Q, atol=5e-4)
+
+
+def test_two_cameras_each_seeing_another_object_of_a_tracked_label_place_both_apart():
+    # A camera that sees one of two tracked pens, and another camera that sees the other.
+    dets = [Detection("pen", "a", project(A, P), height_m=float(P[2])),
+            Detection("pen", "b", project(B, Q), height_m=float(Q[2]))]
+    size = (0.01, 0.01, 0.04)
+    tracked = {"pen": Resting(P, np.eye(3), size, "pen"), "pen 2": Resting(Q, np.eye(3), size, "pen")}
+    placed, _ = run(dets, tracked=tracked)
+    assert sorted(obj.method for obj in placed) == ["promien", "promien"]
+    got = sorted((obj.pos for obj in placed), key=lambda p: p[0])
+    np.testing.assert_allclose(got[0], P, atol=1e-6)
+    np.testing.assert_allclose(got[1], Q, atol=1e-6)
+    # One tracked pen, or none: one detection per camera is one object, as always.
+    (obj,), _ = run(dets, tracked={"pen": tracked["pen"]})
+    assert obj.method == "promien"
+
+
+def _square(u: float, v: float, side: int = 16) -> np.ndarray:
+    m = np.zeros((H, W), bool)
+    m[int(v) - side // 2:int(v) + side // 2, int(u) - side // 2:int(u) + side // 2] = True
+    return m
+
+
+def test_each_block_of_a_label_is_fitted_to_its_own_masks_only():
+    calls = []
+
+    class Recorder:
+        def __init__(self, size, base=0.0):
+            self.size = size
+
+        def fit_masks(self, masks, mapper, occluders=None, t=0.0):
+            calls.append(masks)
+            p = P if any(m is first for m in masks.values()) else Q
+            return CubeDetection(np.array([p[0], p[1], 0.015]), np.eye(3), 1.0, 0.9, n_cameras=2)
+
+        def fit_silhouette(self, masks, cameras, start, occluders=None):
+            raise AssertionError("the masks do not touch")
+
+    cube = (0.03, 0.03, 0.03)
+    first = _square(*project(A, P))
+    dets = [Detection("cube", "a", project(A, P), mask=first, size_m=cube),
+            Detection("cube", "a", project(A, Q), mask=_square(*project(A, Q)), size_m=cube),
+            Detection("cube", "b", project(B, Q), mask=_square(*project(B, Q)), size_m=cube),
+            Detection("cube", "b", project(B, P), mask=_square(*project(B, P)), size_m=cube)]
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    placed, _ = run(dets, mapper=mapper, box=Recorder)
+
+    assert len(placed) == 2 and len(calls) == 2
+    by_mask = {id(d.mask): d for d in dets}
+    for masks in calls:
+        one = {c: by_mask[id(m)] for c, m in masks.items()}
+        assert set(one) == {"a", "b"}
+        assert np.allclose(one["a"].pixel, project(A, P)) == np.allclose(one["b"].pixel, project(B, P))
+
+
+def test_one_object_reported_twice_with_overlapping_boxes_counts_once():
+    u, v = project(A, P)
+    dets = [Detection("pen", "a", (u, v), box=(u - 10, v - 10, u + 10, v + 10), confidence=0.9),
+            Detection("pen", "a", (u + 3.0, v), box=(u - 7, v - 10, u + 13, v + 10), confidence=0.5),
+            Detection("pen", "b", project(B, P), confidence=0.8)]
+    (obj,), _ = run(dets)
+    assert obj.n_cameras == 2 and obj.confidence == pytest.approx(0.85)
+
+
+def test_one_object_placed_twice_in_one_spot_counts_once():
+    # Camera a reports the pen twice, 3 px apart and without boxes; b once. One pen, from both cameras.
+    u, v = project(A, P)
+    h = float(P[2])
+    dets = [Detection("pen", "a", (u, v), confidence=0.9, height_m=h),
+            Detection("pen", "a", (u + 3.0, v), confidence=0.5, height_m=h),
+            Detection("pen", "b", project(B, P), confidence=0.8, height_m=h)]
+    (obj,), _ = run(dets)
+    assert obj.n_cameras == 2 and obj.confidence == pytest.approx(0.85)
+
+
+def test_each_object_rests_where_its_own_tracked_block_rests():
+    bases = []
+
+    def box(size, base=0.0):
+        bases.append(base)
+        z = base + size[2] / 2
+        p = P if len(bases) == 1 else Q
+        return FakeCube(size, CubeDetection(np.array([p[0], p[1], z]), np.eye(3), 1.0, 0.9, n_cameras=1))
+
+    cube = (0.03, 0.03, 0.03)
+    dets = [Detection("cube", "a", project(A, [P[0], P[1], 0.045]), mask=_square(100, 100), size_m=cube),
+            Detection("cube", "a", project(A, [Q[0], Q[1], 0.015]), mask=_square(400, 300), size_m=cube)]
+    tracked = {"cube": resting(P[0], P[1], 0.03), "cube 2": resting(Q[0], Q[1], 0.0),
+               "under": resting(P[0], P[1], 0.0)}
+    tracked = {k: Resting(r.pos, r.rot, r.size_m, "cube" if k.startswith("cube") else k) for k, r in tracked.items()}
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    placed, _ = run(dets, mapper=mapper, box=box, tracked=tracked)
+    assert bases == [0.03, 0.0] and len(placed) == 2
+
+
+def test_the_boxes_of_a_block_on_another_of_its_size_are_two_objects():
+    # The boxes overlap by more than half, but the upper one's centre lies a block's height higher.
+    u, v = project(A, P)
+    dets = [Detection("brick", "a", (u, v - 4.0), box=(u - 30, v - 22, u + 30, v + 14), confidence=0.9),
+            Detection("brick", "a", (u, v + 4.0), box=(u - 30, v - 14, u + 30, v + 22), confidence=0.8)]
+    assert objects._box_iou(dets[0].box, dets[1].box) > objects.SAME_IOU
+    assert len(objects._distinct(dets)) == 2
+
+
+@pytest.mark.parametrize("turned", [False, True])
+def test_a_flat_block_resting_on_one_of_its_label_is_not_placed_twice_in_one_spot(turned: bool):
+    brick = (0.06, 0.029, 0.014)
+    rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]) if turned else np.eye(3)
+
+    def at(z: float, dx: float = 0.0, r: np.ndarray | None = None) -> objects.Located:
+        return objects.Located("red cuboid", np.array([0.2 + dx, 0.0, z]), np.eye(3) if r is None else r, 0.9, 2,
+                               1.0, brick, "sylwetka")
+
+    assert sorted(objects._once({0: at(0.007), 1: at(0.021, r=rot)})) == [0, 1]
+    assert sorted(objects._once({0: at(0.007), 1: at(0.009, dx=0.005, r=rot)})) == [0]
