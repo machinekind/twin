@@ -285,6 +285,15 @@ def test_a_detection_has_only_pixels_by_default():
     assert d.confidence == 1.0
 
 
+def test_an_object_s_key_carries_its_instance_number_and_base_label_drops_it():
+    assert [machinekind_twin_api.instance_key("red cube", n) for n in (1, 2, 3)] == \
+        ["red cube", "red cube 2", "red cube 3"]
+    assert machinekind_twin_api.base_label("red cube 2") == "red cube"
+    assert machinekind_twin_api.base_label("  Red   Cube 12 ") == "red cube"
+    assert machinekind_twin_api.base_label("red cube") == "red cube"
+    assert machinekind_twin_api.base_label("7") == "7"
+
+
 def test_a_detection_with_a_mask_compares_by_identity():
     d = Detection(label="cube", camera="front", pixel=(1.0, 1.0), mask=np.ones((4, 6), bool))
 

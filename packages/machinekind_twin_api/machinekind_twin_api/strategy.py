@@ -94,7 +94,8 @@ class Observation:
     #: The task's goal point, shape (3,); None = no goal.
     goal: np.ndarray | None = None
     #: Objects the perception knows about, by a detector's label, e.g. "cube" or "red pen"; empty
-    #: when no detector runs.
+    #: when no detector runs. Further objects with one label are "red pen 2", "red pen 3", ...; a key
+    #: keeps naming the same object while it is tracked (`detector.base_label` gives the label).
     objects: Mapping[str, ObjectPose] = field(default_factory=dict)
     #: Camera frames by camera name, fetched only when read: a strategy without vision pays nothing.
     #: A camera without a frame (not open yet, stream broken) is missing.

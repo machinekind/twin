@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import pytest
-from machinekind_twin_seeded.grow import Blob, blobs, box_distance, colour_mask, nearest
+from machinekind_twin_seeded.grow import Blob, assign, blobs, box_distance, colour_mask, nearest, part, split
 from machinekind_twin_seeded.settings import COLOURS, parse_hsv
 
 W, H = 640, 480
@@ -95,3 +95,44 @@ def test_box_distance_is_zero_inside_and_euclidean_outside():
     assert box_distance((15.0, 25.0), box) == 0.0
     assert box_distance((0.0, 30.0), box) == pytest.approx(10.0)
     assert box_distance((33.0, 44.0), box) == pytest.approx(5.0)
+
+
+def test_a_blob_of_two_touching_squares_splits_into_one_part_per_square():
+    labels, (blob,) = found(image((300, 200, 40, 40), (340, 200, 40, 40)))
+    mask = labels == blob.index
+
+    (left, right), centres = split(mask, [(305.0, 230.0), (350.0, 210.0)])
+
+    assert not (left & right).any() and np.array_equal(left | right, mask)
+    assert left[:, 300:340].sum() == right[:, 340:380].sum() == 40 * 40
+    assert part(left) == ((319.5, 219.5), (300, 200, 339, 239), 40)
+    assert centres == [pytest.approx((319.5, 219.5)), pytest.approx((359.5, 219.5))]
+    assert part(np.zeros_like(mask)) is None
+
+
+def test_a_flat_block_on_another_is_cut_across_not_along_its_length():
+    # A long low blob: one flat block's top and front over the front of the one below it.
+    labels, (blob,) = found(image((300, 200, 80, 40)))
+    mask = labels == blob.index
+
+    (top, under), centres = split(mask, [(338.0, 214.0), (342.0, 226.0)])
+
+    assert top[200:207, 300:380].all() and under[234:240, 300:380].all()
+    assert centres == [(338.0, 214.0), (342.0, 226.0)]
+
+
+def test_a_free_centre_moves_along_the_line_from_the_one_that_stays():
+    # The lower block's track had the whole blob to itself: it starts at the blob's centroid.
+    labels, (blob,) = found(image((300, 200, 80, 40)))
+    mask = labels == blob.index
+
+    (top, under), (kept, moved) = split(mask, [(339.0, 207.0), (341.0, 220.0)], free=[False, True])
+
+    assert kept == (339.0, 207.0) and moved[1] > 224.0
+    assert top[200:210, 300:380].all() and under[232:240, 300:380].all()
+
+
+def test_assign_pairs_the_cheapest_way_within_the_gate():
+    assert assign(np.array([[1.0, 2.0], [1.5, 10.0]]), 20.0) == [(0, 1), (1, 0)]
+    assert assign(np.array([[0.2], [0.1]]), 1.0) == [(1, 0)]
+    assert assign(np.array([[5.0, 6.0]]), 1.0) == []

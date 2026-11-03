@@ -12,7 +12,7 @@ import json
 import stat
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +191,13 @@ def centre(u0: int, v0: int, size_px: int = SQUARE) -> tuple[float, float]:
     return u0 + (size_px - 1) / 2, v0 + (size_px - 1) / 2
 
 
+def track_of(det: SeededDetector, label: str = "red cube", camera: str = "top") -> Any:
+    """The detector's one track of `label` in `camera`; None without one."""
+    found = [t for t in det._tracks if (t.label, t.camera) == (label, camera)]
+    assert len(found) <= 1, found
+    return found[0] if found else None
+
+
 # --- start and stop -------------------------------------------------------------------------------
 
 
@@ -300,13 +307,13 @@ def test_a_blob_farther_than_the_seed_error_is_not_snapped(fake: Fake,
 
     clock.advance(0.2)
     assert det.detect(top((300, 200))) == []
-    assert ("red cube", "top") in det._tracks
+    assert track_of(det) is not None
     clock.advance(2.9)                      # 2.9 s after the answer arrived
     assert det.detect(top((300, 200))) == []
-    assert ("red cube", "top") in det._tracks
+    assert track_of(det) is not None
     clock.advance(0.2)                      # 3.1 s
     assert det.detect(top((300, 200))) == []
-    assert det._tracks == {}
+    assert det._tracks == []
     clock.advance(0.2)
     assert det.detect(top((500, 200))) == []   # under the old pixel now, but nothing seeds it
     assert len(fake.runs()) == 1
@@ -322,13 +329,13 @@ def test_a_fresh_seed_gets_lost_after_s_from_the_answer_s_arrival_not_from_the_q
     answered(det)
 
     assert det.detect(top()) == []          # drained now; the square is gone
-    assert ("red cube", "top") in det._tracks
+    assert track_of(det) is not None
     clock.advance(2.9)
     assert det.detect(top()) == []
-    assert ("red cube", "top") in det._tracks
+    assert track_of(det) is not None
     clock.advance(0.2)
     assert det.detect(top()) == []
-    assert det._tracks == {}
+    assert det._tracks == []
 
 
 def test_a_lost_blob_omits_the_label_and_the_next_answer_reseeds(
@@ -343,10 +350,10 @@ def test_a_lost_blob_omits_the_label_and_the_next_answer_reseeds(
 
     clock.advance(0.2)
     assert det.detect(top()) == []          # gone: the label is omitted
-    assert det._tracks[("red cube", "top")].lost
+    assert track_of(det).lost
     clock.advance(3.1)                      # 3.3 s since the last sighting
     assert det.detect(top()) == []
-    assert det._tracks == {}
+    assert det._tracks == []
 
     clock.advance(1.5)                      # 5.0 s since the first question: the next one goes out
     assert det.detect(top((300, 200))) == []
@@ -376,7 +383,7 @@ def test_a_live_track_outranks_a_new_seed(fake: Fake, started: Callable[..., See
     found = det.detect(top((260, 200), (180, 200)))
 
     assert [d.pixel for d in found] == [pytest.approx(centre(260, 200), abs=1.0)]
-    assert det._tracks[("red cube", "top")].unconfirmed == 0
+    assert track_of(det).unconfirmed == 0
 
 
 def test_three_answers_without_the_label_drop_a_live_track(fake: Fake,
@@ -396,14 +403,14 @@ def test_three_answers_without_the_label_drop_a_live_track(fake: Fake,
         answered(det)
         clock.advance(0.2)
         assert len(det.detect(top((300, 200)))) == 1     # the empty answer, drained
-        assert det._tracks[("red cube", "top")].unconfirmed == unconfirmed
+        assert track_of(det).unconfirmed == unconfirmed
     clock.advance(2.0)
     det.detect(top((300, 200)))
     answered(det)
     clock.advance(0.2)
 
     assert det.detect(top((300, 200))) == []             # the third empty answer drops the track
-    assert det._tracks == {}
+    assert det._tracks == []
     assert det._asks == 4
 
 
@@ -530,4 +537,185 @@ def test_bare_wood_on_a_wood_coloured_table_is_not_followed(fake: Fake, started:
     det = started()
 
     assert seeded_once(det, painted(TABLE, (300, 200, WOOD))) == []
-    assert det._tracks[("wooden cube", "top")].seen_at is None
+    assert track_of(det, "wooden cube").seen_at is None
+
+
+# --- several blocks of one label ----------------------------------------------------------------
+
+
+def masks_by_pixel(found: Sequence[Detection]) -> list[tuple[tuple[float, float], int]]:
+    """Each detection's pixel and mask area, left to right."""
+    out = []
+    for d in found:
+        assert d.mask is not None
+        out.append(((round(d.pixel[0], 1), round(d.pixel[1], 1)), int(d.mask.sum())))
+    return sorted(out)
+
+
+def test_two_blocks_of_one_label_get_a_track_each(fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(100, 200), seed(400, 200))
+
+    found = seeded_once(started(), top((100, 200), (400, 200)))
+
+    assert [d.label for d in found] == ["red cube", "red cube"]
+    assert masks_by_pixel(found) == [(centre(100, 200), SQUARE * SQUARE), (centre(400, 200), SQUARE * SQUARE)]
+
+
+def test_the_tracks_keep_their_blocks_when_the_model_lists_them_the_other_way(
+        fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(100, 200), seed(400, 200))
+    det = started(seed_interval_s=2.0)
+    clock = clock_of(det)
+    seeded_once(det, top((100, 200), (400, 200)))
+    left, right = sorted(det._tracks, key=lambda t: t.anchor[0])
+
+    for k in range(1, 11):                  # both move 2 px a call; the second question at 2.0 s
+        clock.advance(0.2)
+        found = det.detect(top((100 + 2 * k, 200), (400 - 2 * k, 200)))
+        if k == 10:
+            fake.answers(seed(380, 200), seed(120, 200))
+    answered(det)
+    clock.advance(0.2)
+    found = det.detect(top((122, 200), (378, 200)))
+
+    assert det._asks == 2 and len(det._tracks) == 2
+    assert left.anchor == pytest.approx(centre(122, 200), abs=1.0) and left.unconfirmed == 0
+    assert right.anchor == pytest.approx(centre(378, 200), abs=1.0) and right.unconfirmed == 0
+    assert len(found) == 2
+
+
+@pytest.mark.parametrize("second", [(340, 200), (300, 240)])
+def test_touching_blocks_of_one_colour_share_their_blob(fake: Fake, started: Callable[..., SeededDetector],
+                                                       second: tuple[int, int]):
+    fake.answers(seed(300, 200), seed(*second))
+
+    found = seeded_once(started(), top((300, 200), second))
+
+    assert masks_by_pixel(found) == sorted([(centre(300, 200), SQUARE * SQUARE), (centre(*second), SQUARE * SQUARE)])
+    a, b = (d.mask for d in found)
+    assert a is not None and b is not None and not (a & b).any()
+
+
+def test_a_cube_and_a_cuboid_of_one_colour_touching_share_their_blob(fake: Fake,
+                                                                      started: Callable[..., SeededDetector]):
+    fake.answers(seed(300, 200, "red cube"), seed(340, 200, "red cuboid"))
+
+    found = {d.label: d for d in seeded_once(started(), top((300, 200), (340, 200)))}
+
+    assert found["red cube"].pixel == pytest.approx(centre(300, 200), abs=1.0)
+    assert found["red cuboid"].pixel == pytest.approx(centre(340, 200), abs=1.0)
+    assert found["red cuboid"].size_m == (0.060, 0.029, 0.014)
+
+
+def test_a_block_the_model_names_twice_is_one_track(fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(300, 200), seed(300, 200))
+    det = started()
+
+    (found,) = seeded_once(det, top((300, 200)))
+
+    assert len(det._tracks) == 1 and found.mask is not None and int(found.mask.sum()) == SQUARE * SQUARE
+
+
+def test_a_blob_too_long_for_the_one_block_named_is_split_once_the_model_names_both(
+        fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(300, 200))
+    det = started(seed_interval_s=2.0)
+    clock = clock_of(det)
+    call = top((300, 200), (340, 200))
+    assert seeded_once(det, call) == []      # one block named, a blob of two: not followed
+
+    fake.answers(seed(340, 200), seed(300, 200))
+    clock.advance(1.8)
+    det.detect(call)
+    answered(det)
+    clock.advance(0.2)
+    found = det.detect(call)
+
+    assert masks_by_pixel(found) == [(centre(300, 200), SQUARE * SQUARE), (centre(340, 200), SQUARE * SQUARE)]
+
+
+def test_a_block_taken_away_from_its_neighbour_leaves_the_neighbour_whole(
+        fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(300, 200), seed(340, 200))
+    det = started(seed_interval_s=60.0)
+    clock = clock_of(det)
+    assert len(seeded_once(det, top((300, 200), (340, 200)))) == 2
+
+    clock.advance(0.2)
+    (found,) = det.detect(top((340, 200)))   # the left one is gone; its track reaches the right one
+
+    assert masks_by_pixel([found]) == [(centre(340, 200), SQUARE * SQUARE)]
+    assert sorted(t.lost for t in det._tracks) == [False, True]
+
+
+def test_the_model_s_boxes_of_a_block_on_another_of_its_size_are_two_tracks(fake: Fake,
+                                                                             started: Callable[..., SeededDetector]):
+    # The boxes overlap by more than half; the upper block's lies higher by its height.
+    fake.answers(seed(300, 200), seed(300, 212))
+    det = started()
+
+    found = seeded_once(det, top((300, 200), (300, 212)))
+
+    assert len(det._tracks) == 2 and len(found) == 2
+
+
+def hold_answer(det: SeededDetector) -> Any:
+    """The worker's answer, taken away as if the model were still thinking."""
+    answered(det)
+    with det._lock:
+        held, det._answer = det._answer, None
+    assert held is not None
+    return held
+
+
+def give_answer(det: SeededDetector, held: Any) -> None:
+    with det._lock:
+        det._answer = held
+
+
+@pytest.mark.parametrize("lost_first", [False, True])
+def test_an_answer_about_a_block_since_taken_away_leaves_its_neighbour_whole(
+        fake: Fake, started: Callable[..., SeededDetector], lost_first: bool):
+    # The right block stands in front of the left one and hides part of it.
+    fake.answers(seed(300, 200), seed(320, 200))
+    det = started(seed_interval_s=2.0)
+    clock = clock_of(det)
+    both, right = top((300, 200), (320, 200)), top((320, 200))
+    assert len(seeded_once(det, both)) == 2
+
+    clock.advance(1.8)
+    det.detect(both)                        # the question goes out with both blocks there
+    held = hold_answer(det)
+    if lost_first:
+        clock.advance(0.2)
+        det.detect(right)                   # the left one is taken away; its track is lost
+    give_answer(det, held)
+    clock.advance(0.2)
+    found = det.detect(right)               # the answer still names the left one where it was
+
+    assert masks_by_pixel(found) == [(centre(320, 200), SQUARE * SQUARE)]
+    assert [t.anchor for t in det._tracks if t.live] == [pytest.approx(centre(320, 200), abs=1.0)]
+
+
+def test_a_block_put_against_a_followed_one_of_its_colour_gets_its_share_once_named(
+        fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(300, 200))
+    det = started(seed_interval_s=2.0, max_blob_ratio=2.5)
+    clock = clock_of(det)
+    assert len(seeded_once(det, top((300, 200)))) == 1
+
+    both = top((300, 200), (340, 200))
+    clock.advance(0.2)
+    (whole,) = det.detect(both)             # the one track now follows both blocks' blob
+    assert whole.mask is not None and int(whole.mask.sum()) == 2 * SQUARE * SQUARE
+    fake.answers(seed(300, 200), seed(340, 200))
+    clock.advance(1.6)
+    det.detect(both)
+    answered(det)
+    clock.advance(0.2)
+    found = det.detect(both)
+
+    got = masks_by_pixel(found)
+    assert [pixel for pixel, _ in got] == [pytest.approx(centre(300, 200), abs=1.0),
+                                           pytest.approx(centre(340, 200), abs=1.0)]
+    assert [area for _, area in got] == [pytest.approx(SQUARE * SQUARE, rel=0.05)] * 2

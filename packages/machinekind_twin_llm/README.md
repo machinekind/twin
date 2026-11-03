@@ -11,6 +11,11 @@ the CLI is logged in with.
 
 The package depends on `machinekind-twin-api` (the contracts), numpy and OpenCV, never on the twin.
 
+The model answers with one entry per object per image: a label, a pixel, a box and a confidence.
+Several objects may share a label; the prompt asks for each of them, with its own box, also when
+they touch or stand on each other. A number the model appends to a label (`red cube 2`) is
+dropped: the twin numbers the objects itself.
+
 ## CLI and model selection
 
 The panel offers a `cli` dropdown (`codex`, `claude`) and a `model` dropdown for the selected CLI.
