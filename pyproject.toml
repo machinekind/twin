@@ -16,10 +16,11 @@ dependencies = [
     # two OpenCV wheels write the same cv2/ directory and overwrite each other.
     "opencv-contrib-python>=4.8",
     "numpy>=1.24",
+    "zstandard>=0.25,<1",
     "PyYAML>=6.0",
     # The plugin contracts, packages/machinekind_twin_api in this repository. They are not on PyPI;
     # `uv sync` installs them from the clone ([tool.uv.sources]).
-    "machinekind-twin-api>=0.1.2,<0.2",
+    "machinekind-twin-api>=0.1.3,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +65,8 @@ include = [
     "examples/strategies",
     "src/machinekind_twin/detection.py",
     "src/machinekind_twin/detectors.py",
+    "src/machinekind_twin/episode.py",
+    "src/machinekind_twin/episode_report.py",
     "src/machinekind_twin/objects.py",
     "src/machinekind_twin/plugin_settings.py",
     "src/machinekind_twin/strategy.py",

@@ -21,6 +21,7 @@ from machinekind_twin_api import (
     Action,
     BackendContext,
     BackendPlugin,
+    Decision,
     Detection,
     Detector,
     DetectorInfo,
@@ -111,6 +112,27 @@ def test_an_action_without_a_target_keeps_driving_to_the_previous_one():
     assert action.success is None
 
 
+def test_an_action_carries_no_model_decisions_by_default():
+    assert Action().decisions == ()
+    assert dataclasses.fields(Action)[-1].name == "decisions"
+
+
+def test_a_decision_needs_only_the_question_and_the_answer():
+    decision = Decision(question="where is the cube?", answer='{"x": 0.2}')
+
+    assert decision.state == {}
+    assert decision.confidence is None
+    assert decision.response_s is None
+
+
+def test_an_action_with_decisions_compares_without_comparing_arrays():
+    decision = Decision(question="q", answer="a", state={"image": np.zeros((4, 6, 3))})
+    action = Action(decisions=(decision,))
+
+    assert action == Action(decisions=(decision,))
+    assert action != Action(decisions=(copy.copy(decision),))
+
+
 def test_run_info_holds_the_robot_once():
     info = RunInfo(robot="testbot", joints=("j1", "gripper"), gripper="gripper",
                    limits={"j1": (-90.0, 90.0)}, max_vel={"j1": 90.0}, folder=Path("."), simulated=True)
@@ -118,7 +140,7 @@ def test_run_info_holds_the_robot_once():
     assert info.joints == ("j1", "gripper")
 
 
-@pytest.mark.parametrize("cls", [ObjectPose, Frame, RunInfo, Observation, Action, BackendContext,
+@pytest.mark.parametrize("cls", [ObjectPose, Frame, RunInfo, Observation, Action, Decision, BackendContext,
                                  Detection, DetectRequest, DetectorInfo])
 def test_the_twins_data_is_frozen(cls):
     assert cls.__dataclass_params__.frozen

@@ -347,6 +347,7 @@ dependencies = [
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "opencv-contrib-python" },
     { name = "pyyaml" },
+    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -381,6 +382,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "trimesh", marker = "extra == 'research'", specifier = ">=4,<6" },
     { name = "viser", marker = "extra == 'twin'", specifier = ">=1.1" },
+    { name = "zstandard", specifier = ">=0.25,<1" },
 ]
 provides-extras = ["twin", "research"]
 
@@ -398,7 +400,7 @@ dev = [
 
 [[package]]
 name = "machinekind-twin-api"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "packages/machinekind_twin_api" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

@@ -10,11 +10,11 @@ import atexit
 import shutil
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 import numpy as np
 import pytest
+import tomllib
 from machinekind_twin_api.entry_points import DETECTORS
 
 from machinekind_twin.robots import reload_robots
@@ -72,6 +72,14 @@ def _no_config_from_env(monkeypatch):
     # w os.environ, zniknie po tescie (samo delenv nieistniejacej zmiennej niczego nie zapamietuje).
     monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", "")
     monkeypatch.delenv("MACHINEKIND_TWIN_CONFIG")
+
+
+@pytest.fixture(autouse=True)
+def _episodes_in_tmp(tmp_path, monkeypatch):
+    """Keep explicitly enabled recordings under the test's temporary directory."""
+    from machinekind_twin import episode
+
+    monkeypatch.setattr(episode, "data_path", lambda rel: tmp_path / rel)
 
 
 @pytest.fixture

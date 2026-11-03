@@ -13,12 +13,12 @@ twin re-exports the same classes from `machinekind_twin.strategy` and `machineki
 from .backend import BackendContext, BackendPlugin, RobotBackend, RobotInfo
 from .detector import Detection, Detector, DetectorInfo, DetectRequest
 from .entry_points import BACKENDS, DETECTORS, ROBOTS, STRATEGIES
-from .strategy import Action, ActionLike, Frame, ObjectPose, Observation, RunInfo, S, Strategy
+from .strategy import Action, ActionLike, Decision, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext",
-    "BackendPlugin", "DetectRequest", "Detection", "Detector", "DetectorInfo", "Frame", "ObjectPose",
-    "Observation", "RobotBackend", "RobotInfo", "RunInfo", "S", "Strategy", "__version__",
+    "BackendPlugin", "Decision", "DetectRequest", "Detection", "Detector", "DetectorInfo", "Frame",
+    "ObjectPose", "Observation", "RobotBackend", "RobotInfo", "RunInfo", "S", "Strategy", "__version__",
 ]
