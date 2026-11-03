@@ -360,6 +360,29 @@ def test_config_file_keeps_foreign_sections_for_backends_but_fails_on_unknown_ke
         load_config(bad)
 
 
+def test_the_panel_speed_is_a_safety_setting_and_must_be_a_positive_number(tmp_path):
+    from machinekind_twin.config import load_config
+
+    assert load_config().safety.panel_speed_deg_s == 20.0
+    path = tmp_path / "local.yaml"
+    path.write_text("safety: {panel_speed_deg_s: 80}\n")
+    speed = load_config(path).safety.panel_speed_deg_s
+    assert speed == 80.0 and isinstance(speed, float)
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "fast", "true", ".nan", ".inf", "null"])
+def test_a_panel_speed_that_is_not_a_positive_number_stops_the_twin_at_startup(tmp_path, bad):
+    from machinekind_twin.cli import _use_config
+    from machinekind_twin.config import load_config
+
+    path = tmp_path / "local.yaml"
+    path.write_text(f"safety: {{panel_speed_deg_s: {bad}}}\n")
+    with pytest.raises(ValueError, match="panel_speed_deg_s"):
+        load_config(path)
+    with pytest.raises(SystemExit, match="panel_speed_deg_s"):
+        _use_config(str(path))
+
+
 # ------------------------------------------------------------ bledy serw, przerwy, limity
 def test_servo_fault_triggers_estop_and_preempts_the_owner(twin, monkeypatch):
     arm = FakeArm()

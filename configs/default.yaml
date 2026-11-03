@@ -18,6 +18,8 @@ safety:
   return_home_timeout_s: 6.0
   startup_ramp_s: 2.5       # plynne dojscie do pozycji domowej po starcie
   velocity_scale: 1.0       # globalny mnoznik limitow predkosci
+  panel_speed_deg_s: 20.0   # start of the panel's speed slider [deg/s]: the cap on every arm
+                            # joint, strategy runs included; must be > 0
   home_on_exit: true
   # Poza domowa i limity stawow sa w opisie ramienia (robot.yaml w folderze ramienia);
   # `safety.home` i `joints` w tym pliku nadpisuja je tylko dla ramienia o tych stawach.
