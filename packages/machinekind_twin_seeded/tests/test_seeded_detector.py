@@ -120,7 +120,7 @@ def sent(u: float, v: float) -> tuple[float, float]:
     return (u + 0.5) / SCALE - 0.5, (v + 0.5) / SCALE - 0.5
 
 
-def seed(u0: int, v0: int, label: str = "cube", camera: str = "top", size_px: int = SQUARE) -> dict[str, Any]:
+def seed(u0: int, v0: int, label: str = "red cube", camera: str = "top", size_px: int = SQUARE) -> dict[str, Any]:
     """The model's answer item for a square at (u0, v0): its centre and its box, in sent pixels."""
     u, v = sent(u0 + (size_px - 1) / 2, v0 + (size_px - 1) / 2)
     a, b = sent(u0, v0)
@@ -258,11 +258,11 @@ def test_the_first_call_asks_and_the_seed_grows_a_track_on_the_next(
     (found,) = det.detect(top((300, 200)))
 
     assert isinstance(found, Detection)
-    assert (found.label, found.camera) == ("cube", "top")
+    assert (found.label, found.camera) == ("red cube", "top")
     assert found.mask is not None and found.mask.dtype == bool and found.mask.shape == (H, W)
     assert found.mask[200:240, 300:340].all() and int(found.mask.sum()) == SQUARE * SQUARE
     assert found.box == (300.0, 200.0, 339.0, 239.0)
-    assert found.size_m == (0.025, 0.025, 0.025)
+    assert found.size_m == (0.029, 0.029, 0.029)
     assert found.pixel_error_px == 6.0 and found.confidence == 1.0
     assert found.pixel == pytest.approx(centre(300, 200), abs=1.0)
 
@@ -300,10 +300,10 @@ def test_a_blob_farther_than_the_seed_error_is_not_snapped(fake: Fake,
 
     clock.advance(0.2)
     assert det.detect(top((300, 200))) == []
-    assert ("cube", "top") in det._tracks
+    assert ("red cube", "top") in det._tracks
     clock.advance(2.9)                      # 2.9 s after the answer arrived
     assert det.detect(top((300, 200))) == []
-    assert ("cube", "top") in det._tracks
+    assert ("red cube", "top") in det._tracks
     clock.advance(0.2)                      # 3.1 s
     assert det.detect(top((300, 200))) == []
     assert det._tracks == {}
@@ -322,10 +322,10 @@ def test_a_fresh_seed_gets_lost_after_s_from_the_answer_s_arrival_not_from_the_q
     answered(det)
 
     assert det.detect(top()) == []          # drained now; the square is gone
-    assert ("cube", "top") in det._tracks
+    assert ("red cube", "top") in det._tracks
     clock.advance(2.9)
     assert det.detect(top()) == []
-    assert ("cube", "top") in det._tracks
+    assert ("red cube", "top") in det._tracks
     clock.advance(0.2)
     assert det.detect(top()) == []
     assert det._tracks == {}
@@ -343,7 +343,7 @@ def test_a_lost_blob_omits_the_label_and_the_next_answer_reseeds(
 
     clock.advance(0.2)
     assert det.detect(top()) == []          # gone: the label is omitted
-    assert det._tracks[("cube", "top")].lost
+    assert det._tracks[("red cube", "top")].lost
     clock.advance(3.1)                      # 3.3 s since the last sighting
     assert det.detect(top()) == []
     assert det._tracks == {}
@@ -354,7 +354,7 @@ def test_a_lost_blob_omits_the_label_and_the_next_answer_reseeds(
     answered(det)
     clock.advance(0.2)
     (found,) = det.detect(top((300, 200)))
-    assert found.label == "cube"
+    assert found.label == "red cube"
 
 
 def test_a_live_track_outranks_a_new_seed(fake: Fake, started: Callable[..., SeededDetector]):
@@ -376,7 +376,7 @@ def test_a_live_track_outranks_a_new_seed(fake: Fake, started: Callable[..., See
     found = det.detect(top((260, 200), (180, 200)))
 
     assert [d.pixel for d in found] == [pytest.approx(centre(260, 200), abs=1.0)]
-    assert det._tracks[("cube", "top")].unconfirmed == 0
+    assert det._tracks[("red cube", "top")].unconfirmed == 0
 
 
 def test_three_answers_without_the_label_drop_a_live_track(fake: Fake,
@@ -396,7 +396,7 @@ def test_three_answers_without_the_label_drop_a_live_track(fake: Fake,
         answered(det)
         clock.advance(0.2)
         assert len(det.detect(top((300, 200)))) == 1     # the empty answer, drained
-        assert det._tracks[("cube", "top")].unconfirmed == unconfirmed
+        assert det._tracks[("red cube", "top")].unconfirmed == unconfirmed
     clock.advance(2.0)
     det.detect(top((300, 200)))
     answered(det)
@@ -464,3 +464,70 @@ def test_the_frames_handed_to_the_model_are_copies(fake: Fake, started: Callable
     img[:] = 0
     assert np.array_equal(got["top"], image((300, 200)))
     assert fake.runs() == []
+
+
+# --- the real blocks -----------------------------------------------------------------------------
+
+#: Paints, RGB: so-arm101's light blue and bare wood, and the twin simulation's table.
+LIGHT_BLUE, WOOD, TABLE = (115, 185, 235), (214, 189, 166), (140, 128, 112)
+
+
+def painted(background: tuple[int, int, int], *squares: tuple[int, int, tuple[int, int, int]]) -> DetectRequest:
+    """A call offering the top camera only: squares (u, v, colour) on a plain background."""
+    img = np.full((H, W, 3), background, np.uint8)
+    for u, v, colour in squares:
+        img[v:v + SQUARE, u:u + SQUARE] = colour
+    return request(top=img)
+
+
+def seeded_once(det: SeededDetector, call: DetectRequest) -> list[Detection]:
+    """The asking call, the answer, and the call 0.2 s later that grows the seeds."""
+    det.detect(call)
+    answered(det)
+    clock_of(det).advance(0.2)
+    return list(det.detect(call))
+
+
+def test_every_label_the_model_names_as_a_block_is_followed_with_its_shape_s_size(
+        fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(100, 100, "light blue cuboid"), seed(300, 100, "red pen"), seed(500, 100, "Red Cube"))
+    call = painted((120, 120, 120), (100, 100, LIGHT_BLUE), (300, 100, RED), (500, 100, RED))
+
+    found = {d.label: d for d in seeded_once(started(), call)}
+
+    assert sorted(found) == ["light blue cuboid", "red cube"]
+    assert found["light blue cuboid"].size_m == (0.060, 0.029, 0.014)
+    assert found["light blue cuboid"].pixel == pytest.approx(centre(100, 100), abs=1.0)
+    assert found["red cube"].size_m == (0.029, 0.029, 0.029)
+
+
+def test_with_labels_set_only_those_are_followed(fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(100, 100, "light blue cuboid"), seed(500, 100, "red cube"))
+    call = painted((120, 120, 120), (100, 100, LIGHT_BLUE), (500, 100, RED))
+
+    det = started(labels="red cube")
+
+    assert [d.label for d in seeded_once(det, call)] == ["red cube"]
+    assert det._llm.config.objects == "red cube"
+
+
+def test_bare_wood_is_followed_on_a_table_of_another_colour(fake: Fake, started: Callable[..., SeededDetector]):
+    fake.answers(seed(300, 200, "wooden cube"))
+
+    (found,) = seeded_once(started(), painted((120, 120, 120), (300, 200, WOOD)))
+
+    assert found.label == "wooden cube"
+    assert found.mask is not None and int(found.mask.sum()) == SQUARE * SQUARE
+
+
+@pytest.mark.parametrize("with_box", [True, False])
+def test_bare_wood_on_a_wood_coloured_table_is_not_followed(fake: Fake, started: Callable[..., SeededDetector],
+                                                           with_box: bool):
+    item = seed(300, 200, "wooden cube")
+    if not with_box:
+        item["box"] = None
+    fake.answers(item)
+    det = started()
+
+    assert seeded_once(det, painted(TABLE, (300, 200, WOOD))) == []
+    assert det._tracks[("wooden cube", "top")].seen_at is None

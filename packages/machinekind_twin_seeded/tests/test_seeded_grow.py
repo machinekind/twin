@@ -6,12 +6,12 @@ import cv2
 import numpy as np
 import pytest
 from machinekind_twin_seeded.grow import Blob, blobs, box_distance, colour_mask, nearest
-from machinekind_twin_seeded.settings import DEFAULT_HSV, parse_hsv
+from machinekind_twin_seeded.settings import COLOURS, parse_hsv
 
 W, H = 640, 480
 RED = (200, 30, 30)
-#: The default red ranges, which wrap around H = 0.
-RED_RANGES = parse_hsv(DEFAULT_HSV)["cube"]
+#: The red ranges, which wrap around H = 0.
+RED_RANGES = parse_hsv(f"red={COLOURS['red']}")["red"]
 
 
 def image(*squares: tuple[int, int, int, int]) -> np.ndarray:

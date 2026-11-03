@@ -1,11 +1,12 @@
 """The seeded detector end to end through the twin's perception, against a fake codex CLI.
 
-Two synthetic cameras (`test_objects`' a, distorted, and b, pinhole) see a red 50x25x25 mm block
-on grey: its silhouette is the filled hull of its projected corners. The fake codex
+Two synthetic cameras (`test_objects`' a, distorted, and b, pinhole) see a red cuboid lying flat on
+grey: its silhouette is the filled hull of its projected corners. The fake codex
 (`packages/machinekind_twin_llm/tests/fake_cli.py`) answers the block's footprint centre in the
-pixels of the images the detector sent. The detector follows the block by colour, hands the twin
-its masks and size, and headless `Perception` fits the box: position and yaw in the base frame.
-No model, no network, no render.
+pixels of the images the detector sent. The detector takes the block's size from the label's shape
+word and its colour from the colour word, follows the block by colour and hands the twin its masks
+and size. Headless `Perception` fits the box: position and yaw in the base frame. No model, no
+network, no render.
 
 The plugin's `create` cannot pass a clock, so each test sets the detector's `_clock` to the test
 clock right after `start_detector`; the detector reads it only in `detect`. The worker runs a real
@@ -34,9 +35,9 @@ from test_perception import box_points, hull_mask
 from machinekind_twin.detection import DetectorRunner, Perception
 from machinekind_twin.detectors import load_detector
 
-#: The block: 50x25x25 mm lying on a long side, its half sides [m].
-HALF = (0.025, 0.0125, 0.0125)
-LABEL = "cuboid5"
+#: The block: the cuboid shape lying flat, its half sides [m].
+HALF = (0.030, 0.0145, 0.007)
+LABEL = "red cuboid"
 RED, GREY = (200, 30, 30), (120, 120, 120)
 #: The frames are 640x480; sent with max_side_px=320 they are 320x240, so the scale is 2.
 SIDE = 320
@@ -146,10 +147,8 @@ def perception(clock: Clock, source: Synthetic) -> Iterator[Perception]:
 def start_seeded(perception: Perception, clock: Clock, seeded_package: str, fake: FakeCodex,
                  **kw: Any) -> DetectorRunner:
     plugin = load_detector(seeded_package)
-    raw = {"cli": "codex", "executable": fake.exe, "max_side_px": SIDE,
-           "labels_sizes": "cuboid5=0.05x0.025x0.025",
-           "labels_hsv": "cuboid5=0-12,120-255,70-255|170-180,120-255,70-255",
-           "interval_s": 0.2, "seed_interval_s": 2.0}
+    raw = {"cli": "codex", "executable": fake.exe, "max_side_px": SIDE, "interval_s": 0.2,
+           "seed_interval_s": 2.0}
     raw.update(kw)
     runner = perception.start_detector(plugin, plugin.check(raw), threaded=False)
     runner.detector._clock = clock  # type: ignore[attr-defined]
@@ -204,7 +203,7 @@ def test_the_seed_becomes_a_box_with_yaw_in_the_base_frame(perception: Perceptio
     assert block.age_s <= 0.3
     (view,) = perception.snapshot()
     assert view.method == "sylwetka" and view.n_cameras == 2 and view.detector == "seeded"
-    assert view.size_m == (0.05, 0.025, 0.025)
+    assert view.size_m == (0.060, 0.029, 0.014)
 
 
 def test_the_pose_follows_the_block_between_questions(perception: Perception, clock: Clock, source: Synthetic,
