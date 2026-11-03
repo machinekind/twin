@@ -52,3 +52,19 @@ robot:
 #   effort: low          # low, medium, high, xhigh or max; "" = the CLI's default
 #   objects: "red pen, cube"   # labels to look for; "" = every movable object on the table
 #   interval_s: 10.0     # seconds between questions, at least 2
+
+# The seeded detector `seeded` (packages/machinekind_twin_seeded) follows blocks by colour at
+# interval_s after the LLM detector names them; frames leave the machine every seed_interval_s.
+# See docs/TWIN.md, "Seeded detector".
+# seeded:
+#   cli: codex           # codex or claude, as for llm:
+#   model: gpt-6-astra   # as the CLI names it; "" = the CLI's default
+#   # "<colour> <shape>" labels, comma-separated; "" = every block the model names
+#   labels: "red cube, light blue cuboid, wooden cylinder"
+#   # overrides by label or shape word, name=LxWxH [m], ";" between entries
+#   labels_sizes: "cube=0.03x0.03x0.03"
+#   # overrides by label or colour word, OpenCV HSV (H 0..180, S and V 0..255), "|" between ranges
+#   labels_hsv: "wooden=10-20,30-90,150-255"
+#   interval_s: 0.2      # the colour loop [s], at least 0.1
+#   seed_interval_s: 10.0   # seconds between LLM questions, at least 2
+#   track_error_px: 40   # how far a followed block may move between two calls [px]

@@ -78,6 +78,8 @@ in the robot's base frame, tracks it and passes it to strategies in
 `Observation.objects`.
 The [LLM detector](packages/machinekind_twin_llm) asks a vision model through the
 `claude` or `codex` CLI, on the subscription that CLI is logged in with.
+The [seeded detector](packages/machinekind_twin_seeded) follows the blocks that
+model names by colour, five times a second, and gives each its yaw.
 
 Existing robot integrations include the **SO-101** through
 [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) and the

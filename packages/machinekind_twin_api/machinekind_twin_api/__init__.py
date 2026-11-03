@@ -19,7 +19,7 @@ from .backend import (
     read_only_capable,
     supports_read_only,
 )
-from .detector import Detection, Detector, DetectorInfo, DetectRequest
+from .detector import Detection, Detector, DetectorInfo, DetectRequest, base_label, instance_key
 from .entry_points import BACKENDS, DETECTORS, ROBOTS, STRATEGIES
 from .strategy import Action, ActionLike, Decision, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
@@ -29,5 +29,5 @@ __all__ = [
     "BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext",
     "BackendPlugin", "Decision", "DetectRequest", "Detection", "Detector", "DetectorInfo", "Frame",
     "ObjectPose", "Observation", "RobotBackend", "RobotInfo", "RunInfo", "S", "Strategy", "__version__",
-    "read_only_capable", "supports_read_only",
+    "base_label", "instance_key", "read_only_capable", "supports_read_only",
 ]

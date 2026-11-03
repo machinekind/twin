@@ -6,7 +6,7 @@ when it can, a box, a silhouette mask and the object's physical size. It knows n
 coordinates: no intrinsics, no camera poses, no robot, no clock. The twin does the geometry. It
 turns each pixel into a ray through the calibrated camera, intersects the rays of two cameras or
 one ray with the table, fits a box of the given size to the masks, tracks each object over time
-and hands strategies `Observation.objects[label]` in the robot's base frame, with `age_s`.
+and hands strategies `Observation.objects[key]` in the robot's base frame, with `age_s`.
 
 A detector from another package depends on this package, never on the twin. It subclasses
 `Detector` and registers under the `machinekind_twin.detectors` entry point group
@@ -20,12 +20,15 @@ Pixels follow OpenCV: (0, 0) is the centre of the top-left pixel, u grows right,
 in the resolution of the frame the detector was given. A detector that works on a resized copy
 maps its answer back.
 
-Labels are compared stripped and lower-cased. One object per label: when one camera reports a
-label twice, the twin keeps the surer detection.
+Labels are compared stripped and lower-cased. Several objects may share a label: a camera reports
+each in a detection of its own. The twin pairs them across cameras by geometry, tracks each one
+and keys them "<label>", "<label> 2", "<label> 3" in `Observation.objects`; `base_label` gives the
+label back from such a key.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -34,7 +37,23 @@ import numpy as np
 
 from .strategy import Frame, S
 
-__all__ = ["DetectRequest", "Detection", "Detector", "DetectorInfo"]
+__all__ = ["DetectRequest", "Detection", "Detector", "DetectorInfo", "base_label", "instance_key"]
+
+_NUMBERED = re.compile(r"^(.*\S)\s+\d+$")
+
+
+def instance_key(label: str, n: int) -> str:
+    """The key of the n-th object with this label in `Observation.objects`: the label itself for
+    the first, "<label> <n>" for the others."""
+    return label if n <= 1 else f"{label} {n}"
+
+
+def base_label(key: str) -> str:
+    """The label of an `Observation.objects` key: the key without a trailing instance number,
+    normalised ("Red cube 2" -> "red cube")."""
+    key = " ".join(key.split()).lower()
+    numbered = _NUMBERED.match(key)
+    return numbered.group(1) if numbered else key
 
 
 @dataclass(frozen=True)
@@ -68,7 +87,8 @@ class DetectRequest:
 class Detection:
     """One object seen in one camera's frame. Compared by identity (it may hold an array)."""
 
-    #: What the object is: the key of `Observation.objects`, e.g. "cube" or "red pen".
+    #: What the object is, e.g. "cube" or "red pen". Several objects may share a label; the twin
+    #: keys them "red pen", "red pen 2", ... in `Observation.objects`.
     label: str
     #: The camera whose frame this is: a key of `DetectRequest.frames`.
     camera: str
@@ -83,8 +103,9 @@ class Detection:
     #: Height above the table top [m] of the point `pixel` marks; None = on the table (0), or
     #: half the object's height when `size_m` is given. One camera alone cannot tell depth; this fixes it.
     height_m: float | None = None
-    #: The object's size [m] as (x, y, z) of a box resting on the table; None = unknown. With a
-    #: `mask` the twin fits a box of this size to the masks of every camera, which also gives yaw.
+    #: The object's size [m] as (x, y, z) of a box as it rests, z its height; None = unknown. With a
+    #: `mask` the twin fits a box of this size, resting on the table or on another object, to the
+    #: masks of every camera, which also gives yaw.
     size_m: tuple[float, float, float] | None = None
     #: How far off `pixel` may be, in THIS frame's pixels; None = the detector's `pixel_error_px`.
     #: A detector that answers on a resized copy scales its error back with the pixel.
