@@ -9,7 +9,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -71,14 +71,15 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fake:
 class Frames(Mapping[str, Frame]):
     """Like the twin's lazy frames: every offered camera iterates; one without a frame raises KeyError."""
 
-    def __init__(self, offered: Mapping[str, np.ndarray | None]) -> None:
+    def __init__(self, offered: Mapping[str, np.ndarray | None], ages: Mapping[str, float] | None = None) -> None:
         self._offered = dict(offered)
+        self._ages = dict(ages or {})
 
     def __getitem__(self, name: str) -> Frame:
         image = self._offered[name]
         if image is None:
             raise KeyError(name)
-        return Frame(image=image, age_s=0.0)
+        return Frame(image=image, age_s=self._ages.get(name, 0.0))
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._offered)
@@ -93,8 +94,8 @@ def image(shade: int = 120) -> np.ndarray:
     return img
 
 
-def request(step: int = 0, **offered: np.ndarray | None) -> DetectRequest:
-    return DetectRequest(frames=Frames(offered or {"top": image(), "side": image()}), step=step)
+def request(step: int = 0, ages: Mapping[str, float] | None = None, **offered: np.ndarray | None) -> DetectRequest:
+    return DetectRequest(frames=Frames(offered or {"top": image(), "side": image()}, ages), step=step)
 
 
 def settings(fake: Fake, **kw: Any) -> LlmSettings:
@@ -109,6 +110,18 @@ def started(fake: Fake, **kw: Any) -> LlmDetector:
     det = LlmDetector(settings(fake, **kw))
     det.start(INFO)
     return det
+
+
+class Clock:
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def described(dets: Sequence[Detection]) -> list[tuple[Any, ...]]:
+    return [(d.label, d.camera, d.pixel, d.box, d.confidence, d.pixel_error_px) for d in dets]
 
 
 # --- settings -------------------------------------------------------------------------------------
@@ -298,11 +311,69 @@ def test_unchanged_images_repeat_the_last_answer_without_asking(fake: Fake):
     again = det.detect(request(1))
 
     assert len(fake.runs()) == 1
-    assert again == first
+    assert described(again) == described(first)
 
     det.detect(request(2, top=image(shade=20), side=image()))
 
     assert len(fake.runs()) == 2
+    det.stop("test")
+
+
+def test_a_repeat_is_as_old_as_its_question_s_frames_and_a_new_answer_has_age_0(fake: Fake):
+    clock = Clock()
+    det = LlmDetector(settings(fake), clock=clock)
+    det.start(INFO)
+    first = det.detect(request(0, ages={"top": 0.5, "side": 0.5}))
+
+    assert first
+    assert all(d.age_s == 0.0 for d in first)
+
+    clock.t += 12.5
+    again = det.detect(request(1))
+
+    assert [d.age_s for d in again] == pytest.approx([13.0] * len(first), abs=1e-9)
+    assert described(again) == described(first)
+
+    clock.t += 10.0
+    later = det.detect(request(2, ages={"top": 1.0, "side": 1.0}))
+
+    assert [d.age_s for d in later] == pytest.approx([22.0] * len(first), abs=1e-9)
+    assert described(later) == described(first)
+    assert len(fake.runs()) == 1
+
+    changed = det.detect(request(3, top=image(shade=20), side=image()))
+
+    assert len(fake.runs()) == 2
+    assert changed
+    assert all(d.age_s == 0.0 for d in changed)
+    det.stop("test")
+
+
+def test_a_repeat_s_age_is_the_time_between_the_two_frames_from_its_camera(fake: Fake):
+    clock = Clock()
+    det = LlmDetector(settings(fake), clock=clock)
+    det.start(INFO)
+    det.detect(request(0, ages={"top": 0.9, "side": 0.2}))
+    clock.t += 10.0
+    again = det.detect(request(1, ages={"top": 0.0, "side": 0.7}))
+
+    assert len(fake.runs()) == 1
+    assert {d.camera for d in again} == {"top", "side"}
+    for d in again:
+        assert d.age_s == pytest.approx({"top": 10.9, "side": 9.5}[d.camera], abs=1e-9)
+    det.stop("test")
+
+
+def test_a_repeat_on_a_frame_captured_before_the_question_s_has_age_0(fake: Fake):
+    clock = Clock()
+    det = LlmDetector(settings(fake), clock=clock)
+    det.start(INFO)
+    det.detect(request(0))
+    clock.t += 10.0
+    again = det.detect(request(1, ages={"top": 10.0 + 1e-6, "side": 0.0}))
+
+    assert len(fake.runs()) == 1
+    assert {d.camera: d.age_s for d in again}["top"] == 0.0
     det.stop("test")
 
 
@@ -345,7 +416,7 @@ def test_a_repeat_does_not_count_toward_the_hourly_cap(fake: Fake):
     det = started(fake, max_calls_per_hour=1)
     det.detect(request(0))
 
-    assert det.detect(request(1)) == det.detect(request(2))
+    assert described(det.detect(request(1))) == described(det.detect(request(2)))
     with pytest.raises(RuntimeError, match="hourly cap of 1 questions reached"):
         det.detect(request(3, top=image(shade=20), side=image()))
     assert len(fake.runs()) == 1
