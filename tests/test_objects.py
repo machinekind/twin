@@ -4,6 +4,7 @@ ways to place a label, and what `locate` drops. Synthetic cameras and projected 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import ClassVar
 
 import cv2
@@ -17,6 +18,7 @@ from machinekind_twin.objects import (
     MIN_RAY_GAP_M,
     Z_RANGE_M,
     CameraModel,
+    Resting,
     camera_key,
     camera_models,
     locate,
@@ -75,9 +77,10 @@ def frames(t_a: float = 1.0, t_b: float = 2.0, size=(W, H)) -> dict:
     return {"a": (size, t_a), "b": (size, t_b)}
 
 
-def run(dets, *, pixel_error_px: float = 3.0, fr=None, mapper=None, occluders=None, box=None):
+def run(dets, *, pixel_error_px: float = 3.0, fr=None, mapper=None, occluders=None, box=None, tracked=None):
     return locate(dets, CAMS, frames() if fr is None else fr, pixel_error_px=pixel_error_px, mapper=mapper,
-                  occluders=occluders, box=box or (lambda size: pytest.fail("no fit expected")))
+                  occluders=occluders, box=box or (lambda size, base=0.0: pytest.fail("no fit expected")),
+                  tracked=tracked)
 
 
 # ------------------------------------------------------------------ camera models
@@ -268,7 +271,7 @@ def test_a_point_behind_a_camera_is_not_triangulated():
     hit = triangulate([pixel_ray(A, *project(A, P), (W, H)), pixel_ray(C, *project(C, behind), (W, H))])
     assert hit is not None and np.linalg.norm(hit[0] - behind) < 1e-6 and hit[1] < 1e-6
     (obj,), _ = locate(dets, cams, {"a": ((W, H), 1.0), "c": ((W, H), 1.0)}, pixel_error_px=3.0,
-                       mapper=None, occluders=None, box=lambda size: pytest.fail("no fit expected"))
+                       mapper=None, occluders=None, box=lambda size, base=0.0: pytest.fail("no fit expected"))
     assert obj.method == "promien"
     np.testing.assert_allclose(obj.pos, P, atol=1e-6)
 
@@ -359,7 +362,8 @@ def test_masks_of_a_cube_go_to_the_silhouette_fit():
         return occ
 
     dets = _masks()
-    (obj,), dropped = run(dets, mapper=mapper, occluders=occluders, box=lambda size: FakeCube(size, answer))
+    (obj,), dropped = run(dets, mapper=mapper, occluders=occluders,
+                          box=lambda size, base=0.0: FakeCube(size, answer))
     assert dropped == 0
     assert obj.method == "sylwetka" and obj.n_cameras == 2 and obj.confidence == 0.88
     np.testing.assert_allclose(obj.pos, answer.pos)
@@ -373,7 +377,7 @@ def test_masks_of_a_cube_go_to_the_silhouette_fit():
 
 def test_a_gated_out_fit_places_nothing():
     mapper = mapper_for(CAMS, get_spec(BOT).desk)
-    placed, dropped = run(_masks(), mapper=mapper, box=lambda size: FakeCube(size, None))
+    placed, dropped = run(_masks(), mapper=mapper, box=lambda size, base=0.0: FakeCube(size, None))
     assert placed == [] and dropped == 0
 
 
@@ -383,12 +387,160 @@ def test_masks_of_a_cuboid_go_to_the_silhouette_fit_with_its_three_sides():
     mapper = mapper_for(CAMS, get_spec(BOT).desk)
 
     (obj,), dropped = run(_masks(size=(0.05, 0.025, 0.025)), mapper=mapper,
-                          box=lambda size: FakeCube(size, answer))
+                          box=lambda size, base=0.0: FakeCube(size, answer))
 
     assert dropped == 0 and obj.method == "sylwetka" and obj.confidence == 0.97
     assert obj.size_m == (0.05, 0.025, 0.025)
     (size, *_), = FakeCube.calls
     assert size == (0.05, 0.025, 0.025)
+
+
+class HiddenCube:
+    """Fits only when the other block's pixels are among the occluders: a block partly hidden by it."""
+
+    def __init__(self, size: tuple[float, float, float], base: float, other: np.ndarray,
+                 answer: CubeDetection):
+        self.size, self.base, self.other, self.answer = size, base, other, answer
+        self.calls: list = []
+
+    def fit_masks(self, masks, mapper, occluders=None, t=0.0):
+        self.calls.append(occluders)
+        hidden = occluders is not None and "a" in occluders and bool(occluders["a"][self.other].all())
+        return self.answer if hidden else None
+
+
+def test_a_block_another_label_hides_is_fitted_again_with_that_label_s_mask_as_hidden():
+    answer = CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=2)
+    low, up = _masks(), _masks()
+    upper = np.zeros((H, W), bool)
+    upper[190:205, 300:320] = True
+    up = [Detection("up", d.camera, d.pixel, mask=upper.copy(), size_m=(0.03, 0.03, 0.014)) for d in up]
+    made: dict[tuple[float, float, float], HiddenCube] = {}
+
+    def box(size, base=0.0):
+        made[size] = fit = HiddenCube(size, base, upper, answer)
+        return fit
+
+    arm = {"a": np.zeros((H, W), bool), "b": np.zeros((H, W), bool)}
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    placed, _ = run(low + up, mapper=mapper, occluders=lambda times: arm, box=box)
+
+    assert [obj.label for obj in placed] == ["cube"]
+    fit = made[(0.03, 0.03, 0.03)]
+    assert len(fit.calls) == 2 and fit.calls[0] is arm
+    assert fit.calls[1]["a"][upper].all() and not fit.calls[1]["a"][~upper].any()
+
+
+CUBE = (0.03, 0.03, 0.03)
+
+
+def resting(x: float, y: float, base: float, size=CUBE) -> Resting:
+    """A tracked block resting `base` above the table at (x, y)."""
+    return Resting(np.array([x, y, base + size[2] / 2]), np.eye(3), size)
+
+
+def test_the_fit_rests_a_label_where_it_last_rested():
+    answer = CubeDetection(np.array([0.2, 0.01, 0.045]), np.eye(3), 1.0, 0.9, n_cameras=2)
+    bases = []
+
+    def box(size, base=0.0):
+        bases.append(base)
+        return FakeCube(size, answer)
+
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    for given, used in (({"cube": 0.03}, 0.03), ({"other": 0.03}, 0.0), ({"cube": 9.0}, objects.MAX_BASE_M),
+                        ({"cube": 0.004}, 0.0)):
+        tracked = {label: resting(0.2, 0.01, base) for label, base in given.items()}
+        run(_masks(), mapper=mapper, box=box, tracked=tracked)
+        assert bases[-1] == used
+
+
+def _labelled(label: str, size, mask: np.ndarray | None = None, cams=("a", "b")) -> list[Detection]:
+    """`_masks` under another label and size, from `cams`, with `mask` if given."""
+    return [Detection(label, d.camera, d.pixel, confidence=d.confidence,
+                      mask=d.mask if mask is None else mask.copy(), size_m=size)
+            for d in _masks() if d.camera in cams]
+
+
+def _boxes(answers: dict) -> Callable:
+    """A `box` that answers per size."""
+    return lambda size, base=0.0: FakeCube(size, answers[size])
+
+
+def test_a_fit_off_the_table_needs_a_block_under_it():
+    on_base = CubeDetection(np.array([0.2, 0.01, 0.045]), np.eye(3), 1.0, 0.9, n_cameras=2)
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    box = _boxes({CUBE: on_base})
+
+    for tracked, placed in (({}, False), ({"base": resting(0.2, 0.01, 0.0)}, True),
+                            ({"base": resting(0.2, 0.06, 0.0)}, False),
+                            ({"base": resting(0.2, 0.01, 0.0, (0.03, 0.03, 0.014))}, False)):
+        got, _ = run(_masks(), mapper=mapper, box=box, tracked=tracked)
+        assert [obj.label for obj in got] == (["cube"] if placed else []), tracked
+
+
+def test_blocks_placed_in_one_call_hold_each_other_up_from_the_table():
+    low, mid, top = (0.06, 0.03, 0.03), CUBE, (0.03, 0.03, 0.014)
+    answers = {low: CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=2),
+               mid: CubeDetection(np.array([0.2, 0.01, 0.045]), np.eye(3), 1.0, 0.9, n_cameras=2),
+               top: CubeDetection(np.array([0.2, 0.01, 0.067]), np.eye(3), 1.0, 0.9, n_cameras=2)}
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    stack = _labelled("top", top) + _labelled("mid", mid) + _labelled("low", low)
+
+    got, _ = run(stack, mapper=mapper, box=_boxes(answers))
+    assert sorted(obj.label for obj in got) == ["low", "mid", "top"]
+
+    got, _ = run(stack[:4], mapper=mapper, box=_boxes(answers))
+    assert got == []
+
+
+def _touching_masks() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A block's mask, one touching it from below and one far from it."""
+    m = np.zeros((H, W), bool)
+    m[200:220, 300:320] = True
+    below, far = np.zeros_like(m), np.zeros_like(m)
+    below[222:240, 300:320] = True
+    far[50:70, 50:70] = True
+    return m, below, far
+
+
+def test_a_new_block_one_camera_sees_touching_another_waits_for_two_cameras():
+    m, below, far = _touching_masks()
+    cuboid = (0.06, 0.03, 0.03)
+    answers = {CUBE: CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=1),
+               cuboid: CubeDetection(np.array([0.3, 0.1, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=1)}
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    one = _labelled("cube", CUBE, m, cams=("a",))
+
+    got, _ = run(one + _labelled("other", cuboid, below, cams=("a",)), mapper=mapper, box=_boxes(answers))
+    assert got == []
+    got, _ = run(one + _labelled("other", cuboid, far, cams=("a",)), mapper=mapper, box=_boxes(answers))
+    assert sorted(obj.label for obj in got) == ["cube", "other"]
+    # Tracked blocks have a height the cameras gave before.
+    tracked = {"cube": resting(0.2, 0.01, 0.0), "other": resting(0.3, 0.1, 0.0, cuboid)}
+    got, _ = run(one + _labelled("other", cuboid, below, cams=("a",)), mapper=mapper, box=_boxes(answers),
+                 tracked=tracked)
+    assert sorted(obj.label for obj in got) == ["cube", "other"]
+
+
+def test_a_new_block_one_camera_puts_on_the_table_waits_when_its_ray_passes_over_another():
+    # A cube on a tracked cube at (0.2, 0.0), fitted on the table along camera a's ray.
+    o = A.T_cam2base[:3, 3]
+    on_top = np.array([0.2, 0.0, 0.045])
+    d = on_top - o
+    on_table = o + (0.015 - o[2]) / d[2] * d
+    answers = {CUBE: CubeDetection(on_table, np.eye(3), 1.0, 0.9, n_cameras=1)}
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    one = _labelled("cube", CUBE, cams=("a",))
+
+    got, _ = run(one, mapper=mapper, box=_boxes(answers), tracked={"base": resting(0.2, 0.0, 0.0)})
+    assert got == []
+    got, _ = run(one, mapper=mapper, box=_boxes(answers), tracked={"base": resting(0.3, 0.1, 0.0)})
+    assert [obj.label for obj in got] == ["cube"]
+    # The block standing on this one is no other place for it.
+    answers[CUBE] = CubeDetection(np.array([0.2, 0.0, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=1)
+    got, _ = run(one, mapper=mapper, box=_boxes(answers), tracked={"up": resting(0.2, 0.0, 0.03)})
+    assert [obj.label for obj in got] == ["cube"]
 
 
 @pytest.mark.parametrize("why", ["no mapper", "a mask missing", "a resized frame"])

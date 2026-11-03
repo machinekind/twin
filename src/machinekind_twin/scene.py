@@ -34,6 +34,12 @@ from .robots import RobotCamera, RobotSpec
 PREFIX = "robot/"
 #: MuJoCo kamera patrzy wzdluz -z z y w gore; OpenCV wzdluz +z z y w dol.
 CV_TO_MJ = np.diag([1.0, -1.0, -1.0])
+#: Contact of the table top and of every object that collides: stiff, so a pressing gripper does not
+#: push an object into the table or into another object. MuJoCo's default contact is softer.
+OBJECT_SOLREF = (0.01, 1.0)
+OBJECT_SOLIMP = (0.95, 0.995, 0.001, 0.5, 2.0)
+#: Friction of the objects: sliding, torsional, rolling.
+OBJECT_FRICTION = (1.0, 0.02, 0.002)
 
 
 @dataclass
@@ -79,6 +85,11 @@ class Box:
     #: Cialo mocap bez kolizji (tylko do ogladania) - np. cel odlozenia pickplace. Poze
     #: ustawia sie przez `data.mocap_pos` / `mocap_quat`; obiekty przez nie przenikaja.
     mocap: bool = False
+    #: Height of its bottom above the table top [m]: 0 rests on the table, the height of another
+    #: box's top stacks it on that box.
+    z: float = 0.0
+    #: Turn about the vertical [rad], relative to the base; 0 leaves the box aligned with the world.
+    yaw: float = 0.0
 
 
 @dataclass
@@ -407,6 +418,11 @@ def _check_camera_names(cfg: SceneConfig) -> None:
                          f"({cfg.robot.name}) - zmien ich nazwy")
 
 
+def _stiff_contact(g: mujoco.MjsGeom) -> None:
+    g.solref = list(OBJECT_SOLREF)
+    g.solimp = list(OBJECT_SOLIMP)
+
+
 def _rotmat(quat) -> np.ndarray:
     R = np.zeros(9)
     q = np.asarray(quat, float)
@@ -445,6 +461,7 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     tab.size = [t.size[0] / 2, t.size[1] / 2, top / 2]
     tab.pos = [0.0, 0.0, top / 2]
     tab.rgba = list(t.rgba)
+    _stiff_contact(tab)
 
     for k, light in enumerate(cfg.look.lights):
         _add_light(spec, f"light{k}", light, top)
@@ -469,10 +486,13 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     spec.attach(robot, prefix=PREFIX, frame=mount)
 
     for obj in cfg.objects:
-        p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.size[2], 1.0])
+        p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.z + obj.size[2], 1.0])
         body = world.add_body()
         body.name = obj.name
         body.pos = p[:3]
+        if obj.yaw:
+            c, s = np.cos(obj.yaw), np.sin(obj.yaw)
+            body.quat = _quat(R_base @ np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]))
         if obj.mocap:
             body.mocap = True
         elif obj.free:
@@ -488,7 +508,8 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
             g.group = 1
             continue
         g.condim = 4
-        g.friction = [1.0, 0.02, 0.002]
+        g.friction = list(OBJECT_FRICTION)
+        _stiff_contact(g)
 
     for panel in cfg.panels:
         _add_panel(spec, panel, T_base2world)
