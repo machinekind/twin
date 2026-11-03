@@ -334,7 +334,8 @@ uv run pyright
 UI tests also create renderers without that marker. It is not currently a
 complete way to run the suite without OpenGL. UI and stream tests also need
 permission to bind localhost sockets. A1X-specific tests skip when `galaxeo`
-is not installed. `pytest-xdist` is not part of the default dependencies.
+is not installed, and the SO-101 contact tests skip when `soarm` is not
+installed. `pytest-xdist` is not part of the default dependencies.
 
 Control-loop tests use [VirtualClock](../src/machinekind_twin/clock.py) and
 [the test bench](../tests/twinbench.py) to advance simulation deterministically.
