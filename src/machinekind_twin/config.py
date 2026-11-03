@@ -23,6 +23,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
+from .camera_controls import CameraControls
 from .paths import CONFIG_ENV, config_from_env
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ class CameraConfig:
     fourcc: str | None = "MJPG"
     #: Loop a video file (for demos without a camera).
     loop_video: bool = True
+    #: Focus and exposure set on a V4L2 camera after it opens (`camera_controls.apply`).
+    controls: CameraControls | None = None
 
 
 @dataclass
