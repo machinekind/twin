@@ -29,6 +29,7 @@ which is exact printed geometry, and `corners` the four detected pixel corners.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 import cv2
@@ -47,6 +48,8 @@ class Observation:
     camera: str = "cam"
     #: Numer pozy fali, z ktorej jest ta obserwacja (-1 = nieznany) - do diagnostyki.
     pose: int = -1
+    #: The measured joint angles [app units] `T_frame2base` came from, for `solve_offsets`.
+    joints: Mapping[str, float] | None = None
 
 
 @dataclass
@@ -77,6 +80,11 @@ class Fit:
     n_obs: int = 0
     init: str = ""                                                 # which starting point won
     dropped: int = 0
+    #: Servo zero offsets fitted with the cameras [app units], on top of those the arm already had:
+    #: the model angle is the servo's reading plus the offset. Empty = not fitted or not kept.
+    joint_offsets: dict[str, float] = field(default_factory=dict)
+    #: What fitting the offsets gave, for the panel: the residual before and after, or why they were left out.
+    offsets_note: str = ""
 
     @property
     def trusted(self) -> bool:
@@ -427,6 +435,61 @@ def _drop_outliers(best, obs, cameras, tag_size, names_cam, names_mount, iters, 
         fit.cameras[name].dropped = n
     fit.dropped = sum(dropped.values())
     return fit
+
+
+class _OffsetProblem(_Problem):
+    """`_Problem` with servo zero offsets [app units] after the camera and mount parameters.
+
+    The arm's pose of every observation comes from forward kinematics `fk` at the measured joints plus
+    the offsets, so it is recomputed whenever the offsets change. A weak prior pulls each offset to
+    zero: `prior` of offset costs as much as one pixel, which keeps a direction the cameras cannot
+    tell apart from drifting, and does nothing to one they can.
+    """
+
+    def __init__(self, obs, cameras, tag_size, names_cam, names_mount, fk, names_joint, prior):
+        super().__init__(obs, cameras, tag_size, names_cam, names_mount)
+        self.fk, self.names_joint, self.prior = fk, list(names_joint), float(prior)
+        self.joints = [dict(o.joints) for o in obs]
+        self.n_base = 6 * (len(names_cam) + len(names_mount))
+        self._at = np.zeros(len(self.names_joint))      # the offsets `self.A` was computed for
+
+    def offsets(self, p) -> dict[str, float]:
+        return {n: float(v) for n, v in zip(self.names_joint, p[self.n_base:])}
+
+    def residuals(self, p):
+        d = np.asarray(p[self.n_base:], float)
+        if not np.array_equal(d, self._at):
+            self.A = np.array([self.fk({**j, **{n: j[n] + v for n, v in zip(self.names_joint, d)}})
+                               for j in self.joints])
+            self._at = d.copy()
+        return np.concatenate([super().residuals(p[:self.n_base]), d / self.prior])
+
+
+def solve_offsets(fit: Fit, obs, cameras, tag_size, fk: Callable[[Mapping[str, float]], np.ndarray],
+                  names_joint, iters=60, prior=2.0) -> Fit:
+    """`fit` fitted again together with zero offsets of the joints `names_joint` [app units].
+
+    Starts from `fit` with no offsets, on the observations it kept (`CameraFit.obs_ids`), each of which
+    needs its measured `joints`. `fk` is the forward kinematics the observations' arm poses came from.
+    Which joints the cameras can tell apart is the caller's call: an offset of the base's turn is the
+    same as every camera standing elsewhere, one of the roll in front of the card the same as the
+    card sitting turned in the jaws. The result has `joint_offsets` set; the verdicts are not judged.
+    """
+    names_cam, names_mount = sorted(fit.cameras), sorted(fit.mounts)
+    kept = {(c, int(pose), int(tag)) for c, cf in fit.cameras.items() for pose, tag in cf.obs_ids}
+    inliers = [o for o in obs if (o.camera, int(o.pose), int(o.tag_id)) in kept]
+    if any(o.joints is None for o in inliers):
+        raise ValueError("observations without measured joints - the offsets need them")
+    problem = _OffsetProblem(inliers, cameras, tag_size, names_cam, names_mount, fk, names_joint, prior)
+    p0 = np.concatenate([_params([fit.cameras[c].T_cam2base for c in names_cam],
+                                 [fit.mounts[n] for n in names_mount]), np.zeros(len(problem.names_joint))])
+    p, r = _lm(p0, problem, iters)
+    out = _fit(p, r[:problem.A.shape[0] * 8], problem, inliers, fit.init + "+zera")
+    for name, cam in out.cameras.items():
+        cam.dropped = fit.cameras[name].dropped
+    out.dropped = fit.dropped
+    out.joint_offsets = problem.offsets(p)
+    return out
 
 
 def judge(fit, max_px=1.5, min_spread=8.0, min_obs=14):

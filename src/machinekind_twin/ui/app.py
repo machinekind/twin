@@ -1025,6 +1025,8 @@ class TwinApp:
                     except RuntimeError:                # ramie odebrane panelowi w miedzyczasie
                         self.arm_engage.value = False
                 s.on_update(on_slide)
+            # The sliders stay in the servos' own units; the model the twin draws has the zeros from step 2.
+            self.arm_offsets_md = g.add_markdown("", visible=False)
 
             disconnect = g.add_button("Rozlacz", icon=viser.Icon.PLUG_CONNECTED_X, color="gray",
                                       hint="Konczy strategie, fale i identyfikacje, odbiera ramie wszystkim i "
@@ -2057,8 +2059,25 @@ class TwinApp:
                     hint="Kazdy zapis kroku 2 to osobny plik w workspace/calib/ - nic nie nadpisuje "
                          "poprzedniego. Domyslnie wgrany jest najnowszy; wybierz starszy, zeby do niego wrocic.")
                 self.preset_md = g.add_markdown("")
+            # Servo zero offsets from step 2: shown while the arm has them, with the way back to the servos' zeros.
+            self.offsets_box = g.add_folder(None, visible=False)
+            with self.offsets_box:
+                self.offsets_md = g.add_markdown("")
+                offsets_reset = g.add_button(
+                    "Wyzeruj poprawki zer serw", icon=viser.Icon.ARROW_BACK_UP, color="gray",
+                    hint="Wraca do zer samych serw. Polozenia kamer liczone z poprawkami przestaja byc pewne - "
+                         "potem krok 2. Ramie sie nie rusza.")
         self.calib_ask = _TwoClick()
         self._calib_pending = False
+
+        @offsets_reset.on_click
+        @self._safe
+        def _(event):
+            names = self.ws.reset_joint_offsets("poprawki zer serw wyzerowane - zrob krok 2 jeszcze raz")
+            self._poses_changed(names)
+            self._notify(event, "Poprawki zer serw", "Wyzerowane." + (f" Niepewne teraz: {', '.join(names)}."
+                                                                       if names else ""))
+            self._render_calibration()
 
         @sheet.on_click
         @self._safe
@@ -2291,11 +2310,21 @@ class TwinApp:
         self._render_calibration()
         return False
 
+    def _offsets_text(self, offsets) -> str:
+        """Servo zero offsets for the panel: the joints' slider labels and degrees."""
+        labels = self.ws.spec().joint_labels
+        return ", ".join(f"{labels.get(n, (n, n))[0]} {v:+.2f} st." for n, v in offsets.items())
+
     def _render_calibration(self) -> None:
         """Przemalowanie zakladki Kalibracja do stanu (co takt; zapisy tylko przy zmianie)."""
         with self._render_lock:
             set_if(self.calib_html, "content", self._cams_html(calib=True))
             set_if(self.calib_now_md, "content", f"**Teraz:** {self._calib_now()}")
+            offsets = self.ws.joint_offsets
+            text = f"**Poprawki zer serw** (z kroku 2): {self._offsets_text(offsets)}" if offsets else ""
+            for box, md in ((self.offsets_box, self.offsets_md), (self.arm_offsets_md, self.arm_offsets_md)):
+                set_if(box, "visible", bool(offsets))
+                set_if(md, "content", text)
             ij, cj = self.intr_job, self.calib_job
             sim = bool(self.twin.status.simulated) if self.twin.connected else self._preset_backend() == "sim"
             # --- krok 1: tylko przy prawdziwej kamerze
@@ -2451,7 +2480,8 @@ class TwinApp:
         preset = self.ws.save_preset()                  # nowy plik - poprzednie zapisy zostaja
         self._poses_changed(names)
         self._calib_pending = False
-        self.calib_md.content = f"Zapisano polozenie: {', '.join(names)} (zestaw {preset.stem})."
+        self.calib_md.content = f"Zapisano polozenie: {', '.join(names)} (zestaw {preset.stem})." + (
+            f" Poprawki zer serw teraz: {self._offsets_text(self.ws.joint_offsets)}." if fit.joint_offsets else "")
         self._render_calibration()
         return names
 
@@ -2461,6 +2491,13 @@ class TwinApp:
             self._simreal_px.pop(n, None)               # nowa poza - Sim-Real do sprawdzenia od nowa
         self._save()
         self.twin.rebuild()
+        spec = self.ws.spec()
+        if self._kin_gizmo.spec is not spec:             # new servo zero offsets: the panel's own kinematics too
+            from ..kinematics import RobotKinematics
+            with self._mask_lock:
+                self._kin_mask = RobotKinematics(spec)
+            with self._gizmo_lock:
+                self._kin_gizmo, self._gizmo_seed = RobotKinematics(spec), None
         for n in names:
             try:
                 self._remember_reference(n)
@@ -2520,6 +2557,11 @@ class TwinApp:
                 verdict = (f"**zle** - {bad}; popraw ustawienie kamery i zrob krok 2 jeszcze raz" if bad else
                            f"**dobrze** (dokladnosc {c.rms_px:.2f} px){extra}")
                 rows.append(f"| {n} | {verdict} |")
+            if fit.joint_offsets:
+                rows += ["", (f"**Poprawki zer serw:** {self._offsets_text(fit.joint_offsets)} "
+                              f"({fit.offsets_note.split(': ', 1)[-1]}). Zapisz wynik wlaczy je razem z polozeniem kamer.")]
+            elif fit.offsets_note:
+                rows += ["", fit.offsets_note]
             self.calib_md.content = "\n".join(rows)
             self._calib_pending = True
             j.data["shown"] = fit

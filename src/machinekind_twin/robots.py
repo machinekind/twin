@@ -194,6 +194,10 @@ class RobotSpec:
     joint_labels: dict[str, tuple[str, str]] = field(default_factory=dict)
     #: How the panel offers to connect this arm, besides the simulation.
     connections: tuple[Connection, ...] = ()
+    #: Zero offsets of this arm's servos [app units], found by calibration step 2: the model angle is the
+    #: servo's reading plus the offset (`RobotKinematics.to_q`). Set per workstation through
+    #: `Workspace.joint_offsets`, not in robot.yaml; limits, home and commands stay in the servo's units.
+    joint_offsets: dict[str, float] = field(default_factory=dict)
 
     @property
     def mjcf_path(self) -> Path:
