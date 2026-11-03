@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 _BACKEND = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
 
 
+def video_indices(dev: Path = Path("/dev"), max_index: int = 6) -> list[int]:
+    """Numbers of the /dev/video<N> nodes present, in order; 0..max_index-1 where there are none.
+
+    Linux numbers V4L2 nodes in the order devices appear, so a stand with several cameras
+    (two nodes each) goes past any fixed range. Other systems have no such nodes.
+    """
+    nodes = sorted(int(p.name[5:]) for p in dev.glob("video*") if p.name[5:].isdigit())
+    return nodes or list(range(max_index))
+
+
 def probe_devices(max_index: int = 6) -> list[dict]:
     """Kamery, ktore naprawde oddaja klatke: [{index, width, height}].
 
@@ -39,7 +49,7 @@ def probe_devices(max_index: int = 6) -> list[dict]:
     sterowniku kamera sie otwiera i zadnej klatki nie oddaje.
     """
     found = []
-    for index in range(max_index):
+    for index in video_indices(max_index=max_index):
         cap = cv2.VideoCapture(index, _BACKEND)
         try:
             if not cap.isOpened():
