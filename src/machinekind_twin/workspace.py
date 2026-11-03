@@ -32,6 +32,7 @@ from typing import Any
 import numpy as np
 
 from .calib.card import Card
+from .calib.session import WaveLimits
 from .config import from_mapping
 from .paths import data_path
 from .robots import RobotSpec, default_robot, get_spec
@@ -209,6 +210,9 @@ class Workspace:
     #: Zero offsets of this arm's servos [app units] from calibration step 2 (`RobotSpec.joint_offsets`).
     #: The camera poses were fitted with them, so they come and go together (`apply_fit`, presets).
     joint_offsets: dict[str, float] = field(default_factory=dict)
+    #: What the calibration wave must keep out of on this stand (`calib.session.WaveLimits`): keep-out
+    #: boxes in the base frame [m] and the base's turn range [degrees]. Empty = only the arm's own limits.
+    wave: WaveLimits = field(default_factory=WaveLimits)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -462,6 +466,8 @@ class Workspace:
             raise ValueError(f"nieznane pola w {target}: {sorted(unknown)}")
         if "look" in data:
             data["look"] = from_mapping(Look, data["look"], f"{target}: look")
+        if "wave" in data:
+            data["wave"] = from_mapping(WaveLimits, data["wave"], f"{target}: wave")
         ws = cls(cameras=cams, **data)
         ws.path = target
         if ws.calib_preset is None:

@@ -118,16 +118,26 @@ class Result:
     #: Servo zero offsets the session fitted [app units] and what came of fitting them.
     joint_offsets: dict[str, float] = field(default_factory=dict)
     offsets_note: str = ""
+    #: Every move the wave commanded (from, to), its seconds of motion, and its map (`Session.summary`).
+    moves: list[tuple[dict[str, float], dict[str, float]]] = field(default_factory=list)
+    motion_s: float = 0.0
+    summary: dict = field(default_factory=dict)
 
 
 def run(seed: int, n_cameras: int, spec: RobotSpec, card: Card | None = None,
         extreme: bool = False, cfg: WaveConfig | None = None, on_step=None,
-        servo_offsets: Mapping[str, float] | None = None) -> Result:
+        servo_offsets: Mapping[str, float] | None = None, views: list[sc.CameraView] | None = None,
+        objects: list[sc.Box] | None = None) -> Result:
     """With `servo_offsets` [app units] the arm's servos read that much less than the arm stands at: the
-    scene's arm has them, the session's kinematics does not - a real arm with its zeros off."""
+    scene's arm has them, the session's kinematics does not - a real arm with its zeros off.
+
+    `views` places the cameras instead of drawing `n_cameras`; `objects` stand in the scene (the wave keeps
+    `cfg.clearance` from them as from the table)."""
     rng = np.random.default_rng(seed)
     card = card or Card()
-    views = sample_cameras(rng, n_cameras, spec)
+    cfg = cfg or WaveConfig.for_spec(spec)
+    views = list(views) if views is not None else sample_cameras(rng, n_cameras, spec)
+    objects = list(objects or [])
 
     from ..kinematics import RobotKinematics
 
@@ -136,17 +146,17 @@ def run(seed: int, n_cameras: int, spec: RobotSpec, card: Card | None = None,
     truth = perturb(nominal, rng, extreme=extreme)     # tam, gdzie karta NAPRAWDE siedzi
 
     real = replace(spec, joint_offsets=dict(servo_offsets)) if servo_offsets else spec
-    world = sc.build(sc.SceneConfig(real, cameras=views, card=card, card_pose=truth))
+    world = sc.build(sc.SceneConfig(real, cameras=views, card=card, card_pose=truth, objects=objects))
     # Sprawdzacz widzi karte tam, gdzie mysli, ze jest - nominalnie - z zapasem.
-    check_scene = sc.build(sc.SceneConfig(spec, card=card, card_pose=nominal, card_collider=0.012))
+    check_scene = sc.build(sc.SceneConfig(spec, card=card, card_pose=nominal, card_collider=0.012, objects=objects))
     try:
         home = dict(spec.home)
         if spec.gripper:
             home[spec.gripper] = 0.0
         world.set_joints(home)
         session = Session(SimRobot(world), SimCameras(world), {v.name: (v.K, None) for v in views},
-                          kin_free if servo_offsets else world.kin, card, nominal, CollisionChecker(check_scene),
-                          cfg, seed=seed)
+                          kin_free if servo_offsets else world.kin, card, nominal,
+                          CollisionChecker(check_scene, clearance=cfg.clearance), cfg, seed=seed)
         fit = session.run(on_step)
     finally:
         world.close()
@@ -165,7 +175,7 @@ def run(seed: int, n_cameras: int, spec: RobotSpec, card: Card | None = None,
     tid0 = card.ids[0]
     ct, cr = pose_error(truth @ card.tag_poses()[tid0], fit.mounts[f"tag{tid0}"])
     return Result(seed, session.index, trusted, reasons, rms, err_mm, err_deg, ct * 1000, np.degrees(cr),
-                  dict(fit.joint_offsets), fit.offsets_note)
+                  dict(fit.joint_offsets), fit.offsets_note, session.moves, session.motion_s, session.summary())
 
 
 def main(argv: list[str] | None = None) -> int:

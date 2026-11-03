@@ -224,12 +224,15 @@ precedence for that hardware.
    square** (excluding its white border), fold it and hold the free end in the
    gripper with about 70 mm protruding. In calibration step 2, enter the black
    square and how far the card sticks out beyond the jaw tips: the card's width and
-   length follow from them, and the wave keeps that card off the table. Start the wave and
-   confirm the card is in place and the table clear. A second click within the
-   confirmation window starts hardware motion. The arm searches both sides of
-   the table, then targets cameras needing more observations. Review each
-   camera's trust verdict and reason before saving. Changing tag size after the
-   measurement prevents saving that result. Remove the card afterwards.
+   length follow from them, and the wave keeps that card off the table. Leave at least
+   10 mm of white between the tag and the jaw tips (about 125 mm out for a 100 mm
+   tag): in simulation the SO-101's fixed jaw covers the border of a tag that sits
+   only 5 mm away. Start the wave and confirm the card is in place and the table
+   clear. A second click within the confirmation window starts hardware motion.
+   The wave explores first, then aims at the cameras it has found, as described in
+   [Calibration wave](#calibration-wave). Review each camera's trust verdict and
+   reason before saving. Changing tag size after the measurement prevents saving
+   that result. Remove the card afterwards.
    The fit also estimates the servos' zero offsets for the joints the cameras can
    tell apart (on the SO-101: shoulder lift, elbow, wrist flex). It keeps them
    only when they cut the residual clearly and stay within 4 degrees. Saving the
@@ -353,6 +356,60 @@ intrinsics first. The card uses AprilTag 36h11; the twin's ChArUco board uses Ar
 5x5, and the 7 by 5 layout of OpenCV's sample board uses ArUco 6x6.
 The solver rejects outlier observations and refits while retaining enough
 observations per camera. See [the calibration tests](../tests/test_twin_calib.py).
+
+### Calibration wave
+
+The wave assumes nothing about where the cameras stand. It first explores the
+arm's reachable workspace. The card goes through the base's whole turn range,
+near and far, low and high. At each place the card faces a different direction
+of the half-space above the table, from flat to straight up. The wave keeps a
+coarse map of which camera saw the card, from where and facing which way. A
+camera gets aimed poses only after at least three sightings from different poses
+agree on its position by reprojection. A single or mirrored PnP no longer steers
+the wave. Until a camera is located, the arm keeps exploring and repeats poses
+near the ones where that camera saw the card. The wave drops a rough position
+when later sightings contradict it. It also drops one with little support when
+the poses aimed at it keep missing. The camera is then searched for again.
+
+A frame counts only 0.8 s after the arm stops, and only once the tag stays
+still across two new frames (within 0.5 px). A cheap arm still sways right after a
+move, which gave 8 to 16 px residuals on the SO-101 stand. Each camera
+collects at least 36 observations from 16 poses with 18 degrees of rotation
+spread, and the fit needs 30 of them after dropping outliers. The wave stops
+after 200 poses. In simulation an SO-101 wave with two or three cameras takes
+40 to 140 poses, about 2 to 7 minutes on the arm's speed limits.
+
+When the wave cannot solve, the panel says which camera saw the card how often,
+facing which way and from where, or that it never saw it.
+`workspace/ostatnia_fala.json` keeps the whole record: every pose with its phase
+and place, the map (`mapa`), and the reason in `blad`.
+
+The `wave` section of `twin.json` tells the wave what to keep out of. Keep-out
+boxes are in the arm's base frame in metres: x forward, y left, z up from the
+table top. `base_turn` limits the base joint, in the panel's degrees. Both
+default to none:
+
+```json
+"wave": {
+  "keepout": [
+    {"name": "drugie ramie", "x": [-0.12, 0.20], "y": [0.09, 0.30], "z": [0.0, 0.40]}
+  ],
+  "base_turn": [-90.0, 60.0]
+}
+```
+
+The example box is a second SO-101 standing on the working arm's left. The wave
+keeps its card, gripper and links 4 cm outside every box, at every pose and
+along every move. Only the wave reads this section; teleoperation and strategies
+do not. The calibration tab lists the active limits, and a malformed section
+fails the workstation load. On the twin's SO-101 model a positive `shoulder_pan`
+turns the arm toward -y, to its right.
+
+Besides the boxes, the wave keeps 2 cm from every body in the twin's scene that
+is not the arm itself: the table, objects, or a second robot model. The collision
+check grows those bodies' primitive geoms by that clearance, so a body added to
+the scene needs no box. Mesh-only geoms get a best-effort margin. The card and
+the gripper also stay 4 cm above the table top.
 
 After calibration, the camera watcher compares live frames with references,
 masking the moving arm. It detects translation, rotation and scale changes and
