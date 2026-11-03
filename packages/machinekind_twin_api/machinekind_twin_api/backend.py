@@ -6,16 +6,22 @@ package, never on the twin: it implements the `BackendPlugin` protocol (or subcl
 `RobotBackend`), and the twin's factory wraps a plugin into a `RobotBackend`. Such a package
 registers a factory under the `machinekind_twin.backends` entry point group (`entry_points.BACKENDS`);
 the twin calls it with a `BackendContext`, plain data with everything the backend may use.
+
+The twin may also open a backend only to watch an arm it does not drive (another robot in the
+scene): `BackendContext.read_only`, set only for a factory marked with `read_only_capable`.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
-__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo"]
+__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "read_only_capable",
+           "supports_read_only"]
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,21 @@ class BackendContext:
     port: str | None
     #: The backend's own section of the twin's YAML config, unvalidated: the plugin checks it.
     settings: Mapping[str, Any] = field(default_factory=dict)
+    #: True: the twin only reads this arm. The backend then writes nothing to the hardware, also not
+    #: in `connect` and `disconnect` (no torque, no goals, no settings), and `send_joints` raises.
+    #: The twin sets it only for a factory marked with `read_only_capable`.
+    read_only: bool = False
+
+
+def read_only_capable(factory: _F) -> _F:
+    """Marks a backend factory that honours `BackendContext.read_only`."""
+    factory.supports_read_only = True  # type: ignore[attr-defined]
+    return factory
+
+
+def supports_read_only(factory: Any) -> bool:
+    """Whether `factory` is marked with `read_only_capable`."""
+    return getattr(factory, "supports_read_only", False) is True
 
 
 @runtime_checkable

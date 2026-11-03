@@ -26,11 +26,11 @@ import cv2
 import mujoco
 import numpy as np
 
-from ..scene import PREFIX
-
 
 def arm_mask(scene, camera: str, dilate: int = 9) -> np.ndarray:
     """Piksele ramienia w kadrze kamery sceny (bool, poszerzone o `dilate` px).
+
+    Every robot counts: the driven arm and the ones the twin only watches (`Scene.robot_geom`).
 
     Render sceny to kamera otworkowa bez dystorsji - do surowego kadru prawdziwej
     kamery maske trzeba jeszcze przepuscic przez `distort_mask`.
@@ -44,8 +44,7 @@ def arm_mask(scene, camera: str, dilate: int = 9) -> np.ndarray:
         scene._renderers[key] = r
     r.update_scene(scene.data, camera=camera)
     seg = r.render()
-    m = scene.model
-    robot = np.array([m.body(m.geom_bodyid[g]).name.startswith(PREFIX) for g in range(m.ngeom)])
+    robot = scene.robot_geom
     ids, types = seg[..., 0], seg[..., 1]
     is_geom = (types == int(mujoco.mjtObj.mjOBJ_GEOM)) & (ids >= 0)
     mask = np.zeros(ids.shape, bool)

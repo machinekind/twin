@@ -157,7 +157,12 @@ class MemoryArm:
 ```
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
-`efforts`, ...); `RobotBackend` documents what each one means. Complete, tested examples live in
+`efforts`, ...); `RobotBackend` documents what each one means.
+
+The twin may open a backend only to watch an arm it does not drive, such as a second arm next to
+the working one. It does so only for a factory marked `@read_only_capable`, with
+`BackendContext.read_only` set. Such a backend then writes nothing to the hardware, also not in
+`connect` and `disconnect`: no torque, no goals, no settings. `send_joints` raises. Complete, tested examples live in
 the twin's repository: `examples/robots/arm6`, `examples/robots/testbot`, `examples/strategies/swing`
 and `examples/detectors/cube`.
 

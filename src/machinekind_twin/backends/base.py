@@ -12,6 +12,14 @@ Backends come from installed packages. This module re-exports the same classes, 
 `machinekind_twin.backends.base.RobotBackend is machinekind_twin_api.RobotBackend`.
 """
 
-from machinekind_twin_api.backend import BackendContext, BackendPlugin, RobotBackend, RobotInfo
+from machinekind_twin_api.backend import (
+    BackendContext,
+    BackendPlugin,
+    RobotBackend,
+    RobotInfo,
+    read_only_capable,
+    supports_read_only,
+)
 
-__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo"]
+__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "read_only_capable",
+           "supports_read_only"]

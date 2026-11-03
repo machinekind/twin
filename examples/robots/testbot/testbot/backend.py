@@ -8,17 +8,21 @@ section of the twin's config.
 Settings (`testbot:` section):
 
     start: {j1: 10.0}   # pose at connect [app units]; joints not given start at 0
+
+It can be opened read-only (`read_only_capable`): then `send_joints` refuses, as a real backend
+must never write to an arm the twin only watches.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from machinekind_twin_api import BackendContext, RobotInfo
+from machinekind_twin_api import BackendContext, RobotInfo, read_only_capable
 
 SETTINGS = ("start",)
 
 
+@read_only_capable
 def create(ctx: BackendContext) -> MemoryArm:
     """Entry point of the `testbot` backend plugin."""
     return MemoryArm(ctx)
@@ -40,6 +44,7 @@ class MemoryArm:
         self.joints = tuple(ctx.joints)
         self.limits = {name: tuple(map(float, lim)) for name, lim in ctx.limits.items()}
         self.positions = {name: float(start.get(name, 0.0)) for name in self.joints}
+        self.read_only = ctx.read_only
         self._connected = False
 
     def connect(self) -> None:
@@ -58,6 +63,8 @@ class MemoryArm:
         return dict(self.positions)
 
     def send_joints(self, targets: Mapping[str, float]) -> dict[str, float]:
+        if self.read_only:
+            raise RuntimeError("testbot: otwarty tylko do odczytu")
         if not self._connected:
             raise RuntimeError("testbot: ramie nie jest polaczone")
         sent = {}

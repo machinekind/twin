@@ -36,7 +36,9 @@ from machinekind_twin_api import (
     backend,
     detector,
     entry_points,
+    read_only_capable,
     strategy,
+    supports_read_only,
 )
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -354,6 +356,25 @@ def test_the_backend_context_is_plain_data():
 
     assert ctx.settings == {"start": {"j1": 10.0}}
     assert BackendContext(**{f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)}) == ctx
+
+
+def test_a_backend_context_is_read_write_unless_the_twin_says_otherwise():
+    assert context().read_only is False
+    assert dataclasses.replace(context(), read_only=True).read_only is True
+
+
+def test_only_a_marked_factory_supports_read_only():
+    def create(ctx: BackendContext) -> MemoryArm:
+        return MemoryArm(ctx)
+
+    class Factory:
+        @property
+        def supports_read_only(self) -> bool:  # a property on the class is not the mark
+            return True
+
+    assert not supports_read_only(create) and not supports_read_only(Factory)
+    assert read_only_capable(create) is create
+    assert supports_read_only(create)
 
 
 def test_a_plugin_with_the_required_members_is_a_backend_plugin():

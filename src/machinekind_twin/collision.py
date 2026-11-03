@@ -21,6 +21,11 @@ so any body added to the scene is kept clear of with no further change. Meshes c
 get the clearance as a collision margin, which MuJoCo honours only for some pairs - give a body
 that must be kept clear primitive collision geoms. As before, pairs touching at rest (the base
 on the table) are allowed.
+
+Other robots of the station (`scene.PassiveRobot`) are obstacles like the table, and their
+collision geoms reach `PASSIVE_CLEARANCE` further out, so every check keeps that gap from them,
+with or without a `clearance`. A `clearance` grows them only by what it adds beyond that gap.
+`closer` is the twin loop's guard against driving into one.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ import mujoco
 import numpy as np
 
 from .kinematics import RobotKinematics
-from .scene import PREFIX, Scene
+from .scene import PASSIVE_CLEARANCE, PREFIX, Scene
 
 
 class CollisionChecker:
@@ -51,40 +56,46 @@ class CollisionChecker:
                 p = m.body_parentid[p]
             in_robot[b] = p == base
         self.robot_geom = in_robot[m.geom_bodyid]
-        #: Geoms grown by the clearance: a contact with one of them is `clearance` early.
-        self.grown = np.zeros(m.ngeom, bool)
+        self.passive_geom = scene.passive_geom
+        #: How far each geom was grown [m]: a contact with it comes that much early.
+        self.grown = np.zeros(m.ngeom)
         if self.clearance > 0:
             self._grow(np.flatnonzero(~self.robot_geom & ((m.geom_contype != 0) | (m.geom_conaffinity != 0))))
         self.T_base2world = scene.T_base2world
         self.allowed = set(self._contacts(scene.cfg.robot.home))
 
     def _grow(self, geoms: np.ndarray) -> None:
-        m, c, G = self.model, self.clearance, mujoco.mjtGeom
+        m, G = self.model, mujoco.mjtGeom
         for g in geoms:
             t = int(m.geom_type[g])
+            if t not in (int(G.mjGEOM_BOX), int(G.mjGEOM_ELLIPSOID), int(G.mjGEOM_SPHERE),
+                         int(G.mjGEOM_CAPSULE), int(G.mjGEOM_CYLINDER), int(G.mjGEOM_PLANE)):
+                m.geom_margin[g] = max(float(m.geom_margin[g]), self.clearance)
+                continue
+            # A passive robot's margin keeps PASSIVE_CLEARANCE already: grow it only by the rest.
+            c = self.clearance - (PASSIVE_CLEARANCE if self.passive_geom[g] else 0.0)
+            if c <= 0:
+                continue
             if t in (int(G.mjGEOM_BOX), int(G.mjGEOM_ELLIPSOID)):
                 m.geom_size[g, :3] += c
             elif t == int(G.mjGEOM_SPHERE):
                 m.geom_size[g, 0] += c
             elif t in (int(G.mjGEOM_CAPSULE), int(G.mjGEOM_CYLINDER)):
                 m.geom_size[g, :2] += c
-            elif t == int(G.mjGEOM_PLANE):
+            else:
                 R = np.zeros(9)
                 mujoco.mju_quat2Mat(R, m.geom_quat[g])
                 m.geom_pos[g] += R.reshape(3, 3)[:, 2] * c
-                self.grown[g] = True
-                continue
-            else:
-                m.geom_margin[g] = max(float(m.geom_margin[g]), c)
+                self.grown[g] = c
                 continue
             m.geom_rbound[g] += c
             m.geom_aabb[g, 3:] += c
-            self.grown[g] = True
+            self.grown[g] = c
         # The midphase culls by the bodies' bounding volume hierarchies: they grow with their geoms.
         for b in set(m.geom_bodyid[geoms].tolist()):
             adr, num = int(m.body_bvhadr[b]), int(m.body_bvhnum[b])
             if adr >= 0:
-                m.bvh_aabb[adr:adr + num, 3:] += c
+                m.bvh_aabb[adr:adr + num, 3:] += self.clearance
 
     def _own(self, pair: tuple[int, int]) -> bool:
         return bool(self.robot_geom[pair[0]] and self.robot_geom[pair[1]])
@@ -100,7 +111,7 @@ class CollisionChecker:
             g1, g2 = int(c.geom1), int(c.geom2)
             if self.robot_geom[g1] or self.robot_geom[g2]:
                 pair = (min(g1, g2), max(g1, g2))
-                dist = float(c.dist) + (self.clearance if self.grown[g1] or self.grown[g2] else 0.0)
+                dist = float(c.dist) + float(self.grown[g1] + self.grown[g2])
                 out[pair] = min(out.get(pair, np.inf), dist)
         return out
 
@@ -152,3 +163,28 @@ class CollisionChecker:
             if why:
                 return f"{why} w {s:.0%} drogi"
         return None
+
+    def passive_gap(self, joints: Mapping[str, float]) -> tuple[float, str] | None:
+        """The arm's closest approach to a passive robot in this pose, when nearer than
+        `PASSIVE_CLEARANCE` (or a larger `clearance`): (distance [m], negative = overlap; what meets
+        what). None = farther."""
+        if not self.passive_geom.any():
+            return None
+        near = [(dist, pair) for pair, dist in self._contacts(joints).items()
+                if self.passive_geom[list(pair)].any()]
+        if not near:
+            return None
+        dist, pair = min(near)
+        return dist, self._describe(pair)
+
+    def closer(self, start: Mapping[str, float], end: Mapping[str, float]) -> str | None:
+        """Why the step from `start` to `end` is refused: `end` is within `PASSIVE_CLEARANCE` of a passive
+        robot and nearer to it than `start`. None = allowed, so the arm can always back away."""
+        near = self.passive_gap(end)
+        if near is None:
+            return None
+        was = self.passive_gap(start)
+        if was is not None and near[0] >= was[0] - 1e-4:
+            return None
+        return (f"za blisko innego robota: {near[1]} "
+                f"({max(near[0], 0.0) * 100:.1f} cm, minimum {PASSIVE_CLEARANCE * 100:.0f} cm)")
