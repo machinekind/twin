@@ -501,6 +501,40 @@ def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
         app._refresh_cameras()
 
 
+def test_another_robot_is_added_read_and_removed_from_the_panel(app):
+    try:
+        app.other_name.value = "lewe"
+        app.other_robot.value = BOT
+        app.other_xyz.value = (0.0, 0.19, 0.0)
+        app.other_source.value = "testbot"
+        app.other_port.value = "/dev/ttyACM1"
+        app.other_joints.value = "j1=90"
+        ev = _click(app, "Zapisz robota")
+        assert ev.client.notes and "lewe" in ev.client.notes[0][1]
+        rec = app.ws.other_robot("lewe")
+        assert (rec.robot, rec.xyz, rec.backend, rec.port) == (BOT, [0.0, 0.19, 0.0], "testbot", "/dev/ttyACM1")
+        assert "other_robots" in json.loads(app.ws_path.read_text(encoding="utf-8"))
+        app._sync_mirror()                                          # the 3D view draws it
+        model = app.twin.scene.model
+        assert any(model.body(b).name.startswith("lewe/") for b in app.mirror.bodies)
+        end = time.monotonic() + 5.0
+        while app.twin.passive_status()["lewe"] != "odczyt na zywo":
+            assert time.monotonic() < end, app.twin.passive_status()
+            time.sleep(0.02)
+        assert "lewe" in app._others_text() and "odczyt na zywo" in app._others_text()
+
+        app.other_pick.value = "lewe"
+        _click(app, "Usun robota")
+        assert app.ws.other_robots == [] and app.twin.passive_status() == {}
+        assert "other_robots" not in json.loads(app.ws_path.read_text(encoding="utf-8"))
+        with pytest.raises(KeyError):
+            app.twin.scene.model.body("lewe/hand")
+    finally:
+        if app.ws.other_robots:
+            app._apply_others([])
+        app.other_pick.value = "(nowy)"
+
+
 def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
     from machinekind_twin.runtime import RobotStatus
 

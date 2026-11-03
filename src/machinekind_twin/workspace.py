@@ -36,7 +36,7 @@ from .calib.session import WaveLimits
 from .config import from_mapping
 from .paths import data_path
 from .robots import RobotSpec, default_robot, get_spec
-from .scene import CameraView, Look, SceneConfig, Table
+from .scene import PREFIX, CameraView, Look, PassiveRobot, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
 #: zeby panel odpalony z innego katalogu nie zaczynal od pustego stanowiska.
@@ -186,6 +186,42 @@ class CameraRecord:
 
 
 @dataclass
+class RobotRecord:
+    """One robot of the station besides the driven arm, which the twin only watches.
+
+    `robot`, `backend` and `port` mean what they mean for the driven arm (`Workspace`). The backend
+    is opened read-only (`BackendContext.read_only`); without one the robot keeps `joints`.
+    """
+
+    #: Its name in the scene (`<name>/<body>`) and in the panel.
+    name: str
+    #: Robot description from an installed package (`robots.robot_folders`).
+    robot: str
+    #: Base position relative to the driven arm's base [m]: x forward, y left, z up.
+    xyz: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    #: Base rotation about the vertical axis relative to the driven arm's base [deg].
+    yaw_deg: float = 0.0
+    #: Backend of the robot's package, opened read-only; None = the fixed pose `joints`.
+    backend: str | None = None
+    port: str | None = None
+    #: Joint values [app units]: the fixed pose, or the last pose read from `backend`.
+    #: Joints not given take the robot's home pose.
+    joints: dict[str, float] = field(default_factory=dict)
+
+    def T_base(self) -> np.ndarray:
+        """Base pose in the driven arm's base frame (4x4)."""
+        c, s = np.cos(np.radians(self.yaw_deg)), np.sin(np.radians(self.yaw_deg))
+        T = np.eye(4)
+        T[:2, :2] = [[c, -s], [s, c]]
+        T[:3, 3] = [float(v) for v in self.xyz]
+        return T
+
+    def placed(self) -> PassiveRobot:
+        """This robot as part of the scene."""
+        return PassiveRobot(self.name, get_spec(self.robot), self.T_base(), dict(self.joints))
+
+
+@dataclass
 class Workspace:
     #: Ramie z zainstalowanego pakietu (`robots.robot_folders`); nowe stanowisko bierze
     #: pierwsze zarejestrowane (`robots.default_robot`).
@@ -213,6 +249,9 @@ class Workspace:
     #: What the calibration wave must keep out of on this stand (`calib.session.WaveLimits`): keep-out
     #: boxes in the base frame [m] and the base's turn range [degrees]. Empty = only the arm's own limits.
     wave: WaveLimits = field(default_factory=WaveLimits)
+    #: Other robots of the station, which the twin only watches (`RobotRecord`). Empty = the driven
+    #: arm alone; such a workspace saves without this key, as before.
+    other_robots: list[RobotRecord] = field(default_factory=list)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -234,6 +273,17 @@ class Workspace:
                 rec.calibration["trusted"], rec.calibration["reason"] = False, reason
                 names.append(rec.name)
         return names
+
+    def robots(self) -> list[RobotRecord]:
+        """Every robot of the station: the driven arm first (at the origin), then `other_robots`."""
+        return [RobotRecord(PREFIX.rstrip("/"), self.robot, backend=self.backend, port=self.port),
+                *self.other_robots]
+
+    def other_robot(self, name: str) -> RobotRecord:
+        for rec in self.other_robots:
+            if rec.name == name:
+                return rec
+        raise KeyError(f"brak robota {name!r} w stanowisku")
 
     def card_obj(self) -> Card:
         data = dict(self.card)
@@ -290,7 +340,8 @@ class Workspace:
         fixed = [c for c in self.cameras if c.enabled and c.name not in on_arm]
         views = [v for c in fixed for v in [c.view()] if v is not None]
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
-                          card=self.card_obj() if with_card else None, look=self.look)
+                          card=self.card_obj() if with_card else None, look=self.look,
+                          passive=[r.placed() for r in self.other_robots])
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
@@ -434,6 +485,8 @@ class Workspace:
         """The workspace as `save` writes it: JSON types only (the look's tuples come out as lists)."""
         data = asdict(self)
         data.pop("path", None)
+        if not data["other_robots"]:
+            data.pop("other_robots")
         return json.loads(json.dumps(data))
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -460,7 +513,9 @@ class Workspace:
             return ws
         data = json.loads(target.read_text(encoding="utf-8"))
         cams = [CameraRecord(**c) for c in data.pop("cameras", [])]
-        known = {f for f in cls.__dataclass_fields__ if f not in ("cameras", "path")}
+        others = [from_mapping(RobotRecord, r, f"{target}: other_robots")
+                  for r in data.pop("other_robots", [])]
+        known = {f for f in cls.__dataclass_fields__ if f not in ("cameras", "other_robots", "path")}
         unknown = set(data) - known
         if unknown:
             raise ValueError(f"nieznane pola w {target}: {sorted(unknown)}")
@@ -468,7 +523,7 @@ class Workspace:
             data["look"] = from_mapping(Look, data["look"], f"{target}: look")
         if "wave" in data:
             data["wave"] = from_mapping(WaveLimits, data["wave"], f"{target}: wave")
-        ws = cls(cameras=cams, **data)
+        ws = cls(cameras=cams, other_robots=others, **data)
         ws.path = target
         if ws.calib_preset is None:
             newest = ws.presets()

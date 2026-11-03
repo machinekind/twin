@@ -82,7 +82,7 @@ see [the first-session procedure](#galaxea-a1x-first-session) below.
 
 | Path | Contents |
 |---|---|
-| `workspace/twin.json` | Your local robot selection, backend/port, table, scene look, cameras, calibration and measured dynamics; ignored by Git |
+| `workspace/twin.json` | Your local robot selection, backend/port, table, other robots, scene look, cameras, calibration and measured dynamics; ignored by Git |
 | `workspace/calib/*.json` | Saved camera-pose presets; example presets are tracked |
 | `workspace/episodes/` | Opt-in episode recordings and optional camera images; ignored by Git |
 | `configs/local.yaml` | Your backend, strategy, detector and safety settings; ignored by Git |
@@ -780,6 +780,51 @@ arm. It lists each name once. With a real arm, a camera on the arm has frames
 only as the enabled workspace camera of its name. The Kamery tab and the 3D
 view do not show cameras on the arm and do not calibrate them. Their pose comes
 from the description.
+
+## Other robots in the scene
+
+A second arm next to the working one is part of the station. The twin does not
+drive it, but it stands in the scene: in the 3D view, in simulated camera
+frames, in every collision check and in the arm masks, so detectors never
+report it as an object. List it under `other_robots` in `twin.json`, or in the
+panel: **Ramie**, folder **Inne roboty (tylko odczyt)**. The working arm stays
+`robot`, `backend` and `port`. A workspace without the key is the working arm
+alone, as before. This one has a second SO-101 19 cm to the working arm's left,
+read from its own bus:
+
+```json
+"other_robots": [
+  {"name": "lewe", "robot": "so101", "xyz": [0.0, 0.19, 0.0], "yaw_deg": 0.0,
+   "backend": "feetech", "port": "/dev/ttyACM1", "joints": {}}
+]
+```
+
+- `name`: its prefix in the scene (`lewe/<body>`): letters, digits, `_`, `-`.
+- `robot`: an installed robot description, as for the working arm.
+- `xyz` [m] and `yaw_deg` [deg]: its base relative to the working arm's base;
+  x forward, y left, z up.
+- `backend` and `port`: a backend of that robot's package, opened read-only.
+  `null` keeps the fixed pose in `joints`.
+- `joints` [app units]: the fixed pose, or the last pose read. Joints left out
+  take the robot's home pose.
+
+Read-only is part of the backend contract. The twin opens the backend only when
+its factory is marked `read_only_capable`. It sets `BackendContext.read_only`,
+and the backend then writes nothing to the arm: no torque, no goals, no
+settings. The twin holds such a backend as a `ReadOnlyArm`, which only
+connects, reads and disconnects. A backend without the mark is refused, and the
+robot keeps its fixed pose. When the bus is missing or a read fails, the robot
+keeps its last pose, the panel says why, and the twin retries every few seconds.
+
+The copy is welded in place, so physics never moves it, and contacts with it
+are real. Its collision geoms reach 2 cm further out (`scene.PASSIVE_CLEARANCE`).
+Every collision check therefore keeps 2 cm from it, the calibration wave's
+included. The wave's own clearance does not add to that gap: the larger of the
+two counts, and a robot listed here needs no keep-out box. The control loop
+refuses a command that brings the arm within that distance and closer than it
+already is. The arm then holds where it stands, its owner loses it, and the
+panel shows the reason. Moves away are allowed. A block held in the jaws is not
+in that check; it meets the other arm only in physics.
 
 ## Scene look
 

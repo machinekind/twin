@@ -12,6 +12,10 @@ roznicy: `joints()`, `set_target()`, `move()` dzialaja tak samo.
 Kazdy rozkaz przechodzi przez `safety.SafetySupervisor`: limity pozycji
 i predkosci, stop awaryjny i plynny powrot do domu.
 
+Other robots of the station stand in the scene too (`Workspace.other_robots`). The twin never
+drives them: their joints come from a fixed pose or from their backend opened read-only
+(`start_passive`), and the loop refuses a command that brings the arm too close to one.
+
 Ramieniem steruje naraz JEDEN wlasciciel (`claim`/`release`): panel (suwaki
 ze sprzeglem), polityka, fala kalibracyjna albo identyfikacja. Bez tego
 trzy watki pisaly ten sam cel na zmiane i ramie skakalo miedzy nimi.
@@ -28,23 +32,28 @@ trzymalo petle prawdziwego ramienia do 0,7 s.
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mujoco
 import numpy as np
 
 from .safety import SafetyState, SafetySupervisor
-from .backends import create_backend
+from .backends import create_backend, open_read_only
 from .backends.base import RobotBackend, RobotInfo
 from . import scene as sc
 from .cameras import CameraHub
 from .clock import Clock, VirtualClock, WallClock
-from .robots import RobotSpec, robot_config
+from .passive import PassiveReader
+from .robots import RobotSpec, get_spec, robot_config
 from .workspace import Workspace
+
+if TYPE_CHECKING:
+    from .collision import CollisionChecker
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +384,77 @@ class Twin:
         self._listeners: dict[int, Callable[[TickSample], None]] = {}
         self._listener_seq = 0
         self._listeners_lock = threading.Lock()
+        #: Readers of the other robots that have a backend (`start_passive`), by name.
+        self._readers: dict[str, PassiveReader] = {}
+        #: Why a robot with a backend has no reader, by name.
+        self._passive_notes: dict[str, str] = {}
+        #: The loop's collision checker for the clearance to other robots, on the current scene's model.
+        self._clearance: CollisionChecker | None = None
+
+    # ------------------------------------------------------------ inne roboty
+    def start_passive(self) -> None:
+        """Starts reading every other robot that has a backend; the others keep their fixed pose.
+
+        Restarts the readers, so call it again after the station's robots change.
+        """
+        self.stop_passive()
+        ws = self.workspace
+        taken = {ws.port} if ws.backend != "sim" and ws.port else set()
+        for rec in ws.other_robots:
+            if not rec.backend:
+                continue
+            if rec.port and rec.port in taken:
+                # Two readers on one serial bus garble each other's replies; the driven arm's above all.
+                self._passive_notes[rec.name] = f"port {rec.port} jest juz uzywany - zostaje ostatnia poza"
+                continue
+            taken.add(rec.port)
+            spec = get_spec(rec.robot)
+            opener = functools.partial(open_read_only, robot_config(spec), spec, rec.backend, rec.port)
+            reader = PassiveReader(rec.name, opener, functools.partial(self.set_passive_joints, rec.name))
+            self._readers[rec.name] = reader
+            reader.start()
+
+    def stop_passive(self) -> None:
+        self._passive_notes = {}
+        readers, self._readers = self._readers, {}
+        for reader in readers.values():
+            reader.stop()
+
+    def passive_status(self) -> dict[str, str]:
+        """Where each other robot's pose comes from now, for the panel."""
+        out = {}
+        for rec in self.workspace.other_robots:
+            reader = self._readers.get(rec.name)
+            out[rec.name] = (reader.status if reader is not None
+                             else "stala poza" if not rec.backend
+                             else self._passive_notes.get(rec.name, "odczyt wylaczony"))
+        return out
+
+    def set_passive_joints(self, name: str, joints: Mapping[str, float]) -> None:
+        """New joints [app units] of the other robot `name`: in the workspace (its last pose) and the scene."""
+        try:
+            rec = self.workspace.other_robot(name)
+        except KeyError:
+            return                                      # removed from the station meanwhile
+        joints = {k: float(v) for k, v in joints.items()}
+        if rec.joints.keys() == joints.keys() and all(abs(rec.joints[k] - v) < 0.2 for k, v in joints.items()):
+            return                                      # servo noise: the scene stays as it is
+        rec.joints = joints
+        with self.lock:
+            if name in self.scene.passive:
+                self.scene.set_passive_joints(name, joints)
+
+    def _too_close(self, command: Mapping[str, float], ls: _LoopState) -> str:
+        """Why `command` may not go out: it brings the arm too close to another robot ("" = it may)."""
+        scene = self.scene
+        start = ls.last_sent or ls.measured
+        if not scene.passive or all(abs(v - start.get(k, np.inf)) < 1e-9 for k, v in command.items()):
+            return ""
+        checker = self._clearance
+        if checker is None or checker.model is not scene.model:
+            from .collision import CollisionChecker
+            checker = self._clearance = CollisionChecker(scene)
+        return checker.closer(start, command) or ""
 
     # ------------------------------------------------------------ scena
     def rebuild(self) -> None:
@@ -704,6 +784,8 @@ class Twin:
         ws = self.workspace
         backend = (backend or ws.backend).lower()
         port = port if port is not None else ws.port
+        if backend != "sim" and port and any(r.backend and r.port == port for r in ws.other_robots):
+            raise ValueError(f"port {port} czyta inny robot stanowiska (Inne roboty) - wybierz inny port")
         overrides: dict[str, Any] = {"robot": {"backend": backend, "port": port}}
         if ws.home:                                    # "Ustaw dom = tu" tego stanowiska
             overrides["safety"] = {"home": {k: float(v) for k, v in ws.home.items()}}
@@ -1483,6 +1565,15 @@ class Twin:
                     sup.reseed({self._grip: floor})           # chwytak odciazony: nie ciasniej niz prog
                     command = sup.command
                 outside = sup.outside
+            why = "" if frozen or not command else self._too_close(command, ls)
+            if why:
+                # Back to the last command that went out, then stop where the arm stands, as on STOP.
+                with self._sup_lock:
+                    sup.reseed(dict(ls.last_sent or ls.measured))
+                self._note, self._note_t = f"ramie zatrzymane - {why}", now
+                logger.warning(self._note)
+                self.preempt(self._note)
+                command = sup.command
             if engaged or report.state in _MOVING:
                 ls.moved = True
             # Prawdziwe ramie po "polacz bez ruchu" trzyma cel wpisany przy polaczeniu
@@ -1730,6 +1821,7 @@ class Twin:
         return None if self._supervisor is None else self._supervisor.state
 
     def close(self) -> None:
+        self.stop_passive()
         self.disconnect()
         self.cameras.close()
 

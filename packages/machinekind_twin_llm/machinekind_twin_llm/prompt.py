@@ -63,7 +63,7 @@ def build_prompt(sent: Sequence[SentImage], objects: Sequence[str] = (), extra: 
         lines.append(f"Find these objects: {', '.join(wanted)}. Report only these, with exactly these labels.")
     else:
         lines.append(
-            "Find every movable object on the table: not the robot arm, not the table, not the cameras, "
+            "Find every movable object on the table: not a robot arm, not the table, not the cameras, "
             "not things fixed to the table. Label each with a short lowercase English name, colour plus "
             'noun, e.g. "red pen", the same name in every image.')
     lines += [

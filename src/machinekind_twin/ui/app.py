@@ -42,7 +42,8 @@ from ..kinematics import inverse, pose
 from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
-from ..workspace import CameraRecord, Workspace, nominal_K
+from ..robots import get_spec
+from ..workspace import CameraRecord, RobotRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
@@ -60,6 +61,9 @@ logger = logging.getLogger(__name__)
 
 #: Wlasciciel ramienia (`Twin.claim`), gdy steruje panel: suwaki i uchwyt TCP ze sprzeglem.
 PANEL_OWNER = "panel"
+#: "Inne roboty": the picker's entry for a new robot and the joint source without a backend.
+NEW_ROBOT = "(nowy)"
+FIXED_POSE = "stala poza"
 #: Najwiekszy skok stawu [st.] miedzy kolejnymi rozwiazaniami IK uchwytu TCP. Zmierzone:
 #: przeciagniecie uchwytu o 1-2 cm z shoulder_pan ~108 st. dawalo "poprawne" IK na
 #: drugiej galezi - 178-180 st. zmiany, cale ramie przez stol w ~1,3 s.
@@ -242,6 +246,11 @@ def usb_serial_ports() -> list[str]:
     except ImportError:
         return []
     return sorted(str(p.device) for p in comports() if p.vid is not None)
+
+
+def _joints_text(joints: dict[str, float]) -> str:
+    """Joint values as the panel's text field shows them: `name=value, ...`."""
+    return ", ".join(f"{k}={float(v):g}" for k, v in joints.items())
 
 
 def find_port(saved: str | None) -> str:
@@ -608,6 +617,7 @@ class TwinApp:
         self.mirror = None
         self._mirror_version = -1
         self._sync_mirror()
+        self._guard("inne roboty", self.twin.start_passive)
         self.twin.cameras.sync()
         self._refresh_cameras()
         self._guard("przewodnik", self._tick_guide)
@@ -1102,6 +1112,8 @@ class TwinApp:
         # --- stol (zawsze, zwiniete)
         with g.add_folder("Stanowisko (stol)", expand_by_default=False):
             self._build_table()
+        with g.add_folder("Inne roboty (tylko odczyt)", expand_by_default=False):
+            self._build_others()
 
         self.twin.set_speed(self.arm_speed.value)
 
@@ -1333,6 +1345,138 @@ class TwinApp:
         @self.tcp_gizmo.on_update
         def _(event):
             self._on_tcp_gizmo()
+
+    # ------------------------------------------------------- inne roboty
+    def _build_others(self) -> None:
+        """Robots of the station the twin only watches: list, editor, status of their joints."""
+        from ..backends.factory import backends
+        from ..robots import robot_folders
+
+        g = self.server.gui
+        g.add_markdown("Roboty stojace obok ramienia. Blizniak nimi nie steruje: stawy z zapisanej pozy albo "
+                       "z ich backendu TYLKO DO ODCZYTU (nic nie wysyla na ich magistrale). Ramie nie podjedzie "
+                       f"blizej niz {sc.PASSIVE_CLEARANCE * 100:.0f} cm.")
+        self.others_md = g.add_markdown("")
+        self.other_pick = g.add_dropdown("Robot", (NEW_ROBOT, *(r.name for r in self.ws.other_robots)),
+                                         initial_value=NEW_ROBOT,
+                                         hint="Robot do edycji albo nowy.")
+        self.other_name = g.add_text("Nazwa", "", hint="Nazwa w scenie: litery, cyfry, _ i -.")
+        robots = tuple(robot_folders()) or (self.ws.robot,)
+        self.other_robot = g.add_dropdown("Opis robota", robots, initial_value=self.ws.robot if self.ws.robot in robots
+                                          else robots[0], hint="Model z zainstalowanego pakietu robota.")
+        self.other_xyz = g.add_vector3("Podstawa x, y, z [m]", (0.0, 0.3, 0.0), min=(-2.0, -2.0, -1.0),
+                                       max=(2.0, 2.0, 1.0), step=0.005,
+                                       hint="Polozenie podstawy wzgledem podstawy ramienia [m]: x do przodu, "
+                                            "y w lewo, z w gore.")
+        self.other_yaw = g.add_number("Obrot podstawy [st.]", 0.0, min=-180.0, max=180.0, step=1.0,
+                                      hint="Obrot wokol osi pionowej wzgledem podstawy ramienia [st.].")
+        sources = (FIXED_POSE, *sorted(n for n in backends() if n != "sim"))
+        self.other_source = g.add_dropdown("Stawy z", sources, initial_value=FIXED_POSE,
+                                           hint="Stala poza albo backend robota otwarty tylko do odczytu.")
+        self.other_port = g.add_text("Port", "", hint="Port backendu, np. /dev/ttyACM1; pusty = domyslny.")
+        self.other_joints = g.add_text("Stala poza", "",
+                                       hint="staw=wartosc po przecinku [st., chwytak 0..100]; brakujace z pozy "
+                                            "domowej. Przy backendzie: ostatnia odczytana poza.")
+        save = g.add_button("Zapisz robota", icon=viser.Icon.CHECK, color="gray",
+                            hint="Zapisuje robota w stanowisku, przebudowuje scene i wznawia odczyty.")
+        remove = g.add_button("Usun robota", icon=viser.Icon.TRASH, color="gray", hint="Usuwa robota ze sceny.")
+        self._fill_other()
+
+        @self.other_pick.on_update
+        @self._safe
+        def _(event):
+            self._fill_other()
+
+        @self.other_robot.on_update
+        @self._safe
+        def _(event):
+            if self.other_pick.value == NEW_ROBOT:
+                self.other_joints.value = _joints_text(get_spec(self.other_robot.value).home)
+
+        @save.on_click
+        @self._safe
+        def _(event):
+            rec = self._other_from_fields()
+            old = self.other_pick.value
+            others = [r for r in self.ws.other_robots if r.name != old]
+            if any(r.name == rec.name for r in others):
+                raise ValueError(f"robot {rec.name!r} juz jest w stanowisku")
+            self._apply_others([*others, rec])
+            self.other_pick.value = rec.name
+            self._notify(event, "Inne roboty", f"{rec.name} zapisany, scena przebudowana.")
+
+        @remove.on_click
+        @self._safe
+        def _(event):
+            name = self.other_pick.value
+            if name == NEW_ROBOT:
+                return
+            self._apply_others([r for r in self.ws.other_robots if r.name != name])
+            self.other_pick.value = NEW_ROBOT
+            self._notify(event, "Inne roboty", f"{name} usuniety ze sceny.")
+
+    def _fill_other(self) -> None:
+        """The editor's fields from the picked robot, or defaults for a new one."""
+        name = self.other_pick.value
+        rec = None if name == NEW_ROBOT else self.ws.other_robot(name)
+        if rec is None:
+            k = 2
+            while any(r.name == f"ramie{k}" for r in self.ws.other_robots):
+                k += 1
+            rec = RobotRecord(f"ramie{k}", str(self.other_robot.value), xyz=[0.0, 0.3, 0.0])
+        self.other_name.value = rec.name
+        if rec.robot in self.other_robot.options:
+            self.other_robot.value = rec.robot
+        self.other_xyz.value = tuple(float(v) for v in rec.xyz)
+        self.other_yaw.value = float(rec.yaw_deg)
+        source = rec.backend or FIXED_POSE
+        if source not in self.other_source.options:
+            self.other_source.options = (*self.other_source.options, source)
+        self.other_source.value = source
+        self.other_port.value = rec.port or ""
+        self.other_joints.value = _joints_text({**get_spec(rec.robot).home, **rec.joints})
+
+    def _other_from_fields(self) -> RobotRecord:
+        robot = str(self.other_robot.value)
+        spec = get_spec(robot)
+        joints = {}
+        for part in self.other_joints.value.replace(";", ",").split(","):
+            if not part.strip():
+                continue
+            key, _, value = part.partition("=")
+            if key.strip() not in spec.joints:
+                raise ValueError(f"{robot} nie ma stawu {key.strip()!r} (ma: {', '.join(spec.joints)})")
+            joints[key.strip()] = float(value.replace(" ", ""))
+        source = str(self.other_source.value)
+        return RobotRecord(self.other_name.value.strip(), robot, xyz=[float(v) for v in self.other_xyz.value],
+                           yaw_deg=float(self.other_yaw.value), backend=None if source == FIXED_POSE else source,
+                           port=self.other_port.value.strip() or None, joints=joints)
+
+    def _apply_others(self, others: list[RobotRecord]) -> None:
+        """New list of other robots: checked by building the scene, then saved, rebuilt and read again."""
+        old = self.ws.other_robots
+        self.ws.other_robots = others
+        try:
+            sc.compose(self.ws.scene_config())
+        except Exception:
+            self.ws.other_robots = old
+            raise
+        self._save()
+        self._simreal_px.clear()
+        self.twin.rebuild()
+        self.twin.start_passive()
+        names = (NEW_ROBOT, *(r.name for r in others))
+        self.other_pick.options = names
+
+    def _others_text(self) -> str:
+        status = self.twin.passive_status()
+        lines = []
+        for r in self.ws.other_robots:
+            x, y, z = (float(v) for v in r.xyz)
+            source = f"{r.backend} {r.port or ''}".strip() if r.backend else "stala poza"
+            lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
+                         f"obrot {r.yaw_deg:.0f} st.; {_html.escape(source)}: {_html.escape(status.get(r.name, ''))}")
+        return "\n".join(lines) or "Brak innych robotow w scenie."
 
     def _on_tcp_gizmo(self) -> None:
         """Przeciagniety uchwyt TCP -> cel stawow, tylko na tej samej galezi IK co ramie teraz.
@@ -3114,6 +3258,7 @@ class TwinApp:
         status = self._status_text()
         self.status_md.content = status
         set_if(self.status_md, "visible", bool(status))
+        self.others_md.content = self._others_text()
         with self._render_lock:
             self._render_chip(*self._arm_mode())        # odswieza tez Hz na plakietce
         opts = tuple(c.name for c in self.ws.cameras) or ("-",)
