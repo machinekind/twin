@@ -59,11 +59,12 @@ robot:
 # seeded:
 #   cli: codex           # codex or claude, as for llm:
 #   model: gpt-6-astra   # as the CLI names it; "" = the CLI's default
-#   # each block as it rests on the table, label=LxWxH [m] with H above the table, ";" between labels
-#   labels_sizes: "cube=0.025x0.025x0.025;cuboid5=0.05x0.025x0.025"
-#   # OpenCV HSV (H 0..180, S and V 0..255), label=H0-H1,S0-S1,V0-V1, "|" between ranges of one label
-#   labels_hsv: "cube=0-12,120-255,70-255|170-180,120-255,70-255;cuboid5=20-35,100-255,90-255"
-#   prompt: "cube is the red cube; cuboid5 the short yellow block"
+#   # "<colour> <shape>" labels, comma-separated; "" = every block the model names
+#   labels: "red cube, light blue cuboid, wooden cylinder"
+#   # overrides by label or shape word, name=LxWxH [m], ";" between entries
+#   labels_sizes: "cube=0.03x0.03x0.03"
+#   # overrides by label or colour word, OpenCV HSV (H 0..180, S and V 0..255), "|" between ranges
+#   labels_hsv: "wooden=10-20,30-90,150-255"
 #   interval_s: 0.2      # the colour loop [s], at least 0.1
 #   seed_interval_s: 10.0   # seconds between LLM questions, at least 2
 #   track_error_px: 40   # how far a followed block may move between two calls [px]

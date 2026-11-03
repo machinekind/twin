@@ -456,13 +456,13 @@ def test_the_seeded_settings_draw_as_str_float_and_int(seeded_package):
     fields = {field.name: field for field in load_detector(seeded_package).fields}
 
     assert list(fields) == [
-        "cli", "model", "effort", "labels_sizes", "labels_hsv", "cameras", "prompt", "interval_s",
+        "cli", "model", "effort", "labels", "labels_sizes", "labels_hsv", "cameras", "prompt", "interval_s",
         "seed_interval_s", "seed_error_px", "track_error_px", "lost_after_s", "min_area_px", "max_blob_ratio",
         "timeout_s", "max_side_px", "max_calls_per_hour", "min_confidence", "executable", "claude_images",
     ]
     assert {name: field.kind for name, field in fields.items()} == {
-        "cli": str, "model": str, "effort": str, "labels_sizes": str, "labels_hsv": str, "cameras": str,
-        "prompt": str, "interval_s": float, "seed_interval_s": float, "seed_error_px": float,
+        "cli": str, "model": str, "effort": str, "labels": str, "labels_sizes": str, "labels_hsv": str,
+        "cameras": str, "prompt": str, "interval_s": float, "seed_interval_s": float, "seed_error_px": float,
         "track_error_px": float, "lost_after_s": float, "min_area_px": int, "max_blob_ratio": float,
         "timeout_s": float, "max_side_px": int, "max_calls_per_hour": int, "min_confidence": float,
         "executable": str, "claude_images": str,
@@ -477,7 +477,7 @@ def test_the_seeded_settings_draw_as_str_float_and_int(seeded_package):
 def test_the_seeded_config_section_prefills_the_detector(tmp_path, monkeypatch, seeded_package):
     config = tmp_path / "local.yaml"
     config.write_text("seeded:\n  cli: claude\n  model: sonnet\n  interval_s: 0.5\n"
-                      "  labels_sizes: cube=0.03x0.03x0.03\n  labels_hsv: cube=0-12,120-255,70-255\n",
+                      "  labels: red cube\n  labels_sizes: cube=0.03x0.03x0.03\n",
                       encoding="utf-8")
     monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(config))
 
@@ -488,7 +488,7 @@ def test_the_seeded_config_section_prefills_the_detector(tmp_path, monkeypatch, 
     assert detector.config.cli == "claude"
     assert detector.interval_s == 0.5
     assert detector._llm.config.model == "sonnet"
-    assert detector._llm.config.objects == "cube"
+    assert detector._llm.config.objects == "red cube"
 
 
 def test_the_seeded_detector_refuses_settings_it_cannot_work_with(seeded_package):
@@ -496,7 +496,7 @@ def test_the_seeded_detector_refuses_settings_it_cannot_work_with(seeded_package
 
     with pytest.raises(ValueError, match="seeded: interval_s"):
         plugin.create({"interval_s": 0.01})
-    with pytest.raises(ValueError, match="seeded: labels"):
-        plugin.create({"labels_hsv": "cube=0-12,120-255,70-255"})
+    with pytest.raises(ValueError, match="seeded: labels: 'purple cube' names no colour"):
+        plugin.create({"labels": "purple cube"})
     with pytest.raises(ValueError, match="is an OpenAI model and cli is claude"):
         plugin.create({"cli": "claude"})

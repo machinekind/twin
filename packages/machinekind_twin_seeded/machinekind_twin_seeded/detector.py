@@ -9,8 +9,14 @@ Two threads share the work:
   copied frames, one question at a time, at most every `seed_interval_s`, and leaves its answer
   for the next `detect`.
 
+A label is "<colour> <shape>": the shape gives the block's size, the colour its HSV ranges
+(`settings.resolve`). A label without a known shape and colour, or an override for them, is not
+followed.
+
 A track is one label in one camera. A fresh seed (the model's pixel for that label) snaps to the
-colour blob within the seed's pixel error; from then on the track follows the blob nearest its last
+colour blob within the seed's pixel error. A blob longer than `max_blob_ratio` times the model's
+box (or the seed's search diameter without a box) is not one block: two touching blocks of one
+colour, or a block the colour of the table (bare wood on wood). From then on the track follows the blob nearest its last
 centroid, within `track_error_px`. A followed track outranks a new seed: the model only confirms it.
 For every followed blob `detect` returns the blob's mask, box and centroid and the label's size, so
 the twin's box fit places the block with its yaw. A track without a blob for `lost_after_s` is
@@ -39,7 +45,7 @@ from machinekind_twin_llm.prompt import normalise_label
 from machinekind_twin_llm.settings import names
 
 from .grow import blobs, colour_mask, nearest
-from .settings import SeededSettings, llm_settings, validate
+from .settings import Block, SeededSettings, llm_settings, resolve, validate
 
 __all__ = ["MAX_UNCONFIRMED", "PIXEL_ERROR_PX", "SeededDetector"]
 
@@ -84,10 +90,12 @@ class _Track:
     anchor: tuple[float, float]
     #: How far from `anchor` the blob's box may lie [px].
     radius: float
-    #: The model's box of the seed, which bounds the blob's size; None = no bound.
+    #: The model's box of the seed, which bounds the blob's size; None = bounded by `seed_radius`.
     seed_box: tuple[float, float, float, float] | None
     #: The clock when the seed arrived: the lost deadline counts from it until the first sighting [s].
     seeded_at: float
+    #: The seed's search radius [px]: bounds the blob's size when the model gave no box.
+    seed_radius: float
     #: The clock at the last sighting [s]; None = not seen yet.
     seen_at: float | None = None
     #: The last grow found no blob.
@@ -125,9 +133,12 @@ class SeededDetector(Detector[SeededSettings]):
     def __init__(self, settings: SeededSettings | None = None, *,
                  clock: Callable[[], float] = time.monotonic):
         settings = settings if settings is not None else SeededSettings()
-        self._sizes, self._hsv = validate(settings)
+        self._tables = validate(settings)
         self.config = settings
-        self._labels = tuple(sorted(self._sizes))
+        #: The labels asked for; empty = every block the model names.
+        self._labels = self._tables.labels
+        #: Every label met so far and its block; None = not a block the detector can follow.
+        self._blocks: dict[str, Block | None] = {}
         self._cameras = names(settings.cameras)
         self._llm = LlmDetector(llm_settings(settings, self._labels))
         self.interval_s = float(settings.interval_s)
@@ -146,6 +157,7 @@ class SeededDetector(Detector[SeededSettings]):
         self._stopping = threading.Event()
         # The runner thread's own, touched only by `detect`.
         self._tracks: dict[tuple[str, str], _Track] = {}
+        self._too_big: set[tuple[str, str]] = set()
         self._last_error = ""
         # The worker's own.
         self._warned: set[str] = set()
@@ -206,6 +218,17 @@ class SeededDetector(Detector[SeededSettings]):
             answer, self._answer = self._answer, None
         return answer
 
+    def _block(self, label: str) -> Block | None:
+        """The block a label names, resolved once; None for a label not asked for or not a block."""
+        if label not in self._blocks:
+            block = None
+            if not self._labels or label in self._labels:
+                block = resolve(label, self._tables.sizes, self._tables.hsv)
+            if block is None:
+                logger.info("seeded: %r is not followed: not asked for, or no size or colour for it", label)
+            self._blocks[label] = block
+        return self._blocks[label]
+
     def _apply_answer(self, answer: _Answer, images: Mapping[str, np.ndarray], now: float) -> None:
         """Seeds from the model's pixels; a followed track is only confirmed, never moved."""
         if answer.error:
@@ -216,7 +239,7 @@ class SeededDetector(Detector[SeededSettings]):
         for det in answer.dets:                 # surest first
             label = normalise_label(det.label)
             key = (label, det.camera)
-            if label not in self._sizes or det.camera not in images or key in named:
+            if det.camera not in images or key in named or self._block(label) is None:
                 continue
             named.add(key)
             track = self._tracks.get(key)
@@ -226,7 +249,7 @@ class SeededDetector(Detector[SeededSettings]):
             error = det.pixel_error_px
             radius = float(error if error is not None else self.config.seed_error_px)
             self._tracks[key] = _Track(anchor=(float(det.pixel[0]), float(det.pixel[1])), radius=radius,
-                                       seed_box=det.box, seeded_at=now)
+                                       seed_box=det.box, seeded_at=now, seed_radius=radius)
         for key, track in list(self._tracks.items()):
             if key in named or not track.live:
                 continue
@@ -249,15 +272,13 @@ class SeededDetector(Detector[SeededSettings]):
             self._asks += 1
         self._wake.set()
 
-    def _max_side(self, track: _Track) -> float | None:
-        """The longest blob that can still be one block [px]: the seed box's long side times
-        `max_blob_ratio`; None without a usable box."""
+    def _max_side(self, track: _Track) -> float:
+        """The longest blob that can still be one block [px]: `max_blob_ratio` times the seed box's
+        long side, or without a usable box times the seed's search diameter."""
         box = track.seed_box
-        if box is None:
-            return None
-        side = max(box[2] - box[0], box[3] - box[1])
+        side = -1.0 if box is None else max(box[2] - box[0], box[3] - box[1])
         if not (math.isfinite(side) and side > 0):
-            return None
+            side = 2.0 * track.seed_radius
         return float(self.config.max_blob_ratio) * side
 
     def _grow(self, images: Mapping[str, np.ndarray], now: float) -> list[Detection]:
@@ -272,9 +293,16 @@ class SeededDetector(Detector[SeededSettings]):
             for key in keys:
                 label = key[0]
                 track = self._tracks[key]
-                labels, candidates = blobs(colour_mask(hsv, self._hsv[label]), int(config.min_area_px))
+                block = self._blocks[label]
+                assert block is not None
+                labels, candidates = blobs(colour_mask(hsv, block.hsv), int(config.min_area_px))
                 blob = nearest(candidates, track.anchor, track.radius, self._max_side(track))
                 if blob is None:
+                    if key not in self._too_big and nearest(candidates, track.anchor, track.radius):
+                        # Two touching blocks of one colour, or a block the colour of the table.
+                        self._too_big.add(key)
+                        logger.info("seeded: %r in %s: the colour's blob is larger than one block; "
+                                    "not followed there", label, camera)
                     track.lost = True
                     if self._expired(track, now):
                         del self._tracks[key]
@@ -285,7 +313,7 @@ class SeededDetector(Detector[SeededSettings]):
                 found.append(Detection(
                     label=label, camera=camera, pixel=blob.centroid,
                     box=(float(u0), float(v0), float(u1), float(v1)), confidence=1.0,
-                    mask=np.asarray(labels == blob.index, bool), size_m=self._sizes[label],
+                    mask=np.asarray(labels == blob.index, bool), size_m=block.size,
                     pixel_error_px=PIXEL_ERROR_PX))
         # A camera without a frame in this call grows nothing; its tracks expire like lost ones.
         for key, track in list(self._tracks.items()):

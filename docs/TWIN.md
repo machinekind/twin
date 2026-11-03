@@ -661,10 +661,13 @@ details.
 | `detektor:seeded`, the runner | `interval_s`, 0.2 s | Takes the model's latest answer, hands the worker a copy of the frames when a question is due, grows every track in the current frames |
 | `detektor-seed:<cli>`, the worker | at most every `seed_interval_s` | Asks the LLM detector about the copied frames, one question at a time |
 
+A label is `<colour> <shape>` as the model names a block (`red cube`,
+`wooden cuboid`): the shape word gives its size, the colour word its colour.
+
 A track is one label in one camera. A fresh seed takes the blob of the
 label's colour whose box lies within the seed's pixel error. A blob longer
-than `max_blob_ratio` times the model's box is two touching blocks and is not
-taken. From then on the track follows the blob nearest its last centroid,
+than `max_blob_ratio` times the model's box is not one block and is not
+taken: two touching blocks of one colour, or a block the colour of the table. From then on the track follows the blob nearest its last centroid,
 within `track_error_px`. A followed track outranks a new seed, which only
 confirms it. A track the model leaves out of three answers in a row is
 dropped.
@@ -676,8 +679,9 @@ dropped.
 | `cli` | `codex` | `codex` or `claude`, as for the LLM detector |
 | `model` | `gpt-6-astra` | the model as the CLI names it; `""` = the CLI's default |
 | `effort` | `low` | reasoning effort passed to the CLI |
-| `labels_sizes` | the four blocks | per label the block's box as it rests on the table, `LxWxH` [m] |
-| `labels_hsv` | the four blocks | per label the OpenCV HSV ranges of its colour |
+| `labels` | `""` | the blocks to follow, comma-separated; `""` = every block the model names |
+| `labels_sizes` | `""` | size overrides by label or shape word, `name=LxWxH` [m] |
+| `labels_hsv` | `""` | colour overrides by label or colour word, OpenCV HSV ranges |
 | `cameras` | `""` | cameras to track and to send, comma-separated; `""` = every camera offered |
 | `prompt` | `""` | extra instructions appended to the LLM's prompt |
 | `interval_s` | 0.2 | shortest time between two colour-tracking calls [s], at least 0.1 |
@@ -695,28 +699,31 @@ dropped.
 | `claude_images` | `stream` | claude only: `stream` or `read` |
 
 The settings the LLM detector also has go to it unchanged. `seed_interval_s`
-becomes its `interval_s`, `seed_error_px` its `pixel_error_px`, and the labels
-its `objects`.
+becomes its `interval_s`, `seed_error_px` its `pixel_error_px`, and `labels`
+its `objects`. A line naming the colours and shapes goes before `prompt`.
 
-### The label tables
+### The blocks
 
-Both tables name the same labels, one entry per label, entries separated by
-`;`. `labels_sizes` gives `label=LxWxH` in metres; `labels_hsv` gives
-`label=H0-H1,S0-S1,V0-V1` in OpenCV's HSV (H 0..180, S and V 0..255), with
-several ranges of one label joined by `|`. The defaults are the four Classic
-World blocks with so-arm101's placeholder sizes and the simulation's colours:
-
-| Label | Size | HSV ranges |
+| Shape | Size `LxWxH` [m] | Rests |
 |---|---|---|
-| `cube` | `0.025x0.025x0.025` | `0-12,120-255,70-255\|170-180,120-255,70-255` (red) |
-| `cuboid5` | `0.05x0.025x0.025` | `20-35,100-255,90-255` (yellow) |
-| `cuboid85` | `0.085x0.025x0.025` | `40-85,80-255,60-255` (green) |
-| `cylinder` | `0.05x0.025x0.025` | `135-165,60-255,60-255` (purple) |
+| `cube` | `0.029x0.029x0.029` | on a face |
+| `cuboid` | `0.060x0.029x0.014` | flat |
+| `cylinder` | `0.060x0.029x0.029` | on its side, as its bounding box |
 
-The size table lists each block as it rests on the table, `H` being its
-height above the table. A lying cylinder is listed as its bounding box. A block
-stood on its end with its lying size listed does not fit the box and its
-label shows `ostatnie widziane` until it is laid down.
+Colours, OpenCV HSV (H 0..180, S and V 0..255): `red`, `yellow`, `green`,
+`light blue` (or `blue`) and `wooden` (or `wood`, `natural`, `unpainted`); the
+package README lists the ranges. `labels_sizes` (`name=LxWxH`) and
+`labels_hsv` (`name=H0-H1,S0-S1,V0-V1`, `|` between ranges) override them,
+`;` between entries; a key is a whole label or a shape or colour word.
+
+Bare wood is about the colour of a wooden table. On such a table a wooden
+block's blob grows into the table, is longer than `max_blob_ratio` times the
+model's box, and is not followed: the label gets no pose rather than a wrong
+one. On a table of another colour bare wood is followed like paint.
+
+A block stood on its end does not fit its lying box and its label shows
+`ostatnie widziane` until it is laid down. Blocks the model names alike share
+one label.
 
 ### What it returns
 
@@ -773,8 +780,9 @@ tracking runs on the machine.
 
 ### Calibrating the colours on the stand
 
-The default ranges match the simulation. Painted blocks under the stand's lamp
-need their own ranges, or every blob is missed and no label appears. Take a
+The default ranges cover the simulation and plain paint. Painted blocks under
+the stand's lamp may need their own ranges, or every blob is missed and no
+label appears. Take a
 still from each camera, find a block's pixel (u, v) and read the HSV values
 around it:
 
