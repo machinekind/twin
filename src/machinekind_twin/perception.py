@@ -405,7 +405,13 @@ CubeTracker = ObjectTracker
 
 @dataclass
 class CubeDetector:
-    """Kostka po kolorze na mapie blatu. Progi HSV w konwencji OpenCV (H 0..180)."""
+    """Kostka po kolorze na mapie blatu. Progi HSV w konwencji OpenCV (H 0..180).
+
+    The silhouette fit places a box resting on the table: a cube of `cube_half`, or a box of
+    `half_size`. Its rotation is Rz(yaw): `rot[:, 0]` runs along the box's x side (`size_m[0]`),
+    `rot[:, 1]` along its y side (`size_m[1]`), and its z side (`size_m[2]`) is its height above the
+    table. The yaw is folded by the footprint's symmetry, `yaw_period`.
+    """
 
     hsv_lo: tuple[int, int, int] = (0, 120, 70)
     hsv_hi: tuple[int, int, int] = (12, 255, 255)
@@ -413,11 +419,29 @@ class CubeDetector:
     hsv_lo2: tuple[int, int, int] = (170, 120, 70)
     hsv_hi2: tuple[int, int, int] = (180, 255, 255)
     cube_half: float = 0.015
+    #: Half the box's sides (x, y, z) [m], z being half its height above the table; None = a cube
+    #: of `cube_half`. A detector's `size_m` halved.
+    half_size: tuple[float, float, float] | None = None
     #: Najmniejsze pokrycie sylwetki (IoU), przy ktorym kostka "lezy na blacie tam, gdzie mowimy".
     min_iou: float = 0.75
     #: Kamera liczy sie do `n_cameras`, gdy widzi (nie zaslonieta ramieniem) co najmniej
     #: taka czesc przewidzianej sylwetki.
     min_visible: float = 0.5
+
+    @property
+    def half(self) -> tuple[float, float, float]:
+        """Half the sides (x, y, z) of the box the fit places [m]: `half_size`, else the cube's."""
+        if self.half_size is None:
+            return (self.cube_half, self.cube_half, self.cube_half)
+        hx, hy, hz = self.half_size
+        return (hx, hy, hz)
+
+    @property
+    def yaw_period(self) -> float:
+        """The turn after which the box's footprint looks the same [rad]: a quarter turn for a square
+        footprint (a cube), a half turn otherwise. The published yaw lies in [-period/2, period/2)."""
+        hx, hy, _ = self.half
+        return np.pi / 2 if hx == hy else np.pi
 
     def mask(self, table: np.ndarray) -> np.ndarray:
         hsv = cv2.cvtColor(table, cv2.COLOR_RGB2HSV)
@@ -482,7 +506,7 @@ class CubeDetector:
                   t: float | None = None) -> CubeDetection | None:
         """`detect_frames` for masks someone else made: the same top-face start and silhouette fit.
 
-        `masks[camera]` is a bool image of that camera's raw frame, True on the cube. Each one is
+        `masks[camera]` is a bool image of that camera's raw frame, True on the object. Each one is
         warped onto the plane of the top face the way `top_mask` warps occluders, so only the
         start differs from `detect_frames` (a warped mask instead of a mask of the warped colours).
         """
@@ -497,8 +521,8 @@ class CubeDetector:
         return self._fit(self._top_from_votes(votes, top, occluders), top, masks, mapper, occluders, t)
 
     def _top_mapper(self, mapper: TableMapper) -> TableMapper:
-        """The map on the plane of the top face."""
-        z = 2 * self.cube_half
+        """The map on the plane of the top face: the box's full height above the table."""
+        z = 2 * self.half[2]
         return mapper if abs(mapper.table_z - z) < 1e-6 else mapper.at_height(z)
 
     def _fit(self, top_face: np.ndarray, top: TableMapper, masks: dict[str, np.ndarray], mapper: TableMapper,
@@ -517,14 +541,16 @@ class CubeDetector:
 
     # ------------------------------------------------------ dopasowanie sylwetki
     def _corners(self, x: float, y: float, yaw: float) -> np.ndarray:
-        h = self.cube_half
+        """The box's 8 corners in the base frame, resting on the table at (x, y) turned by `yaw`."""
+        hx, hy, hz = self.half
         c, s = np.cos(yaw), np.sin(yaw)
-        local = np.array([[sx * h, sy * h, sz * h] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+        local = np.array([[sx * hx, sy * hy, sz * hz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
         R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-        return local @ R.T + np.array([x, y, h])
+        return local @ R.T + np.array([x, y, hz])
 
     def _ray_guess(self, masks, cameras, occluders) -> tuple[float, float, float] | None:
-        """Srodek plamy z kazdej kamery rzutowany na wysokosc srodka kostki - zgrubny start."""
+        """A rough start: each camera's mask centroid met with the plane of the box's centre (z = hz),
+        averaged over the cameras, at yaw 0."""
         pts = []
         for n, m in masks.items():
             vis = m & ~occluders[n] if occluders and n in occluders else m
@@ -537,7 +563,7 @@ class CubeDetector:
             d, o = T[:3, :3] @ ray_c, T[:3, 3]
             if abs(d[2]) < 1e-6:
                 continue
-            s = (self.cube_half - o[2]) / d[2]
+            s = (self.half[2] - o[2]) / d[2]
             if s > 0:
                 pts.append(o + s * d)
         if not pts:
@@ -547,11 +573,21 @@ class CubeDetector:
 
     def fit_silhouette(self, masks: dict[str, np.ndarray], cameras, start, occluders=None,
                        scale: float = 1.0) -> CubeDetection | None:
-        """(x, y, obrot) kostki lezacej na blacie, przy ktorych jej rzut najlepiej pokrywa maski kamer."""
+        """(x, y, yaw) of the box resting on the table whose projection best covers the cameras' masks.
+
+        The box is `half` resting on the table, `size_m[2]` being its height; a block resting another
+        way (a cuboid stood on its end with its lying size given) cannot be covered and is gated out
+        by `min_iou`. The returned rotation is Rz(yaw), with `rot[:, 0]` along the box's x side, and
+        the yaw folded into [-yaw_period/2, yaw_period/2).
+        """
         prepared = []
+        period = self.yaw_period
         # Wszystko liczymy w WYCINKU kadru wokol startu: kostka to kilkadziesiat pikseli,
         # a pelny kadr kosztowal ~40 ms na detekcje - i trzymal GIL, spowalniajac petle ramienia.
         around = self._corners(start[0], start[1], 0.0)
+        if period == np.pi:
+            # A box longer than wide: the crop covers its long side along x and along y, any yaw.
+            around = np.vstack([around, self._corners(start[0], start[1], np.pi / 2)])
         around = np.vstack([around + [dx, dy, 0.0] for dx in (-0.04, 0.04) for dy in (-0.04, 0.04)])
         for n, m in masks.items():
             K, dist, T = cameras[n]
@@ -613,8 +649,9 @@ class CubeDetector:
             return -sum(c[0] for c in cams) / union if union else 0.0
 
         best, best_s = np.asarray(start, float), score(start)
-        # Kilka startow obrotu (symetria 90 st.), potem Nelder-Mead po (x, y, obrot).
-        for yaw in np.radians([0, 22.5, 45, 67.5]):
+        # Yaw starts every 22.5 deg over one period (4 for a cube, 8 for a box longer than wide),
+        # then Nelder-Mead over (x, y, yaw).
+        for yaw in np.radians(np.arange(0.0, np.degrees(period), 22.5)):
             p = np.array([start[0], start[1], start[2] + yaw])
             s = score(p)
             if s < best_s:
@@ -645,30 +682,42 @@ class CubeDetector:
         # (IoU 0,96-0,82 przy 26-92 mm bledu) - stad `n_cameras` w detekcji.
         if iou < self.min_iou:
             return None
-        yaw = (best[2] + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        yaw = (best[2] + period / 2) % period - period / 2
         c_, s_ = np.cos(yaw), np.sin(yaw)
         R = np.array([[c_, -s_, 0.0], [s_, c_, 0.0], [0.0, 0.0, 1.0]])
-        return CubeDetection(np.array([best[0], best[1], self.cube_half]), R, float(iou), float(iou), n_seen)
+        return CubeDetection(np.array([best[0], best[1], self.half[2]]), R, float(iou), float(iou), n_seen)
 
     def detect(self, table: np.ndarray, mapper: TableMapper) -> CubeDetection | None:
         """Kostka na gotowej mapie (np. z jednej kamery) - mniej dokladnie niz `detect_frames`."""
         return self._from_mask(self.mask(table), mapper)
 
     def _from_mask(self, m: np.ndarray, mapper: TableMapper) -> CubeDetection | None:
+        """The box's top face on the map: the largest blob's rectangle gives (x, y) and the yaw of
+        the box's x side, folded by `yaw_period`; None for a blob under a quarter of the face."""
         contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
         c = max(contours, key=cv2.contourArea)
         area = float(cv2.contourArea(c))
-        expected = (2 * self.cube_half / mapper.m_per_px) ** 2
+        hx, hy, hz = self.half
+        if hx == hy:
+            expected = (2 * hx / mapper.m_per_px) ** 2
+        else:
+            expected = (2 * hx / mapper.m_per_px) * (2 * hy / mapper.m_per_px)
         if area < 0.25 * expected:
             return None
-        (u, v), _, angle = cv2.minAreaRect(c)
+        (u, v), (w, h), angle = cv2.minAreaRect(c)
         p = mapper.to_base(u, v)
-        p[2] = self.cube_half
-        # Obrot wokol z: kat prostokata na mapie (v rosnie w dol = -y), kostka ma symetrie 90 st.
-        yaw = -np.radians(angle)
-        yaw = (yaw + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        p[2] = hz
+        # minAreaRect gives the angle of its first side, `w` long, in map-image coordinates. The
+        # box's x side is the rectangle's longer side when hx > hy, its shorter one when hx < hy,
+        # and the other side when `w` is not that one. A square footprint needs no choice: its yaw
+        # is folded by a quarter turn anyway.
+        x_angle = angle if hx == hy or (w >= h) == (hx > hy) else angle + 90.0
+        # The map's v runs down, i.e. along the base's -y: an image angle is the negated yaw.
+        yaw = -np.radians(x_angle)
+        period = self.yaw_period
+        yaw = (yaw + period / 2) % period - period / 2
         c_, s_ = np.cos(yaw), np.sin(yaw)
         R = np.array([[c_, -s_, 0.0], [s_, c_, 0.0], [0.0, 0.0, 1.0]])
         conf = float(np.clip(1.0 - abs(area / expected - 1.0), 0.0, 1.0))

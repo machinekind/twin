@@ -203,7 +203,8 @@ above the table or its `size_m`. The detector needs no intrinsics, camera poses 
 turns each pixel into a ray through the calibrated camera and places the object in one of three
 ways:
 
-* It fits a cube of `size_m` to the masks from every camera.
+* It fits a box of `size_m`, resting on the table, to the masks from every camera; this also
+  gives yaw.
 * It takes the point nearest to the rays of two or more cameras.
 * It takes the point where one ray meets the plane at the object's height.
 

@@ -5,8 +5,9 @@ module does the geometry. It builds a pinhole model (with distortion) of every c
 perception may use, turns a pixel into a ray in the base frame, and places each label one of
 three ways:
 
-- "sylwetka": every camera gave a mask and the object is a cube of known size. The cube's
-  silhouette fit (`CubeDetector.fit_masks`) gives position and yaw from all masks at once.
+- "sylwetka": every camera gave a mask and the object's size is known. The box fit
+  (`CubeDetector.fit_masks`) gives position and yaw from all masks at once, for a box of that size
+  resting on the table.
 - "triangulacja": two or more cameras saw the label and their rays pass close enough to each
   other for the detectors' pixel error. The point nearest to all rays.
 - "promien": one camera, or rays that disagree. The surest detection's ray meets the plane at
@@ -57,8 +58,6 @@ MIN_RAY_GAP_M = 0.01
 MIN_RANGE_M = 0.05
 #: How far a pixel may lie outside its frame and still count as in it [px].
 PIXEL_MARGIN_PX = 2.0
-#: How far from a cube the sides of `size_m` may be for the silhouette fit (max / min).
-CUBE_TOLERANCE = 1.1
 #: Rays closer to parallel than this (smallest over largest eigenvalue of the normal matrix)
 #: give no point.
 _ILL_CONDITIONED = 1e-6
@@ -262,7 +261,7 @@ _warned_size: set[str] = set()
 def _full_size(dets: list[Detection], cameras: Mapping[str, CameraModel],
                frames: Mapping[str, tuple[tuple[int, int], float]]) -> bool:
     """True when every camera's frame has its record's size. Logs a camera that differs once, as
-    the cube then loses its yaw to triangulation (a webcam negotiating another resolution)."""
+    the object then loses its yaw to triangulation (a webcam negotiating another resolution)."""
     full = True
     for d in dets:
         got, want = frames[d.camera][0], cameras[d.camera].size
@@ -277,10 +276,6 @@ def _full_size(dets: list[Detection], cameras: Mapping[str, CameraModel],
 
 
 # ------------------------------------------------------------------ locate
-def _is_cube(size: tuple[float, float, float] | None) -> bool:
-    return size is not None and max(size) <= CUBE_TOLERANCE * min(size)
-
-
 def _height(det: Detection) -> float:
     """The height above the table of the point the pixel marks (the contract's `height_m` rule)."""
     if det.height_m is not None:
@@ -294,13 +289,13 @@ def locate(dets: Sequence[Detection], cameras: Mapping[str, CameraModel],
            frames: Mapping[str, tuple[tuple[int, int], float]], *, pixel_error_px: float,
            mapper: TableMapper | None,
            occluders: Callable[[dict[str, float]], dict[str, np.ndarray] | None] | None,
-           cube: Callable[[float], CubeDetector]) -> tuple[list[Located], int]:
+           box: Callable[[tuple[float, float, float]], CubeDetector]) -> tuple[list[Located], int]:
     """Places one detector call's detections in the base frame.
 
     `cameras` are the models the call may use; `frames[camera]` is ((width, height), capture time)
     of the frame the detector read. `pixel_error_px` is the detector's own, used for a detection
     that gives none. `mapper` (over `cameras`) enables the silhouette fit, `occluders` gives the arm
-    masks for the capture times of the cameras used, and `cube(side)` the cube detector for a side.
+    masks for the capture times of the cameras used, and `box(size_m)` the fit for a box of that size.
     Returns the placed objects and the number of detections dropped as invalid.
     """
     dropped = 0
@@ -320,7 +315,8 @@ def locate(dets: Sequence[Detection], cameras: Mapping[str, CameraModel],
     out = []
     for label, per_cam in by_label.items():
         try:
-            placed = _place(label, list(per_cam.values()), cameras, frames, pixel_error_px, mapper, occluders, cube)
+            placed = _place(label, list(per_cam.values()), cameras, frames, pixel_error_px, mapper,
+                            occluders, box)
         except Exception:  # one bad label never costs the others
             logger.exception("placing %r failed", label)
             placed = None
@@ -337,7 +333,7 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
            frames: Mapping[str, tuple[tuple[int, int], float]], pixel_error_px: float,
            mapper: TableMapper | None,
            occluders: Callable[[dict[str, float]], dict[str, np.ndarray] | None] | None,
-           cube: Callable[[float], CubeDetector]) -> Located | None:
+           box: Callable[[tuple[float, float, float]], CubeDetector]) -> Located | None:
     dets = sorted(dets, key=_conf, reverse=True)
     best = dets[0]
     size = None if best.size_m is None else tuple(float(s) for s in best.size_m)
@@ -345,11 +341,11 @@ def _place(label: str, dets: list[Detection], cameras: Mapping[str, CameraModel]
     times = {d.camera: float(frames[d.camera][1]) for d in dets}
 
     # The silhouette fit runs on raw masks with each camera's K, so every frame must be full size.
-    if (mapper is not None and _is_cube(size3) and size3 is not None
+    if (mapper is not None and size3 is not None
             and all(d.mask is not None for d in dets) and _full_size(dets, cameras, frames)):
         masks = {d.camera: d.mask for d in dets if d.mask is not None}
         occ = occluders(dict(times)) if occluders is not None else None
-        fit = cube(float(np.mean(size3))).fit_masks(masks, mapper, occ, t=min(times.values()))
+        fit = box(size3).fit_masks(masks, mapper, occ, t=min(times.values()))
         if fit is None:
             return None
         return Located(label, np.asarray(fit.pos, float), np.asarray(fit.rot, float), float(fit.confidence),

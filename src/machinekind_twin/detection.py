@@ -561,12 +561,12 @@ class Perception:
             value = getattr(detector, "pixel_error_px", 3.0)
             pixel_error_px = float(value) if _finite_non_negative(value) else 3.0
             placed, dropped = locate(dets, models.cameras, read, pixel_error_px=pixel_error_px,
-                                     mapper=models.mapper, occluders=self._occluders, cube=_cube)
+                                     mapper=models.mapper, occluders=self._occluders, box=_box)
             self.tracks.observe(name, placed, latency_s, interval_s)
             return dropped
         return sink
 
 
-def _cube(side: float) -> CubeDetector:
-    """The cube detector whose silhouette fit places a cube of this side."""
-    return CubeDetector(cube_half=side / 2.0)
+def _box(size: tuple[float, float, float]) -> CubeDetector:
+    """The silhouette fit for a box of this size resting on the table."""
+    return CubeDetector(half_size=(size[0] / 2.0, size[1] / 2.0, size[2] / 2.0))
