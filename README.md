@@ -56,9 +56,11 @@ uv run twin calib-sim --n 5 --cameras 2 # Evaluate calibration in simulation
 uv run twin export workspace/export    # Export scene.xml, assets/ and station.json
 uv run twin episode                    # Report the latest recorded episode
 uv run twin ui --stand ~/stands/desk   # Work on a stand folder: setup, calibration history, station
+uv run twin eval-strategy swing --robot arm6 --set joint=base_yaw --episodes 5   # Run a strategy many times in simulation; the scene judges success
 ```
 
-Episode recording is opt-in; see [recording and reports](docs/EPISODES.md).
+Episode recording is opt-in in the panel; see [recording and reports](docs/EPISODES.md).
+`twin eval-strategy` records every run; see [strategy evaluation](docs/TWIN.md#strategy-evaluation).
 
 Your workstation is saved in `workspace/twin.json`. A physical stand and its
 measurement history can live in a stand folder of its own (`twin stand`, see
