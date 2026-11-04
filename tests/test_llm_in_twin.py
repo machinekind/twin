@@ -192,3 +192,81 @@ def test_the_object_outlives_a_still_scene_until_the_next_question_answers(
 
     assert pen.source == "kamery"
     assert pen.age_s == pytest.approx(0.4, abs=1e-6)
+    np.testing.assert_allclose(pen.position, PEN, atol=3e-3)
+
+
+class ArmScene:
+    """A grey table with the arm as a dark bar, stamped on the test clock. At capture time t the bar
+    stands at column `column(t)` and reaches `reach(t)` px down. `occluders` gives the bar's masks
+    for the times asked."""
+
+    def __init__(self, clock: Clock, column, reach=lambda t: 300):
+        self.clock = clock
+        self.column = column
+        self.reach = reach
+        self.asked: list[dict[str, float]] = []
+
+    def mask(self, t: float) -> np.ndarray:
+        mask = np.zeros((H, W), bool)
+        mask[:self.reach(t), self.column(t):self.column(t) + 40] = True
+        return mask
+
+    def frame(self, name: str):
+        t = self.clock()
+        img = np.full((H, W, 3), 120, np.uint8)
+        img[self.mask(t)] = 30
+        return img, t
+
+    def occluders(self, times: dict[str, float]) -> dict[str, np.ndarray]:
+        self.asked.append(dict(times))
+        return {name: self.mask(t) for name, t in times.items()}
+
+
+@pytest.fixture
+def make_perception(clock: Clock):
+    made: list[Perception] = []
+
+    def make(**kw) -> Perception:
+        p = Perception(SimpleNamespace(), workspace(), hand=lambda: None, clock=clock, **kw)
+        made.append(p)
+        return p
+
+    yield make
+    for p in made:
+        p.stop_all("koniec testu")
+
+
+def test_the_arm_reaching_further_under_its_mask_does_not_ask_again(make_perception, clock: Clock,
+                                                                    llm_package: str, fake_codex: tuple[str, Path]):
+    exe, log = fake_codex
+    scene = ArmScene(clock, lambda t: 100, reach=lambda t: min(450, 150 + int(10 * (t - 1000.0))))
+    perception = make_perception(frame=scene.frame, occluders=scene.occluders)
+    runner = start_llm(perception, llm_package, exe)
+    captured = []
+
+    for _ in range(5):
+        captured += [{"a": clock.t}, {"b": clock.t}]
+        runner.step_once()
+        clock.advance(10.0)
+
+    assert runner.status.failures == 0, runner.status.last_error
+    assert len(runs(log)) == 1
+    assert scene.asked == captured
+    np.testing.assert_allclose(perception.objects()["red pen"].position, PEN, atol=3e-3)
+
+
+def test_a_scene_moving_through_the_twin_asks_once_it_settles(make_perception, clock: Clock, llm_package: str,
+                                                              fake_codex: tuple[str, Path]):
+    exe, log = fake_codex
+    scene = ArmScene(clock, lambda t: 100 if t < 1005.0 else 300)
+    perception = make_perception(frame=scene.frame)
+    runner = start_llm(perception, llm_package, exe)
+    counts = []
+
+    for _ in range(3):
+        runner.step_once()
+        counts.append(len(runs(log)))
+        clock.advance(10.0)
+
+    assert runner.status.failures == 0, runner.status.last_error
+    assert counts == [1, 1, 2]

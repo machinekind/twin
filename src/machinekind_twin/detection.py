@@ -155,6 +155,54 @@ class _LazyRequestFrames(Mapping[str, Frame]):
         return Frame(image=image, age_s=age)
 
 
+class _LazyArmMasks(Mapping[str, np.ndarray]):
+    """`DetectRequest.arm_masks`. Each mask is made on first read, for its frame's capture time.
+
+    Iteration and `len` follow the frames. Reading a mask reads its frame first. A camera has no
+    mask when it has no frame, when the source gives none, or when the mask's shape differs from
+    the frame's. Then `get` returns None and `[]` raises KeyError. Each camera is looked up once,
+    even when it has no mask.
+    """
+
+    def __init__(self, frames: _LazyRequestFrames, source: OccluderSource):
+        self._frames = frames
+        self._source = source
+        self._made: dict[str, np.ndarray | None] = {}
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        if name not in self._made:
+            self._made[name] = self._make(name)
+        mask = self._made[name]
+        if mask is None:
+            raise KeyError(f"{name}: no arm mask")
+        return mask
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._frames)
+
+    def __len__(self) -> int:
+        return len(self._frames)
+
+    def _make(self, name: str) -> np.ndarray | None:
+        frame = self._frames.get(name)
+        if frame is None:
+            return None
+        captured = self._frames.read[name][1]
+        try:
+            masks = self._source({name: captured})
+        except Exception as exc:  # noqa: BLE001 - a failing source means no mask for this camera
+            logger.debug("arm mask for %r failed: %s: %s", name, type(exc).__name__, exc)
+            return None
+        mask = masks.get(name) if masks is not None else None
+        if mask is None:
+            return None
+        mask = np.asarray(mask, bool)
+        if mask.shape != frame.image.shape[:2]:
+            logger.debug("arm mask for %r has shape %s, its frame %s", name, mask.shape, frame.image.shape[:2])
+            return None
+        return mask
+
+
 def _finite_non_negative(value: Any) -> bool:
     try:
         return math.isfinite(float(value)) and float(value) >= 0
@@ -176,7 +224,9 @@ class DetectorRunner:
 
     def __init__(self, name: str, detector: Detector[Any], *, info: DetectorInfo,
                  cameras: Callable[[], tuple[str, ...]], frame: FrameSource, sink: Sink,
-                 clock: Callable[[], float], wait: Callable[[float], bool] | None = None):
+                 clock: Callable[[], float], wait: Callable[[float], bool] | None = None,
+                 occluders: OccluderSource | None = None):
+        """`occluders` gives the arm masks for `DetectRequest.arm_masks`. Without it, requests carry none."""
         self.name = name
         self.detector = detector
         self.info = info
@@ -185,6 +235,7 @@ class DetectorRunner:
         self._frame = frame
         self._sink = sink
         self._clock = clock
+        self._occluders = occluders
         self._stop = threading.Event()
         #: Waits up to the given time; True when the run is to end. Tests inject one that never sleeps.
         self._wait = wait if wait is not None else self._stop.wait
@@ -317,8 +368,12 @@ class DetectorRunner:
         error = ""
         bad = 0
         dets: list[Detection] | None
+        if self._occluders is not None:
+            request = DetectRequest(frames=frames, step=step, arm_masks=_LazyArmMasks(frames, self._occluders))
+        else:
+            request = DetectRequest(frames=frames, step=step)
         try:
-            answer = list(self.detector.detect(DetectRequest(frames=frames, step=step)))
+            answer = list(self.detector.detect(request))
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:300]
             dets = None
@@ -423,8 +478,9 @@ class Perception:
 
     `frame` defaults to the twin's cameras (`twin.cameras.frame_t`); the panel injects a reader of
     its cached frames. Both stamp on `time.monotonic`, the default `clock`. `occluders` gives arm
-    masks for the silhouette fit; it is optional and its failures cost only the occlusion handling
-    of one call. `hand` defaults to the twin's gripper; pass `lambda: None` for none.
+    masks to the silhouette fit and to detectors through `DetectRequest.arm_masks`. It is optional
+    and its failures cost only the occlusion handling of one call. `hand` defaults to the twin's
+    gripper; pass `lambda: None` for none.
     """
 
     def __init__(self, twin: Any, ws: Workspace, *, frame: FrameSource | None = None,
@@ -460,7 +516,8 @@ class Perception:
         info = DetectorInfo(cameras=names, robot=self.ws.spec().name,
                             simulated=bool(names) and all(records[n].simulated for n in names if n in records))
         runner = DetectorRunner(name, detector, info=info, cameras=self._camera_names, frame=self._frame,
-                                sink=self._sink_for(detector), clock=self.clock)
+                                sink=self._sink_for(detector), clock=self.clock,
+                                occluders=self._occluders if self._occluder_source is not None else None)
 
         with self._lock:
             old = self._runners.get(name)

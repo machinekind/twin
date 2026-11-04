@@ -3,9 +3,13 @@ what is where, in each frame's pixels.
 
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory.
-With `reuse_if_still`, it repeats the last answer while no camera's image changes. The repeat is as
-old as that answer's frames. Over the hourly cap, it raises instead of asking. `stop` cancels a
-running question and kills the CLI's process group within 0.2 s.
+With `reuse_if_still` it repeats the last answer while no camera's image changed since the last
+question. The repeat is as old as that answer's frames. It also repeats it while the scene still
+moves, for up to `SETTLE_MAX_SKIPS` calls. The scene still moves when the frames changed since both
+the last question and the previous call. Pixels the twin's arm masks hide are left out. The arm
+moving over a table the last question saw does not count as a change. A place the arm hid at the
+last question counts as changed once it shows. A question over the hourly cap fails. `stop` cancels
+a running question: the CLI's process group is killed within 0.2 s.
 """
 
 from __future__ import annotations
@@ -25,16 +29,18 @@ from machinekind_twin_api import Detection, Detector, DetectorInfo, DetectReques
 
 from . import cli
 from .answer import parse_answer
-from .images import encode, thumbnail, unchanged
+from .images import arm_thumbnail, encode, hide_arm, thumbnail, unchanged
 from .prompt import SCHEMA, build_prompt
 from .settings import LlmSettings, names, validate
 
-__all__ = ["CALL_WINDOW_S", "LlmDetector"]
+__all__ = ["CALL_WINDOW_S", "SETTLE_MAX_SKIPS", "LlmDetector"]
 
 logger = logging.getLogger(__name__)
 
 #: The window `max_calls_per_hour` counts questions in [s].
 CALL_WINDOW_S = 3600.0
+#: Most calls in a row that repeat the last answer while the scene still moves.
+SETTLE_MAX_SKIPS = 2
 
 
 class LlmDetector(Detector[LlmSettings]):
@@ -56,10 +62,14 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
-        #: The still check keeps the last question's frame thumbnails and capture times by camera,
-        #: its answer and the `_clock` time it was asked.
-        self._thumbs: dict[str, np.ndarray] = {}
+        #: The still check's state. `_ref` and `_prev` hold each camera's thumbnail at the last
+        #: question and at the previous call, NaN where the arm hid the scene. `_captured` holds the
+        #: capture time of each camera's frame at the last question. `_moving` counts the calls
+        #: repeated in a row while the scene moved. `_last` is the last answer, asked at `_last_t`.
+        self._ref: dict[str, np.ndarray] = {}
+        self._prev: dict[str, np.ndarray] = {}
         self._captured: dict[str, float] = {}
+        self._moving = 0
         self._last: list[Detection] = []
         self._last_t = -float("inf")
 
@@ -86,7 +96,8 @@ class LlmDetector(Detector[LlmSettings]):
         self._work = Path(tempfile.mkdtemp(prefix="twin-llm-"))
         self._cancel = threading.Event()
         self._calls.clear()
-        self._thumbs, self._captured, self._last, self._last_t = {}, {}, [], -float("inf")
+        self._ref, self._prev, self._captured, self._moving = {}, {}, {}, 0
+        self._last, self._last_t = [], -float("inf")
 
     def stop(self, reason: str) -> None:
         self._cancel.set()
@@ -111,9 +122,11 @@ class LlmDetector(Detector[LlmSettings]):
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
         now = self._clock()
-        thumbs = {name: thumbnail(image) for name, image in frames} if config.reuse_if_still else {}
-        if thumbs and now - self._last_t < config.reuse_max_age_s and unchanged(self._thumbs, thumbs):
-            logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", now - self._last_t)
+        views = self._views(request, frames) if config.reuse_if_still else {}
+        reason = self._repeat_reason(views, now)
+        self._prev = views
+        if reason:
+            logger.debug("llm: %s, repeating the answer from %.0f s ago", reason, now - self._last_t)
             return [dataclasses.replace(d, age_s=max(0.0, captured[d.camera] - self._captured[d.camera]))
                     for d in self._last]
 
@@ -147,5 +160,32 @@ class LlmDetector(Detector[LlmSettings]):
             raise cli.CliCancelled("stopped")
 
         dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
-        self._thumbs, self._captured, self._last, self._last_t = thumbs, captured, dets, now
+        self._ref, self._captured, self._last, self._last_t, self._moving = views, captured, dets, now, 0
         return list(dets)
+
+    def _views(self, request: DetectRequest, frames: list[tuple[str, np.ndarray]]) -> dict[str, np.ndarray]:
+        """Each camera's thumbnail, NaN where its arm mask hides the scene. A mask whose shape
+        differs from its frame's is ignored."""
+        views: dict[str, np.ndarray] = {}
+        for name, image in frames:
+            thumb = thumbnail(image)
+            mask = request.arm_masks.get(name)
+            if mask is not None and mask.shape == image.shape[:2]:
+                thumb = hide_arm(thumb, arm_thumbnail(mask, thumb.shape))
+            views[name] = thumb
+        return views
+
+    def _repeat_reason(self, views: dict[str, np.ndarray], now: float) -> str:
+        """Why this call repeats the last answer, or "" when it asks. An answer resets the count of
+        repeats while the scene moves. Frames that match the last question's reset it too. A failed
+        question does not, so the runner's backoff holds while the scene moves. A call with other
+        cameras than the last question asks."""
+        if not views or now - self._last_t >= self.config.reuse_max_age_s:
+            return ""
+        if unchanged(self._ref, views):
+            self._moving = 0
+            return "no camera's image changed"
+        if self._moving < SETTLE_MAX_SKIPS and set(views) == set(self._ref) and not unchanged(self._prev, views):
+            self._moving += 1
+            return f"the scene still moves ({self._moving} of {SETTLE_MAX_SKIPS})"
+        return ""
