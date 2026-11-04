@@ -1,18 +1,34 @@
-"""The images a question sends: one JPEG per camera, scaled down from the camera's frame."""
+"""The images a question sends, and the still check.
+
+`encode` writes one JPEG per camera, scaled down from the camera's frame. `thumbnail`,
+`changed_pixels` and `unchanged` form the still check. It tells whether any camera's image changed
+since the last question.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-__all__ = ["JPEG_QUALITY", "SentImage", "encode"]
+__all__ = ["CHANGED_LEVELS", "JPEG_QUALITY", "STILL_MAX_CHANGED_PX", "THUMB_LONG_PX", "SentImage",
+           "changed_pixels", "encode", "thumbnail", "unchanged"]
 
 #: JPEG quality of the images sent.
 JPEG_QUALITY = 90
+#: Long edge of the grey thumbnails the still check compares [px]. Through a 60 degree lens, one
+#: thumbnail pixel spans 4.5 mm at 1 m. A 3 cm cube at 1 m covers about 45 pixels.
+THUMB_LONG_PX = 256
+#: A thumbnail pixel has changed when its grey level moved by this much or more [grey levels, 0..255].
+#: Each image's mean is subtracted first, so auto exposure does not count. Sensor noise in a
+#: thumbnail is about one level.
+CHANGED_LEVELS = 16.0
+#: A camera's image counts as unchanged while at most this many thumbnail pixels changed. A
+#: blinking LED stays under it. A 3 cm cube at 1 m that moves or leaves goes over.
+STILL_MAX_CHANGED_PX = 15
 
 
 @dataclass(frozen=True)
@@ -58,3 +74,33 @@ def encode(call: Path, frames: Sequence[tuple[str, np.ndarray]], max_side_px: in
             raise OSError(f"could not write {path}")
         sent.append(SentImage(camera, path, (int(bgr.shape[1]), int(bgr.shape[0])), (int(w), int(h))))
     return sent
+
+
+def thumbnail(image: np.ndarray) -> np.ndarray:
+    """A grey float32 copy of an RGB frame, blurred 3x3, with a long edge of `THUMB_LONG_PX`. A
+    smaller frame keeps its size."""
+    grey = cv2.cvtColor(_rgb(image), cv2.COLOR_RGB2GRAY)
+    h, w = grey.shape
+    scale = THUMB_LONG_PX / max(w, h)
+    if scale < 1.0:
+        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        grey = cv2.resize(grey, size, interpolation=cv2.INTER_AREA)
+    return cv2.GaussianBlur(grey.astype(np.float32), (3, 3), 0)
+
+
+def changed_pixels(before: np.ndarray, now: np.ndarray) -> int:
+    """The number of pixels that differ by `CHANGED_LEVELS` or more between two thumbnails. Each
+    thumbnail's mean is subtracted first. Thumbnails of different shapes differ in every pixel."""
+    if before.shape != now.shape:
+        return int(now.size)
+    diff = np.abs((now - float(now.mean())) - (before - float(before.mean())))
+    return int(np.count_nonzero(diff >= CHANGED_LEVELS))
+
+
+def unchanged(before: Mapping[str, np.ndarray], now: Mapping[str, np.ndarray],
+              max_changed_px: int = STILL_MAX_CHANGED_PX) -> bool:
+    """True when both maps hold the same cameras and no camera has more than `max_changed_px`
+    changed pixels. An empty `before` gives False."""
+    if not before or set(before) != set(now):
+        return False
+    return all(changed_pixels(before[name], now[name]) <= max_changed_px for name in now)
