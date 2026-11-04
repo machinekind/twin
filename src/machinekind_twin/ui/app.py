@@ -32,18 +32,20 @@ import cv2
 import mujoco
 import numpy as np
 import viser
+import yaml
 
 from .. import scene as sc
 from ..calib.card import MIN_WHITE, Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import DEFAULT_LAYOUT, LAYOUTS, Board
 from ..camera_controls import CameraControls
+from ..config import SafetyConfig
 from ..detection import Perception
 from ..kinematics import inverse, pose
 from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
-from ..robots import get_spec
+from ..robots import get_spec, robot_config
 from ..workspace import CameraRecord, RobotRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
@@ -269,6 +271,19 @@ def find_port(saved: str | None) -> str:
     if saved in devices:
         return saved
     return devices[0] if len(devices) == 1 else ""
+
+
+def start_speed(spec, top: float) -> float:
+    """Start value of the speed slider [deg/s]: `safety.panel_speed_deg_s`, clipped to 1..`top`.
+
+    A config file that does not load leaves the default; Connect reports its error.
+    """
+    speed = SafetyConfig().panel_speed_deg_s
+    try:
+        speed = robot_config(spec).safety.panel_speed_deg_s
+    except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+        logger.warning("Konfiguracja: %s - suwak Predkosc startuje od %g st./s", exc, speed)
+    return float(min(max(speed, 1.0), top))
 
 
 #: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
@@ -1028,9 +1043,11 @@ class TwinApp:
                                                   "(puste) naprawde, bo A1X bez pomiaru chwytaka przyjmuje od tej "
                                                   "chwili, ze sa zamkniete. Niczym nie rusza.")
             top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
-            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
-                                          hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "
-                                               "w jog_a1x). Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
+            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0,
+                                          start_speed(self.ws.spec(), float(top)),
+                                          hint="Najwieksza predkosc stawow ramienia: suwaki, uchwyt i strategie "
+                                               "(jak 'speed' w jog_a1x). Na starcie: safety.panel_speed_deg_s z "
+                                               "konfiguracji. Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
                                                "rampa nadzoru.")
             spec = self.ws.spec()
             kin = self.twin.scene.kin

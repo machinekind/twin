@@ -122,6 +122,11 @@ and port; `--arm` reconnects using the workstation's saved selection at startup.
 With one USB-serial adapter plugged in, its current port takes precedence over
 a saved port. With multiple adapters, choose the correct one explicitly.
 
+The panel's **Prędkość** (Speed) slider caps the speed of every arm joint,
+strategy runs included. It starts at `safety.panel_speed_deg_s` (default 20
+deg/s), clipped to the slider's range; a real arm that moves in jerks at that
+speed may need a higher start value. Moving the slider changes the cap at once.
+
 Saving camera positions creates a new preset in `workspace/calib/`. The panel
 loads the selected preset, or the newest when none is selected. Trust is
 reassessed against the current lens calibration. Older presets remain available

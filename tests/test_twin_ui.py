@@ -796,6 +796,32 @@ def test_startup_flag_connects_the_arm(app):
     assert app.twin.connected and app.twin.status.simulated
 
 
+def test_the_speed_slider_starts_at_the_configured_speed_and_the_arm_runs_under_it(tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "safety: {panel_speed_deg_s: 80}\n")
+    panel = a_panel(tmp_path / "twin.json")
+    try:
+        assert panel.arm_speed.value == 80.0
+        panel.twin.connect("sim")
+        limits = panel.twin.speed_limits()
+        assert limits["j1"] == limits["j2"] == 80.0
+        panel.arm_speed.value = 30.0
+        assert panel.twin.speed_limits()["j1"] == 30.0
+    finally:
+        panel.close()
+
+
+def test_the_start_speed_stays_on_the_slider_and_a_broken_config_leaves_the_default(tmp_path, monkeypatch):
+    from machinekind_twin.robots import get_spec
+    from machinekind_twin.ui.app import start_speed
+
+    spec = get_spec(BOT)
+    assert start_speed(spec, 90.0) == 20.0
+    for text, start in (("panel_speed_deg_s: 500", 90.0), ("panel_speed_deg_s: 0.25", 1.0),
+                        ("panel_speed_deg_s: -1", 20.0), ("bogus: 1", 20.0)):
+        a_config_file(tmp_path, monkeypatch, f"safety: {{{text}}}\n")
+        assert start_speed(spec, 90.0) == start, text
+
+
 # ------------------------------------------------------------------ strategies from installed packages
 def choose_strategy(app, name: str, **values):
     """Strategie: Odswiez liste, choose `name`, type `values` into its form."""
