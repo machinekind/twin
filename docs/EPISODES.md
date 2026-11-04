@@ -14,7 +14,8 @@ runner.start()
 
 Omit `folder` to use `episodes/` beside the workspace file. Names default to a
 local timestamp; duplicates receive a numeric suffix. In the Strategies tab,
-**Record episode** enables the same recorder.
+**Record episode** enables the same recorder. `twin eval-strategy` always records;
+see [strategy evaluation](TWIN.md#strategy-evaluation).
 
 Telemetry and images use separate background workers. Image encoding or storage
 backlog cannot end telemetry collection. The recorder streams throughout the run;
