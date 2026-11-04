@@ -5,20 +5,29 @@ twin re-exports the same classes from `machinekind_twin.strategy` and `machineki
 
 * `strategy`: `Observation` in, `Action` out, the `Strategy` protocol;
 * `backend`: `BackendContext` in, the `BackendPlugin` protocol or a `RobotBackend` subclass out;
+  `read_only_capable` marks a factory that can open its arm read-only;
 * `detector`: frames in, Detections (pixels) out, the `Detector` protocol;
 * `entry_points`: the groups under which a package registers its robots, backends, strategies and
   detectors.
 """
 
-from .backend import BackendContext, BackendPlugin, RobotBackend, RobotInfo
-from .detector import Detection, Detector, DetectorInfo, DetectRequest
+from .backend import (
+    BackendContext,
+    BackendPlugin,
+    RobotBackend,
+    RobotInfo,
+    read_only_capable,
+    supports_read_only,
+)
+from .detector import Detection, Detector, DetectorInfo, DetectRequest, base_label, instance_key
 from .entry_points import BACKENDS, DETECTORS, ROBOTS, STRATEGIES
-from .strategy import Action, ActionLike, Frame, ObjectPose, Observation, RunInfo, S, Strategy
+from .strategy import Action, ActionLike, Decision, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
-__version__ = "0.1.2"
+__version__ = "0.1.5"
 
 __all__ = [
     "BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext",
-    "BackendPlugin", "DetectRequest", "Detection", "Detector", "DetectorInfo", "Frame", "ObjectPose",
-    "Observation", "RobotBackend", "RobotInfo", "RunInfo", "S", "Strategy", "__version__",
+    "BackendPlugin", "Decision", "DetectRequest", "Detection", "Detector", "DetectorInfo", "Frame",
+    "ObjectPose", "Observation", "RobotBackend", "RobotInfo", "RunInfo", "S", "Strategy", "__version__",
+    "base_label", "instance_key", "read_only_capable", "supports_read_only",
 ]

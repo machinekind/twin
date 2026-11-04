@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import logging
+import math
 import types
 from collections.abc import Mapping
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
@@ -23,6 +24,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
+from .camera_controls import CameraControls
 from .paths import CONFIG_ENV, config_from_env
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,8 @@ class CameraConfig:
     fourcc: str | None = "MJPG"
     #: Loop a video file (for demos without a camera).
     loop_video: bool = True
+    #: Focus and exposure set on a V4L2 camera after it opens (`camera_controls.apply`).
+    controls: CameraControls | None = None
 
 
 @dataclass
@@ -73,10 +77,20 @@ class SafetyConfig:
     startup_ramp_s: float = 2.5
     #: Global multiplier of the speed limits (0.5 = half, the "slow" mode).
     velocity_scale: float = 1.0
+    #: Start value of the panel's speed slider [deg/s]: the cap on every arm joint, strategy runs
+    #: included. The panel clips it to the slider's range.
+    panel_speed_deg_s: float = 20.0
     #: Home/rest pose [app units]. Empty = the robot description's home (`robots.robot_config`).
     home: dict[str, float] = field(default_factory=dict)
     #: Return to the home pose before disconnecting.
     home_on_exit: bool = True
+
+    def __post_init__(self) -> None:
+        speed = self.panel_speed_deg_s
+        number = isinstance(speed, (int, float)) and not isinstance(speed, bool)
+        if not number or not math.isfinite(speed) or speed <= 0:
+            raise ValueError(f"safety.panel_speed_deg_s: liczba > 0 [st./s], jest {speed!r}")
+        self.panel_speed_deg_s = float(speed)
 
 
 @dataclass

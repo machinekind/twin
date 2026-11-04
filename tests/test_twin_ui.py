@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -18,9 +19,10 @@ import pytest
 pytest.importorskip("viser")
 pytest.importorskip("mujoco")
 
-from conftest import BOT  # noqa: E402
+from conftest import BOT
 
-from machinekind_twin.ui import jobs  # noqa: E402
+from machinekind_twin.episode import EpisodeLog
+from machinekind_twin.ui import jobs
 
 
 def free_port() -> int:
@@ -137,6 +139,9 @@ def app(shared_app):
     a.arm_engage.value = False
     a.tcp_gizmo_on.value = False
     a.strategies.goal_on.value = False
+    a.strategies.record_episode.value = False
+    a.strategies.keep_frames.value = False
+    a.strategies.frame_format.value = "JPEG"
     for owner in (a.twin.owner,):
         if owner is not None:
             a.twin.release(owner)
@@ -496,6 +501,40 @@ def test_cameras_tab_with_no_cameras_shows_only_the_add_section(app):
         app._refresh_cameras()
 
 
+def test_another_robot_is_added_read_and_removed_from_the_panel(app):
+    try:
+        app.other_name.value = "lewe"
+        app.other_robot.value = BOT
+        app.other_xyz.value = (0.0, 0.19, 0.0)
+        app.other_source.value = "testbot"
+        app.other_port.value = "/dev/ttyACM1"
+        app.other_joints.value = "j1=90"
+        ev = _click(app, "Zapisz robota")
+        assert ev.client.notes and "lewe" in ev.client.notes[0][1]
+        rec = app.ws.other_robot("lewe")
+        assert (rec.robot, rec.xyz, rec.backend, rec.port) == (BOT, [0.0, 0.19, 0.0], "testbot", "/dev/ttyACM1")
+        assert "other_robots" in json.loads(app.ws_path.read_text(encoding="utf-8"))
+        app._sync_mirror()                                          # the 3D view draws it
+        model = app.twin.scene.model
+        assert any(model.body(b).name.startswith("lewe/") for b in app.mirror.bodies)
+        end = time.monotonic() + 5.0
+        while app.twin.passive_status()["lewe"] != "odczyt na zywo":
+            assert time.monotonic() < end, app.twin.passive_status()
+            time.sleep(0.02)
+        assert "lewe" in app._others_text() and "odczyt na zywo" in app._others_text()
+
+        app.other_pick.value = "lewe"
+        _click(app, "Usun robota")
+        assert app.ws.other_robots == [] and app.twin.passive_status() == {}
+        assert "other_robots" not in json.loads(app.ws_path.read_text(encoding="utf-8"))
+        with pytest.raises(KeyError):
+            app.twin.scene.model.body("lewe/hand")
+    finally:
+        if app.ws.other_robots:
+            app._apply_others([])
+        app.other_pick.value = "(nowy)"
+
+
 def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
     from machinekind_twin.runtime import RobotStatus
 
@@ -533,7 +572,7 @@ def test_a_moved_camera_brings_up_its_relocalize_button(app, monkeypatch):
         monkeypatch.setattr(app.watch, "moved", lambda name: name == "kam1")
         monkeypatch.setattr(app, "_wave_cameras", lambda: ["kam1"])
         app._render_calibration()
-        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)"
+        label = "Kamera kam1 zostala poruszona - pokaz jej karte jeszcze raz (ok. 2 min)"
         assert app.reloc_box.visible and app.reloc_btn.label == label
         assert "PORUSZONA" in app.calib_html.content
         _click(app, label)
@@ -757,6 +796,32 @@ def test_startup_flag_connects_the_arm(app):
     assert app.twin.connected and app.twin.status.simulated
 
 
+def test_the_speed_slider_starts_at_the_configured_speed_and_the_arm_runs_under_it(tmp_path, monkeypatch):
+    a_config_file(tmp_path, monkeypatch, "safety: {panel_speed_deg_s: 80}\n")
+    panel = a_panel(tmp_path / "twin.json")
+    try:
+        assert panel.arm_speed.value == 80.0
+        panel.twin.connect("sim")
+        limits = panel.twin.speed_limits()
+        assert limits["j1"] == limits["j2"] == 80.0
+        panel.arm_speed.value = 30.0
+        assert panel.twin.speed_limits()["j1"] == 30.0
+    finally:
+        panel.close()
+
+
+def test_the_start_speed_stays_on_the_slider_and_a_broken_config_leaves_the_default(tmp_path, monkeypatch):
+    from machinekind_twin.robots import get_spec
+    from machinekind_twin.ui.app import start_speed
+
+    spec = get_spec(BOT)
+    assert start_speed(spec, 90.0) == 20.0
+    for text, start in (("panel_speed_deg_s: 500", 90.0), ("panel_speed_deg_s: 0.25", 1.0),
+                        ("panel_speed_deg_s: -1", 20.0), ("bogus: 1", 20.0)):
+        a_config_file(tmp_path, monkeypatch, f"safety: {{{text}}}\n")
+        assert start_speed(spec, 90.0) == start, text
+
+
 # ------------------------------------------------------------------ strategies from installed packages
 def choose_strategy(app, name: str, **values):
     """Strategie: Odswiez liste, choose `name`, type `values` into its form."""
@@ -806,6 +871,9 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
 
     app.twin.connect("sim", threaded=False)
     tab = choose_strategy(app, swing, joint="j1", period_s=1.0)
+    tab.record_episode.value = True
+    tab.keep_frames.value = True
+    tab.frame_format.value = "WebP"
 
     tab.start()
 
@@ -830,6 +898,18 @@ def test_a_strategy_from_a_package_runs_on_the_sim_arm_through_the_strategy_runn
     assert app.twin.owner is None
     tab.tick()
     assert "zatrzymana z panelu" in tab.run_md.content
+
+    assert tab.runner.wait_for_episode(timeout=5.0)
+    episode = tab.runner.status.episode
+    assert episode is not None
+    assert episode.parent == Path(app.ws.path).parent / "episodes"
+    assert episode.name in tab.run_md.content
+    log = EpisodeLog.load(episode)
+    assert log.end.code == "stopped"
+    assert log.header["meta"]["strategy"] == swing
+    assert log.header["meta"]["settings"]["period_s"] == 1.0
+    assert log.header["keep_frames_s"] == 1.0
+    assert log.header["frame_format"] == "webp"
 
 
 def test_a_wrong_key_in_the_strategys_config_section_is_refused_before_start(app, swing, tmp_path, monkeypatch):

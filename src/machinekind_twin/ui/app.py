@@ -32,17 +32,21 @@ import cv2
 import mujoco
 import numpy as np
 import viser
+import yaml
 
 from .. import scene as sc
 from ..calib.card import MIN_WHITE, Card
 from ..calib import intrinsics as intr
 from ..calib.intrinsics import DEFAULT_LAYOUT, LAYOUTS, Board
+from ..camera_controls import CameraControls
+from ..config import SafetyConfig
 from ..detection import Perception
 from ..kinematics import inverse, pose
 from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
-from ..workspace import CameraRecord, Workspace, nominal_K
+from ..robots import get_spec, robot_config
+from ..workspace import CameraRecord, RobotRecord, Workspace, nominal_K
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
@@ -60,6 +64,9 @@ logger = logging.getLogger(__name__)
 
 #: Wlasciciel ramienia (`Twin.claim`), gdy steruje panel: suwaki i uchwyt TCP ze sprzeglem.
 PANEL_OWNER = "panel"
+#: "Inne roboty": the picker's entry for a new robot and the joint source without a backend.
+NEW_ROBOT = "(nowy)"
+FIXED_POSE = "stala poza"
 #: Najwiekszy skok stawu [st.] miedzy kolejnymi rozwiazaniami IK uchwytu TCP. Zmierzone:
 #: przeciagniecie uchwytu o 1-2 cm z shoulder_pan ~108 st. dawalo "poprawne" IK na
 #: drugiej galezi - 178-180 st. zmiany, cale ramie przez stol w ~1,3 s.
@@ -244,6 +251,11 @@ def usb_serial_ports() -> list[str]:
     return sorted(str(p.device) for p in comports() if p.vid is not None)
 
 
+def _joints_text(joints: dict[str, float]) -> str:
+    """Joint values as the panel's text field shows them: `name=value, ...`."""
+    return ", ".join(f"{k}={float(v):g}" for k, v in joints.items())
+
+
 def find_port(saved: str | None) -> str:
     """The serial port to use: `saved` while it is plugged in or is a bridge address, else the one
     USB-serial device plugged in, else "".
@@ -261,6 +273,19 @@ def find_port(saved: str | None) -> str:
     return devices[0] if len(devices) == 1 else ""
 
 
+def start_speed(spec, top: float) -> float:
+    """Start value of the speed slider [deg/s]: `safety.panel_speed_deg_s`, clipped to 1..`top`.
+
+    A config file that does not load leaves the default; Connect reports its error.
+    """
+    speed = SafetyConfig().panel_speed_deg_s
+    try:
+        speed = robot_config(spec).safety.panel_speed_deg_s
+    except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+        logger.warning("Konfiguracja: %s - suwak Predkosc startuje od %g st./s", exc, speed)
+    return float(min(max(speed, 1.0), top))
+
+
 #: Wyglad przycisku UZBROJ, gdy panel nie moze uzbroic: (etykieta, kolor, ikona) - przycisk wylaczony.
 ARM_OVERRIDES = {
     "off": lambda who: ("UZBROJ - najpierw Polacz", "gray", viser.Icon.PLUG_CONNECTED_X),
@@ -275,6 +300,8 @@ GIZMO_OFF = ("Uchwyt 3D: wyl.", "gray", viser.Icon.ARROWS_MOVE)
 GIZMO_ESTOP = ("Uchwyt 3D: STOP aktywny", "gray", viser.Icon.ARROWS_MOVE)
 CAM_ON = ("Wlaczona - kliknij, by wylaczyc", "green", viser.Icon.EYE)
 CAM_OFF = ("Wylaczona - kliknij, by wlaczyc", "gray", viser.Icon.EYE_OFF)
+#: Camera control choices in the panel: leave the camera's own setting, on, off.
+CTL_CHOICES = ("bez zmian", "wl.", "wyl.")
 MOVE_ON = ("Przesuwanie w 3D: wl. - ciagnij uchwyt", "blue", viser.Icon.ARROWS_MOVE)
 MOVE_OFF = ("Przesuwaj w 3D", "gray", viser.Icon.ARROWS_MOVE)
 #: Tyle [s] czeka pytanie na przycisku z potwierdzeniem drugim kliknieciem (`_TwoClick`).
@@ -483,6 +510,15 @@ class _TwoClick:
             self._key = None
 
 
+def _controls_text(c: CameraControls) -> str:
+    """The controls for the camera's details line, such as ", autofokus wyl., ostrosc 30"; "" without."""
+    parts = [(c.autofocus, f"autofokus {'wl.' if c.autofocus else 'wyl.'}"),
+             (c.focus_absolute, f"ostrosc {c.focus_absolute}"),
+             (c.auto_exposure, f"auto ekspozycja {'wl.' if c.auto_exposure else 'wyl.'}"),
+             (c.exposure_absolute, f"ekspozycja {c.exposure_absolute}")]
+    return "".join(f", {text}" for value, text in parts if value is not None)
+
+
 def no_frame_image(text: str = "brak kadru", size: tuple[int, int] = (320, 240)) -> np.ndarray:
     img = np.zeros((size[1], size[0], 3), np.uint8)
     cv2.putText(img, text, (20, size[1] // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (230, 60, 60), 2, cv2.LINE_AA)
@@ -608,6 +644,7 @@ class TwinApp:
         self.mirror = None
         self._mirror_version = -1
         self._sync_mirror()
+        self._guard("inne roboty", self.twin.start_passive)
         self.twin.cameras.sync()
         self._refresh_cameras()
         self._guard("przewodnik", self._tick_guide)
@@ -692,6 +729,7 @@ class TwinApp:
                                       hint="Kasuje STOP awaryjny (takze od bledu serwa). Najpierw usun przyczyne. "
                                            "Ramie samo nie rusza - potem UZBROJ, zeby sterowac.")
         self.status_md = g.add_markdown("", visible=False)
+        self.stand_html = g.add_html(self._stand_html())
         # Przewodnik: gdzie operator jest w procedurze (docs/TWIN.md, kroki 0-5) i jedna nastepna
         # akcja. Logika w `guide.py`, tu tylko wyswietlanie. Widoczna zawsze tylko linia "Teraz";
         # uwagi i lista krokow zwiniete - rozwiniete zabieraly ok. 190-400 px nad kazda zakladka.
@@ -713,6 +751,26 @@ class TwinApp:
             # zwykly callback czekal w tej samej puli 32 watkow co reszta panelu - za
             # przebudowami sceny z przeciagania kamery STOP potrafil ruszyc po kilkudziesieciu s.
             threading.Thread(target=self._emergency_stop, args=(event,), name="STOP", daemon=True).start()
+
+    def _stand_html(self) -> str:
+        """The stand folder the workspace writes back to; an obsolete or missing one in red."""
+        if not self.ws.stand:
+            return ""
+        from ..stand import StandError
+        from ..stand import load as load_stand
+
+        box = ('<div style="margin:0 var(--mantine-spacing-xs);padding:.35em .6em;border-radius:4px;'
+               'background:var(--mantine-color-red-9);color:#fff;font-weight:700">{}</div>')
+        try:
+            stand = load_stand(self.ws.stand)
+        except StandError as exc:
+            return box.format(_html.escape(f"Folder stanowiska nie dziala: {exc}"))
+        if stand.obsolete is not None:
+            logger.warning("%s", stand.obsolete_text())
+            return box.format(_html.escape(f"UWAGA: {stand.obsolete_text()}. Pomiary moga nie pasowac do "
+                                           "rzeczywistosci."))
+        return (f'<div style="margin:0 var(--mantine-spacing-xs);opacity:.8">Stanowisko <b>{_html.escape(stand.name)}'
+                f'</b> - zapisy wracaja do jego folderu</div>')
 
     def _emergency_stop(self, event=None) -> None:
         """STOP: najpierw nadzor (ramie staje w zmierzonej pozie), dopiero potem sprzatanie watkow."""
@@ -985,9 +1043,11 @@ class TwinApp:
                                                   "(puste) naprawde, bo A1X bez pomiaru chwytaka przyjmuje od tej "
                                                   "chwili, ze sa zamkniete. Niczym nie rusza.")
             top = max((self.ws.spec().max_vel.get(n, 0.0) for n in self.ws.spec().arm_joints), default=90.0)
-            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0, float(min(20.0, top)),
-                                          hint="Najwieksza predkosc stawow przy suwakach i uchwycie (jak 'speed' "
-                                               "w jog_a1x). Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
+            self.arm_speed = g.add_slider("Predkosc [st./s]", 1.0, float(top), 1.0,
+                                          start_speed(self.ws.spec(), float(top)),
+                                          hint="Najwieksza predkosc stawow ramienia: suwaki, uchwyt i strategie "
+                                               "(jak 'speed' w jog_a1x). Na starcie: safety.panel_speed_deg_s z "
+                                               "konfiguracji. Dom jedzie po swojemu: 20 st./s etapami (A1X) albo "
                                                "rampa nadzoru.")
             spec = self.ws.spec()
             kin = self.twin.scene.kin
@@ -1102,6 +1162,8 @@ class TwinApp:
         # --- stol (zawsze, zwiniete)
         with g.add_folder("Stanowisko (stol)", expand_by_default=False):
             self._build_table()
+        with g.add_folder("Inne roboty (tylko odczyt)", expand_by_default=False):
+            self._build_others()
 
         self.twin.set_speed(self.arm_speed.value)
 
@@ -1334,6 +1396,138 @@ class TwinApp:
         def _(event):
             self._on_tcp_gizmo()
 
+    # ------------------------------------------------------- inne roboty
+    def _build_others(self) -> None:
+        """Robots of the station the twin only watches: list, editor, status of their joints."""
+        from ..backends.factory import backends
+        from ..robots import robot_folders
+
+        g = self.server.gui
+        g.add_markdown("Roboty stojace obok ramienia. Blizniak nimi nie steruje: stawy z zapisanej pozy albo "
+                       "z ich backendu TYLKO DO ODCZYTU (nic nie wysyla na ich magistrale). Ramie nie podjedzie "
+                       f"blizej niz {sc.PASSIVE_CLEARANCE * 100:.0f} cm.")
+        self.others_md = g.add_markdown("")
+        self.other_pick = g.add_dropdown("Robot", (NEW_ROBOT, *(r.name for r in self.ws.other_robots)),
+                                         initial_value=NEW_ROBOT,
+                                         hint="Robot do edycji albo nowy.")
+        self.other_name = g.add_text("Nazwa", "", hint="Nazwa w scenie: litery, cyfry, _ i -.")
+        robots = tuple(robot_folders()) or (self.ws.robot,)
+        self.other_robot = g.add_dropdown("Opis robota", robots, initial_value=self.ws.robot if self.ws.robot in robots
+                                          else robots[0], hint="Model z zainstalowanego pakietu robota.")
+        self.other_xyz = g.add_vector3("Podstawa x, y, z [m]", (0.0, 0.3, 0.0), min=(-2.0, -2.0, -1.0),
+                                       max=(2.0, 2.0, 1.0), step=0.005,
+                                       hint="Polozenie podstawy wzgledem podstawy ramienia [m]: x do przodu, "
+                                            "y w lewo, z w gore.")
+        self.other_yaw = g.add_number("Obrot podstawy [st.]", 0.0, min=-180.0, max=180.0, step=1.0,
+                                      hint="Obrot wokol osi pionowej wzgledem podstawy ramienia [st.].")
+        sources = (FIXED_POSE, *sorted(n for n in backends() if n != "sim"))
+        self.other_source = g.add_dropdown("Stawy z", sources, initial_value=FIXED_POSE,
+                                           hint="Stala poza albo backend robota otwarty tylko do odczytu.")
+        self.other_port = g.add_text("Port", "", hint="Port backendu, np. /dev/ttyACM1; pusty = domyslny.")
+        self.other_joints = g.add_text("Stala poza", "",
+                                       hint="staw=wartosc po przecinku [st., chwytak 0..100]; brakujace z pozy "
+                                            "domowej. Przy backendzie: ostatnia odczytana poza.")
+        save = g.add_button("Zapisz robota", icon=viser.Icon.CHECK, color="gray",
+                            hint="Zapisuje robota w stanowisku, przebudowuje scene i wznawia odczyty.")
+        remove = g.add_button("Usun robota", icon=viser.Icon.TRASH, color="gray", hint="Usuwa robota ze sceny.")
+        self._fill_other()
+
+        @self.other_pick.on_update
+        @self._safe
+        def _(event):
+            self._fill_other()
+
+        @self.other_robot.on_update
+        @self._safe
+        def _(event):
+            if self.other_pick.value == NEW_ROBOT:
+                self.other_joints.value = _joints_text(get_spec(self.other_robot.value).home)
+
+        @save.on_click
+        @self._safe
+        def _(event):
+            rec = self._other_from_fields()
+            old = self.other_pick.value
+            others = [r for r in self.ws.other_robots if r.name != old]
+            if any(r.name == rec.name for r in others):
+                raise ValueError(f"robot {rec.name!r} juz jest w stanowisku")
+            self._apply_others([*others, rec])
+            self.other_pick.value = rec.name
+            self._notify(event, "Inne roboty", f"{rec.name} zapisany, scena przebudowana.")
+
+        @remove.on_click
+        @self._safe
+        def _(event):
+            name = self.other_pick.value
+            if name == NEW_ROBOT:
+                return
+            self._apply_others([r for r in self.ws.other_robots if r.name != name])
+            self.other_pick.value = NEW_ROBOT
+            self._notify(event, "Inne roboty", f"{name} usuniety ze sceny.")
+
+    def _fill_other(self) -> None:
+        """The editor's fields from the picked robot, or defaults for a new one."""
+        name = self.other_pick.value
+        rec = None if name == NEW_ROBOT else self.ws.other_robot(name)
+        if rec is None:
+            k = 2
+            while any(r.name == f"ramie{k}" for r in self.ws.other_robots):
+                k += 1
+            rec = RobotRecord(f"ramie{k}", str(self.other_robot.value), xyz=[0.0, 0.3, 0.0])
+        self.other_name.value = rec.name
+        if rec.robot in self.other_robot.options:
+            self.other_robot.value = rec.robot
+        self.other_xyz.value = tuple(float(v) for v in rec.xyz)
+        self.other_yaw.value = float(rec.yaw_deg)
+        source = rec.backend or FIXED_POSE
+        if source not in self.other_source.options:
+            self.other_source.options = (*self.other_source.options, source)
+        self.other_source.value = source
+        self.other_port.value = rec.port or ""
+        self.other_joints.value = _joints_text({**get_spec(rec.robot).home, **rec.joints})
+
+    def _other_from_fields(self) -> RobotRecord:
+        robot = str(self.other_robot.value)
+        spec = get_spec(robot)
+        joints = {}
+        for part in self.other_joints.value.replace(";", ",").split(","):
+            if not part.strip():
+                continue
+            key, _, value = part.partition("=")
+            if key.strip() not in spec.joints:
+                raise ValueError(f"{robot} nie ma stawu {key.strip()!r} (ma: {', '.join(spec.joints)})")
+            joints[key.strip()] = float(value.replace(" ", ""))
+        source = str(self.other_source.value)
+        return RobotRecord(self.other_name.value.strip(), robot, xyz=[float(v) for v in self.other_xyz.value],
+                           yaw_deg=float(self.other_yaw.value), backend=None if source == FIXED_POSE else source,
+                           port=self.other_port.value.strip() or None, joints=joints)
+
+    def _apply_others(self, others: list[RobotRecord]) -> None:
+        """New list of other robots: checked by building the scene, then saved, rebuilt and read again."""
+        old = self.ws.other_robots
+        self.ws.other_robots = others
+        try:
+            sc.compose(self.ws.scene_config())
+        except Exception:
+            self.ws.other_robots = old
+            raise
+        self._save()
+        self._simreal_px.clear()
+        self.twin.rebuild()
+        self.twin.start_passive()
+        names = (NEW_ROBOT, *(r.name for r in others))
+        self.other_pick.options = names
+
+    def _others_text(self) -> str:
+        status = self.twin.passive_status()
+        lines = []
+        for r in self.ws.other_robots:
+            x, y, z = (float(v) for v in r.xyz)
+            source = f"{r.backend} {r.port or ''}".strip() if r.backend else "stala poza"
+            lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
+                         f"obrot {r.yaw_deg:.0f} st.; {_html.escape(source)}: {_html.escape(status.get(r.name, ''))}")
+        return "\n".join(lines) or "Brak innych robotow w scenie."
+
     def _on_tcp_gizmo(self) -> None:
         """Przeciagniety uchwyt TCP -> cel stawow, tylko na tej samej galezi IK co ramie teraz.
 
@@ -1434,6 +1628,22 @@ class TwinApp:
                 remember = g.add_button("Zapamietaj kadr odniesienia", icon=viser.Icon.PHOTO_CHECK,
                                         hint="Biezacy kadr jako odniesienie: od niego straznik liczy przestawienie "
                                              "kamery (co 2 s, prog 3 px). Po zapisie kalibracji robi sie samo.")
+            self.cam_ctl_box = g.add_folder("Ustawienia kamery (ostrosc, ekspozycja)", expand_by_default=False)
+            with self.cam_ctl_box:
+                self.cam_af = g.add_dropdown("Autofokus", CTL_CHOICES, initial_value=CTL_CHOICES[0],
+                                             hint="Wylacz przed krokiem 1: obiektyw, ktory sam sie ostrzy, zmienia "
+                                                  "ogniskowa miedzy kadrami.")
+                self.cam_focus = g.add_text("Ostrosc", "", hint="Stala ostrosc (focus_absolute) w jednostkach kamery, "
+                                                               "czesto 0-255; puste = bez zmian. Wylacza autofokus.")
+                self.cam_ae = g.add_dropdown("Auto ekspozycja", CTL_CHOICES, initial_value=CTL_CHOICES[0],
+                                             hint="Automatyczny czas naswietlania kamery.")
+                self.cam_exposure = g.add_text("Ekspozycja", "", hint="Staly czas naswietlania (exposure_absolute) "
+                                                                     "w 100 us; puste = bez zmian. Wylacza auto "
+                                                                     "ekspozycje.")
+                ctl_apply = g.add_button("Zastosuj i zapisz", icon=viser.Icon.DEVICE_FLOPPY,
+                                         hint="Ustawia kamere teraz i przy kazdym otwarciu (Linux, V4L2). Zapisane w "
+                                              "stanowisku - skrypt ustawiajacy ostrosc przed startem nie jest potrzebny.")
+                self.cam_ctl_md = g.add_markdown("")
         g.add_divider()
         g.add_markdown("**Dodaj kamere**")
         add_front = g.add_button("Dodaj symulowana przed ramieniem", icon=viser.Icon.CAMERA_PLUS,
@@ -1456,6 +1666,19 @@ class TwinApp:
         self.cam_gizmo = self.server.scene.add_transform_controls("/uchwyt_kamery", scale=0.1, visible=False)
         self._found_usb: list[dict] = []
         self.cam_ask = _TwoClick()
+        self._ctl_cam: str | None = None                # the camera whose controls the fields show
+
+        @ctl_apply.on_click
+        @self._safe
+        def _(event):
+            rec = self._cam()
+            if rec is None or rec.simulated:
+                raise RuntimeError("ustawienia dotycza prawdziwej kamery")
+            rec.controls = self._controls_from_fields()
+            self._save()
+            done = self.twin.cameras.apply_controls(rec.name)
+            self.cam_ctl_md.content = done.text() if not rec.controls.empty else "bez ustawien - kamera zostaje, jak jest"
+            self._notify(event, "Ustawienia kamery", f"{rec.name}: {self.cam_ctl_md.content}", error=bool(done.failed))
 
         @self.cam_pick.on_update
         def _(event):
@@ -1560,6 +1783,37 @@ class TwinApp:
             x = np.cross(z, [0, 0, 1.0])
             x /= np.linalg.norm(x)
             self._add_sim_camera(self.T_b2w @ pose(np.column_stack([x, np.cross(z, x), z]), eye))
+
+    def _controls_from_fields(self) -> CameraControls:
+        def flag(value: str) -> bool | None:
+            return None if value == CTL_CHOICES[0] else value == CTL_CHOICES[1]
+
+        def number(text: str, label: str) -> int | None:
+            text = text.strip()
+            if not text:
+                return None
+            if not text.isdigit():
+                raise RuntimeError(f"{label}: liczba calkowita >= 0 albo puste, jest {text!r}")
+            return int(text)
+
+        try:
+            return CameraControls(flag(self.cam_af.value), number(self.cam_focus.value, "ostrosc"),
+                                  flag(self.cam_ae.value), number(self.cam_exposure.value, "ekspozycja"))
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+
+    def _fill_controls(self, rec: CameraRecord) -> None:
+        """The selected camera's controls in the fields, and what the twin last did with them."""
+        def choice(value: bool | None) -> str:
+            return CTL_CHOICES[0] if value is None else CTL_CHOICES[1] if value else CTL_CHOICES[2]
+
+        c = rec.controls
+        self.cam_af.value, self.cam_ae.value = choice(c.autofocus), choice(c.auto_exposure)
+        self.cam_focus.value = "" if c.focus_absolute is None else str(c.focus_absolute)
+        self.cam_exposure.value = "" if c.exposure_absolute is None else str(c.exposure_absolute)
+        done = None if c.empty else self.twin.cameras.controls_applied(rec.name)
+        self.cam_ctl_md.content = done.text() if done is not None else ""
+        self._ctl_cam = rec.name
 
     def _viewer_pose(self, event) -> np.ndarray:
         cam = event.client.camera
@@ -1872,6 +2126,9 @@ class TwinApp:
             self.cam_gizmo.visible = False
             return
         self.cam_enabled.value = rec.enabled
+        set_if(self.cam_ctl_box, "visible", not rec.simulated)
+        if rec.name != self._ctl_cam:
+            self._fill_controls(rec)
         if not rec.simulated and self.cam_move.value:
             self.cam_move.value = False                 # prawdziwej nie przestawia sie z panelu
         set_if(self.cam_sim_box, "visible", rec.simulated)
@@ -1899,7 +2156,7 @@ class TwinApp:
             info += f"  \n**blad kamery:** {err}"
         self.cam_info.content = info
         K, dist = rec.intrinsics()
-        lines = [f"zrodlo `{rec.source}`, {rec.width}x{rec.height}",
+        lines = [f"zrodlo `{rec.source}`, {rec.width}x{rec.height}" + _controls_text(rec.controls),
                  f"K ({rec.intrinsics_from}): fx {K[0, 0]:.0f} fy {K[1, 1]:.0f} cx {K[0, 2]:.0f} cy {K[1, 2]:.0f}"]
         if rec.intrinsics_info:
             ii = rec.intrinsics_info
@@ -2032,7 +2289,8 @@ class TwinApp:
                 self._show_card()
             self.wave_box, self.wave_btn = self._big_button(
                 "Start", icon=viser.Icon.WAVE_SINE, color="green",
-                hint="RUSZA ramieniem: ok. 20 miejsc z karta nad stolem, potem ramie wraca na miejsce. Prawdziwe "
+                hint="RUSZA ramieniem: najpierw pokazuje karte w calej przestrzeni roboczej i w kazdym kierunku, "
+                     "potem celuje w znalezione kamery (ok. 3-6 min), na koniec wraca na miejsce. Prawdziwe "
                      "ramie: drugie klikniecie potwierdza, ze karta jest w chwytaku, a stol pusty.")
             self.reloc_box, self.reloc_btn = self._big_button(
                 "Kamera poruszona", icon=viser.Icon.CURRENT_LOCATION, color="orange",
@@ -2384,12 +2642,13 @@ class TwinApp:
             set_if(self.pose_title, "content", "**Krok 2 z 2: ustal, gdzie stoja kamery**" + (
                 " - gotowe" if poses_done else ""))
             if sim:
-                help_ = ("Ramie samo pokaze kamerom karte z kodem w ok. 20 miejscach nad stolem (ok. 2-3 min); "
-                         "z tego program liczy, gdzie stoi kazda kamera. W symulacji karta jest w chwytaku sama - "
-                         "kliknij **Start**. Szybciej: **Symulacja: pomin** nizej.")
+                help_ = ("Ramie samo obejrzy z karta z kodem cala przestrzen robocza, znajdzie kamery i pokaze im karte "
+                         "z wielu stron (ok. 3-6 min); z tego program liczy, gdzie stoi kazda kamera. W symulacji "
+                         "karta jest w chwytaku sama - kliknij **Start**. Szybciej: **Symulacja: pomin** nizej.")
             else:
-                help_ = ("Ramie samo pokaze kamerom karte z kodem w ok. 20 miejscach nad stolem (ok. 2-3 min); "
-                         "z tego program liczy, gdzie stoi kazda kamera. Wszystkie kamery naraz.\n\n"
+                help_ = ("Ramie samo obejrzy z karta z kodem cala przestrzen robocza, znajdzie kamery i pokaze im karte "
+                         "z wielu stron (ok. 3-6 min); z tego program liczy, gdzie stoi kazda kamera. Wszystkie "
+                         "kamery naraz.\n\n"
                          "1. Pobierz karte i wydrukuj ja w skali **100%**.\n"
                          "2. Zmierz linijka bok kwadratowego kodu (czarna ramka) i wpisz go nizej.\n"
                          "3. Zegnij karte na linii; wolny koniec wloz w szczeki chwytaka - ok. **7 cm** ma wystawac.\n"
@@ -2417,7 +2676,7 @@ class TwinApp:
                     look = (f"Karta w chwytaku, stol pusty? Kliknij jeszcze raz - ramie pokaze karte {moved[0]}",
                             "orange", viser.Icon.ALERT_TRIANGLE)
                 else:
-                    look = (f"Kamera {moved[0]} zostala poruszona - pokaz jej karte jeszcze raz (ok. 1 min)",
+                    look = (f"Kamera {moved[0]} zostala poruszona - pokaz jej karte jeszcze raz (ok. 2 min)",
                             "orange", viser.Icon.CURRENT_LOCATION)
                 _Toggle._show(self.reloc_btn, *look, disabled=bool(why))
             notes = []
@@ -2427,6 +2686,9 @@ class TwinApp:
                 notes.append(f"Kamera {moved[0]} przesunela sie od kalibracji. " +
                              ("" if sim else "Wloz karte w chwytak i ") + "kliknij pomaranczowy przycisk - "
                              "ramie pokaze karte tylko tej kamerze.")
+            limits = self.ws.wave.describe()
+            if idle and limits:
+                notes.append(f"Fala omija: {limits} (twin.json, sekcja wave).")
             set_if(self.wave_md, "content", "  \n".join(notes))
             set_if(self.wave_md, "visible", bool(notes))
             set_if(self.truth_btn, "visible", idle and sim and bool(self._truth_cameras()))
@@ -2548,12 +2810,15 @@ class TwinApp:
         if j.running:
             self.calib_bar.value = 100 * j.progress
             prog = j.data.get("progress", {})
-            rows = [f"- {c}: widziala karte {o} razy" for c, (o, p, s) in prog.items()]
+            status = j.data.get("status") or {}
+            rows = [f"- {c}: {status[c]}" if c in status else f"- {c}: widziala karte {o} razy"
+                    for c, (o, p, s) in prog.items()]
             self.calib_md.content = ("**Ramie pokazuje karte kamerom - nie wchodz w jego zasieg.**\n\n"
-                                     + "\n".join(rows))
+                                     + (f"{j.message}\n\n" if j.message else "") + "\n".join(rows))
         elif j.state == jobs.DONE and j.result is not None and not self._calib_pending and \
                 j.data.get("shown") is not j.result:
             fit = j.result
+            explain = j.data.get("explain") or {}
             rows = ["**Wynik** - kliknij Zapisz wynik:", "", "| kamera | wynik |", "|---|---|"]
             for n, c in fit.cameras.items():
                 extra = ""
@@ -2568,7 +2833,13 @@ class TwinApp:
                 bad = c.reason if not c.trusted else k_problem
                 verdict = (f"**zle** - {bad}; popraw ustawienie kamery i zrob krok 2 jeszcze raz" if bad else
                            f"**dobrze** (dokladnosc {c.rms_px:.2f} px){extra}")
+                if bad and n in explain:
+                    verdict += f". {explain[n].split(': ', 1)[-1]}"
                 rows.append(f"| {n} | {verdict} |")
+            # A camera that never saw the card has no fit: it says so instead of missing from the table.
+            for n in j.data.get("cameras", []):
+                if n not in fit.cameras:
+                    rows.append(f"| {n} | **zle** - {explain.get(n, 'nie widziala karty').split(': ', 1)[-1]} |")
             if fit.joint_offsets:
                 rows += ["", (f"**Poprawki zer serw:** {self._offsets_text(fit.joint_offsets)} "
                               f"({fit.offsets_note.split(': ', 1)[-1]}). Zapisz wynik wlaczy je razem z polozeniem kamer.")]
@@ -3100,6 +3371,7 @@ class TwinApp:
         status = self._status_text()
         self.status_md.content = status
         set_if(self.status_md, "visible", bool(status))
+        self.others_md.content = self._others_text()
         with self._render_lock:
             self._render_chip(*self._arm_mode())        # odswieza tez Hz na plakietce
         opts = tuple(c.name for c in self.ws.cameras) or ("-",)
@@ -3245,6 +3517,9 @@ class TwinApp:
             try:
                 self.twin.close()
             finally:
+                runner = self.strategies.runner
+                if runner is not None and not runner.wait_for_episode(timeout=5.0):
+                    logger.warning("Episode recording is still pending after shutdown timeout")
                 if self.stream is not None:
                     self._guard("podglad kamer", self.stream.stop)
                 self.server.stop()

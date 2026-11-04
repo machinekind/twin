@@ -18,7 +18,8 @@ miala na biurku, a nie na pozycji kostki wzietej z fizyki.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -28,9 +29,10 @@ from .robots import RobotSpec
 from .workspace import CameraRecord, Workspace
 
 
-def _nelder_mead3(f, x0: np.ndarray, step: np.ndarray, iters: int = 90, tol: float = 1e-4):
-    """Maly Nelder-Mead dla trzech parametrow (bez scipy)."""
-    pts = [x0] + [x0 + np.eye(3)[i] * step[i] for i in range(3)]
+def _nelder_mead(f, x0: np.ndarray, step: np.ndarray, iters: int = 90, tol: float = 1e-4):
+    """A small Nelder-Mead over len(x0) parameters (no scipy)."""
+    n = len(x0)
+    pts = [x0] + [x0 + np.eye(n)[i] * step[i] for i in range(n)]
     vals = [f(p) for p in pts]
     for _ in range(iters):
         order = np.argsort(vals)
@@ -174,7 +176,9 @@ class ObjectTracker:
     `a`): podniesiona kostka przechodzila bramke z pewnoscia 0,87-0,98 i bledem
     3-40 cm, a tracker podawal ja polityce jako "kamery" zamiast "w dloni" -
     polityka wracala po nia na blat. Z dala od dloni kostka lezy na blacie
-    (nic innego jej nie podnosi), wiec tam jedna kamera wystarcza.
+    (nic innego jej nie podnosi), wiec tam jedna kamera wystarcza. A new block
+    that may rest on another block does not get here from one camera:
+    `objects.locate` waits for two.
 
     Wyjatek: kostka potracona chwytakiem. Lezy wtedy obok, jedna kamera widzi ja
     dobrze - a pomijanie zamrazalo ja w starym miejscu na `hold_s` (zmierzone:
@@ -250,6 +254,12 @@ class ObjectTracker:
         #: wcale ("brak"), panel mowi DLACZEGO - wczesniej runner konczyl "kamery jej nie
         #: widza", choc kamera widziala ja z pewnoscia 0,99 (tylko tracker jej nie przyjal).
         self._rejected: tuple[float, str] | None = None
+        #: Where a dropped object comes to rest: its centre height [m] for its centre at a point,
+        #: e.g. on a block under it; None = where it last rested on its own.
+        self.rest_on: Callable[[np.ndarray], float | None] | None = None
+        #: Whether a closing jaw may take this object: False when another object is nearer the
+        #: TCP (the block under the one being gripped).
+        self.may_grab = True
 
     @classmethod
     def for_spec(cls, spec: RobotSpec, **kw) -> ObjectTracker:
@@ -301,11 +311,18 @@ class ObjectTracker:
         return True
 
     def _dropped(self, now: float) -> None:
-        """Kostka byla w dloni, szczeka juz nic nie trzyma - lezy na blacie pod miejscem upadku."""
-        if self.last is None or self._rest_z is None or self.last[0][2] < self._rest_z + self.drop_height:
+        """The object was in the hand and the jaw holds nothing now: it rests under where it fell,
+        on what `rest_on` finds there (a block under it), else at the height it last rested at."""
+        if self.last is None:
+            return
+        rest_z = self._rest_z
+        if self.rest_on is not None:
+            found = self.rest_on(self.last[0])
+            rest_z = rest_z if found is None else found
+        if rest_z is None or self.last[0][2] < rest_z + self.drop_height:
             return
         p = self.last[0].copy()
-        p[2] = self._rest_z
+        p[2] = rest_z
         # Po upadku zostaje tylko obrot wokol pionu (kostka lezy na scianie).
         yaw = np.arctan2(self.last[1][1, 0], self.last[1][0, 0])
         c, s = np.cos(yaw), np.sin(yaw)
@@ -348,7 +365,7 @@ class ObjectTracker:
             # Poza w dloni zapisywana w CHWILI chwytu, z ostatniej detekcji: kostka lezala
             # wtedy nieruchomo, a kamery i tak juz jej nie widza - szczeki zaslaniaja gorna
             # sciane, zanim TCP zejdzie do niej blizej niz kilka centymetrow.
-            if self.in_hand is None and self.last is not None \
+            if self.in_hand is None and self.may_grab and self.last is not None \
                     and np.linalg.norm(self.last[0] - T_tcp[:3, 3]) < self.grab_radius:
                 T_cube = np.eye(4)
                 T_cube[:3, :3], T_cube[:3, 3] = self.last[1], self.last[0]
@@ -403,14 +420,27 @@ class ObjectTracker:
 CubeTracker = ObjectTracker
 
 
+@dataclass(frozen=True, eq=False)
+class _Fit:
+    """One silhouette search's result, before the IoU gate."""
+
+    #: (x, y, yaw, base): the box's centre in xy and its yaw, and the height of the surface it
+    #: rests on above the table [m, rad].
+    p: np.ndarray
+    iou: float
+    #: Cameras that see at least `min_visible` of the predicted silhouette.
+    n_seen: int
+
+
 @dataclass
 class CubeDetector:
     """Kostka po kolorze na mapie blatu. Progi HSV w konwencji OpenCV (H 0..180).
 
-    The silhouette fit places a box resting on the table: a cube of `cube_half`, or a box of
-    `half_size`. Its rotation is Rz(yaw): `rot[:, 0]` runs along the box's x side (`size_m[0]`),
-    `rot[:, 1]` along its y side (`size_m[1]`), and its z side (`size_m[2]`) is its height above the
-    table. The yaw is folded by the footprint's symmetry, `yaw_period`.
+    The silhouette fit places a box resting on the table, or on the surface `base_z` above it: a
+    cube of `cube_half`, or a box of `half_size`. Its rotation is Rz(yaw): `rot[:, 0]` runs along the
+    box's x side (`size_m[0]`), `rot[:, 1]` along its y side (`size_m[1]`), and its z side
+    (`size_m[2]`) is its height. The yaw is folded by the footprint's symmetry, `yaw_period`. With
+    `max_base_z`, the fit also finds a box resting on another block (`_lifted`).
     """
 
     hsv_lo: tuple[int, int, int] = (0, 120, 70)
@@ -419,7 +449,7 @@ class CubeDetector:
     hsv_lo2: tuple[int, int, int] = (170, 120, 70)
     hsv_hi2: tuple[int, int, int] = (180, 255, 255)
     cube_half: float = 0.015
-    #: Half the box's sides (x, y, z) [m], z being half its height above the table; None = a cube
+    #: Half the box's sides (x, y, z) [m], z being half its height; None = a cube
     #: of `cube_half`. A detector's `size_m` halved.
     half_size: tuple[float, float, float] | None = None
     #: Najmniejsze pokrycie sylwetki (IoU), przy ktorym kostka "lezy na blacie tam, gdzie mowimy".
@@ -427,6 +457,22 @@ class CubeDetector:
     #: Kamera liczy sie do `n_cameras`, gdy widzi (nie zaslonieta ramieniem) co najmniej
     #: taka czesc przewidzianej sylwetki.
     min_visible: float = 0.5
+    #: Height above the table of the surface the box rests on [m]: 0 is the table, the top of
+    #: another block stacks it there.
+    base_z: float = 0.0
+    #: Highest surface the fit may find the box resting on [m]; 0 = `base_z` only. Searching the
+    #: base height needs two cameras that see the box.
+    max_base_z: float = 0.0
+    #: A fit on `base_z` this good, seen by two cameras, is not searched further.
+    good_iou: float = 0.93
+    #: A fit with the base searched replaces the one on `base_z` only when two cameras see it and
+    #: its IoU is higher by this much.
+    lift_margin: float = 0.02
+    #: A searched base within this of the table is the table [m].
+    snap_m: float = 0.004
+    #: Lowest IoU of a fit the base search puts off the table. With the height free, the masks of
+    #: two different blocks can meet in a box in the air that covers both fairly well.
+    lift_iou: float = 0.85
 
     @property
     def half(self) -> tuple[float, float, float]:
@@ -521,37 +567,51 @@ class CubeDetector:
         return self._fit(self._top_from_votes(votes, top, occluders), top, masks, mapper, occluders, t)
 
     def _top_mapper(self, mapper: TableMapper) -> TableMapper:
-        """The map on the plane of the top face: the box's full height above the table."""
-        z = 2 * self.half[2]
+        """The map on the plane of the top face: the box's full height above its base."""
+        z = self.base_z + 2 * self.half[2]
         return mapper if abs(mapper.table_z - z) < 1e-6 else mapper.at_height(z)
 
     def _fit(self, top_face: np.ndarray, top: TableMapper, masks: dict[str, np.ndarray], mapper: TableMapper,
              occluders: dict[str, np.ndarray] | None, t: float | None) -> CubeDetection | None:
-        """From the top face on the map to the silhouette fit on the raw masks (`detect_frames`' tail)."""
+        """From the top face on the map to the silhouette fit on the raw masks (`detect_frames`' tail).
+
+        The box rests on `base_z`. With `max_base_z` set, a fit there that is not clearly good is
+        followed by a fit that also searches the base height (`_lifted`); it wins only when two
+        cameras see the box and its IoU is clearly higher, and at least `lift_iou` when it is off
+        the table.
+        """
         init = self._from_mask(top_face, top)
-        start = None if init is None else (init.pos[0], init.pos[1], np.arctan2(init.rot[1, 0], init.rot[0, 0]))
+        start = None if init is None else (init.pos[0], init.pos[1],
+                                           np.arctan2(init.rot[1, 0], init.rot[0, 0]))
         if start is None:
             start = self._ray_guess(masks, mapper.cameras, occluders)
-        if start is None:
-            return None
-        det = self.fit_silhouette(masks, mapper.cameras, start, occluders)
+        best = None if start is None else self._search(masks, mapper.cameras, start, occluders)
+        if self.max_base_z > 0.0 and (best is None or best.iou < self.good_iou or best.n_seen < 2):
+            lifted = self._lifted(masks, mapper.cameras, occluders)
+            if lifted is not None and lifted.n_seen >= 2 \
+                    and (lifted.p[3] == 0.0 or lifted.iou >= self.lift_iou) \
+                    and (best is None or lifted.iou > best.iou + self.lift_margin):
+                best = lifted
+        det = None if best is None else self._detection(best)
         if det is not None and t is not None:
             det.t = float(t)
         return det
 
     # ------------------------------------------------------ dopasowanie sylwetki
-    def _corners(self, x: float, y: float, yaw: float) -> np.ndarray:
-        """The box's 8 corners in the base frame, resting on the table at (x, y) turned by `yaw`."""
+    def _corners(self, x: float, y: float, yaw: float, base: float | None = None) -> np.ndarray:
+        """The box's 8 corners in the base frame, resting at (x, y) on the surface `base` above the
+        table (default `base_z`), turned by `yaw`."""
         hx, hy, hz = self.half
         c, s = np.cos(yaw), np.sin(yaw)
         local = np.array([[sx * hx, sy * hy, sz * hz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
         R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-        return local @ R.T + np.array([x, y, hz])
+        z = (self.base_z if base is None else base) + hz
+        return local @ R.T + np.array([x, y, z])
 
-    def _ray_guess(self, masks, cameras, occluders) -> tuple[float, float, float] | None:
-        """A rough start: each camera's mask centroid met with the plane of the box's centre (z = hz),
-        averaged over the cameras, at yaw 0."""
-        pts = []
+    def _rays(self, masks, cameras, occluders) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Per camera with at least 20 visible mask pixels, the ray through the mask's centroid as
+        (origin, direction) in the base frame; distortion ignored, a start needs no more."""
+        rays = []
         for n, m in masks.items():
             vis = m & ~occluders[n] if occluders and n in occluders else m
             if vis.sum() < 20:
@@ -560,10 +620,17 @@ class CubeDetector:
             K, dist, T = cameras[n]
             ray_c = np.linalg.inv(K) @ np.array([u.mean(), v.mean(), 1.0])
             T = np.asarray(T, float)
-            d, o = T[:3, :3] @ ray_c, T[:3, 3]
+            rays.append((T[:3, 3], T[:3, :3] @ ray_c))
+        return rays
+
+    def _ray_guess(self, masks, cameras, occluders) -> tuple[float, float, float] | None:
+        """A rough start: each camera's mask centroid met with the plane of the box's centre
+        (z = base_z + hz), averaged over the cameras, at yaw 0."""
+        pts = []
+        for o, d in self._rays(masks, cameras, occluders):
             if abs(d[2]) < 1e-6:
                 continue
-            s = (self.half[2] - o[2]) / d[2]
+            s = (self.base_z + self.half[2] - o[2]) / d[2]
             if s > 0:
                 pts.append(o + s * d)
         if not pts:
@@ -571,23 +638,58 @@ class CubeDetector:
         p = np.mean(pts, axis=0)
         return float(p[0]), float(p[1]), 0.0
 
+    def _lifted(self, masks, cameras, occluders) -> _Fit | None:
+        """The fit with the base height free in [0, max_base_z], started where the cameras' mask
+        centroids meet; None with fewer than two such cameras. A base found within `snap_m` of the
+        table is put on the table."""
+        rays = self._rays(masks, cameras, occluders)
+        if len(rays) < 2:
+            return None
+        A, b = np.zeros((3, 3)), np.zeros(3)
+        for o, d in rays:
+            d = d / np.linalg.norm(d)
+            P = np.eye(3) - np.outer(d, d)
+            A += P
+            b += P @ o
+        if np.linalg.cond(A) > 1e6:
+            return None
+        p = np.linalg.solve(A, b)
+        base = float(np.clip(p[2] - self.half[2], 0.0, self.max_base_z))
+        got = self._search(masks, cameras, (float(p[0]), float(p[1]), 0.0, base), occluders, free=True)
+        if got is not None and got.p[3] < self.snap_m:
+            got = replace(self, base_z=0.0)._search(masks, cameras, tuple(got.p[:3]), occluders)
+        return got
+
     def fit_silhouette(self, masks: dict[str, np.ndarray], cameras, start, occluders=None,
                        scale: float = 1.0) -> CubeDetection | None:
-        """(x, y, yaw) of the box resting on the table whose projection best covers the cameras' masks.
+        """(x, y, yaw) of the box resting on `base_z` whose projection best covers the cameras' masks.
 
-        The box is `half` resting on the table, `size_m[2]` being its height; a block resting another
-        way (a cuboid stood on its end with its lying size given) cannot be covered and is gated out
-        by `min_iou`. The returned rotation is Rz(yaw), with `rot[:, 0]` along the box's x side, and
-        the yaw folded into [-yaw_period/2, yaw_period/2).
+        The box is `half` resting on the surface `base_z` above the table (the table itself by
+        default), `size_m[2]` being its height; a block resting another way (a cuboid stood on its
+        end with its lying size given) cannot be covered and is gated out by `min_iou`. The
+        returned rotation is Rz(yaw), with `rot[:, 0]` along the box's x side, and the yaw folded
+        into [-yaw_period/2, yaw_period/2).
         """
+        got = self._search(masks, cameras, start, occluders, scale=scale)
+        return None if got is None else self._detection(got)
+
+    def _search(self, masks: dict[str, np.ndarray], cameras, start, occluders=None, scale: float = 1.0,
+                free: bool = False) -> _Fit | None:
+        """The silhouette search: (x, y, yaw, base) from `start`, (x, y, yaw) on `base_z` or with
+        `free` (x, y, yaw, base) with the base searched too. None when no camera can see the box."""
         prepared = []
         period = self.yaw_period
+        x0, y0 = float(start[0]), float(start[1])
+        base0 = float(start[3]) if free else self.base_z
         # Wszystko liczymy w WYCINKU kadru wokol startu: kostka to kilkadziesiat pikseli,
         # a pelny kadr kosztowal ~40 ms na detekcje - i trzymal GIL, spowalniajac petle ramienia.
-        around = self._corners(start[0], start[1], 0.0)
+        around = self._corners(x0, y0, 0.0, base0)
         if period == np.pi:
             # A box longer than wide: the crop covers its long side along x and along y, any yaw.
-            around = np.vstack([around, self._corners(start[0], start[1], np.pi / 2)])
+            around = np.vstack([around, self._corners(x0, y0, np.pi / 2, base0)])
+        if free:
+            # The base may move too: the crop covers it a few centimetres up and down.
+            around = np.vstack([around + [0.0, 0.0, dz] for dz in (-0.03, 0.03)])
         around = np.vstack([around + [dx, dy, 0.0] for dx in (-0.04, 0.04) for dy in (-0.04, 0.04)])
         for n, m in masks.items():
             K, dist, T = cameras[n]
@@ -598,20 +700,20 @@ class CubeDetector:
             px, _ = cv2.projectPoints(around, cv2.Rodrigues(Ti[:3, :3])[0], Ti[:3, 3], np.asarray(K, float), dist)
             px = px.reshape(-1, 2)
             H, W = m.shape
-            x0, y0 = max(0, int(px[:, 0].min()) - 10), max(0, int(px[:, 1].min()) - 10)
-            x1, y1 = min(W, int(px[:, 0].max()) + 10), min(H, int(px[:, 1].max()) + 10)
-            if x1 - x0 < 8 or y1 - y0 < 8:
+            x0c, y0c = max(0, int(px[:, 0].min()) - 10), max(0, int(px[:, 1].min()) - 10)
+            x1c, y1c = min(W, int(px[:, 0].max()) + 10), min(H, int(px[:, 1].max()) + 10)
+            if x1c - x0c < 8 or y1c - y0c < 8:
                 continue
-            crop = m[y0:y1, x0:x1]
+            crop = m[y0c:y1c, x0c:x1c]
             valid = np.ones_like(crop)
             if occluders and n in occluders:
-                valid = ~occluders[n][y0:y1, x0:x1]
+                valid = ~occluders[n][y0c:y1c, x0c:x1c]
             small = cv2.resize(crop.astype(np.uint8), None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST) > 0
             valid = cv2.resize(valid.astype(np.uint8), (small.shape[1], small.shape[0]),
                                interpolation=cv2.INTER_NEAREST) > 0
             Ks = np.asarray(K, float).copy()
-            Ks[0, 2] -= x0
-            Ks[1, 2] -= y0
+            Ks[0, 2] -= x0c
+            Ks[1, 2] -= y0c
             Ks[:2] *= scale
             prepared.append((small & valid, valid, Ks, dist, Ti))
         if not prepared:
@@ -619,7 +721,7 @@ class CubeDetector:
 
         def per_camera(p) -> list[tuple[int, int, int, int, int]]:
             """Na kamere: (czesc wspolna, suma, przewidziana widoczna, cala przewidziana, widziana) [px]."""
-            corners = self._corners(*p)
+            corners = self._corners(p[0], p[1], p[2], p[3] if free else None)
             out = []
             for obs, valid, Ks, dist, Ti in prepared:
                 pc = corners @ Ti[:3, :3].T + Ti[:3, 3]
@@ -644,19 +746,25 @@ class CubeDetector:
             # bo druga zaslonieta, ma boki kostki), dopasowanie konczylo na IoU 0,70 zamiast
             # 0,96 w prawdziwej pozie - kostka "niewidoczna" dla 14 z 18 obrotow. Laczne IoU
             # wazy kamere jej pikselami: skrawek to kilka pikseli, nie pol glosu.
+            if free and not 0.0 <= p[3] <= self.max_base_z:
+                return 1.0
             cams = per_camera(p)
             union = sum(c[1] for c in cams)
             return -sum(c[0] for c in cams) / union if union else 0.0
 
-        best, best_s = np.asarray(start, float), score(start)
+        first = [x0, y0, float(start[2])] + ([base0] if free else [])
+        best = np.asarray(first, float)
+        best_s = score(best)
         # Yaw starts every 22.5 deg over one period (4 for a cube, 8 for a box longer than wide),
-        # then Nelder-Mead over (x, y, yaw).
+        # then Nelder-Mead over (x, y, yaw), and the base too when it is free.
         for yaw in np.radians(np.arange(0.0, np.degrees(period), 22.5)):
-            p = np.array([start[0], start[1], start[2] + yaw])
+            p = np.asarray(first, float)
+            p[2] += yaw
             s = score(p)
             if s < best_s:
                 best, best_s = p, s
-        best, best_s = _nelder_mead3(score, best, np.array([0.006, 0.006, np.radians(12)]), iters=90)
+        step = [0.006, 0.006, np.radians(12)] + ([0.006] if free else [])
+        best, best_s = _nelder_mead(score, best, np.array(step), iters=120 if free else 90)
         cams = [c for c in per_camera(best) if c[1] > 0]
         # Kamera, ktorej ramie zaslania ponad polowe przewidzianej sylwetki, glosuje
         # kilkoma pikselami - nie jest drugim, niezaleznym swiadkiem polozenia.
@@ -673,19 +781,26 @@ class CubeDetector:
         # z waga 9 razy (przed zmiana 6); jako dwoch swiadkow nigdy - IoU jak wczesniej, max 0,56.
         w = [min(1.0, max(c[2], c[4]) / (self.min_visible * c[3])) if c[3] else 1.0 for c in cams]
         iou = float(np.dot(w, [c[0] / c[1] for c in cams]) / sum(w)) if sum(w) > 0 else 0.0
-        # Model zaklada kostke LEZACA na blacie. Kostke w powietrzu (w szczekach) da sie
+        p = np.asarray([best[0], best[1], best[2], best[3] if free else self.base_z], float)
+        return _Fit(p, iou, n_seen)
+
+    def _detection(self, fit: _Fit) -> CubeDetection | None:
+        """The search's result as a detection, or None under `min_iou`."""
+        # Model zaklada kostke LEZACA na podlozu. Kostke w powietrzu (w szczekach) da sie
         # "wcisnac" w jakas poze na blacie, ktora czesciowo pasuje - zmierzone wzdluz
         # epizodow lift: prawdziwe detekcje na blacie IoU 0,88-0,96, falszywe przy
         # podniesionej kostce 0,36-0,64 (i 26-970 mm bledu). Prog miedzy nimi.
         # Dziala tylko wtedy, gdy kostke widza co najmniej DWIE kamery: jednej kamerze
         # kostke podniesiona o 2-6 cm zastepuje lezaca dalej na tym samym promieniu
         # (IoU 0,96-0,82 przy 26-92 mm bledu) - stad `n_cameras` w detekcji.
-        if iou < self.min_iou:
+        if fit.iou < self.min_iou:
             return None
-        yaw = (best[2] + period / 2) % period - period / 2
+        period = self.yaw_period
+        x, y, yaw, base = fit.p
+        yaw = (yaw + period / 2) % period - period / 2
         c_, s_ = np.cos(yaw), np.sin(yaw)
         R = np.array([[c_, -s_, 0.0], [s_, c_, 0.0], [0.0, 0.0, 1.0]])
-        return CubeDetection(np.array([best[0], best[1], self.half[2]]), R, float(iou), float(iou), n_seen)
+        return CubeDetection(np.array([x, y, base + self.half[2]]), R, fit.iou, fit.iou, fit.n_seen)
 
     def detect(self, table: np.ndarray, mapper: TableMapper) -> CubeDetection | None:
         """Kostka na gotowej mapie (np. z jednej kamery) - mniej dokladnie niz `detect_frames`."""
@@ -708,7 +823,7 @@ class CubeDetector:
             return None
         (u, v), (w, h), angle = cv2.minAreaRect(c)
         p = mapper.to_base(u, v)
-        p[2] = hz
+        p[2] = self.base_z + hz
         # minAreaRect gives the angle of its first side, `w` long, in map-image coordinates. The
         # box's x side is the rectangle's longer side when hx > hy, its shorter one when hx < hy,
         # and the other side when `w` is not that one. A square footprint needs no choice: its yaw

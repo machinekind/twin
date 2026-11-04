@@ -10,11 +10,11 @@ import atexit
 import shutil
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 import numpy as np
 import pytest
+import tomllib
 from machinekind_twin_api.entry_points import DETECTORS
 
 from machinekind_twin.robots import reload_robots
@@ -30,6 +30,8 @@ SWING = EXAMPLES / "strategies" / "swing"
 CUBE = EXAMPLES / "detectors" / "cube"
 #: The LLM detector's package: frames to the claude or codex CLI.
 LLM = Path(__file__).resolve().parents[1] / "packages" / "machinekind_twin_llm"
+#: The seeded detector's package: the LLM detector's seeds followed by colour.
+SEEDED = Path(__file__).resolve().parents[1] / "packages" / "machinekind_twin_seeded"
 
 
 def write_dist(site: Path, name: str, entry_points: dict[str, dict[str, str]],
@@ -72,6 +74,14 @@ def _no_config_from_env(monkeypatch):
     # w os.environ, zniknie po tescie (samo delenv nieistniejacej zmiennej niczego nie zapamietuje).
     monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", "")
     monkeypatch.delenv("MACHINEKIND_TWIN_CONFIG")
+
+
+@pytest.fixture(autouse=True)
+def _episodes_in_tmp(tmp_path, monkeypatch):
+    """Keep explicitly enabled recordings under the test's temporary directory."""
+    from machinekind_twin import episode
+
+    monkeypatch.setattr(episode, "data_path", lambda rel: tmp_path / rel)
 
 
 @pytest.fixture
@@ -137,6 +147,13 @@ def llm_package(install_dist, monkeypatch):
     """The LLM detector (`packages/machinekind_twin_llm`), installed."""
     install_example(install_dist, monkeypatch, LLM)
     return "llm"
+
+
+@pytest.fixture
+def seeded_package(install_dist, monkeypatch):
+    """The seeded detector (`packages/machinekind_twin_seeded`), installed."""
+    install_example(install_dist, monkeypatch, SEEDED)
+    return "seeded"
 
 
 class CubeScene:

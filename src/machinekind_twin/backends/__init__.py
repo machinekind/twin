@@ -8,7 +8,7 @@ from the `galaxeo` package (galaxeo-manipulators repository), the test robot's f
 """
 
 from .base import BackendContext, BackendPlugin, RobotBackend, RobotInfo
-from .factory import backend_context, backends, create_backend
+from .factory import ReadOnlyArm, backend_context, backends, create_backend, open_read_only
 
-__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "backend_context", "backends",
-           "create_backend"]
+__all__ = ["BackendContext", "BackendPlugin", "ReadOnlyArm", "RobotBackend", "RobotInfo", "backend_context",
+           "backends", "create_backend", "open_read_only"]

@@ -19,6 +19,9 @@ najnowszy (`load`). Starszy zestaw wraca przez `load_preset`.
 
 A package that runs on this station without importing the twin (training) gets
 it as data: `export` (`twin export <folder>`).
+
+A workspace loaded from a stand folder (`stand`, `twin stand load`) stays bound to it: its pose
+presets are the stand's and every `save` writes back to the stand (`stand.sync`).
 """
 
 from __future__ import annotations
@@ -32,10 +35,12 @@ from typing import Any
 import numpy as np
 
 from .calib.card import Card
+from .calib.session import WaveLimits
+from .camera_controls import CameraControls
 from .config import from_mapping
 from .paths import data_path
 from .robots import RobotSpec, default_robot, get_spec
-from .scene import CameraView, Look, SceneConfig, Table
+from .scene import PREFIX, CameraView, Look, PassiveRobot, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
 #: zeby panel odpalony z innego katalogu nie zaczynal od pustego stanowiska.
@@ -72,6 +77,11 @@ def nominal_K(width: int, height: int, hfov_deg: float = NOMINAL_HFOV_DEG) -> np
     return np.array([[f, 0.0, (width - 1) / 2], [0.0, f, (height - 1) / 2], [0.0, 0.0, 1.0]])
 
 
+def stamp_name(stamp: str) -> str:
+    """File name of a dated entry: 2026-09-26T14:52:16 -> 20260926-145216."""
+    return stamp.replace("-", "").replace(":", "").replace("T", "-")
+
+
 def same_intrinsics(a: tuple[Any, Any], b: tuple[Any, Any]) -> bool:
     """Te same intrynsyki (K, dist)? Brak dystorsji (None) = same zera; JSON gubi tylko ostatnie bity."""
     Ka, Kb = np.asarray(a[0], float), np.asarray(b[0], float)
@@ -106,6 +116,8 @@ class CameraRecord:
     sim_pose: list[list[float]] | None = None
     #: Wynik kalibracji intrynsyk: rms_px, n_views, coverage, trusted, reason, time.
     intrinsics_info: dict[str, Any] = field(default_factory=dict)
+    #: Focus and exposure the twin sets whenever it opens this camera (V4L2 only).
+    controls: CameraControls = field(default_factory=CameraControls)
 
     @property
     def calibrated(self) -> bool:
@@ -185,6 +197,42 @@ class CameraRecord:
 
 
 @dataclass
+class RobotRecord:
+    """One robot of the station besides the driven arm, which the twin only watches.
+
+    `robot`, `backend` and `port` mean what they mean for the driven arm (`Workspace`). The backend
+    is opened read-only (`BackendContext.read_only`); without one the robot keeps `joints`.
+    """
+
+    #: Its name in the scene (`<name>/<body>`) and in the panel.
+    name: str
+    #: Robot description from an installed package (`robots.robot_folders`).
+    robot: str
+    #: Base position relative to the driven arm's base [m]: x forward, y left, z up.
+    xyz: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    #: Base rotation about the vertical axis relative to the driven arm's base [deg].
+    yaw_deg: float = 0.0
+    #: Backend of the robot's package, opened read-only; None = the fixed pose `joints`.
+    backend: str | None = None
+    port: str | None = None
+    #: Joint values [app units]: the fixed pose, or the last pose read from `backend`.
+    #: Joints not given take the robot's home pose.
+    joints: dict[str, float] = field(default_factory=dict)
+
+    def T_base(self) -> np.ndarray:
+        """Base pose in the driven arm's base frame (4x4)."""
+        c, s = np.cos(np.radians(self.yaw_deg)), np.sin(np.radians(self.yaw_deg))
+        T = np.eye(4)
+        T[:2, :2] = [[c, -s], [s, c]]
+        T[:3, 3] = [float(v) for v in self.xyz]
+        return T
+
+    def placed(self) -> PassiveRobot:
+        """This robot as part of the scene."""
+        return PassiveRobot(self.name, get_spec(self.robot), self.T_base(), dict(self.joints))
+
+
+@dataclass
 class Workspace:
     #: Ramie z zainstalowanego pakietu (`robots.robot_folders`); nowe stanowisko bierze
     #: pierwsze zarejestrowane (`robots.default_robot`).
@@ -209,6 +257,14 @@ class Workspace:
     #: Zero offsets of this arm's servos [app units] from calibration step 2 (`RobotSpec.joint_offsets`).
     #: The camera poses were fitted with them, so they come and go together (`apply_fit`, presets).
     joint_offsets: dict[str, float] = field(default_factory=dict)
+    #: What the calibration wave must keep out of on this stand (`calib.session.WaveLimits`): keep-out
+    #: boxes in the base frame [m] and the base's turn range [degrees]. Empty = only the arm's own limits.
+    wave: WaveLimits = field(default_factory=WaveLimits)
+    #: Other robots of the station, which the twin only watches (`RobotRecord`). Empty = the driven
+    #: arm alone; such a workspace saves without this key, as before.
+    other_robots: list[RobotRecord] = field(default_factory=list)
+    #: The stand folder this workspace was loaded from (absolute path); None = no stand, as before.
+    stand: str | None = None
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # --------------------------------------------------------------- obiekty
@@ -230,6 +286,17 @@ class Workspace:
                 rec.calibration["trusted"], rec.calibration["reason"] = False, reason
                 names.append(rec.name)
         return names
+
+    def robots(self) -> list[RobotRecord]:
+        """Every robot of the station: the driven arm first (at the origin), then `other_robots`."""
+        return [RobotRecord(PREFIX.rstrip("/"), self.robot, backend=self.backend, port=self.port),
+                *self.other_robots]
+
+    def other_robot(self, name: str) -> RobotRecord:
+        for rec in self.other_robots:
+            if rec.name == name:
+                return rec
+        raise KeyError(f"brak robota {name!r} w stanowisku")
 
     def card_obj(self) -> Card:
         data = dict(self.card)
@@ -286,7 +353,8 @@ class Workspace:
         fixed = [c for c in self.cameras if c.enabled and c.name not in on_arm]
         views = [v for c in fixed for v in [c.view()] if v is not None]
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
-                          card=self.card_obj() if with_card else None, look=self.look)
+                          card=self.card_obj() if with_card else None, look=self.look,
+                          passive=[r.placed() for r in self.other_robots])
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
@@ -304,8 +372,9 @@ class Workspace:
 
         folder = Path(folder)
         export(self.scene_config(), folder)
-        (folder / "station.json").write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
-                                             encoding="utf-8")
+        data = self.to_dict()
+        data.pop("stand", None)                         # a path on this machine, not station data
+        (folder / "station.json").write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         return folder
 
     def apply_fit(self, fit, tag_size: float | None = None,
@@ -368,6 +437,9 @@ class Workspace:
 
     # ------------------------------------------------------- zestawy polozen
     def presets_dir(self) -> Path:
+        """`calib/` next to the workspace file; for a workspace bound to a stand, the stand's pose history."""
+        if self.stand is not None:
+            return Path(self.stand) / "calib" / "poses"
         return Path(self.path or default_path()).parent / "calib"
 
     def presets(self) -> list[str]:
@@ -382,17 +454,11 @@ class Workspace:
         trafia do tego samego pliku, inny wynik z tej samej sekundy dostaje przyrostek `-2`.
         Istniejacy plik nigdy nie jest nadpisywany inna trescia.
         """
-        cams = {c.name: {"T_cam2base": c.T_cam2base, "calibration": c.calibration}
-                for c in self.cameras if c.calibrated}
-        if not cams:
+        entry = self.preset_entry()
+        if not entry["cameras"]:
             raise ValueError("zadna kamera nie ma polozenia - nie ma czego zapisac")
-        times = [c["calibration"].get("time") for c in cams.values()]
-        stamp = max(t for t in times if t) if any(times) else time.strftime("%Y-%m-%dT%H:%M:%S")
-        name = stamp.replace("-", "").replace(":", "").replace("T", "-")
-        # The servo zero offsets the poses were fitted with go along; a set without any keeps its old form.
-        offsets = {"joint_offsets": dict(self.joint_offsets)} if self.joint_offsets else {}
-        body = json.dumps({"time": stamp, "tag_size": self.card.get("tag_size"), "cameras": cams, **offsets},
-                          indent=2, ensure_ascii=False)
+        name = stamp_name(entry["time"])
+        body = json.dumps(entry, indent=2, ensure_ascii=False)
         d = self.presets_dir()
         d.mkdir(parents=True, exist_ok=True)
         path, k = d / f"{name}.json", 2
@@ -401,6 +467,19 @@ class Workspace:
         path.write_text(body, encoding="utf-8")
         self.calib_preset = path.stem
         return path
+
+    def preset_entry(self) -> dict[str, Any]:
+        """What a pose preset holds: every camera with a pose, the tag size and the servo zero offsets.
+
+        `time` is the newest calibration time (now, when no camera has one).
+        """
+        cams = {c.name: {"T_cam2base": c.T_cam2base, "calibration": c.calibration}
+                for c in self.cameras if c.calibrated}
+        times = [c["calibration"].get("time") for c in cams.values()]
+        stamp = max(t for t in times if t) if any(times) else time.strftime("%Y-%m-%dT%H:%M:%S")
+        # The servo zero offsets the poses were fitted with go along; a set without any keeps its old form.
+        offsets = {"joint_offsets": dict(self.joint_offsets)} if self.joint_offsets else {}
+        return {"time": stamp, "tag_size": self.card.get("tag_size"), "cameras": cams, **offsets}
 
     def load_preset(self, name: str) -> list[str]:
         """Wgrywa zapisany zestaw do kamer o tych samych nazwach. Zwraca nazwy kamer, ktore dostaly poze.
@@ -430,13 +509,33 @@ class Workspace:
         """The workspace as `save` writes it: JSON types only (the look's tuples come out as lists)."""
         data = asdict(self)
         data.pop("path", None)
+        if not data["other_robots"]:
+            data.pop("other_robots")
+        if data["stand"] is None:
+            data.pop("stand")
+        for cam, rec in zip(data["cameras"], self.cameras):
+            if rec.controls.empty:
+                cam.pop("controls")
+            else:
+                cam["controls"] = rec.controls.to_dict()
         return json.loads(json.dumps(data))
 
     def save(self, path: str | Path | None = None) -> Path:
+        """Writes the workspace file. A workspace bound to a stand writes back to it first; when that
+        fails, the workspace file is still written and the error is raised after it."""
         target = Path(path) if path else (self.path or default_path())
         target.parent.mkdir(parents=True, exist_ok=True)
         self.path = target
-        if self.calib_preset is None and any(c.calibrated for c in self.cameras):
+        problem = None
+        if self.stand is not None:
+            # Imported here: the stand module imports this one.
+            from .stand import sync
+
+            try:
+                sync(self)
+            except Exception as exc:                    # noqa: BLE001 - reported after the file is safe
+                problem = exc
+        elif self.calib_preset is None and any(c.calibrated for c in self.cameras):
             self.save_preset()                          # polozenie sprzed zestawow - pierwszy zestaw
         tmp = target.with_suffix(".tmp")
         # Najpierw do pliku obok, potem podmiana - przerwany zapis nie zniszczy
@@ -444,6 +543,8 @@ class Workspace:
         tmp.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(target)
         self.path = target
+        if problem is not None:
+            raise RuntimeError(f"stanowisko {self.stand} nie zapisane: {problem}") from problem
         return target
 
     @classmethod
@@ -455,17 +556,31 @@ class Workspace:
             ws.path = target
             return ws
         data = json.loads(target.read_text(encoding="utf-8"))
-        cams = [CameraRecord(**c) for c in data.pop("cameras", [])]
-        known = {f for f in cls.__dataclass_fields__ if f not in ("cameras", "path")}
+        cams = [camera_record(c, f"{target}: cameras") for c in data.pop("cameras", [])]
+        others = [from_mapping(RobotRecord, r, f"{target}: other_robots")
+                  for r in data.pop("other_robots", [])]
+        known = {f for f in cls.__dataclass_fields__ if f not in ("cameras", "other_robots", "path")}
         unknown = set(data) - known
         if unknown:
             raise ValueError(f"nieznane pola w {target}: {sorted(unknown)}")
         if "look" in data:
             data["look"] = from_mapping(Look, data["look"], f"{target}: look")
-        ws = cls(cameras=cams, **data)
+        if "wave" in data:
+            data["wave"] = from_mapping(WaveLimits, data["wave"], f"{target}: wave")
+        ws = cls(cameras=cams, other_robots=others, **data)
         ws.path = target
-        if ws.calib_preset is None:
+        if ws.calib_preset is None and ws.stand is None:    # a stand names its poses itself
             newest = ws.presets()
             if newest:
                 ws.load_preset(newest[0])
         return ws
+
+
+def camera_record(data: dict[str, Any], where: str) -> CameraRecord:
+    """A camera from its JSON form; `controls` as a strict mapping (`CameraControls`)."""
+    data = dict(data)
+    controls = data.pop("controls", None) or {}
+    try:
+        return CameraRecord(**data, controls=from_mapping(CameraControls, controls, f"{where}.controls"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{where} {data.get('name', '?')!r}: {exc}") from exc

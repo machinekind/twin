@@ -15,13 +15,18 @@ Konwencje, ktorych trzeba pilnowac:
   sie z prawdziwym o kilka pikseli, i to po cichu. Zgodnosc pilnuje test.
 * Ramie jest wstawiane pod prefiksem `robot/`, wiec jego stawy, aktuatory
   i site'y maja w scenie nazwy `robot/<nazwa>`.
+* Other robots of the station (`PassiveRobot`) come in under their own name as prefix
+  (`<name>/<body>`), welded in place: the twin never drives them.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 import mujoco
 import numpy as np
@@ -34,6 +39,11 @@ from .robots import RobotCamera, RobotSpec
 PREFIX = "robot/"
 #: MuJoCo kamera patrzy wzdluz -z z y w gore; OpenCV wzdluz +z z y w dol.
 CV_TO_MJ = np.diag([1.0, -1.0, -1.0])
+#: A passive robot's collision geoms report contacts this far out [m] but push only on touch
+#: (margin = gap), so every collision check keeps this clearance from it.
+PASSIVE_CLEARANCE = 0.02
+#: Physics options the scene takes from the driven arm's model.
+_OPTIONS = ("timestep", "integrator", "cone", "impratio", "iterations", "ls_iterations")
 #: Contact of the table top and of every object that collides: stiff, so a pressing gripper does not
 #: push an object into the table or into another object. MuJoCo's default contact is softer.
 OBJECT_SOLREF = (0.01, 1.0)
@@ -85,6 +95,11 @@ class Box:
     #: Cialo mocap bez kolizji (tylko do ogladania) - np. cel odlozenia pickplace. Poze
     #: ustawia sie przez `data.mocap_pos` / `mocap_quat`; obiekty przez nie przenikaja.
     mocap: bool = False
+    #: Height of its bottom above the table top [m]: 0 rests on the table, the height of another
+    #: box's top stacks it on that box.
+    z: float = 0.0
+    #: Turn about the vertical [rad], relative to the base; 0 leaves the box aligned with the world.
+    yaw: float = 0.0
 
 
 @dataclass
@@ -142,6 +157,25 @@ class Look:
 
 
 @dataclass
+class PassiveRobot:
+    """Another robot of the station, one the twin does not drive: a full copy of its model.
+
+    Its base stands at `T_base` in the driven arm's base frame. It has no actuators and physics never
+    moves it, but contacts with it are real. `joints` [app units] is the pose it is built in; a live
+    source moves it later (`Scene.set_passive_joints`).
+    """
+
+    name: str
+    spec: RobotSpec
+    T_base: np.ndarray
+    joints: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def prefix(self) -> str:
+        return self.name + "/"
+
+
+@dataclass
 class SceneConfig:
     robot: RobotSpec
     table: Table = field(default_factory=Table)
@@ -158,6 +192,8 @@ class SceneConfig:
     grasp_sensors: list[str] = field(default_factory=list)
     panels: list[Panel] = field(default_factory=list)
     look: Look = field(default_factory=Look)
+    #: Robots the twin does not drive (`PassiveRobot`); empty = the driven arm alone.
+    passive: list[PassiveRobot] = field(default_factory=list)
 
 
 class Scene:
@@ -174,6 +210,22 @@ class Scene:
         mujoco.mj_forward(model, self.data)
         base = model.body(PREFIX + spec.base_body).id
         self.T_base2world = pose(self.data.xmat[base].reshape(3, 3), self.data.xpos[base])
+        self.passive = {p.name: p for p in cfg.passive}
+        bodies = [model.body(model.geom_bodyid[g]).name for g in range(model.ngeom)]
+        #: Geoms of the passive robots, and of every robot (driven and passive), per geom id.
+        self.passive_geom = np.array([any(n.startswith(p.prefix) for p in cfg.passive) for n in bodies], bool)
+        self.robot_geom = np.array([n.startswith(PREFIX) for n in bodies], bool) | self.passive_geom
+
+    # ------------------------------------------------------------ inne roboty
+    def set_passive_joints(self, name: str, joints: Mapping[str, float]) -> None:
+        """Moves the passive robot `name` to `joints` [app units]; no physics involved."""
+        robot = self.passive[name]
+        for body, (pos, quat) in passive_poses(robot.spec, joints).items():
+            b = self.model.body(robot.prefix + body).id
+            self.model.body_pos[b] = pos
+            self.model.body_quat[b] = quat
+        robot.joints = dict(joints)
+        mujoco.mj_kinematics(self.model, self.data)
 
     # ------------------------------------------------------------ ramie
     def set_joints(self, joints: dict[str, float], *, hold: bool = True) -> None:
@@ -405,6 +457,64 @@ def _add_light(spec: mujoco.MjSpec, name: str, light: Light, top: float) -> None
     mj.castshadow = light.castshadow
 
 
+#: Compiled models of robots alone, by MJCF path: forward kinematics of passive robots.
+_ROBOT_MODELS: dict[str, mujoco.MjModel] = {}
+
+
+def passive_poses(spec: RobotSpec, joints: Mapping[str, float]) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Pose (pos, quat) of each moving body of `spec` in its parent body at `joints` [app units]."""
+    key = str(spec.mjcf_path)
+    model = _ROBOT_MODELS.get(key)
+    if model is None:
+        model = _ROBOT_MODELS[key] = mujoco.MjModel.from_xml_path(key)
+    kin = RobotKinematics(spec, model)
+    kin.write_qpos(kin.data.qpos, kin.to_q(joints))
+    mujoco.mj_kinematics(model, kin.data)
+    d = kin.data
+    out = {}
+    for b in range(1, model.nbody):
+        parent = int(model.body_parentid[b])
+        if model.body_jntnum[b] == 0 or parent == 0:          # fixed, or a floating root: as mounted
+            continue
+        R = d.xmat[parent].reshape(3, 3)
+        out[model.body(b).name] = (R.T @ (d.xpos[b] - d.xpos[parent]), _quat(R.T @ d.xmat[b].reshape(3, 3)))
+    return out
+
+
+def _check_passive(cfg: SceneConfig) -> None:
+    """Passive robots need names that are unique, plain and not the driven arm's prefix."""
+    names = [p.name for p in cfg.passive]
+    bad = [n for n in names if not re.fullmatch(r"[A-Za-z0-9_-]+", n) or n + "/" == PREFIX]
+    if bad:
+        raise ValueError(f"nazwy robotow {bad}: tylko litery, cyfry, _ i -, inne niz {PREFIX[:-1]!r}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"nazwy robotow powtarzaja sie: {names}")
+
+
+def _add_passive(spec: mujoco.MjSpec, other: PassiveRobot, T_base2world: np.ndarray) -> None:
+    """A copy of `other`'s model, welded at its pose: no joints, actuators, sensors or cameras."""
+    robot = mujoco.MjSpec.from_file(str(other.spec.mjcf_path))
+    for body, (pos, quat) in passive_poses(other.spec, other.joints).items():
+        b = robot.body(body)
+        if b.frame is not None:
+            raise ValueError(f"{other.spec.name}: ruchome cialo {body!r} lezy w <frame> - nieobslugiwane")
+        b.pos, b.quat = pos, quat
+        b.alt.type = mujoco.mjtOrientation.mjORIENTATION_QUAT
+    for group in (robot.actuators, robot.sensors, robot.tendons, robot.equalities, robot.keys,
+                  robot.cameras, robot.lights, robot.joints):
+        for element in list(group):
+            robot.delete(element)
+    for g in robot.geoms:
+        if g.contype or g.conaffinity:
+            g.margin = g.gap = PASSIVE_CLEARANCE
+    for name in _OPTIONS:                                   # the scene keeps the driven arm's options
+        setattr(robot.option, name, getattr(spec.option, name))
+    T = T_base2world @ np.asarray(other.T_base, float)
+    mount = spec.worldbody.add_frame()
+    mount.pos, mount.quat = T[:3, 3], _quat(T[:3, :3])
+    spec.attach(robot, prefix=other.prefix, frame=mount)
+
+
 def _check_camera_names(cfg: SceneConfig) -> None:
     """The scene renders cameras by name, so a fixed one may not take the name of one on the arm."""
     clash = sorted({view.name for view in cfg.cameras} & set(cfg.robot.cameras))
@@ -428,6 +538,7 @@ def _rotmat(quat) -> np.ndarray:
 def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     """Composes the scene from scratch as an `MjSpec`, without compiling it."""
     _check_camera_names(cfg)
+    _check_passive(cfg)
     t = cfg.table
     top = t.height
     # Ramie jako pierwsze: jego opcje fizyki (menagerie stroi je pod manipulacje -
@@ -437,7 +548,7 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     robot = mujoco.MjSpec.from_file(str(cfg.robot.mjcf_path))
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
-    for name in ("timestep", "integrator", "cone", "impratio", "iterations", "ls_iterations"):
+    for name in _OPTIONS:
         setattr(spec.option, name, getattr(robot.option, name))
     _set_headlight(spec, cfg.look.headlight)
 
@@ -481,10 +592,13 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     spec.attach(robot, prefix=PREFIX, frame=mount)
 
     for obj in cfg.objects:
-        p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.size[2], 1.0])
+        p = T_base2world @ np.array([obj.xy[0], obj.xy[1], obj.z + obj.size[2], 1.0])
         body = world.add_body()
         body.name = obj.name
         body.pos = p[:3]
+        if obj.yaw:
+            c, s = np.cos(obj.yaw), np.sin(obj.yaw)
+            body.quat = _quat(R_base @ np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]))
         if obj.mocap:
             body.mocap = True
         elif obj.free:
@@ -544,6 +658,10 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
         # Pilnuje tego `test_twin_scene.py` na maskach kulek w znanych punktach.
         cam.principal_pixel = [(view.width - 1) / 2 - K[0, 2], (view.height - 1) / 2 - K[1, 2]]
 
+    # Last, so every id of the scene without them stays as it was.
+    for other in cfg.passive:
+        _add_passive(spec, other, T_base2world)
+
     return spec
 
 
@@ -566,15 +684,26 @@ def export(cfg: SceneConfig, folder: str | Path) -> Path:
     folder = Path(folder)
     assets = folder / "assets"
     assets.mkdir(parents=True, exist_ok=True)
-    robot = mujoco.MjSpec.from_file(str(cfg.robot.mjcf_path))
-    meshes = Path(robot.modelfiledir) / robot.meshdir
+
+    def mesh_dir(spec: RobotSpec) -> Path:
+        robot = mujoco.MjSpec.from_file(str(spec.mjcf_path))
+        return Path(robot.modelfiledir) / robot.meshdir
+
+    meshes = mesh_dir(cfg.robot)
+    # A passive robot's meshes go to `assets/<name>/`: another robot may use the same file names.
+    others = {p.prefix: (mesh_dir(p.spec), Path(p.name)) for p in cfg.passive}
     spec = compose(cfg)
     for mesh in spec.meshes:
-        shutil.copyfile(meshes / mesh.file, assets / Path(mesh.file).name)
-        mesh.file = Path(mesh.file).name
-    # `to_xml` compiles along the way, so the meshes must already be where the XML points.
+        source, sub = next((v for k, v in others.items() if mesh.name.startswith(k)), (meshes, Path()))
+        (assets / sub).mkdir(exist_ok=True)
+        shutil.copyfile(source / mesh.file, assets / sub / Path(mesh.file).name)
+        # Absolute while `to_xml` compiles: an attached model looks for its files in its own folder,
+        # where `assets/<name>/` does not exist. The XML gets them relative to `assets/` below.
+        mesh.file = (assets.resolve() / sub / Path(mesh.file).name).as_posix()
     spec.modelfiledir = str(folder)
     spec.meshdir = "assets"
+    absolute = quoteattr(assets.resolve().as_posix() + "/")[:-1]     # `file="/.../assets/`, as XML writes it
+    xml = spec.to_xml().replace(f"file={absolute}", 'file="')
     path = folder / "scene.xml"
-    path.write_text(spec.to_xml(), encoding="utf-8")
+    path.write_text(xml, encoding="utf-8")
     return path

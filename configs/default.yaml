@@ -18,6 +18,8 @@ safety:
   return_home_timeout_s: 6.0
   startup_ramp_s: 2.5       # plynne dojscie do pozycji domowej po starcie
   velocity_scale: 1.0       # globalny mnoznik limitow predkosci
+  panel_speed_deg_s: 20.0   # start of the panel's speed slider [deg/s]: the cap on every arm
+                            # joint, strategy runs included; must be > 0
   home_on_exit: true
   # Poza domowa i limity stawow sa w opisie ramienia (robot.yaml w folderze ramienia);
   # `safety.home` i `joints` w tym pliku nadpisuja je tylko dla ramienia o tych stawach.
@@ -29,6 +31,7 @@ robot:
 # Kazda inna sekcja nalezy do backendu albo strategii o tej nazwie. Backend sprawdza swoja sam;
 # sekcja strategii (np. `swing:`) wypelnia formularz jej ustawien w panelu (zakladka Strategie),
 # a nieznany klucz albo zly typ blokuje Uruchom.
+# `twin eval-strategy <name>` reads the same strategy section; `--set KEY=VALUE` overrides one key.
 
 # Sekcje backendow przychodza z pakietem ramienia (SO-101: `feetech:` i `lerobot:` w pakiecie soarm).
 
@@ -44,7 +47,7 @@ robot:
 #   interval_s: 0.33     # seconds between calls
 
 # The LLM detector `llm` (packages/machinekind_twin_llm) asks a vision model through a CLI
-# logged in with your subscription; frames leave the machine. See docs/TWIN.md, "LLM detector".
+# logged in with your subscription; frames leave the machine. See docs/DETECTORS.md, "LLM detector".
 # llm:
 #   cli: codex           # codex or claude
 #   model: gpt-6-astra   # as the CLI names it; "" = the CLI's default
@@ -52,3 +55,21 @@ robot:
 #   effort: low          # low, medium, high, xhigh or max; "" = the CLI's default
 #   objects: "red pen, cube"   # labels to look for; "" = every movable object on the table
 #   interval_s: 10.0     # seconds between questions, at least 2
+#   reuse_if_still: true  # repeat the last answer, as old as its frames, while no camera's image changes
+#   reuse_max_age_s: 60   # seconds an answer may be repeated after its question
+
+# The seeded detector `seeded` (packages/machinekind_twin_seeded) follows blocks by colour at
+# interval_s after the LLM detector names them; frames leave the machine every seed_interval_s.
+# See docs/DETECTORS.md, "Seeded detector".
+# seeded:
+#   cli: codex           # codex or claude, as for llm:
+#   model: gpt-6-astra   # as the CLI names it; "" = the CLI's default
+#   # "<colour> <shape>" labels, comma-separated; "" = every block the model names
+#   labels: "red cube, light blue cuboid, wooden cylinder"
+#   # overrides by label or shape word, name=LxWxH [m], ";" between entries
+#   labels_sizes: "cube=0.03x0.03x0.03"
+#   # overrides by label or colour word, OpenCV HSV (H 0..180, S and V 0..255), "|" between ranges
+#   labels_hsv: "wooden=10-20,30-90,150-255"
+#   interval_s: 0.2      # the colour loop [s], at least 0.1
+#   seed_interval_s: 10.0   # seconds between LLM questions, at least 2
+#   track_error_px: 40   # how far a followed block may move between two calls [px]

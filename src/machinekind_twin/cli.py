@@ -9,6 +9,17 @@
     twin calib-sim --robot NAZWA     # ... na innym zainstalowanym ramieniu
     twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
     twin export <folder>             # stanowisko jako dane (MJCF + station.json) dla treningu
+    twin episode                     # raport ostatniego przebiegu strategii (opoznienia stawow, dryf chwytaka)
+    twin episode <plik.jsonl>        # ... z tego zapisu
+    twin episode <folder>            # lista przebiegow: koniec, sukces, blad zadania
+    twin stand save <folder>         # stanowisko robocze -> folder stanowiska (stand.json, calib/, station/)
+    twin stand load <folder>         # folder stanowiska -> stanowisko robocze (zwiazane z folderem)
+    twin stand export <folder>       # odswiez station/ w folderze stanowiska
+    twin stand list <repozytorium>   # stanowiska, nieaktualne na koncu
+    twin stand obsolete <folder> --reason "..."   # oznacz stanowisko jako nieaktualne
+    twin ui --stand <folder>         # panel na stanowisku z folderu, zapisy wracaja do folderu
+    twin eval-strategy NAZWA --episodes 50 --seed 50000   # ocena strategii w symulacji: obiekt losowany z ziarna, sukces wg sceny (touch/lift)
+    twin --config configs/local.yaml eval-strategy touch --robot so101 --rule lift   # ... ustawienia z sekcji pliku i --set KLUCZ=WARTOSC
     twin ui                          # panel w przegladarce: http://localhost:8080
     twin ui --host 0.0.0.0           # ... dostepny z sieci (bez hasla - tylko w zaufanej)
     twin ui --stream-port 8766       # ... plus podglad kamer (MJPEG, tylko odczyt): http://<maszyna>:8766
@@ -32,6 +43,7 @@ import os
 import platform
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _check(_: argparse.Namespace) -> int:
@@ -71,7 +83,7 @@ def _check(_: argparse.Namespace) -> int:
                 line(f"model {spec.title}", f"{m.nbody} cial, {faces} trojkatow ({folder})")
             except Exception as exc:  # noqa: BLE001 - zly model to wiersz raportu, nie wyjatek
                 line(f"model {name}", f"{type(exc).__name__}: {exc}", False)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a broken robot registry is a report line, not a crash
         line("ramiona", f"{type(exc).__name__}: {exc}", False)
 
     try:
@@ -165,6 +177,8 @@ def _workspace(a: argparse.Namespace) -> int:
     print(f"Stanowisko: {where} {'' if exists else '(jeszcze nie zapisane - wartosci domyslne)'}")
     print(f"  ramie: {ws.robot}, backend: {ws.backend}, port: {ws.port or '-'}")
     print(f"  karta: tag {ws.card_obj().tag_size * 1000:.1f} mm")
+    if ws.stand:
+        print(f"  folder stanowiska: {ws.stand} (kazdy zapis wraca tez tam)")
     if not ws.cameras:
         print("  kamery: brak  (przyklad w symulacji z dwiema kamerami: twin demo)")
     for cam in ws.cameras:
@@ -188,6 +202,287 @@ def _export(a: argparse.Namespace) -> int:
     folder = ws.export(a.folder)
     print(f"Stanowisko -> {folder.resolve()}: scene.xml, assets/, station.json "
           f"(ramie {ws.robot}, kamer {sum(c.enabled for c in ws.cameras)})")
+    return 0
+
+
+def _episode(a: argparse.Namespace) -> int:
+    """The report of one run's episode log, or one line per run for a folder of them.
+
+    Without a path it reports the newest log next to the workspace file.
+    """
+    from .episode import EpisodeLog, episodes_dir
+    from .episode_report import report
+
+    target = Path(a.target) if a.target else episodes_dir(a.path)
+    if not target.exists():
+        print(f"twin episode: no such path: {target}", file=sys.stderr)
+        return 1
+
+    if target.is_dir():
+        logs = sorted([*target.glob("*.jsonl"), *target.glob("*.jsonl.zst")],
+                      key=lambda path: _natural(path.name.split(".jsonl")[0]), reverse=True)
+        if not logs:
+            print(f"no episode logs in {target}", file=sys.stderr)
+            return 1
+        if a.target:
+            _list_episodes(target, logs)
+            return 0
+        target = logs[0]
+
+    try:
+        log = EpisodeLog.load(target)
+    except (OSError, ValueError) as exc:
+        print(f"twin episode: {exc}", file=sys.stderr)
+        return 1
+
+    offset_m = tuple(value / 1000.0 for value in a.offset_mm)
+    print("\n".join(report(log, gripper=a.gripper, offset_m=offset_m).lines()))
+    return 2 if log.recording.get("telemetry_complete") is False else 0
+
+
+def _list_episodes(folder: Path, logs: list[Path]) -> None:
+    from .episode import EpisodeLog
+
+    print(f"Episodes in {folder} (newest first):")
+    for path in logs:
+        name = path.name.removesuffix(".zst").removesuffix(".jsonl")
+        try:
+            summary = EpisodeLog.summary(path)
+        except (OSError, ValueError) as exc:
+            print(f"  {name:<24} unreadable: {exc}")
+            continue
+
+        end = summary.end
+        success = "-" if end.success is None else ("yes" if end.success else "no")
+        error = "-" if end.error is None else f"{end.error:.3g}"
+        length = "-" if end.t is None else f"{end.t:.2f}"
+        collection = ""
+        if summary.recording.get("telemetry_complete") is False:
+            collection = "  INCOMPLETE TELEMETRY"
+        elif summary.recording and not summary.recording.get("frames_complete"):
+            collection = "  frame gaps"
+        print(f"  {name:<24} {end.code:<13} success {success:<4} task error {error:<9} "
+              f"duration {length:>8} s  steps {end.steps:<6} {end.reason}{collection}")
+
+
+def _eval_strategy(a: argparse.Namespace) -> int:
+    """Runs one strategy many times in simulation, each episode with an object drawn from the seed,
+    and counts what the scene judges a success. Refuses before writing anything when a check fails.
+    """
+    import math
+
+    from . import evaluation
+    from .detectors import config_section as detector_section
+    from .detectors import load_detector
+    from .scene_truth import Area, ObjectSpec
+    from .strategies import config_section, load_strategy
+    from .workspace import Workspace
+
+    def refuse(message: str) -> int:
+        print(f"twin eval-strategy: {message}", file=sys.stderr)
+        return 1
+
+    try:
+        plugin = load_strategy(a.name)
+    except KeyError as exc:
+        return refuse(exc.args[0])
+    except (TypeError, ValueError) as exc:
+        return refuse(str(exc))
+
+    if a.robot:
+        robot = _installed_robot(a.robot)
+        if robot is None:
+            return 1
+        workspace = Workspace(robot=robot)
+    else:
+        missing = _missing_robot(_workspace_path(a.path))
+        if missing:
+            print(missing, file=sys.stderr)
+            return 1
+        try:
+            workspace = Workspace.load(a.path)
+        except (OSError, TypeError, ValueError) as exc:
+            return refuse(f"stanowisko: {exc}")
+
+    try:
+        values = evaluation.plugin_values(plugin, config_section(plugin.name), a.assignments)
+        detector, detector_values = None, {}
+        if a.detector:
+            detector = load_detector(a.detector)
+            detector_values = evaluation.plugin_values(detector, detector_section(detector.name))
+
+        label = evaluation.object_label(a.label, plugin, values, detector, detector_values)
+        obj = ObjectSpec(label=label, shape=a.shape, size_m=evaluation.object_size_m(a.size_mm),
+                         mass_kg=a.mass_g / 1000.0)
+        desk = workspace.spec().desk
+        radius = (a.radius_m[0], a.radius_m[1]) if a.radius_m else desk.cube_radius
+        bearing = ((math.radians(a.bearing_deg[0]), math.radians(a.bearing_deg[1])) if a.bearing_deg
+                   else desk.cube_bearing)
+        area = Area(radius, bearing, (math.radians(a.yaw_deg[0]), math.radians(a.yaw_deg[1])))
+        campaign = evaluation.Campaign(
+            plugin=plugin, settings=values, rule=a.rule, label=label, obj=obj, area=area, seed=a.seed,
+            episodes=a.episodes, time_limit_s=a.time_limit_s, speed_deg_s=a.speed_deg_s,
+            wall_limit_s=a.wall_limit_s, detector=detector, detector_settings=detector_values,
+        )
+        facts = evaluation.preflight(workspace, campaign)
+        folder = evaluation.campaign_folder(Path(a.out) if a.out else None, workspace, plugin.name)
+    except KeyError as exc:
+        return refuse(exc.args[0])
+    except (OSError, TypeError, ValueError) as exc:
+        return refuse(str(exc))
+
+    print("\n".join(evaluation.header_lines(campaign, workspace, folder)), flush=True)
+    result = evaluation.run_campaign(workspace, campaign, folder, facts=facts,
+                                     on_episode=lambda row: print(evaluation.row_line(row), flush=True))
+    print("\n".join(evaluation.footer_lines(campaign, result)))
+
+    if result.aborted:
+        return refuse(f"przerwano: {result.aborted}")
+    return 130 if result.interrupted else 0
+
+
+def _natural(name: str) -> list[Any]:
+    """`name` split into text and numbers, so `-10` sorts after `-2`."""
+    import re
+
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
+
+
+def _stand_problem(exc: Exception) -> int:
+    print(f"twin stand: {exc}", file=sys.stderr)
+    return 1
+
+
+def _obsolete_banner(text: str) -> None:
+    """A warning nobody misses: an obsolete stand no longer matches the real one."""
+    bar = "!" * min(100, len(text) + 8)
+    print(f"{bar}\n!!! UWAGA: {text}\n!!! Pomiary moga nie pasowac do rzeczywistosci.\n{bar}", file=sys.stderr)
+
+
+def _stand_save(a: argparse.Namespace) -> int:
+    from .stand import load, save
+    from .workspace import Workspace
+
+    missing = _missing_robot(_workspace_path(a.path))
+    if missing:
+        print(missing, file=sys.stderr)
+        return 1
+    ws = Workspace.load(a.path)
+    for cam in ws.cameras:
+        if cam.source.isdigit() or cam.source.startswith("/dev/video"):
+            print(f"Uwaga: kamera {cam.name} ma zrodlo {cam.source} - numer przesuwa sie po wpieciu czegos do USB; "
+                  "stala sciezka to /dev/v4l/by-id/...", file=sys.stderr)
+    try:
+        written, skipped = save(ws, a.folder, name=a.name, description=a.description, history=not a.no_history)
+        stand = load(a.folder)
+    except (RuntimeError, OSError, ValueError) as exc:
+        return _stand_problem(exc)
+    if stand.obsolete is not None:
+        _obsolete_banner(stand.obsolete_text())
+    print(f"Stanowisko {stand.name} -> {stand.folder}")
+    for f in written:
+        print(f"  zapisano {f}")
+    if not written:
+        print("  bez zmian")
+    if skipped:
+        print(f"  pominiete zestawy polozen (zadna ich kamera nie jest w stanowisku): {', '.join(skipped)}")
+    print(f"Stanowisko robocze {ws.path} jest zwiazane z tym folderem: kazdy zapis wraca tez tam.")
+    return 0
+
+
+def _stand_load(a: argparse.Namespace) -> int:
+    from .stand import StandError, load, load_into
+
+    try:
+        stand = load(a.folder)
+    except StandError as exc:
+        return _stand_problem(exc)
+    missing = _missing_stand_robot(stand)
+    if missing:
+        print(missing, file=sys.stderr)
+        return 1
+    if stand.obsolete is not None:
+        _obsolete_banner(stand.obsolete_text())
+    try:
+        ws, _, backup = load_into(a.folder, a.path)
+    except (RuntimeError, OSError, ValueError) as exc:
+        return _stand_problem(exc)
+    print(f"Stanowisko {stand.name} ({stand.folder}) -> {Path(ws.path or '').resolve()}")
+    if backup is not None:
+        print(f"  poprzednie stanowisko robocze zachowane w {backup}")
+    print(f"  ramie {ws.robot} ({ws.backend}{', ' + ws.port if ws.port else ''}), kamer {len(ws.cameras)}, "
+          f"polozenie kamer: {ws.calib_preset or 'brak'}")
+    print("  kazdy zapis stanowiska roboczego (panel) wraca tez do folderu stanowiska")
+    return 0
+
+
+def _missing_stand_robot(stand) -> str | None:
+    """What to do when the stand's driven arm is not installed; None when it is."""
+    from .robots import INSTALL_HINT, robot_folders
+
+    robot = next(r["robot"] for r in stand.data["robots"] if not r.get("read_only", False))
+    if robot.lower() in robot_folders():
+        return None
+    known = ", ".join(robot_folders()) or "zadne"
+    return f"Stanowisko {stand.name} ma ramie {robot!r}, ktorego nie ma w srodowisku (zainstalowane: {known}) - {INSTALL_HINT}."
+
+
+def _stand_export(a: argparse.Namespace) -> int:
+    from .stand import export, load
+
+    try:
+        stand = load(a.folder)
+        missing = _missing_stand_robot(stand)
+        if missing:
+            print(missing, file=sys.stderr)
+            return 1
+        folder = export(a.folder)
+    except (RuntimeError, OSError, ValueError) as exc:
+        return _stand_problem(exc)
+    if stand.obsolete is not None:
+        _obsolete_banner(stand.obsolete_text())
+    print(f"Stanowisko {stand.name} -> {folder}: scene.xml, assets/, station.json")
+    return 0
+
+
+def _stand_list(a: argparse.Namespace) -> int:
+    from .stand import list_stands
+
+    root = Path(a.root)
+    if not root.is_dir():
+        print(f"twin stand list: {root} nie jest folderem", file=sys.stderr)
+        return 1
+    stands = list_stands(root)
+    if not stands:
+        print(f"Brak stanowisk w {root.resolve()} (folder stanowiska ma stand.json).")
+    for s in stands:
+        if s.error:
+            print(f"BLAD        {s.folder.name}: {s.error}")
+            continue
+        n = s.newest
+        newest = f"{n[:4]}-{n[4:6]}-{n[6:8]}" if len(n) >= 8 and n[:8].isdigit() else "brak"
+        mark = "NIEAKTUALNE" if s.obsolete is not None else "aktualne   "
+        print(f"{mark} {s.name} ({s.folder.name}): {', '.join(s.robots)}; kamer {s.cameras}; "
+              f"ostatni pomiar {newest}")
+        if s.description:
+            print(f"            {s.description}")
+        if s.obsolete is not None:
+            why = ", ".join(x for x in (s.obsolete["date"], s.obsolete["reason"]) if x)
+            print(f"            nieaktualne{': ' + why if why else ''}")
+    return 0
+
+
+def _stand_obsolete(a: argparse.Namespace) -> int:
+    from .stand import StandError, mark_obsolete
+
+    try:
+        stand = mark_obsolete(a.folder, reason=a.reason or "", date=a.date, clear=a.clear)
+    except StandError as exc:
+        return _stand_problem(exc)
+    if a.clear:
+        print(f"Stanowisko {stand.name} znow aktualne.")
+    else:
+        print(f"Stanowisko {stand.name} oznaczone jako nieaktualne: {stand.obsolete_text()}")
     return 0
 
 
@@ -328,7 +623,11 @@ def _ui_startup_line(a: argparse.Namespace) -> str:
 
 def _ui(a: argparse.Namespace) -> int:
     ws = _workspace_path(a.workspace)
-    print(_ui_banner(ws, _first_start(ws)), flush=True)
+    if a.stand:
+        loaded = _stand_load(argparse.Namespace(folder=a.stand, path=str(ws)))
+        if loaded:
+            return loaded
+    print(_ui_banner(ws, None if a.stand else _first_start(ws)), flush=True)
     missing = _missing_robot(ws)
     if missing:
         print(missing, file=sys.stderr)
@@ -433,6 +732,83 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
     p.set_defaults(fn=_export)
 
+    p = sub.add_parser("episode", help="report an episode or list recordings")
+    p.add_argument("target", nargs="?", default=None, metavar="PATH",
+                   help=".jsonl.zst or .jsonl file (report), or folder (list); defaults to the newest recording")
+    p.add_argument("--path", default=None, help="workspace file (default: workspace/twin.json)")
+    p.add_argument("--gripper", default=None, metavar="LABEL",
+                   help="camera-observed gripper marker label for the drift report")
+    p.add_argument("--offset-mm", nargs=3, type=float, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"),
+                   help="marker position in the TCP frame [mm]")
+    p.set_defaults(fn=_episode)
+
+    p = sub.add_parser("stand", help="foldery stanowisk: zapis, wczytanie, eksport, lista")
+    stand = p.add_subparsers(dest="stand_cmd", required=True)
+    q = stand.add_parser("save", help="stanowisko robocze -> folder stanowiska (nowe wpisy kalibracji, station/)")
+    q.add_argument("folder")
+    q.add_argument("--path", default=None, help="plik stanowiska roboczego (domyslnie workspace/twin.json)")
+    q.add_argument("--name", default=None, help="nazwa stanowiska (nowe: nazwa folderu)")
+    q.add_argument("--description", default=None, help="opis stanowiska")
+    q.add_argument("--no-history", action="store_true",
+                   help="bez starszych zestawow polozen kamer z workspace/calib - tylko obecne polozenie")
+    q.set_defaults(fn=_stand_save)
+    q = stand.add_parser("load", help="folder stanowiska -> stanowisko robocze (inne zachowane jako .bak)")
+    q.add_argument("folder")
+    q.add_argument("--path", default=None, help="plik stanowiska roboczego (domyslnie workspace/twin.json)")
+    q.set_defaults(fn=_stand_load)
+    q = stand.add_parser("export", help="odswiez station/ w folderze stanowiska (dla treningu)")
+    q.add_argument("folder")
+    q.set_defaults(fn=_stand_export)
+    q = stand.add_parser("list", help="stanowiska w repozytorium stanowisk; nieaktualne na koncu")
+    q.add_argument("root", nargs="?", default=".", help="repozytorium stanowisk (domyslnie biezacy folder)")
+    q.set_defaults(fn=_stand_list)
+    q = stand.add_parser("obsolete", help="oznacz stanowisko jako nieaktualne (nie pasuje do rzeczywistosci)")
+    q.add_argument("folder")
+    q.add_argument("--reason", default=None, help="dlaczego, np. \"kamera2 przestawiona\"")
+    q.add_argument("--date", default=None, help="od kiedy, RRRR-MM-DD (domyslnie dzis)")
+    q.add_argument("--clear", action="store_true", help="znow aktualne")
+    q.set_defaults(fn=_stand_obsolete)
+    p = sub.add_parser("eval-strategy",
+                       help="ocena strategii w symulacji: wiele przebiegow z obiektem losowanym z ziarna, sukces wg sceny")
+    p.add_argument("name", metavar="NAZWA", help="strategia: nazwa punktu wejscia, jak w zakladce Strategie")
+    p.add_argument("--episodes", type=int, default=10, help="ile przebiegow (domyslnie 10)")
+    p.add_argument("--seed", type=int, default=0,
+                   help="ziarno: przebieg i losuje obiekt z ziarna S+i, wiec --seed S+i --episodes 1 go powtarza")
+    p.add_argument("--rule", choices=("touch", "lift"), default="touch",
+                   help="kiedy scena uznaje sukces: touch = szczeka dotyka obiektu, lift = obie szczeki "
+                        "i obiekt uniesiony o 4 cm (domyslnie touch)")
+    p.add_argument("--set", dest="assignments", action="append", default=[], metavar="KLUCZ=WARTOSC",
+                   help="ustawienie strategii ponad sekcje pliku konfiguracji; mozna kilka razy")
+    where = p.add_mutually_exclusive_group()
+    where.add_argument("--path", default=None, help="plik stanowiska (domyslnie workspace/twin.json)")
+    where.add_argument("--robot", default=None, metavar="NAZWA",
+                       help="ramie bez pliku stanowiska (bez kamer), np. w srodowisku innego pakietu")
+    p.add_argument("--out", default=None, metavar="FOLDER",
+                   help="nowy albo pusty folder na zapisy i summary.json "
+                        "(domyslnie episodes/eval-<strategia>-<czas> obok stanowiska)")
+    p.add_argument("--label", default=None, metavar="ETYKIETA",
+                   help="klucz obiektu w Observation.objects (domyslnie ustawienie label strategii albo cube)")
+    p.add_argument("--shape", choices=("box",), default="box", help="ksztalt obiektu (na razie tylko box)")
+    p.add_argument("--size-mm", nargs="+", type=float, default=[30.0], metavar="MM",
+                   help="krawedz szescianu albo trzy krawedzie pudelka [mm] (domyslnie 30)")
+    p.add_argument("--mass-g", type=float, default=30.0, help="masa obiektu [g] (domyslnie 30)")
+    p.add_argument("--radius-m", nargs=2, type=float, default=None, metavar=("OD", "DO"),
+                   help="odleglosc obiektu od podstawy [m] (domyslnie pierscien kostki z opisu ramienia)")
+    p.add_argument("--bearing-deg", nargs=2, type=float, default=None, metavar=("OD", "DO"),
+                   help="kierunek od osi x podstawy [st] (domyslnie z opisu ramienia)")
+    p.add_argument("--yaw-deg", nargs=2, type=float, default=(-180.0, 180.0), metavar=("OD", "DO"),
+                   help="obrot obiektu wokol pionu [st] (domyslnie -180 180)")
+    p.add_argument("--time-limit-s", type=float, default=120.0,
+                   help="najdluzszy przebieg w czasie symulacji [s]; krotszy limit strategii zostaje (domyslnie 120)")
+    p.add_argument("--speed-deg-s", type=float, default=None,
+                   help="granica predkosci stawow jak suwak w panelu [st./s] (domyslnie bez granicy)")
+    p.add_argument("--wall-limit-s", type=float, default=None,
+                   help="przerwij przebieg po tylu sekundach rzeczywistych (wynik zalezy wtedy od maszyny)")
+    p.add_argument("--detector", default=None, metavar="NAZWA",
+                   help="pozy obiektu z tego detektora przez zaufane kamery symulowane stanowiska "
+                        "(domyslnie prawda symulacji); ustawienia z jego sekcji konfiguracji")
+    p.set_defaults(fn=_eval_strategy)
+
     p = sub.add_parser("ui", help="panel blizniaka w przegladarce (viser)")
     # Panel rusza prawdziwym ramieniem i nie ma hasla, a viser dzieli stan GUI miedzy
     # wszystkich podlaczonych - kazdy, kto dosiegnie portu, moze nacisnac "Polacz" albo
@@ -442,6 +818,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8080,
                    help="port panelu (domyslnie 8080; zajety przez inna usluge? np. --port 8765)")
     p.add_argument("--workspace", default=None)
+    p.add_argument("--stand", default=None, metavar="FOLDER",
+                   help="wczytaj stanowisko z folderu do stanowiska roboczego; kazdy zapis panelu wraca do folderu")
     # Podglad kamer nie steruje niczym, wiec moze sluchac w sieci nawet gdy panel jest tylko lokalny.
     p.add_argument("--stream-port", type=int, default=None,
                    help="podglad kamer po HTTP (MJPEG, tylko odczyt) na tym porcie, np. 8766; bez flagi - brak")

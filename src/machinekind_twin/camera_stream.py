@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from . import camera_controls
 from .config import CameraConfig
 
 
@@ -46,6 +47,8 @@ class CameraStream:
         self._index = 0
         self._is_file = _is_video_file(cfg.source)
         self._error: str | None = None
+        #: What the last open did with `cfg.controls`.
+        self.controls_applied = camera_controls.Applied()
 
     # ---------------------------------------------------------------- setup
     def open(self) -> "CameraStream":
@@ -77,6 +80,8 @@ class CameraStream:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except cv2.error:  # pragma: no cover - backend dependent
                 pass
+            # After the format: some cameras reset their controls when it changes.
+            self.controls_applied = camera_controls.apply(self.cfg.source, self.cfg.controls)
 
         self._cap = cap
         self._stop.clear()

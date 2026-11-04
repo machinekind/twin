@@ -21,6 +21,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import camera_controls
 from .camera_stream import CameraStream
 from .config import CameraConfig
 from .workspace import CameraRecord, Workspace
@@ -32,6 +33,16 @@ logger = logging.getLogger(__name__)
 _BACKEND = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
 
 
+def video_indices(dev: Path = Path("/dev"), max_index: int = 6) -> list[int]:
+    """Numbers of the /dev/video<N> nodes present, in order; 0..max_index-1 where there are none.
+
+    Linux numbers V4L2 nodes in the order devices appear, so a stand with several cameras
+    (two nodes each) goes past any fixed range. Other systems have no such nodes.
+    """
+    nodes = sorted(int(p.name[5:]) for p in dev.glob("video*") if p.name[5:].isdigit())
+    return nodes or list(range(max_index))
+
+
 def probe_devices(max_index: int = 6) -> list[dict]:
     """Kamery, ktore naprawde oddaja klatke: [{index, width, height}].
 
@@ -39,7 +50,7 @@ def probe_devices(max_index: int = 6) -> list[dict]:
     sterowniku kamera sie otwiera i zadnej klatki nie oddaje.
     """
     found = []
-    for index in range(max_index):
+    for index in video_indices(max_index=max_index):
         cap = cv2.VideoCapture(index, _BACKEND)
         try:
             if not cap.isOpened():
@@ -83,9 +94,13 @@ def open_live(record: CameraRecord) -> _Live:
 class _Live:
     def __init__(self, record: CameraRecord):
         cfg = CameraConfig(source=record.source, width=record.width, height=record.height,
-                           fps=record.fps, mirror=False)
+                           fps=record.fps, mirror=False, controls=record.controls)
         self.stream = CameraStream(cfg)
         self.stream.open()
+
+    @property
+    def controls_applied(self) -> camera_controls.Applied:
+        return self.stream.controls_applied
 
     def rgb_t(self) -> tuple[np.ndarray | None, float, str | None]:
         """(kadr RGB, chwila jego wykonania, blad strumienia).
@@ -148,6 +163,7 @@ class CameraHub:
         self._live: dict[str, _Live] = {}
         self._errors: dict[str, str] = {}
         self._stream_errors: dict[str, str] = {}
+        self._applied: dict[str, camera_controls.Applied] = {}
         self._lock = threading.Lock()
 
     def sync(self) -> None:
@@ -168,10 +184,28 @@ class CameraHub:
                     self._stream_errors.pop(name, None)
                 try:
                     self._live[name] = open_live(rec)
+                    self._applied.pop(name, None)       # the open applied the controls again
                     self._errors.pop(name, None)
                 except Exception as exc:                  # brak urzadzenia, zajete, zly indeks
                     self._errors[name] = str(exc)
                     logger.warning("Kamera %s (%s) nie otworzyla sie: %s", name, rec.source, exc)
+
+    def apply_controls(self, name: str) -> camera_controls.Applied:
+        """Sets the workspace camera's controls now, on the device, without reopening its stream."""
+        rec = self.workspace.camera(name)
+        if rec.simulated:
+            return camera_controls.Applied(skipped="kamera symulowana")
+        done = camera_controls.apply(rec.source, rec.controls)
+        self._applied[name] = done
+        return done
+
+    def controls_applied(self, name: str) -> camera_controls.Applied | None:
+        """What the last open or `apply_controls` did with the camera's controls; None = nothing yet."""
+        if name in self._applied:
+            return self._applied[name]
+        with self._lock:
+            live = self._live.get(name)
+        return getattr(live, "controls_applied", None) if live is not None else None
 
     def error(self, name: str) -> str | None:
         """Blad otwarcia kamery albo jej strumienia (zerwany, zamrozony)."""

@@ -46,8 +46,9 @@ def tracks(clock: Clock) -> Tracks:
 
 
 def located(t: float, label: str = "cube", pos=REST, confidence: float = 0.9, n_cameras: int = 2,
-            method: str = "sylwetka") -> Located:
-    return Located(label, np.array(pos, float), np.eye(3), confidence, n_cameras, t, (0.03, 0.03, 0.03), method)
+            method: str = "sylwetka", age_s: float = 0.0) -> Located:
+    return Located(label, np.array(pos, float), np.eye(3), confidence, n_cameras, t, (0.03, 0.03, 0.03), method,
+                   age_s)
 
 
 def hand_at(tcp, grip_q: float, grip_cmd: float, grip_closed: float = 0.0) -> Hand:
@@ -141,6 +142,29 @@ def test_a_measurement_is_fed_once(tracks: Tracks, clock: Clock, monkeypatch: py
     assert fed[-1] is True
 
 
+def test_the_same_frames_handed_in_again_are_not_fed_again(tracks: Tracks, clock: Clock,
+                                                           monkeypatch: pytest.MonkeyPatch):
+    fed = []
+    update = ObjectTracker.update
+
+    def spy(self, det, *args):
+        fed.append(det is not None)
+        return update(self, det, *args)
+
+    monkeypatch.setattr(ObjectTracker, "update", spy)
+    t = clock.t
+    tracks.observe("cube", [located(t)], latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+    clock.advance(0.33)
+    tracks.observe("cube", [located(t)], latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+    clock.advance(0.33)
+    tracks.observe("cube", [located(t - 1.0, age_s=1.0)], latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+
+    assert fed == [True, False, False]
+
+
 def test_a_slow_detector_keeps_its_track_until_the_next_answer(clock: Clock):
     slow, fast = Tracks(SPEC, clock), Tracks(SPEC, clock)
     t = clock.t
@@ -154,6 +178,83 @@ def test_a_slow_detector_keeps_its_track_until_the_next_answer(clock: Clock):
     obj = slow.step(None)["cube"]
     assert obj.source == "ostatnie widziane"
     assert obj.age_s == pytest.approx(50.0, abs=1e-6)
+
+
+def test_repeats_of_one_answer_hold_its_pose_through_a_60_s_still_scene_and_one_interval(
+        tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=0.0, interval_s=10.0)
+    tracks.step(None)
+    for k in range(1, 6):
+        clock.t = t0 + 10.0 * k
+        tracks.observe("llm", [located(t0, age_s=10.0 * k)], latency_s=0.0, interval_s=10.0)
+        obj = tracks.step(None)["cube"]
+
+        assert obj.source == "ostatnie widziane"
+        assert obj.age_s == pytest.approx(10.0 * k, abs=1e-6)
+
+    clock.t = t0 + 70.0
+    obj = tracks.step(None)["cube"]
+
+    assert obj.age_s == pytest.approx(70.0, abs=1e-6)
+    np.testing.assert_allclose(obj.position, REST)
+
+
+def test_after_a_still_scene_one_answer_without_the_label_keeps_the_object(tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
+    tracks.step(None)
+    for k in range(1, 6):
+        clock.t = t0 + 10.0 * k
+        tracks.observe("llm", [located(t0, age_s=10.0 * k)], latency_s=0.0, interval_s=10.0)
+        tracks.step(None)
+    clock.t = t0 + 62.0
+    tracks.observe("llm", [], latency_s=2.0, interval_s=10.0)
+    obj = tracks.step(None)["cube"]
+
+    assert obj.source == "ostatnie widziane"
+    assert obj.age_s == pytest.approx(62.0, abs=1e-6)
+
+
+def test_a_repeat_dated_just_before_the_fed_measurement_keeps_the_object(tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 10.0
+    tracks.observe("llm", [located(t0 - 1e-9, age_s=10.0)], latency_s=0.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 40.0
+    tracks.observe("llm", [], latency_s=2.0, interval_s=10.0)
+
+    assert "cube" in tracks.step(None)
+
+
+def test_the_oldest_label_in_an_answer_sets_the_hold(tracks: Tracks, clock: Clock):
+    t = clock.t
+    tracks.observe("llm", [located(t, "a"), located(t - 50.0, "b", age_s=50.0)], latency_s=0.0, interval_s=10.0)
+    objs = tracks.step(None)
+
+    assert set(objs) == {"a", "b"}
+    assert objs["b"].age_s == pytest.approx(50.0, abs=1e-6)
+
+
+def test_a_repeated_answer_s_age_counts_as_latency_for_the_hold(tracks: Tracks, clock: Clock):
+    t = clock.t
+    clock.advance(50.0)
+    tracks.observe("llm", [located(t, age_s=50.0)], latency_s=0.0, interval_s=10.0)
+    fed_at = clock.t
+    obj = tracks.step(None)["cube"]
+
+    assert obj.source == "ostatnie widziane"
+    assert obj.age_s == pytest.approx(50.0, abs=1e-6)
+
+    clock.t = fed_at + Tracks.hold_s_for(10.0, 50.0) - 0.1
+
+    assert "cube" in tracks.step(None)
+
+    clock.advance(0.2)
+
+    assert "cube" not in tracks.step(None)
 
 
 def test_a_pose_expires_after_hold_s_and_its_track_goes(tracks: Tracks, clock: Clock):
@@ -269,6 +370,22 @@ def test_the_newer_capture_wins_a_shared_label(tracks: Tracks, clock: Clock):
     assert tracks.snapshot()[0].detector == "a"
 
 
+def test_a_newer_capture_from_another_detector_is_fed_after_a_repeat(tracks: Tracks, clock: Clock):
+    t0 = clock.t
+    tracks.observe("llm", [located(t0)], latency_s=2.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 60.0
+    tracks.observe("llm", [located(t0, age_s=60.0)], latency_s=0.0, interval_s=10.0)
+    tracks.step(None)
+    clock.t = t0 + 70.0
+    tracks.observe("vlm", [located(t0 + 50.0, pos=REST + [0.05, 0.0, 0.0])], latency_s=20.0, interval_s=10.0)
+    obj = tracks.step(None)["cube"]
+
+    assert obj.age_s == pytest.approx(20.0, abs=1e-6)
+    np.testing.assert_allclose(obj.position, REST + [0.05, 0.0, 0.0])
+    assert tracks.snapshot()[0].detector == "vlm"
+
+
 def test_two_steps_within_10_ms_read_the_hand_once(tracks: Tracks, clock: Clock):
     calls = []
 
@@ -295,3 +412,158 @@ def test_snapshot_never_steps(tracks: Tracks, clock: Clock):
     view = tracks.snapshot()[0]
     assert (view.label, view.source, view.age_s, view.n_cameras, view.method) == ("cube", "kamery", 0.0, 2, "sylwetka")
     assert view.size_m == (0.03, 0.03, 0.03) and view.confidence == 0.9
+
+
+# ------------------------------------------------------------------ blocks on blocks
+#: A second 3 cm cube on the table, 6 cm from the first along x.
+BASE = np.array([0.26, 0.0, 0.015])
+#: Where a 3 cm cube rests on top of it.
+ON_BASE = BASE + [0.0, 0.0, 0.03]
+
+
+def grip(tracks: Tracks, clock: Clock, tcp) -> None:
+    """The jaw closes at `tcp` and stops on the object there: held from the second step."""
+    for _ in range(2):
+        clock.advance(0.05)
+        tracks.step(hand_at(tcp, SQUEEZE, 0.0))
+
+
+def test_a_block_released_over_another_rests_on_it_and_the_lower_one_is_never_taken(tracks: Tracks,
+                                                                                    clock: Clock):
+    tcp = REST + [0.0, 0.0, 0.01]
+    tracks.observe("cube", [located(clock.t), located(clock.t, "base", BASE)], latency_s=0.05,
+                   interval_s=CUBE_INTERVAL)
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    clock.advance(0.05)
+    above = ON_BASE + [0.0, 0.0, 0.015]      # over its rest on the base; the TCP 5.5 cm over the base
+    objects = tracks.step(hand_at(above + [0.0, 0.0, 0.01], SQUEEZE, 0.0))
+    assert objects["cube"].source == "w dloni"
+    assert objects["base"].source != "w dloni"
+
+    clock.advance(0.05)
+    objects = tracks.step(hand_at(above + [0.0, 0.0, 0.01], OPEN, OPEN))
+
+    assert objects["cube"].source == "ostatnie widziane (upuszczona)"
+    np.testing.assert_allclose(objects["cube"].position, ON_BASE, atol=1e-9)
+    np.testing.assert_allclose(objects["base"].position, BASE, atol=1e-9)
+
+
+def test_a_block_taken_off_a_stack_and_dropped_rests_on_the_table(tracks: Tracks, clock: Clock):
+    tcp = ON_BASE + [0.0, 0.0, 0.01]
+    tracks.observe("cube", [located(clock.t, "cube", ON_BASE), located(clock.t, "base", BASE)],
+                   latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    clock.advance(0.05)
+    away = REST + [0.0, 0.0, 0.05]
+    assert tracks.step(hand_at(away, SQUEEZE, 0.0))["cube"].source == "w dloni"
+
+    clock.advance(0.05)
+    cube = tracks.step(hand_at(away, OPEN, OPEN))["cube"]
+
+    assert cube.source == "ostatnie widziane (upuszczona)"
+    np.testing.assert_allclose(cube.position, REST, atol=1e-9)
+
+
+def test_resting_gives_each_block_but_the_one_in_the_hand(tracks: Tracks, clock: Clock):
+    tracks.observe("cube", [located(clock.t, "cube", ON_BASE),
+                            located(clock.t, "base", BASE + [0.0, 0.0, 0.002])],
+                   latency_s=0.05, interval_s=CUBE_INTERVAL)
+    tracks.step(None)
+
+    blocks = tracks.resting()
+    assert {label: r.base for label, r in blocks.items()} == pytest.approx({"cube": 0.03, "base": 0.002})
+    assert blocks["base"].holds(blocks["cube"])
+
+    tcp = ON_BASE + [0.0, 0.0, 0.01]
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    assert tracks.step(hand_at(tcp, SQUEEZE, 0.0))["cube"].source == "w dloni"
+    assert list(tracks.resting()) == ["base"]
+
+
+# ------------------------------------------------------------------ several blocks of one label
+#: A second cube of the label, 10 cm from the first along y.
+OTHER = np.array([0.20, 0.10, 0.015])
+
+
+def observe(tracks: Tracks, clock: Clock, *where, label: str = "cube") -> None:
+    tracks.observe("cube", [located(clock.t, label, pos) for pos in where], latency_s=0.05,
+                   interval_s=CUBE_INTERVAL)
+
+
+def test_a_second_block_of_a_label_gets_a_numbered_key_and_keys_follow_positions(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST, OTHER)
+    objects = tracks.step(None)
+    assert set(objects) == {"cube", "cube 2"}
+    np.testing.assert_allclose(objects["cube"].position, REST)
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER)
+
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER + [0.005, 0.0, 0.0], REST + [0.0, 0.005, 0.0])   # listed the other way round
+    objects = tracks.step(None)
+    np.testing.assert_allclose(objects["cube"].position, REST + [0.0, 0.005, 0.0])
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER + [0.005, 0.0, 0.0])
+    assert {v.label: v.source for v in tracks.snapshot()} == {"cube": "kamery", "cube 2": "kamery"}
+    assert {label: r.label for label, r in tracks.resting().items()} == {"cube": "cube", "cube 2": "cube"}
+
+
+def test_a_block_moved_far_keeps_its_key_and_the_other_is_untouched(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST, OTHER)
+    tracks.step(None)
+    far = np.array([0.30, -0.10, 0.015])
+    clock.advance(0.2)
+    observe(tracks, clock, far, OTHER)
+    objects = tracks.step(None)
+    assert set(objects) == {"cube", "cube 2"}
+    np.testing.assert_allclose(objects["cube"].position, far)
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER)
+
+
+def test_one_block_and_one_measurement_pair_however_far(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST)
+    tracks.step(None)
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER)
+    assert set(tracks.step(None)) == {"cube"}
+
+
+def test_a_new_block_takes_the_lowest_free_key(tracks: Tracks, clock: Clock):
+    third = np.array([0.30, 0.0, 0.015])
+    observe(tracks, clock, REST, OTHER, third)
+    assert set(tracks.step(None)) == {"cube", "cube 2", "cube 3"}
+    # "cube" leaves the cameras and expires; the others stay in view.
+    for _ in range(int(Tracks.HOLD_S / 0.5) + 2):
+        clock.advance(0.5)
+        observe(tracks, clock, OTHER, third)
+        objects = tracks.step(None)
+    assert set(objects) == {"cube 2", "cube 3"}
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER, third, REST + [0.0, -0.1, 0.0])
+    objects = tracks.step(None)
+    assert set(objects) == {"cube", "cube 2", "cube 3"}
+    np.testing.assert_allclose(objects["cube"].position, REST + [0.0, -0.1, 0.0])
+
+
+def test_a_block_carried_and_put_down_elsewhere_keeps_its_key(tracks: Tracks, clock: Clock):
+    observe(tracks, clock, REST, OTHER)
+    tcp = REST + [0.0, 0.0, 0.01]
+    tracks.step(hand_at(tcp, OPEN, OPEN))
+    grip(tracks, clock, tcp)
+    # Carried 15 cm across, past the other block, out of the cameras' sight.
+    put = np.array([0.30, 0.15, 0.015])
+    for k in range(1, 6):
+        clock.advance(0.05)
+        at = REST + (put - REST) * k / 5 + [0.0, 0.0, 0.03]
+        objects = tracks.step(hand_at(at + [0.0, 0.0, 0.01], SQUEEZE, 0.0))
+        assert objects["cube"].source == "w dloni" and objects["cube 2"].source != "w dloni"
+    clock.advance(0.05)
+    tracks.step(hand_at(put + [0.0, 0.0, 0.04], OPEN, OPEN))
+    clock.advance(0.2)
+    observe(tracks, clock, OTHER, put)                         # the cameras see both again
+    objects = tracks.step(hand_at(put + [0.0, 0.0, 0.1], OPEN, OPEN))
+
+    np.testing.assert_allclose(objects["cube"].position, put)
+    np.testing.assert_allclose(objects["cube 2"].position, OTHER)
+    assert objects["cube"].source == objects["cube 2"].source == "kamery"

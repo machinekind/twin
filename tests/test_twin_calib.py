@@ -30,6 +30,7 @@ WAVE_ROBOTS = [
                                                   reason="ramie przykladowe instaluje uv sync")),
     pytest.param("a1x", marks=pytest.mark.skipif(not _installed("galaxeo.robot"),
                                                  reason="A1X przychodzi z pakietu galaxeo")),
+    pytest.param("so101", marks=pytest.mark.skipif(not _installed("soarm"), reason="SO-101 przychodzi z pakietu soarm")),
 ]
 
 
@@ -50,8 +51,9 @@ class _BlindCameras:
         return {}
 
 
-def _session(spec_name: str, seed: int, cameras=("c0", "c1")):
+def _session(spec_name: str, seed: int, cameras=("c0", "c1"), cfg=None, objects=(), clearance=0.0):
     import numpy as np
+
     from machinekind_twin import scene as sc
     from machinekind_twin.calib.card import Card, pinch_point
     from machinekind_twin.calib.session import Session, WaveConfig
@@ -62,59 +64,146 @@ def _session(spec_name: str, seed: int, cameras=("c0", "c1")):
     spec = get_spec(spec_name)
     card = Card(tag_size=0.037)
     nominal = card.nominal(pinch_point(RobotKinematics(spec)), spec)
-    world = sc.build(sc.SceneConfig(spec, card=card, card_pose=nominal, card_collider=0.012))
+    world = sc.build(sc.SceneConfig(spec, card=card, card_pose=nominal, card_collider=0.012, objects=list(objects)))
     K = np.array([[900.0, 0, 640], [0, 900.0, 360], [0, 0, 1]])
     home = dict(spec.home)
     if spec.gripper:
         home[spec.gripper] = 0.0
     s = Session(_StillRobot(home), _BlindCameras(), {c: (K, None) for c in cameras}, world.kin, card, nominal,
-                CollisionChecker(world), WaveConfig.for_spec(spec), seed=seed)
+                CollisionChecker(world, clearance), cfg or WaveConfig.for_spec(spec), seed=seed)
     return s, world
 
 
 @pytest.mark.parametrize("spec_name", WAVE_ROBOTS)
-def test_wave_search_sweeps_both_sides_of_the_table_in_every_run(spec_name):
-    """Na stanowisku A1X fala zwiedzila tylko prawa strone stolu: szukanie bylo losowym
-    spacerem w stawach z limitem przejazdu, a nie zamiataniem. Teraz kazde 16 poz bez
-    detekcji odwiedza wszystkie sektory stawu podstawy, po obu stronach."""
+def test_wave_explores_the_whole_turn_and_turns_the_card_every_way(spec_name):
+    """Replaces the sweep of `wave_ranges` in five sectors toward where cameras "usually stand": on the SO-101
+    stand that search missed a camera looking down from 0.9 m. With no camera seeing anything, 30 poses
+    sweep every sector of the base's turn (the description's range widened, both sides) and, with a
+    roll joint, turn the card's face to every exploration direction."""
     import numpy as np
 
-    for seed in range(6):
+    from machinekind_twin.calib.session import DIRECTIONS
+
+    for seed in range(3):
         s, world = _session(spec_name, seed)
         try:
-            pan = s._pan
-            lo, hi = s.kin.spec.wave_ranges[pan]
-            edges = np.linspace(lo, hi, 6)[1:-1]
-            j = np.array([s.step().joints[pan] for _ in range(16)])
-            sectors = set(np.digitize(j, edges).tolist())
-            assert sectors == {0, 1, 2, 3, 4}, f"{spec_name} ziarno {seed}: sektory {sorted(sectors)}, {j.round()}"
-            assert 0.3 <= np.mean(j < (lo + hi) / 2) <= 0.7
+            reps = [s.step() for _ in range(30)]
+            lo, hi = s.kin.spec.wave_ranges[s._pan]
+            assert s._ranges[s._pan][0] < lo and s._ranges[s._pan][1] > hi
+            pan = np.array([r.joints[s._pan] for r in reps])
+            assert {s._sector(v) for v in pan} == set(range(len(s._sectors))), f"{spec_name} {seed}: {pan.round()}"
+            assert all(r.phase == "szukanie" and r.aim is None for r in reps)
+            if s._roll:
+                assert (s.visits.sum(axis=0) > 0).all() and len(DIRECTIONS) == s.visits.shape[1]
         finally:
             world.close()
 
 
-@pytest.mark.parametrize("spec_name", WAVE_ROBOTS)
-def test_wave_aims_at_a_camera_only_after_two_detections_and_never_goes_home_for_it(spec_name):
-    """Jedna detekcja malego taga z daleka dawala lustrzana poze kamery, w ktora celowala
-    co druga poza; gdy kadru nie dalo sie trafic, fala wracala do domu (stracony przejazd).
-    Kamera z jedna detekcja nie jest namierzona; namierzona bez osiagalnego kadru dostaje
-    poze z zamiatania, nie dom."""
+def _sightings(s, T_cam, K, joints_list, mount=None):
+    """Tags a camera at `T_cam` (cam2base) sees at these poses, as the session records them; `mount` is where
+    the card truly sits (default: nominal)."""
     import numpy as np
 
-    s, world = _session(spec_name, 3)
+    from machinekind_twin.calib.session import Sighting
+    from machinekind_twin.calib.tags import corners_in_tag, project
+
+    mount = s.card_nominal if mount is None else mount
+    X = np.c_[corners_in_tag(s.card.tag_size), np.ones(4)].T
+    out = []
+    for k, j in enumerate(joints_list):
+        T = s.kin.tcp(j)
+        for tid, T_tag in s.tags.items():
+            P = (np.linalg.inv(T_cam) @ T @ mount @ T_tag @ X)[:3].T
+            normal = (T @ mount @ T_tag)[:3, 2]
+            if (P[:, 2] < 0.1).any() or normal @ (T_cam[:3, 3] - (T @ mount @ T_tag)[:3, 3]) <= 0:
+                continue
+            px = project(P, K)
+            if ((px < 0) | (px > [1280, 720])).any():
+                continue
+            out.append(Sighting(100 + k, T, tid, px, dict(j)))
+    return out
+
+
+def _poses_seen_by(s, T_cam, K, n, seed=0, mount=None):
+    """`n` poses from the wave's own sampling at which the camera sees a tag, with those sightings."""
+    import numpy as np
+
+    rng, found = np.random.default_rng(seed), []
+    joints = dict(s._home)
+    while len(found) < n:
+        j = s._sample(joints)
+        for name in s._ranges:
+            j[name] = float(rng.uniform(*s._ranges[name]))
+        if s._roll:
+            j[s._roll] = float(rng.uniform(-150, 150))
+        seen = _sightings(s, T_cam, K, [j], mount)
+        if seen:
+            for x in seen:
+                x.pose = 100 + len(found)
+            found.append(seen[0])
+    return found
+
+
+@pytest.mark.parametrize("spec_name", [p for p in WAVE_ROBOTS if p != BOT])
+def test_wave_aims_only_where_several_sightings_agree_and_drops_what_later_disagrees(spec_name):
+    """Replaces "aims after two detections": two sightings of a small tag from far away gave a mirrored pose and the
+    wave aimed there for 80 poses. Now a camera is aimed at only when `locate_min` sightings from different poses
+    agree by reprojection (both solutions of each PnP tried); a mixed bag does not locate it, later sightings at
+    odds with the pose, or aimed poses that keep missing with little support, drop it. A camera located where no
+    frame can be reached gets exploration, not the home pose."""
+    import numpy as np
+
+    from machinekind_twin.calib.card import perturb
+    from machinekind_twin.calib.simulate import look_at
+
+    s, world = _session(spec_name, 3, cameras=("c0",))
     try:
+        K = s.intrinsics["c0"][0]
+        cam = look_at((0.75, 0.1, 0.9), (0.22, 0.0, 0.0))
         p = s.progress["c0"]
-        T = np.eye(4)
-        T[:3, 3] = [0.9, 0.0, 0.5]
-        p.estimates.append(T)
-        assert not s._located(p) and s._target_camera() is None
-        p.estimates.append(T)
-        assert s._located(p) and s._target_camera() == "c0"
-        # Kamera "namierzona" 30 m nad stolem: zaden kadr nie do trafienia - poza mimo to jest.
-        p.estimates[:] = [np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 30.0], [0, 0, 0, 1.0]])] * 2
-        s.index = 2                                       # parzysta = celowanie, nie zamiatanie
+        # A card in the jaws up to 10 deg and 12 mm off nominal: still agreeing.
+        mount = perturb(s.card_nominal, np.random.default_rng(1))
+        seen = _poses_seen_by(s, cam, K, 6, mount=mount)
+        p.sightings[:] = seen[:2]
+        assert s._locate("c0") is None                                    # two are not enough
+        p.sightings[:] = seen[:3]
+        found = s._locate("c0")
+        assert found is not None and np.linalg.norm(found[0][:3, 3] - cam[:3, 3]) < 0.15
+        # Three sightings, each from a camera somewhere else (what mirrored poses look like): no consensus.
+        others = [look_at(e, (0.22, 0.0, 0.0)) for e in ((0.75, 0.1, 0.9), (0.2, -0.7, 0.4), (-0.3, 0.6, 0.6))]
+        mixed = [_poses_seen_by(s, T, K, 1, seed=k)[0] for k, T in enumerate(others)]
+        for k, x in enumerate(mixed):
+            x.pose = 200 + k
+        p.sightings[:] = mixed
+        assert s._locate("c0") is None
+        # Located from good sightings, then three that a camera elsewhere would have seen: dropped.
+        p.sightings[:] = list(seen)
+        s._adopt("c0", s._locate("c0"))
+        assert p.rough is not None
+        elsewhere = _poses_seen_by(s, others[1], K, 3, seed=5)
+        n0 = len(p.sightings)
+        p.sightings.extend(elsewhere)
+        notes = s._weigh({"c0": list(range(n0, len(p.sightings)))}, None, {"c0"})
+        assert p.rough is None and p.drops == 1 and any("odrzucone" in n for n in notes)
+        # Aimed poses that miss: a pose few sightings back is dropped, one many back is kept.
+        p.sightings[:] = list(seen[:3])
+        p.drops = 0
+        s._adopt("c0", s._locate("c0"))
+        for _ in range(s.cfg.max_misses):
+            s._weigh({}, "c0", {"c0"})
+        assert p.rough is None
+        p.sightings[:] = list(seen) + _poses_seen_by(s, cam, K, 6, seed=7, mount=mount)
+        p.drops = 0
+        s._adopt("c0", s._locate("c0"))
+        assert len(p.inliers) >= 2 * s.cfg.locate_min
+        for _ in range(s.cfg.max_misses + 2):
+            s._weigh({}, "c0", {"c0"})
+        assert p.rough is not None
+        # Located 30 m above the table: no frame to aim at - an exploration pose, not home.
+        p.rough = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 30.0], [0, 0, 0, 1.0]])
+        s.explored, s.index, p.misses = s.cfg.explore_min, 2, 0
         rep = s.step()
-        assert rep.note == "" and s._far_from(rep.joints, s._home)
+        assert rep.phase == "szukanie" and "wracam" not in rep.note and s._far_from(rep.joints, s._home)
     finally:
         world.close()
 
@@ -202,6 +291,7 @@ def test_solver_drops_outlier_frames_and_reports_them():
     Odstajace obserwacje (3 x mediana) odpadaja przed koncowym dopasowaniem, a werdykt mowi ile."""
     import cv2
     import numpy as np
+
     from machinekind_twin.calib.handeye import Observation, judge, solve
     from machinekind_twin.calib.tags import corners_in_tag
 
@@ -235,38 +325,55 @@ def test_solver_drops_outlier_frames_and_reports_them():
     assert len(cam.per_obs_px) == 21 and all(p not in (5, 11, 17) for p, _ in cam.obs_ids)
 
 
-def test_wave_uses_only_frames_captured_after_the_arm_stopped():
-    """Kadr do obserwacji byl najnowszym kadrem do 1 s wstecz - nierzadko z karta jeszcze w ruchu.
-    Teraz kamera musi oddac kadr zlapany po zatrzymaniu (+ margines); bez niego jest pomijana."""
+def test_wave_uses_only_frames_taken_after_the_settle_with_the_card_standing_still():
+    """Was: the newest frame up to 1 s back, then a frame 0.15 s after the stop - the SO-101 still swayed and
+    gave 8-16 px residuals (2026-11-03). Now a frame counts `settle` s after the stop, and a camera's tags only
+    when two consecutive new frames agree within `still_px`; a camera whose tag keeps moving gives none, one
+    without a new frame is left out."""
     import time
+
     import numpy as np
+
     from machinekind_twin.calib import session as sm
 
     t0 = time.monotonic()
     img = np.zeros((8, 8, 3), np.uint8)
+    corners = np.array([[10.0, 10.0], [50.0, 10.0], [50.0, 50.0], [10.0, 50.0]])
+    # Tag shift [px] in each new frame: camera a settles after three frames, camera c keeps swaying.
+    sway = {0: [2.0, 1.0, 0.1, 0.0, 0.0, 0.0, 0.0], 100: [3.0, -3.0] * 30}
 
     class Cams:
         def __init__(self):
-            self.calls = 0
+            self.n = {"a": 0, "c": 0}
 
         def grab(self):
             raise AssertionError("z grab_t nie wolno brac starych kadrow")
 
         def grab_t(self):
-            self.calls += 1
-            fresh = time.monotonic() if self.calls >= 3 else t0 - 0.5
-            return {"a": (img, fresh), "b": (img, t0 - 0.5)}        # b nigdy nie daje swiezego
+            out = {"b": (img, t0 - 0.5)}                                 # b nigdy nie daje swiezego
+            for name, base in (("a", 0), ("c", 100)):
+                self.n[name] += 1
+                out[name] = (np.full((8, 8, 3), base + min(self.n[name], 60), np.uint8), time.monotonic())
+            return out
 
-    cams = Cams()
-    sm.FRESH_TIMEOUT_S, old = 0.4, sm.FRESH_TIMEOUT_S
+    def tags_in(frame, ids):
+        v = int(frame[0, 0, 0])
+        base = 100 if v >= 100 else 0
+        return {0: corners + sum(sway[base][:v - base])}
+
+    orig = sm._tags_in
+    sm._tags_in = tags_in
     try:
-        out = sm.fresh_frames(cams, t0)
+        frames, found, moving = sm.still_frames(Cams(), t0, 0.05, 0.3, 0.4, {0: None})
     finally:
-        sm.FRESH_TIMEOUT_S = old
-    assert set(out) == {"a"} and cams.calls >= 3
+        sm._tags_in = orig
+    assert time.monotonic() - t0 >= 0.05                                  # the settle went by first
+    assert set(frames) == {"a", "c"} and "b" not in found
+    assert set(found["a"]) == {0} and moving == {"c"} and found["c"] == {}
 
     class Plain:
         def grab(self):
             return {"a": img}
 
-    assert set(sm.fresh_frames(Plain(), t0)) == {"a"}                 # symulacja: bez znacznikow czasu
+    frames, found, moving = sm.still_frames(Plain(), t0, 0.8, 0.3, 2.5, {0: None})  # symulacja: bez czasow
+    assert set(frames) == {"a"} and found == {"a": {}} and not moving

@@ -100,7 +100,7 @@ class _CameraSubset:
         return {n: img for n in self.names for img in [self.hub.frame(n)] if img is not None}
 
     def grab_t(self) -> dict[str, tuple[np.ndarray | None, float]]:
-        """{kamera: (kadr albo None, chwila kadru wg time.monotonic)} - dla `session.fresh_frames`."""
+        """{kamera: (kadr albo None, chwila kadru wg time.monotonic)} - dla `session.still_frames`."""
         return {n: self.hub.frame_t(n) for n in self.names}
 
 
@@ -173,18 +173,24 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
     Ramie ma byc wziete dla fali (`twin.claim(CALIB_OWNER)`) przed startem. Na koniec
     fala jedzie do domu TYLKO, jesli wciaz ma ramie: po STOP-ie albo ponownym
     polaczeniu `home()` w `finally` ruszalo ramie, ktore juz do fali nie nalezalo.
+
+    The wave honours the stand's limits (`Workspace.wave`: keep-out boxes, base turn range) and keeps
+    `WaveConfig.clearance` from everything in the twin's scene that is not the arm (table, objects,
+    another robot). While it runs, `job.data["status"]` has a line per camera; at the end
+    `job.data["explain"]` says what each camera saw, and the record goes to `ostatnia_fala.json`.
     """
+    from .. import scene as sc
     from ..calib.card import perturb, pinch_point
     from ..calib.session import Session, WaveConfig
     from ..collision import CollisionChecker
     from ..kinematics import RobotKinematics
-    from .. import scene as sc
 
     ws = twin.workspace
     card = ws.card_obj()
     # Bok taga i K, z ktorymi liczone jest dopasowanie - zapis wyniku bierze je stad,
     # nie z pol panelu w chwili klikniecia "Zapisz".
     job.data["tag_size"] = float(card.tag_size)
+    job.data["cameras"] = list(cameras)
     nominal = card.nominal(pinch_point(RobotKinematics(ws.spec())), ws.spec())
     simulated = twin.status.simulated
     before = dict(twin.extras)                           # np. kostka polozona wczesniej - wroci po fali
@@ -195,12 +201,15 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
             twin.configure(**before, with_card=True, card_pose=truth)
             job.data["card_truth"] = truth
         job.message = "przygotowanie sprawdzacza kolizji"
-        checker = CollisionChecker(sc.build(ws.scene_config(with_card=True, card_pose=nominal, card_collider=0.012)))
+        cfg = WaveConfig.for_spec(ws.spec(), ws.wave)
+        if quick:
+            cfg = replace(cfg, min_obs=20, min_poses=10, max_poses=80)
+        # The twin's own scene (objects, anything else in it) with the nominal card and a padded collider.
+        scene_extras = {k: v for k, v in before.items() if k not in ("with_card", "card", "card_pose", "card_collider")}
+        checker = CollisionChecker(sc.build(ws.scene_config(**scene_extras, with_card=True, card_pose=nominal,
+                                                            card_collider=0.012)), clearance=cfg.clearance)
         intr = {n: ws.camera(n).intrinsics() for n in cameras}
         job.data["intrinsics"] = intr
-        cfg = WaveConfig.for_spec(ws.spec())
-        if quick:
-            cfg = replace(cfg, min_obs=10, min_poses=6, max_poses=36)
         session = Session(_OwnedArm(twin, job), _CameraSubset(twin.cameras, cameras), intr, twin.scene.kin, card,
                           nominal, checker, cfg, seed=int(time.time()) % 10_000)
         while not session.done:
@@ -211,16 +220,20 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
             need = [min(o / cfg.min_obs, p / cfg.min_poses, s / cfg.min_spread) for o, p, s in rep.progress.values()]
             job.progress = min(0.99, max(min(need) if need else 0.0, rep.index / cfg.max_poses))
             job.data["progress"] = rep.progress
-            job.message = f"poza {rep.index}: " + ", ".join(
+            job.data["status"] = session.status()
+            phase = f"celuje w {rep.aim}" if rep.aim else (rep.phase or "")
+            job.message = f"poza {rep.index}" + (f" ({phase})" if phase else "") + ": " + ", ".join(
                 f"{c} widzi {len(t)} tag." for c, t in rep.seen.items()) + (f" - {rep.note}" if rep.note else "")
         job.message = "dopasowanie"
         fit = session.solve()
+        _explain_wave(job, session)
         _dump_wave(twin, session, fit)
         return fit
     except RuntimeError as exc:
         # STOP, Dom, Polacz albo Przerwij w trakcie przejazdu - przerwane, nie blad.
         why = interrupted_by_operator(job, twin, CALIB_OWNER)
         if not why:
+            _explain_wave(job, session)
             if getattr(session, "obs", None):
                 # Blad w trakcie, ale obserwacje juz sa: dopasowanie z nich i werdykt per kamera
                 # (za malo = "zle" z powodem), zamiast wyrzucac dorobek fali.
@@ -229,6 +242,8 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
                 fit = session.solve()
                 _dump_wave(twin, session, fit, error=str(exc))
                 return fit
+            if session is not None:
+                _dump_wave(twin, session, None, error=str(exc))
             raise _explain(exc, twin) from exc
         job.message = why
         return None
@@ -247,17 +262,38 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
             twin.configure(**before)
 
 
+def _explain_wave(job: Job, session) -> None:
+    """`job.data["explain"]`: what each camera saw and from where, for the panel. Quiet on a session without it."""
+    explain = getattr(session, "explain", None)
+    if explain is not None:
+        job.data["explain"] = {c: explain(c) for c in getattr(session, "progress", {})}
+
+
 def _dump_wave(twin, session, fit, error: str = "") -> None:
     """Diagnostyka ostatniej fali do `workspace/ostatnia_fala.json`: pozy, kto co widzial,
     residuum kazdej obserwacji per kamera, odrzucone. Jedna liczba "6,93 px" nie mowi, czy to
-    trzy kadry w ruchu, czy systematyczny blad (K, bok taga, karta na uchwycie)."""
+    trzy kadry w ruchu, czy systematyczny blad (K, bok taga, karta na uchwycie).
+
+    With the wave's map (`mapa`: what was shown, what each camera saw, by direction and place). A wave
+    without a fit (`fit` None) or with untrusted cameras says why in `blad`, and the log too."""
     import json
     try:
         ws = twin.workspace
+        cams = {} if fit is None else fit.cameras
+        if not error and fit is not None:
+            bad = [f"{n}: {c.reason}" for n, c in cams.items() if not c.trusted]
+            bad += [f"{n}: nie widziala karty" for n in session.progress if n not in cams]
+            if bad:
+                error = "niezaufane - " + "; ".join(bad)
+        if error:
+            sees = "; ".join(session.explain(c) for c in session.progress) if hasattr(session, "explain") else ""
+            logger.warning("Fala bez zaufanego wyniku: %s%s", error, f" | {sees}" if sees else "")
         out = {"czas": time.strftime("%Y-%m-%dT%H:%M:%S"), "blad": error,
                "bok_taga_mm": round(float(session.card.tag_size) * 1000, 2), "pozy": session.log,
                "kamery": {}}
-        for name, cam in fit.cameras.items():
+        if hasattr(session, "summary"):
+            out["mapa"] = session.summary()
+        for name, cam in cams.items():
             out["kamery"][name] = {
                 "obserwacji": cam.n_obs, "rms_px": round(cam.rms_px, 3), "max_px": round(cam.max_px, 3),
                 "rozrzut_st": round(cam.spread_deg, 2), "zaufana": cam.trusted, "powod": cam.reason,
@@ -269,9 +305,10 @@ def _dump_wave(twin, session, fit, error: str = "") -> None:
                               "T_frame2base": np.asarray(o.T_frame2base, float).round(6).tolist(),
                               "rogi": np.asarray(o.corners, float).round(3).tolist()}
                              for o in session.obs]
-        out["montaze"] = {n: np.asarray(T, float).round(6).tolist() for n, T in fit.mounts.items()}
-        out["poprawki_zer"] = {"stawy": {n: round(v, 3) for n, v in fit.joint_offsets.items()},
-                               "uwaga": fit.offsets_note, "juz_w_ramieniu": dict(ws.joint_offsets)}
+        if fit is not None:
+            out["montaze"] = {n: np.asarray(T, float).round(6).tolist() for n, T in fit.mounts.items()}
+            out["poprawki_zer"] = {"stawy": {n: round(v, 3) for n, v in fit.joint_offsets.items()},
+                                   "uwaga": fit.offsets_note, "juz_w_ramieniu": dict(ws.joint_offsets)}
         out["intrynsyki"] = {n: {"K": np.asarray(K, float).tolist(), "dist": None if d is None else np.asarray(d, float).tolist()}
                              for n, (K, d) in session.intrinsics.items()}
         # Obok stanowiska, NIE w workspace/calib: tam panel szuka zestawow polozen kamer (presetow)

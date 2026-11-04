@@ -11,6 +11,9 @@ attributes, or a plain mapping of joint targets. Such packages register their st
 under the `machinekind_twin.strategies` entry point group (`entry_points.STRATEGIES`), and the twin
 builds each one from its settings.
 
+An `Action` can also carry the model decisions a strategy made since the previous tick (`Decision`):
+the twin writes them into the run's log and never acts on them.
+
 The twin's runner ends a run when `act` raises or a target names a joint the robot does not have
 or is not a finite number (the arm then holds where it measures), when the twin takes the arm away
 (Home, STOP, reconnect, another owner), when the arm disconnects, and when the time limit runs out.
@@ -18,14 +21,16 @@ or is not a finite number (the arm then holds where it measures), when the twin 
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 
-__all__ = ["Action", "ActionLike", "Frame", "ObjectPose", "Observation", "RunInfo", "S", "Strategy"]
+__all__ = [
+    "Action", "ActionLike", "Decision", "Frame", "ObjectPose", "Observation", "RunInfo", "S", "Strategy",
+]
 
 #: The type of a strategy's settings (`Strategy.settings`). Invariant, because `settings` is a
 #: writable class attribute: code that takes any strategy annotates it `Strategy[Any]`.
@@ -94,11 +99,29 @@ class Observation:
     #: The task's goal point, shape (3,); None = no goal.
     goal: np.ndarray | None = None
     #: Objects the perception knows about, by a detector's label, e.g. "cube" or "red pen"; empty
-    #: when no detector runs.
+    #: when no detector runs. Further objects with one label are "red pen 2", "red pen 3", ...; a key
+    #: keeps naming the same object while it is tracked (`detector.base_label` gives the label).
     objects: Mapping[str, ObjectPose] = field(default_factory=dict)
     #: Camera frames by camera name, fetched only when read: a strategy without vision pays nothing.
     #: A camera without a frame (not open yet, stream broken) is missing.
     frames: Mapping[str, Frame] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, eq=False)
+class Decision:
+    """Diagnostic model response for optional episode recording. Compared by identity."""
+
+    #: The question text or a prompt identifier.
+    question: str
+    #: The model's answer as received: text, or JSON as text.
+    answer: str
+    #: Additional JSON context. Images are saved separately when enabled.
+    #: Arrays larger than 64 elements are represented by type and shape.
+    state: Mapping[str, Any] = field(default_factory=dict)
+    #: The model's confidence, 0..1, when it gives one.
+    confidence: float | None = None
+    #: Seconds from asking to the answer.
+    response_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +138,9 @@ class Action:
     error: float | None = None
     #: A short status line for the panel.
     note: str = ""
+    #: Model answers that came back since the previous tick, for the run's log. The runner acts only
+    #: on `target`.
+    decisions: Sequence[Decision] = ()
 
 
 class ActionLike(Protocol):

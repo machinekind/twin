@@ -1,20 +1,28 @@
-"""Tracking: what the detectors placed, per label, through the gripper's hold, as `Observation.objects`.
+"""Tracking: what the detectors placed, per object, through the gripper's hold, as `Observation.objects`.
 
-Each label gets the twin's old cube tracker (`perception.ObjectTracker`), unchanged. A detector
-thread hands its placed labels to `Tracks.observe`; whoever reads the objects (a running strategy
-through `objects=`, or the panel when idle) calls `Tracks.step`, which feeds each tracker its newest
-measurement once, together with the hand (TCP pose and jaw angles), and publishes one `ObjectPose`
-per label.
+Each object gets the twin's old cube tracker (`perception.ObjectTracker`), unchanged. A detector
+thread hands its placed objects to `Tracks.observe`; whoever reads the objects (a running strategy
+through `objects=`, or the panel when idle) calls `Tracks.step`. A step feeds each tracker the hand
+(TCP pose and jaw angles) and publishes one `ObjectPose` per object. It feeds a tracker its newest
+measurement only when that measurement's call read newer frames than the last one fed.
+
+An object's key is its label, and "<label> 2", "<label> 3", ... for further objects of one label
+(`machinekind_twin_api.instance_key`). A measurement goes to the track of its label nearest to it
+(`Tracks.MATCH_M`), wherever the detector listed it; one the tracks of its label leave over takes a
+track of the label no measurement of the call is near, else it starts a new track under the lowest
+free key. A key thus names one block while it moves, rides in the hand or is put down elsewhere. A
+label with one track and one measurement pairs them, however far apart, as one label always did.
 
 Every published pose carries `age_s`: seconds since the frames it was measured from were captured,
 0 while it follows the jaws. The tracker's `source` passes through with one bounded rewrite, so the
 word matches the age:
 
-- a plain "ostatnie widziane" becomes "kamery" while the label is in its detector's latest answer
+- a plain "ostatnie widziane" becomes "kamery" while the object is in its detector's latest answer
   and `age_s <= fresh_s`; the tracker says "kamery" only on the step that accepts a measurement,
   and a strategy stepping faster than the detector answers would otherwise see it flicker;
 - a "kamery" becomes "ostatnie widziane" once `age_s > fresh_s`, so a measurement that is old on
-  arrival (a language model answering in 20 s) is never presented as what the cameras see now.
+  arrival is never presented as what the cameras see now. A language model's 20 s answer and a
+  repeated answer are both old on arrival.
 
 `fresh_s` is twice the detector's interval, kept within 0.5 to 1.0 s: the cube detector at 0.33 s
 keeps "kamery" within 0.66 s of capture, close to the old panel's 0.5 s. Annotated sources
@@ -22,6 +30,11 @@ keeps "kamery" within 0.66 s of capture, close to the old panel's 0.5 s. Annotat
 
 The tracker's thresholds on the jaw (`still` in particular) are per update, so they depend on who
 steps the tracks and how often, as they did with the policy's own rate before.
+
+Blocks may rest on blocks. A closing jaw takes only the object nearest the TCP, never the block
+under it (`ObjectTracker.may_grab`). An object that leaves the jaws comes to rest on the highest
+other tracked block under it, or on the table (`ObjectTracker.rest_on`). `resting` gives where
+each block is, for the box fit: its height when the cameras cannot tell it, and what holds whom.
 """
 
 from __future__ import annotations
@@ -31,12 +44,14 @@ import math
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 import numpy as np
+from machinekind_twin_api.detector import instance_key
 from machinekind_twin_api.strategy import ObjectPose
 
 from .kinematics import pose
-from .objects import Located
+from .objects import Located, Resting, assign
 from .perception import CubeDetection, ObjectTracker
 from .robots import RobotSpec
 
@@ -72,6 +87,7 @@ FAR_HAND = Hand(pose(np.eye(3), np.array([0.0, 0.0, 10.0])), 0.0, 0.0, 0.0)
 class TrackView:
     """One published object as the panel shows it: the state of the last step."""
 
+    #: Its key in `Observation.objects`: the label, or "<label> <n>" for a further object of it.
     label: str
     pos: np.ndarray
     rot: np.ndarray
@@ -91,7 +107,8 @@ class TrackView:
 class _Answer:
     """A detector's latest answer, as far as tracking cares."""
 
-    labels: frozenset[str]
+    #: The keys of the objects in it.
+    keys: frozenset[str]
     hold_s: float
     fresh_s: float
 
@@ -99,9 +116,12 @@ class _Answer:
 @dataclass(eq=False)
 class _Track:
     tracker: ObjectTracker
+    #: The detector's label; the track's key may carry an instance number.
+    label: str
     detector: str
-    #: The newest measurement handed in; fed to the tracker once (`used_t`).
+    #: The newest measurement handed in. It is fed when its call read newer frames than `used_t`.
     pending: Located
+    #: The `_read_t` of the last measurement fed from `detector`.
     used_t: float = -math.inf
     #: The last measurement fed to the tracker: what the panel shows about it.
     fed: Located | None = None
@@ -110,8 +130,14 @@ class _Track:
     view: TrackView | None = field(default=None)
 
 
+def _read_t(loc: Located) -> float:
+    """Roughly when the frames read by the call that gave `loc` were captured. A repeated answer has
+    an old `t` and a new `_read_t`."""
+    return loc.t + loc.age_s
+
+
 class Tracks:
-    """Per-label trackers fed by detector threads and stepped by the readers. Thread-safe."""
+    """Per-object trackers fed by detector threads and stepped by the readers. Thread-safe."""
 
     #: Lowest confidence a measurement must have (the old panel's gate).
     MIN_CONFIDENCE = 0.4
@@ -121,6 +147,12 @@ class Tracks:
     FRESH_MIN_S, FRESH_MAX_S = 0.5, 1.0
     #: A second `step` sooner than this after the previous one gets its result [s].
     MIN_STEP_S = 0.01
+    #: How far past a block's footprint a dropped object still lands on it [m].
+    REST_MARGIN_M = 0.005
+    #: How far below a block's top a dropped object's bottom may be and still land on it [m].
+    REST_SLACK_M = 0.01
+    #: A measurement continues the nearest track of its label within this distance [m].
+    MATCH_M = 0.06
 
     def __init__(self, spec: RobotSpec, clock: Callable[[], float]):
         self._spec = spec
@@ -145,17 +177,68 @@ class Tracks:
 
     # ------------------------------------------------------------------ the detector thread
     def observe(self, detector: str, batch: list[Located], latency_s: float, interval_s: float) -> None:
-        """One detector call's placed labels. The newer capture time wins a label two detectors share."""
+        """One detector call's placed objects. The newer capture time wins an object two detectors share.
+        A detector's latest answer always replaces its own earlier one. A detector that takes over a
+        track has its measurement fed, even if the previous detector's last call read later frames.
+
+        The largest `Located.age_s` in the batch counts as latency, so a repeated answer's pose is
+        held until the next answer. A repeat read from newer frames is fed again. It renews the hold,
+        and its age still counts from its `t`.
+        """
+        age_s = max((loc.age_s for loc in batch), default=0.0)
         with self._lock:
-            self._answers[detector] = _Answer(frozenset(loc.label for loc in batch),
-                                              self.hold_s_for(interval_s, latency_s),
-                                              self.fresh_s_for(interval_s))
+            keys = set()
+            by_label: dict[str, list[Located]] = {}
             for loc in batch:
-                track = self._tracks.get(loc.label)
-                if track is None:
-                    self._tracks[loc.label] = _Track(ObjectTracker.for_spec(self._spec), detector, loc)
-                elif loc.t >= track.pending.t:
-                    track.pending, track.detector = loc, detector
+                by_label.setdefault(loc.label, []).append(loc)
+            for label, locs in by_label.items():
+                for key, loc in self._match(label, locs):
+                    keys.add(key)
+                    track = self._tracks.get(key)
+                    if track is None:
+                        self._tracks[key] = _Track(ObjectTracker.for_spec(self._spec), label, detector, loc)
+                    elif detector == track.detector:
+                        track.pending = loc
+                    elif loc.t >= track.pending.t:
+                        track.pending, track.detector, track.used_t = loc, detector, -math.inf
+            self._answers[detector] = _Answer(frozenset(keys), self.hold_s_for(interval_s, latency_s + age_s),
+                                              self.fresh_s_for(interval_s))
+
+    def _match(self, label: str, locs: list[Located]) -> list[tuple[str, Located]]:
+        """Each measurement of one label with the key of its track (`MATCH_M`, then the tracks left
+        over, nearest first), or a new key."""
+        keys = [key for key, t in self._tracks.items() if t.label == label]
+        if len(keys) == 1 and len(locs) == 1:
+            return [(keys[0], locs[0])]
+        where = [self._where(self._tracks[key]) for key in keys]
+        cost = np.array([[float(np.linalg.norm(np.asarray(loc.pos, float) - p)) for p in where]
+                         for loc in locs]).reshape(len(locs), len(keys))
+        pairs = dict(assign(cost, self.MATCH_M))
+        free = [b for b in range(len(keys)) if b not in pairs.values()]
+        left = sorted((a for a in range(len(locs)) if a not in pairs), key=lambda a: cost[a].min(initial=math.inf))
+        for a in left:
+            if free:
+                b = min(free, key=lambda b: cost[a, b])
+                pairs[a] = b
+                free.remove(b)
+        out = []
+        taken = set(self._tracks)
+        for a, loc in enumerate(locs):
+            if a in pairs:
+                out.append((keys[pairs[a]], loc))
+                continue
+            n = 1
+            while instance_key(label, n) in taken:
+                n += 1
+            taken.add(instance_key(label, n))
+            out.append((instance_key(label, n), loc))
+        return out
+
+    @staticmethod
+    def _where(track: _Track) -> np.ndarray:
+        """Where a track's object is now: its published pose, or its first measurement."""
+        v = track.view if track.view is not None else track.pending
+        return np.asarray(v.pos, float)
 
     # ------------------------------------------------------------------ the readers
     def step(self, hand: Hand | Callable[[], Hand | None] | None = None) -> dict[str, ObjectPose]:
@@ -171,14 +254,16 @@ class Tracks:
                 return dict(self._result)
             self._last_step = now
             h = self._hand(hand) if self._tracks else FAR_HAND
+            nearest = self._nearest(h)
             result: dict[str, ObjectPose] = {}
-            for label in sorted(self._tracks):
-                track = self._tracks[label]
-                if self._step_track(label, track, h, now):
-                    del self._tracks[label]
+            for key in sorted(self._tracks):
+                track = self._tracks[key]
+                track.tracker.may_grab = key == nearest
+                if self._step_track(key, track, h, now):
+                    del self._tracks[key]
                 elif track.view is not None:
                     v = track.view
-                    result[label] = ObjectPose(v.pos.copy(), v.rot.copy(), v.source, v.age_s)
+                    result[key] = ObjectPose(v.pos.copy(), v.rot.copy(), v.source, v.age_s)
             self._result = result
             return dict(result)
 
@@ -188,9 +273,21 @@ class Tracks:
             return self._last_step
 
     def snapshot(self) -> list[TrackView]:
-        """The published objects of the last step, by label. Never steps."""
+        """The published objects of the last step, by key. Never steps."""
         with self._lock:
             return [t.view for _, t in sorted(self._tracks.items()) if t.view is not None]
+
+    def resting(self) -> dict[str, Resting]:
+        """Per object with a size, by key, where its block is: the published pose, or the newest
+        measurement before the first step. A block in the hand rests on nothing and is left out."""
+        with self._lock:
+            out = {}
+            for key, track in self._tracks.items():
+                v = track.view if track.view is not None else track.pending
+                if v.size_m is None or (track.view is not None and track.view.source == "w dloni"):
+                    continue
+                out[key] = Resting(np.array(v.pos, float), np.array(v.rot, float), v.size_m, track.label)
+            return out
 
     def clear(self, detector: str | None = None) -> None:
         """Forget every track, or only those following `detector`."""
@@ -201,10 +298,10 @@ class Tracks:
                 self._result = {}
                 return
             self._answers.pop(detector, None)
-            gone = [label for label, t in self._tracks.items() if t.detector == detector]
-            for label in gone:
-                del self._tracks[label]
-                self._result.pop(label, None)
+            gone = [key for key, t in self._tracks.items() if t.detector == detector]
+            for key in gone:
+                del self._tracks[key]
+                self._result.pop(key, None)
 
     # ------------------------------------------------------------------ internals
     def _hand(self, hand: Hand | Callable[[], Hand | None] | None) -> Hand:
@@ -219,18 +316,52 @@ class Tracks:
                 hand = None
         return hand if hand is not None else FAR_HAND
 
-    def _step_track(self, label: str, track: _Track, hand: Hand, now: float) -> bool:
+    def _nearest(self, hand: Hand) -> str | None:
+        """The key of the object in the hand, else of the one whose last pose lies nearest the TCP;
+        None without poses."""
+        for name, track in self._tracks.items():
+            if track.tracker.in_hand is not None:
+                return name
+        tcp = hand.T_tcp[:3, 3]
+        best, nearest = math.inf, None
+        for name, track in self._tracks.items():
+            last = track.tracker.last
+            if last is not None and (d := float(np.linalg.norm(last[0] - tcp))) < best:
+                best, nearest = d, name
+        return nearest
+
+    def _rest_on(self, key: str, half_h: float, p: np.ndarray) -> float:
+        """The centre height of `key`'s box, `half_h` half its height, come to rest under `p`: on
+        the highest other published block whose footprint holds p's xy and whose top is below the
+        box, else on the table."""
+        top = 0.0
+        for other, track in self._tracks.items():
+            v = track.view
+            if other == key or v is None or v.size_m is None or v.source == "w dloni":
+                continue
+            local = v.rot.T @ (np.asarray(p, float) - v.pos)
+            hx, hy, hz = (s / 2 for s in v.size_m)
+            m = self.REST_MARGIN_M
+            other_top = float(v.pos[2]) + hz
+            below = other_top <= p[2] - half_h + self.REST_SLACK_M
+            if abs(local[0]) <= hx + m and abs(local[1]) <= hy + m and below:
+                top = max(top, other_top)
+        return top + half_h
+
+    def _step_track(self, key: str, track: _Track, hand: Hand, now: float) -> bool:
         """One tracker update; True when the track is to be deleted."""
         answer = self._answers.get(track.detector) or _Answer(frozenset(), self.HOLD_S, self.FRESH_MIN_S)
         p = track.pending
         det = None
-        if p.t > track.used_t and p.confidence > self.MIN_CONFIDENCE and now - p.t <= answer.hold_s:
-            track.used_t, track.fed = p.t, p
+        if _read_t(p) > track.used_t and p.confidence > self.MIN_CONFIDENCE and now - p.t <= answer.hold_s:
+            track.used_t, track.fed = _read_t(p), p
             det = CubeDetection(np.asarray(p.pos, float).copy(), np.asarray(p.rot, float).copy(),
                                 area_px=p.confidence, confidence=p.confidence, n_cameras=p.n_cameras, t=p.t)
         tracker = track.tracker
         # A slow detector's pose must outlive the wait for its next answer.
         tracker.hold_s = answer.hold_s
+        size = track.fed.size_m if track.fed is not None else None
+        tracker.rest_on = None if size is None else partial(self._rest_on, key, size[2] / 2)
         got = tracker.update(det, hand.T_tcp, hand.grip_q, hand.grip_cmd, hand.grip_closed, now)
         if got is None or track.fed is None:
             track.view = None
@@ -243,12 +374,12 @@ class Tracks:
             age = 0.0
         else:
             age = max(0.0, now - tracker.t_seen) if math.isfinite(tracker.t_seen) else 0.0
-            if source == "ostatnie widziane" and label in answer.labels and age <= answer.fresh_s:
+            if source == "ostatnie widziane" and key in answer.keys and age <= answer.fresh_s:
                 source = "kamery"
             elif source == "kamery" and age > answer.fresh_s:
                 source = "ostatnie widziane"
         fed = track.fed
-        track.view = TrackView(label, np.asarray(got[0], float).copy(), np.asarray(got[1], float).copy(),
+        track.view = TrackView(key, np.asarray(got[0], float).copy(), np.asarray(got[1], float).copy(),
                                source, age, fed.n_cameras, fed.confidence, fed.size_m, fed.method,
                                track.detector)
         return False

@@ -54,9 +54,17 @@ Useful commands:
 uv run twin workspace                  # Inspect the workstation
 uv run twin calib-sim --n 5 --cameras 2 # Evaluate calibration in simulation
 uv run twin export workspace/export    # Export scene.xml, assets/ and station.json
+uv run twin episode                    # Report the latest recorded episode
+uv run twin ui --stand ~/stands/desk   # Work on a stand folder: setup, calibration history, station
+uv run twin eval-strategy swing --robot arm6 --set joint=base_yaw --episodes 5   # Run a strategy many times in simulation; the scene judges success
 ```
 
-Your workstation is saved in `workspace/twin.json`. For backend and strategy
+Episode recording is opt-in in the panel; see [recording and reports](docs/EPISODES.md).
+`twin eval-strategy` records every run; see [strategy evaluation](docs/TWIN.md#strategy-evaluation).
+
+Your workstation is saved in `workspace/twin.json`. A physical stand and its
+measurement history can live in a stand folder of its own (`twin stand`, see
+[docs/TWIN.md](docs/TWIN.md#stands)). For backend and strategy
 settings, copy `configs/default.yaml` to `configs/local.yaml`, then launch with:
 
 ```bash
@@ -72,6 +80,8 @@ in the robot's base frame, tracks it and passes it to strategies in
 `Observation.objects`.
 The [LLM detector](packages/machinekind_twin_llm) asks a vision model through the
 `claude` or `codex` CLI, on the subscription that CLI is logged in with.
+The [seeded detector](packages/machinekind_twin_seeded) follows the blocks that
+model names by colour, five times a second, and gives each its yaw.
 
 Existing robot integrations include the **SO-101** through
 [`soarm`](https://github.com/machinekind/so-arm101/tree/main/packages/soarm) and the

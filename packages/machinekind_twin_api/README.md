@@ -8,7 +8,7 @@ only numpy: no MuJoCo, viser, torch or OpenCV.
 
 | Module | What is in it |
 |---|---|
-| `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
+| `machinekind_twin_api.strategy` | `Observation` (what a strategy sees in one tick), `Action` (what it wants), `ActionLike`, `Decision` (a model's answer, for the run's log), `RunInfo`, `ObjectPose`, `Frame`, the `Strategy` protocol and its settings type `S` |
 | `machinekind_twin_api.backend` | `BackendContext` (what a backend factory gets), the `BackendPlugin` protocol, the `RobotBackend` base class, `RobotInfo` |
 | `machinekind_twin_api.detector` | `DetectRequest` (one call's frames), `Detection` (one object seen in one frame, in pixels), `DetectorInfo`, the `Detector` protocol |
 | `machinekind_twin_api.entry_points` | `ROBOTS`, `BACKENDS`, `STRATEGIES`, `DETECTORS`: the entry point groups the twin reads |
@@ -49,7 +49,7 @@ cube = "cube_detector:ColourCube"                # a class following Detector, b
   like the detector. It calls `detect` on a dedicated thread with a `DetectRequest`, which holds
   the frames by camera name. The detector returns `Detection`s, each giving what it sees in one
   image and where, in pixels. The twin places and tracks the objects, and strategies read them as
-  `Observation.objects[label]`.
+  `Observation.objects[key]`: the label, or `<label> 2`, `<label> 3` for further objects of it.
 
 String settings can declare dropdown choices without importing the twin:
 
@@ -113,6 +113,11 @@ sets it as `Hold` does. Subclassing also lets a type checker (pyright, mypy) che
 and `stop` against the contract. At runtime the twin does not need the base class: it requires
 `hz` and `act`, and checks `settings` when the class has one.
 
+### Model decisions
+
+`Action.decisions` carries diagnostic model responses when episode recording is enabled.
+See [episode recording](../../docs/EPISODES.md#model-decisions) for the API example and format.
+
 ## A backend
 
 ```python
@@ -152,7 +157,12 @@ class MemoryArm:
 ```
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
-`efforts`, ...); `RobotBackend` documents what each one means. Complete, tested examples live in
+`efforts`, ...); `RobotBackend` documents what each one means.
+
+The twin may open a backend only to watch an arm it does not drive, such as a second arm next to
+the working one. It does so only for a factory marked `@read_only_capable`, with
+`BackendContext.read_only` set. Such a backend then writes nothing to the hardware, also not in
+`connect` and `disconnect`: no torque, no goals, no settings. `send_joints` raises. Complete, tested examples live in
 the twin's repository: `examples/robots/arm6`, `examples/robots/testbot`, `examples/strategies/swing`
 and `examples/detectors/cube`.
 
@@ -203,26 +213,43 @@ above the table or its `size_m`. The detector needs no intrinsics, camera poses 
 turns each pixel into a ray through the calibrated camera and places the object in one of three
 ways:
 
-* It fits a box of `size_m`, resting on the table, to the masks from every camera; this also
-  gives yaw.
+* It fits a box of `size_m`, resting on the table or on another block, to the masks from every
+  camera; this also gives yaw.
 * It takes the point nearest to the rays of two or more cameras.
 * It takes the point where one ray meets the plane at the object's height.
 
-The twin then tracks each label and publishes it with `age_s`, the seconds since the frames were
+The twin then tracks each object and publishes it with `age_s`, the seconds since the frames were
 captured.
+
+A detection's own `age_s` is the age in seconds of the frames it was made from, relative to this
+call's frames. The default 0 means this call's frames. A detector that repeats an earlier answer
+sets it to the time between that answer's frame and this call's frame from the same camera. The twin
+adds it to the published `age_s`. The twin also counts it as latency, so it holds the pose until the
+next answer.
 
 `request.frames` lists the cameras offered in this call. A frame is fetched only when read.
 `frames.get(name)` and `name in frames` tell whether a camera has a frame younger than a second.
 `frames[name]` raises `KeyError` when it has none. Pixels follow the OpenCV convention in the
-frame's own resolution. Labels are compared after stripping whitespace and lower-casing, and each
-label holds one object.
+frame's own resolution. Labels are compared after stripping whitespace and lower-casing. Several
+objects may share a label: report each in its own detection. The twin pairs them across cameras
+by geometry and keys them `red cube`, `red cube 2`, ... in `Observation.objects`; a key keeps
+naming one object while it is tracked. `base_label(key)` gives the label back, and
+`instance_key(label, n)` builds a key.
+
+`request.arm_masks` holds a bool mask per camera in the shape of its frame. A mask is True where
+the robot arm hides the scene. The twin makes a mask only when it is read, for the capture time of
+that camera's frame in `frames`. Reading a mask reads its frame. `arm_masks.get(name)` returns None
+when the twin has no mask for that camera. Iteration and `len` list every offered camera, like
+`frames`. `arm_masks[name]` raises `KeyError` for a camera without a mask. Read masks one camera at
+a time with `get`. `items()` and `dict(arm_masks)` make every camera's mask. They fail when a
+camera has none. The field defaults to an empty mapping. It was added in 0.1.5.
 
 `Detector` supplies these defaults:
 
 * `settings` is None.
 * `interval_s` is 1.0, the shortest time between the starts of two calls.
 * `pixel_error_px` is 3.0, how far off the pixels may be. The twin pairs the rays of two cameras
-  for one label only when they pass this close.
+  for one object only when they pass this close.
 * `start` and `stop` do nothing.
 
 The twin reads `interval_s` and `pixel_error_px` from the instance, so a detector can set them
@@ -234,9 +261,10 @@ subclassing `Detector` is optional.
 
 ## Evolving the contract
 
-Plugins pin `machinekind-twin-api>=0.1,<0.2`. Four rules keep every 0.1.x release working for them:
+Plugins pin `machinekind-twin-api>=0.1,<0.2`. Five rules keep every 0.1.x release working for them:
 
 * A new field goes at the end of a frozen dataclass, with a default.
+* What a strategy hands back each tick lives in `Action`, so `act`'s signature never changes.
 * Everything `detect` gets lives in `DetectRequest`, so its signature never changes.
 * What a detector learns once, at start, lives in `DetectorInfo`.
 * Nothing is removed or renamed within 0.x.

@@ -21,6 +21,7 @@ from machinekind_twin_api import (
     Action,
     BackendContext,
     BackendPlugin,
+    Decision,
     Detection,
     Detector,
     DetectorInfo,
@@ -35,7 +36,9 @@ from machinekind_twin_api import (
     backend,
     detector,
     entry_points,
+    read_only_capable,
     strategy,
+    supports_read_only,
 )
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -111,6 +114,27 @@ def test_an_action_without_a_target_keeps_driving_to_the_previous_one():
     assert action.success is None
 
 
+def test_an_action_carries_no_model_decisions_by_default():
+    assert Action().decisions == ()
+    assert dataclasses.fields(Action)[-1].name == "decisions"
+
+
+def test_a_decision_needs_only_the_question_and_the_answer():
+    decision = Decision(question="where is the cube?", answer='{"x": 0.2}')
+
+    assert decision.state == {}
+    assert decision.confidence is None
+    assert decision.response_s is None
+
+
+def test_an_action_with_decisions_compares_without_comparing_arrays():
+    decision = Decision(question="q", answer="a", state={"image": np.zeros((4, 6, 3))})
+    action = Action(decisions=(decision,))
+
+    assert action == Action(decisions=(decision,))
+    assert action != Action(decisions=(copy.copy(decision),))
+
+
 def test_run_info_holds_the_robot_once():
     info = RunInfo(robot="testbot", joints=("j1", "gripper"), gripper="gripper",
                    limits={"j1": (-90.0, 90.0)}, max_vel={"j1": 90.0}, folder=Path("."), simulated=True)
@@ -118,7 +142,7 @@ def test_run_info_holds_the_robot_once():
     assert info.joints == ("j1", "gripper")
 
 
-@pytest.mark.parametrize("cls", [ObjectPose, Frame, RunInfo, Observation, Action, BackendContext,
+@pytest.mark.parametrize("cls", [ObjectPose, Frame, RunInfo, Observation, Action, Decision, BackendContext,
                                  Detection, DetectRequest, DetectorInfo])
 def test_the_twins_data_is_frozen(cls):
     assert cls.__dataclass_params__.frozen
@@ -285,12 +309,41 @@ def test_a_detection_has_only_pixels_by_default():
     assert d.confidence == 1.0
 
 
+def test_an_object_s_key_carries_its_instance_number_and_base_label_drops_it():
+    assert [machinekind_twin_api.instance_key("red cube", n) for n in (1, 2, 3)] == \
+        ["red cube", "red cube 2", "red cube 3"]
+    assert machinekind_twin_api.base_label("red cube 2") == "red cube"
+    assert machinekind_twin_api.base_label("  Red   Cube 12 ") == "red cube"
+    assert machinekind_twin_api.base_label("red cube") == "red cube"
+    assert machinekind_twin_api.base_label("7") == "7"
+
+
 def test_a_detection_with_a_mask_compares_by_identity():
     d = Detection(label="cube", camera="front", pixel=(1.0, 1.0), mask=np.ones((4, 6), bool))
 
     assert d == d  # noqa: PLR0124 - the point: equal to itself even with an array inside
     assert d != copy.copy(d)
     assert hash(d) == hash(d)
+
+
+def test_a_request_built_without_arm_masks_has_none():
+    by_keyword = DetectRequest(frames={"front": frame()}, step=0)
+    by_position = DetectRequest({"front": frame()}, 1)
+
+    for request in (by_keyword, by_position):
+        assert request.arm_masks.get("front") is None
+        assert len(request.arm_masks) == 0
+    assert [f.name for f in dataclasses.fields(DetectRequest)] == ["frames", "step", "arm_masks"]
+def test_a_detection_s_age_defaults_to_0_and_can_be_replaced():
+    d = Detection("cube", "front", (320.0, 240.0))
+
+    assert d.age_s == 0.0
+
+    older = dataclasses.replace(d, age_s=5.0)
+
+    assert older is not d
+    assert older.age_s == 5.0
+    assert (older.label, older.camera, older.pixel) == (d.label, d.camera, d.pixel)
 
 
 # --------------------------------------------------------------------------- backend
@@ -332,6 +385,25 @@ def test_the_backend_context_is_plain_data():
 
     assert ctx.settings == {"start": {"j1": 10.0}}
     assert BackendContext(**{f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)}) == ctx
+
+
+def test_a_backend_context_is_read_write_unless_the_twin_says_otherwise():
+    assert context().read_only is False
+    assert dataclasses.replace(context(), read_only=True).read_only is True
+
+
+def test_only_a_marked_factory_supports_read_only():
+    def create(ctx: BackendContext) -> MemoryArm:
+        return MemoryArm(ctx)
+
+    class Factory:
+        @property
+        def supports_read_only(self) -> bool:  # a property on the class is not the mark
+            return True
+
+    assert not supports_read_only(create) and not supports_read_only(Factory)
+    assert read_only_capable(create) is create
+    assert supports_read_only(create)
 
 
 def test_a_plugin_with_the_required_members_is_a_backend_plugin():

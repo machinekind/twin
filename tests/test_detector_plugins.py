@@ -4,7 +4,8 @@ Most detectors here are inline fakes that `install_detector` installs the way pi
 dist names start apart from the strategy tests' ones: a module once imported stays in
 `sys.modules` for the whole run. The example cube detector (`examples/detectors/cube`) is
 installed by the `cube_example` fixture, the LLM detector (`packages/machinekind_twin_llm`) by
-the `llm_package` fixture.
+the `llm_package` fixture and the seeded detector (`packages/machinekind_twin_seeded`) by the
+`seeded_package` fixture.
 """
 
 from __future__ import annotations
@@ -392,7 +393,7 @@ def test_the_llm_settings_draw_as_str_float_int_and_bool(llm_package):
     assert {name: field.kind for name, field in fields.items()} == {
         "cli": str, "model": str, "effort": str, "objects": str, "cameras": str, "prompt": str,
         "interval_s": float, "timeout_s": float, "max_side_px": int, "pixel_error_px": float,
-        "reuse_if_still": bool, "max_calls_per_hour": int, "min_confidence": float, "executable": str,
+        "reuse_if_still": bool, "reuse_max_age_s": float, "max_calls_per_hour": int, "min_confidence": float, "executable": str,
         "claude_images": str,
     }
     assert not any(field.required for field in fields.values())
@@ -433,3 +434,69 @@ def test_the_llm_config_section_prefills_the_detector(tmp_path, monkeypatch, llm
 def test_the_llm_detector_refuses_settings_it_cannot_work_with(llm_package):
     with pytest.raises(ValueError, match="is an OpenAI model and cli is claude"):
         load_detector(llm_package).create({"cli": "claude"})
+
+
+# --------------------------------------------------------------------------- the seeded detector
+
+
+def test_the_seeded_detector_is_listed_through_its_entry_point(seeded_package):
+    assert seeded_package in detectors()
+    assert detectors()[seeded_package].value == "machinekind_twin_seeded:SeededDetector"
+
+    plugin = load_detector(seeded_package)
+
+    assert plugin.name == "seeded"
+    assert plugin.cls.__name__ == "SeededDetector"
+    assert plugin.source == "machinekind-twin-seeded 0.1.0 (machinekind_twin_seeded:SeededDetector)"
+    assert plugin.summary == ("Grows colour tracks from the LLM detector's pixels and gives the twin each "
+                              "block's mask and size.")
+
+
+def test_the_seeded_settings_draw_as_str_float_and_int(seeded_package):
+    fields = {field.name: field for field in load_detector(seeded_package).fields}
+
+    assert list(fields) == [
+        "cli", "model", "effort", "labels", "labels_sizes", "labels_hsv", "cameras", "prompt", "interval_s",
+        "seed_interval_s", "seed_error_px", "track_error_px", "lost_after_s", "min_area_px", "max_blob_ratio",
+        "timeout_s", "max_side_px", "max_calls_per_hour", "min_confidence", "executable", "claude_images",
+    ]
+    assert {name: field.kind for name, field in fields.items()} == {
+        "cli": str, "model": str, "effort": str, "labels": str, "labels_sizes": str, "labels_hsv": str,
+        "cameras": str, "prompt": str, "interval_s": float, "seed_interval_s": float, "seed_error_px": float,
+        "track_error_px": float, "lost_after_s": float, "min_area_px": int, "max_blob_ratio": float,
+        "timeout_s": float, "max_side_px": int, "max_calls_per_hour": int, "min_confidence": float,
+        "executable": str, "claude_images": str,
+    }
+    assert not any(field.required for field in fields.values())
+    assert fields["model"].choices_from == "cli"
+    assert fields["cli"].options({}) == ("codex", "claude")
+    assert fields["interval_s"].default == 0.2
+    assert fields["seed_interval_s"].default == 10.0
+
+
+def test_the_seeded_config_section_prefills_the_detector(tmp_path, monkeypatch, seeded_package):
+    config = tmp_path / "local.yaml"
+    config.write_text("seeded:\n  cli: claude\n  model: sonnet\n  interval_s: 0.5\n"
+                      "  labels: red cube\n  labels_sizes: cube=0.03x0.03x0.03\n",
+                      encoding="utf-8")
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(config))
+
+    raw = config_section(seeded_package)
+    detector = load_detector(seeded_package).create(raw)
+
+    assert raw["labels_sizes"] == "cube=0.03x0.03x0.03"
+    assert detector.config.cli == "claude"
+    assert detector.interval_s == 0.5
+    assert detector._llm.config.model == "sonnet"
+    assert detector._llm.config.objects == "red cube"
+
+
+def test_the_seeded_detector_refuses_settings_it_cannot_work_with(seeded_package):
+    plugin = load_detector(seeded_package)
+
+    with pytest.raises(ValueError, match="seeded: interval_s"):
+        plugin.create({"interval_s": 0.01})
+    with pytest.raises(ValueError, match="seeded: labels: 'purple cube' names no colour"):
+        plugin.create({"labels": "purple cube"})
+    with pytest.raises(ValueError, match="is an OpenAI model and cli is claude"):
+        plugin.create({"cli": "claude"})
