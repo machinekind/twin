@@ -3,20 +3,21 @@ what is where, in each frame's pixels.
 
 `start` finds the CLI and refuses one that is not logged in or logged in with an API key. `detect`
 asks one question per call, in a call directory of its own under the detector's work directory.
-With `reuse_if_still`, it repeats the last answer while no camera's image changes. Over the hourly
-cap, it raises instead of asking. `stop` cancels a running question and kills the CLI's process
-group within 0.2 s.
+With `reuse_if_still`, it repeats the last answer while no camera's image changes. The repeat is as
+old as that answer's frames. Over the hourly cap, it raises instead of asking. `stop` cancels a
+running question and kills the CLI's process group within 0.2 s.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import shutil
 import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -41,10 +42,11 @@ class LlmDetector(Detector[LlmSettings]):
 
     settings = LlmSettings
 
-    def __init__(self, settings: LlmSettings | None = None):
+    def __init__(self, settings: LlmSettings | None = None, *, clock: Callable[[], float] = time.monotonic):
         settings = settings if settings is not None else LlmSettings()
         validate(settings)
         self.config = settings
+        self._clock = clock
         self.interval_s = float(settings.interval_s)
         # A fallback only: each Detection carries the error scaled to its own frame.
         self.pixel_error_px = float(settings.pixel_error_px)
@@ -54,8 +56,10 @@ class LlmDetector(Detector[LlmSettings]):
         self._work: Path | None = None
         self._cancel = threading.Event()
         self._calls: deque[float] = deque()
-        #: The still check keeps the last question's frame thumbnails, its answer and when it was asked.
+        #: The still check keeps the last question's frame thumbnails and capture times by camera,
+        #: its answer and the `_clock` time it was asked.
         self._thumbs: dict[str, np.ndarray] = {}
+        self._captured: dict[str, float] = {}
         self._last: list[Detection] = []
         self._last_t = -float("inf")
 
@@ -82,7 +86,7 @@ class LlmDetector(Detector[LlmSettings]):
         self._work = Path(tempfile.mkdtemp(prefix="twin-llm-"))
         self._cancel = threading.Event()
         self._calls.clear()
-        self._thumbs, self._last, self._last_t = {}, [], -float("inf")
+        self._thumbs, self._captured, self._last, self._last_t = {}, {}, [], -float("inf")
 
     def stop(self, reason: str) -> None:
         self._cancel.set()
@@ -97,18 +101,21 @@ class LlmDetector(Detector[LlmSettings]):
         config = self.config
         cameras = self._cameras or tuple(request.frames)
         frames: list[tuple[str, np.ndarray]] = []
+        captured: dict[str, float] = {}
         for name in cameras:
             frame = request.frames.get(name)
             if frame is not None:
                 frames.append((name, frame.image))
+                captured[name] = self._clock() - frame.age_s
         if not frames:
             raise RuntimeError(f"no fresh frame from cameras {', '.join(cameras) or '(none offered)'}")
 
-        now = time.monotonic()
+        now = self._clock()
         thumbs = {name: thumbnail(image) for name, image in frames} if config.reuse_if_still else {}
         if thumbs and now - self._last_t < config.reuse_max_age_s and unchanged(self._thumbs, thumbs):
             logger.debug("llm: no camera's image changed, repeating the answer from %.0f s ago", now - self._last_t)
-            return list(self._last)
+            return [dataclasses.replace(d, age_s=max(0.0, captured[d.camera] - self._captured[d.camera]))
+                    for d in self._last]
 
         if config.max_calls_per_hour:
             while self._calls and now - self._calls[0] >= CALL_WINDOW_S:
@@ -140,5 +147,5 @@ class LlmDetector(Detector[LlmSettings]):
             raise cli.CliCancelled("stopped")
 
         dets = parse_answer(raw, sent, self._objects, config.min_confidence, config.pixel_error_px)
-        self._thumbs, self._last, self._last_t = thumbs, dets, now
+        self._thumbs, self._captured, self._last, self._last_t = thumbs, captured, dets, now
         return list(dets)

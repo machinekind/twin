@@ -5,6 +5,7 @@ ways to place a label, and what `locate` drops. Synthetic cameras and projected 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import ClassVar
 
 import cv2
@@ -276,6 +277,52 @@ def test_a_point_behind_a_camera_is_not_triangulated():
     np.testing.assert_allclose(obj.pos, P, atol=1e-6)
 
 
+# ------------------------------------------------------------------ age
+def test_a_detection_s_age_moves_its_capture_time_back():
+    (obj,), _ = run([Detection("pen", "a", project(A, P), height_m=float(P[2]), age_s=2.5)])
+
+    assert obj.method == "promien"
+    assert obj.t == -1.5
+    assert obj.age_s == 2.5
+
+
+def test_two_detections_of_the_same_age_triangulate_at_their_date():
+    dets = [Detection("pen", "a", project(A, P), age_s=10.0),
+            Detection("pen", "b", project(B, P), age_s=10.0)]
+    (obj,), _ = run(dets)
+
+    assert obj.method == "triangulacja" and obj.n_cameras == 2
+    assert np.linalg.norm(obj.pos - P) < 5e-4
+    assert obj.t == 1.0 - 10.0
+    assert obj.age_s == 10.0
+
+
+def test_a_triangulated_point_takes_the_oldest_detection_date():
+    dets = [Detection("pen", "a", project(A, P)),
+            Detection("pen", "b", project(B, P), age_s=1.5)]
+    (obj,), _ = run(dets)
+
+    assert obj.method == "triangulacja"
+    assert obj.t == 0.5
+    assert obj.age_s == 1.5
+
+
+def test_a_single_ray_takes_the_more_confident_detection_s_date():
+    sure, unsure = _disagreeing()
+    (obj,), _ = run([sure, replace(unsure, age_s=20.0)], pixel_error_px=3.0)
+
+    assert obj.method == "promien"
+    assert obj.t == 1.0
+    assert obj.age_s == 0.0
+
+
+@pytest.mark.parametrize("age", [-0.5, float("nan"), float("inf")])
+def test_a_negative_or_non_finite_age_is_dropped(age):
+    placed, dropped = run([Detection("pen", "a", project(A, P), age_s=age)])
+
+    assert placed == [] and dropped == 1
+
+
 # ------------------------------------------------------------------ labels and what is dropped
 def test_labels_are_compared_stripped_and_lower_cased():
     dets = [Detection("Red Pen ", "a", project(A, P), height_m=float(P[2])),
@@ -381,6 +428,56 @@ def test_masks_of_a_cube_go_to_the_silhouette_fit():
     (size, masks, used_mapper, used_occ, t), = FakeCube.calls
     assert size == (0.03, 0.03, 0.03) and used_mapper is mapper and used_occ is occ and t == 1.0
     assert masks["a"] is dets[0].mask and masks["b"] is dets[1].mask
+
+
+def test_the_silhouette_fit_and_its_arm_masks_use_the_detection_dates():
+    FakeCube.calls = []
+    answer = CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.88, n_cameras=2)
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    seen_times = []
+
+    def occluders(times):
+        seen_times.append(times)
+
+    dets = [replace(d, age_s=3.0) for d in _masks()]
+    (obj,), _ = run(dets, mapper=mapper, occluders=occluders, box=lambda size, base=0.0: FakeCube(size, answer))
+
+    assert obj.method == "sylwetka"
+    assert seen_times == [{"a": -2.0, "b": -1.0}]
+    (*_, t), = FakeCube.calls
+    assert t == -2.0
+    assert obj.t == -2.0
+    assert obj.age_s == 3.0
+
+
+def test_touching_blocks_fitted_again_together_keep_their_detection_dates():
+    answer = CubeDetection(np.array([0.2, 0.01, 0.015]), np.eye(3), 1.0, 0.9, n_cameras=2)
+    refits = []
+
+    class Refit(FakeCube):
+        def fit_silhouette(self, masks, cameras, start, occluders=None):
+            refits.append(self.size)
+            return self.answer
+
+    left, right = np.zeros((H, W), bool), np.zeros((H, W), bool)
+    left[200:220, 300:320] = True
+    right[200:220, 320:340] = True
+    dets = [replace(d, label="left", mask=left.copy(), age_s=3.0) for d in _masks()]
+    dets += [replace(d, label="right", mask=right.copy(), age_s=1.0) for d in _masks()]
+    seen_times = []
+
+    def occluders(times):
+        seen_times.append(times)
+
+    mapper = mapper_for(CAMS, get_spec(BOT).desk)
+    placed, _ = run(dets, mapper=mapper, occluders=occluders, box=lambda size, base=0.0: Refit(size, answer))
+
+    by = {obj.label: obj for obj in placed}
+    assert len(refits) >= 2
+    assert (by["left"].t, by["left"].age_s) == (-2.0, 3.0)
+    assert (by["right"].t, by["right"].age_s) == (0.0, 1.0)
+    assert {"a": -2.0, "b": -1.0} in seen_times and {"a": 0.0, "b": 1.0} in seen_times
+    assert {"a": 1.0, "b": 2.0} not in seen_times
 
 
 def test_a_gated_out_fit_places_nothing():

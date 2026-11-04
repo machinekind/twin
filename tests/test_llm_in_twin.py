@@ -136,19 +136,59 @@ def test_a_slow_answer_is_published_as_last_seen_with_its_age(perception: Percep
     assert perception.objects()["red pen"].age_s == pytest.approx(42.0, abs=1e-6)
 
 
-def test_a_still_scene_repeats_the_answer_and_publishes_kamery(perception: Perception, clock: Clock,
-                                                              llm_package: str, fake_codex: tuple[str, Path]):
+def test_a_repeat_is_last_seen_with_the_age_of_the_model_s_frames(perception: Perception, clock: Clock,
+                                                                  llm_package: str, fake_codex: tuple[str, Path],
+                                                                  monkeypatch: pytest.MonkeyPatch):
     exe, log = fake_codex
     runner = start_llm(perception, llm_package, exe)
+    monkeypatch.setattr(runner.detector, "_clock", clock)
     runner.step_once()
+    first = perception.objects()["red pen"].position
     clock.advance(10.0)
 
     runner.step_once()
 
     assert len(runs(log)) == 1                  # no second question for unchanged frames
     assert runner.status.calls == 2 and runner.status.failures == 0
+
     clock.advance(0.4)
     pen = perception.objects()["red pen"]
+
+    assert pen.source == "ostatnie widziane"
+    assert pen.age_s == pytest.approx(10.4, abs=1e-6)
+    np.testing.assert_array_equal(pen.position, first)
+
+
+def test_the_object_outlives_a_still_scene_until_the_next_question_answers(
+        perception: Perception, clock: Clock, llm_package: str, fake_codex: tuple[str, Path],
+        monkeypatch: pytest.MonkeyPatch):
+    exe, log = fake_codex
+    runner = start_llm(perception, llm_package, exe)
+    monkeypatch.setattr(runner.detector, "_clock", clock)
+    runner.step_once()
+    perception.objects()
+    for k in range(1, 6):
+        clock.advance(10.0)
+        runner.step_once()
+        pen = perception.objects()["red pen"]
+
+        assert pen.source == "ostatnie widziane"
+        assert pen.age_s == pytest.approx(10.0 * k, abs=1e-6)
+
+    assert len(runs(log)) == 1
+
+    clock.advance(20.0)
+    pen = perception.objects()["red pen"]
+
+    assert pen.age_s == pytest.approx(70.0, abs=1e-6)
+    np.testing.assert_allclose(pen.position, PEN, atol=3e-3)
+
+    runner.step_once()
+
+    assert len(runs(log)) == 2
+
+    clock.advance(0.4)
+    pen = perception.objects()["red pen"]
+
     assert pen.source == "kamery"
     assert pen.age_s == pytest.approx(0.4, abs=1e-6)
-    np.testing.assert_allclose(pen.position, PEN, atol=3e-3)
