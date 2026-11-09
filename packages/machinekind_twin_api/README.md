@@ -12,8 +12,10 @@ only numpy: no MuJoCo, viser, torch or OpenCV.
 | `machinekind_twin_api.backend` | `BackendContext` (what a backend factory gets), the `BackendPlugin` protocol, the `RobotBackend` base class, `RobotInfo` |
 | `machinekind_twin_api.detector` | `DetectRequest` (one call's frames), `Detection` (one object seen in one frame, in pixels), `DetectorInfo`, the `Detector` protocol |
 | `machinekind_twin_api.entry_points` | `ROBOTS`, `BACKENDS`, `STRATEGIES`, `DETECTORS`: the entry point groups the twin reads |
+| `machinekind_twin_api.boards` | ChArUco boards: `BoardSpec`, corner labels, detection, the board's pose in a camera (`board_pose`) and on the table (`fit_board`), a camera's intrinsics (`fit_intrinsics`, `calibrate`). OpenCV is passed in as `cv2`; the module imports with numpy only. Added in 0.1.6 |
 
-Everything is also importable from `machinekind_twin_api` itself.
+Everything but `boards` is also importable from `machinekind_twin_api` itself; import `boards` as a
+module.
 
 ## How the twin uses them
 
