@@ -5,6 +5,7 @@
     twin demo --robot NAZWA          # ... z innym zainstalowanym ramieniem (jego demo.json, jesli je ma)
     twin card --tag-mm 50            # arkusz karty kalibracyjnej do druku
     twin board --square-mm 28        # tablica ChArUco do intrynsyk kamery (--layout 7x5: tablica OpenCV)
+    twin board --layout 3x5 --square-mm 45   # tablica detektora charuco (kalibracja podejscia)
     twin calib-sim --n 5 --cameras 2 # kalibracja w symulacji, oceniana wzgledem prawdy
     twin calib-sim --robot NAZWA     # ... na innym zainstalowanym ramieniu
     twin workspace                   # co wiadomo o stanowisku (kamery, kalibracja)
@@ -119,7 +120,10 @@ def _board(a: argparse.Namespace) -> int:
     from .calib.intrinsics import Board
 
     board = Board.of(a.layout, a.square_mm / 1000.0)
-    sheet = board.image(dpi=a.dpi)
+    try:
+        sheet = board.image(dpi=a.dpi)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     out = Path(a.out)
     cv2.imwrite(str(out), sheet)
     print(f"Zapisano {out} ({sheet.shape[1]} x {sheet.shape[0]} px, {a.dpi} dpi).")
@@ -708,9 +712,10 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("board", help="tablica ChArUco do intrynsyk kamery (PNG, A4)")
     p.add_argument("--out", default="tablica_charuco.png")
     p.add_argument("--square-mm", type=float, default=28.0, help="bok kwadratu szachownicy [mm]")
-    p.add_argument("--layout", default="9x6", choices=("9x6", "7x5"),
-                   help="uklad tablicy: 9x6 (tablica blizniaka, ArUco 5x5) albo 7x5 (przykladowa tablica "
-                        "OpenCV, ArUco 6x6; domyslnie 9x6)")
+    p.add_argument("--layout", default="9x6", choices=("9x6", "7x5", "3x5"),
+                   help="uklad tablicy: 9x6 (tablica blizniaka, ArUco 5x5), 7x5 (przykladowa tablica "
+                        "OpenCV, ArUco 6x6) albo 3x5 (tablica detektora charuco i kalibracji podejscia, "
+                        "ArUco 6x6, z --square-mm 45); domyslnie 9x6")
     p.add_argument("--dpi", type=int, default=300)
     p.set_defaults(fn=_board)
 

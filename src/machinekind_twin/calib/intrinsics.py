@@ -31,6 +31,9 @@ board moves is smeared, and a few such frames pull the fit off by a pixel or mor
 `still_px` set, `add` takes a view only when the board's corners moved less than that since
 the previous frame, so the operator sets the board, holds it, and moves on. `solve` then
 leaves out the few views that still disagree with the rest (`outlier_factor`) and fits again.
+
+The board's geometry, the corner detection and the fit come from `machinekind_twin_api.boards`;
+this module adds the layouts, the printable sheet, the choice of views and the verdict.
 """
 
 from __future__ import annotations
@@ -42,11 +45,14 @@ from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
+from machinekind_twin_api import boards
 
 if TYPE_CHECKING:
     from ..robots import RobotSpec
 
 DICT = cv2.aruco.DICT_5X5_100
+#: A Collector needs this many corners in a frame, or all of a smaller board's.
+MIN_CORNERS = 12
 
 
 @dataclass(frozen=True)
@@ -62,12 +68,22 @@ class Layout:
 
 #: The boards the detector knows, by name. `9x6` is the twin's own sheet (`twin board`, the panel's download).
 #: `7x5` is the sample board of OpenCV's ChArUco tutorial, found on many desks already: a print of it needs no new
-#: sheet, only its square measured.
+#: sheet, only its square measured. `3x5` is the board of the `charuco` detector's defaults, printed with 45 mm
+#: squares and 35 mm markers.
 LAYOUTS: dict[str, Layout] = {
     "9x6": Layout((9, 6), DICT, 0.75, "9x6, ArUco 5x5 - szachownica blizniaka"),
     "7x5": Layout((7, 5), cv2.aruco.DICT_6X6_250, 0.6, "7x5, ArUco 6x6 - przykladowa tablica OpenCV"),
+    "3x5": Layout((3, 5), cv2.aruco.DICT_6X6_250, 35 / 45, "3x5, ArUco 6x6 - tablica kalibracji podejscia"),
 }
 DEFAULT_LAYOUT = "9x6"
+
+
+def dictionary_name(code: int) -> str:
+    """The name in `cv2.aruco` of the predefined ArUco dictionary `code`, e.g. "DICT_6X6_250"."""
+    for name in sorted(dir(cv2.aruco)):
+        if name.startswith("DICT_") and getattr(cv2.aruco, name) == code:
+            return name
+    raise ValueError(f"nieznany slownik ArUco {code}")
 
 
 @dataclass(frozen=True)
@@ -95,29 +111,45 @@ class Board:
         lay = LAYOUTS.get(self.name)
         return lay.label if lay is not None else f"{self.squares[0]}x{self.squares[1]}"
 
+    @property
+    def spec(self) -> boards.BoardSpec:
+        """The board as `machinekind_twin_api.boards` describes it."""
+        return boards.BoardSpec(self.squares[0], self.squares[1], self.square, self.marker,
+                                dictionary_name(self.dictionary))
+
     def cv(self) -> cv2.aruco.CharucoBoard:
-        return cv2.aruco.CharucoBoard(self.squares, self.square, self.marker,
-                                      cv2.aruco.getPredefinedDictionary(self.dictionary))
+        return self.spec.cv_board(cv2)
 
     @property
     def size(self) -> tuple[float, float]:
-        return self.squares[0] * self.square, self.squares[1] * self.square
+        return self.spec.size_m
 
     def board_image(self, px_per_m: float) -> np.ndarray:
-        w, h = (int(round(s * px_per_m)) for s in self.size)
-        return self.cv().generateImage((w, h), marginSize=0, borderBits=1)
+        return self.spec.image(cv2, px_per_m)
 
     def image(self, dpi: int = 300) -> np.ndarray:
-        """Arkusz A4 w poziomie z tablica na srodku i opisem, do druku w skali 100%."""
+        """An A4 sheet with the board in the middle and a caption, to print at 100%: landscape, or portrait
+        for a board taller than wide."""
         px_per_m = dpi / 0.0254
         W, H = int(0.297 * px_per_m), int(0.210 * px_per_m)
-        sheet = np.full((H, W), 255, np.uint8)
+        if self.size[1] > self.size[0]:
+            W, H = H, W
         b = self.board_image(px_per_m)
+        if b.shape[0] > H or b.shape[1] > W:
+            raise ValueError(f"tablica {self.size[0] * 1000:.0f} x {self.size[1] * 1000:.0f} mm nie miesci sie "
+                             f"na arkuszu A4")
+        sheet = np.full((H, W), 255, np.uint8)
         y0, x0 = (H - b.shape[0]) // 2, (W - b.shape[1]) // 2
         sheet[y0:y0 + b.shape[0], x0:x0 + b.shape[1]] = b
         text = (f"ChArUco {self.label}, kwadrat {self.square * 1000:.1f} mm - "
                 f"drukuj w skali 100% i ZMIERZ kwadrat linijka")
-        cv2.putText(sheet, text, (x0, max(40, y0 - 25)), cv2.FONT_HERSHEY_SIMPLEX, dpi / 300.0, 0, 2)
+        font, scale, x = cv2.FONT_HERSHEY_SIMPLEX, dpi / 300.0, x0
+        width = cv2.getTextSize(text, font, scale, 2)[0][0]
+        if x0 + width > W:
+            # The caption does not fit beside the board: it starts at a 1 cm margin, smaller if it must.
+            x = int(0.01 * px_per_m)
+            scale *= min(1.0, (W - 2 * x) / width)
+        cv2.putText(sheet, text, (x, max(40, y0 - 25)), font, scale, 0, 2)
         return sheet
 
 
@@ -207,14 +239,16 @@ def read_file(path: str | Path) -> Result:
 
 
 class Collector:
-    def __init__(self, board: Board, size: tuple[int, int], *, min_corners: int = 12, min_move: float = 0.08,
-                 min_tilt_deg: float = 8.0, grid: tuple[int, int] = (8, 6), min_tilt_spread: float = 35.0,
-                 prefer_tilt_after: int = 6, prefer_tilt_coverage: float = 0.55, still_px: float | None = None,
-                 outlier_factor: float = 2.0):
+    def __init__(self, board: Board, size: tuple[int, int], *, min_corners: int | None = None,
+                 min_move: float = 0.08, min_tilt_deg: float = 8.0, grid: tuple[int, int] = (8, 6),
+                 min_tilt_spread: float = 35.0, prefer_tilt_after: int = 6, prefer_tilt_coverage: float = 0.55,
+                 still_px: float | None = None, outlier_factor: float = 2.0):
         self.board = board
-        self.cv_board = board.cv()
-        self.detector = cv2.aruco.CharucoDetector(self.cv_board)
+        # OpenCV's default detector: the marker corners are not refined, the ChArUco corners are.
+        self.cv_board, self.detector = boards.charuco_detector(board.spec, cv2, subpix=False)
         self.size = (int(size[0]), int(size[1]))
+        if min_corners is None:
+            min_corners = min(MIN_CORNERS, board.spec.n_corners)
         self.min_corners, self.min_move, self.min_tilt = min_corners, min_move, np.radians(min_tilt_deg)
         #: Najmniejszy laczny rozrzut pochylen tablicy [st.] (hypot rozrzutow w obu osiach kadru),
         #: przy ktorym K jest zaufane.
@@ -239,14 +273,10 @@ class Collector:
 
     def detect(self, img: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
         """(obj (n, 3), img (n, 2)) rogow tablicy albo None."""
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.ndim == 3 else img
-        corners, ids, _, _ = self.detector.detectBoard(gray)
-        if ids is None or len(ids) < self.min_corners:
+        pts = boards.board_points(img, self.cv_board, self.detector, cv2, markers_below=0)
+        if pts.n_corners < self.min_corners:
             return None
-        obj, pts = self.cv_board.matchImagePoints(corners, ids)
-        if obj is None or len(obj) < self.min_corners:
-            return None
-        return obj.reshape(-1, 3).astype(np.float64), pts.reshape(-1, 2).astype(np.float64)
+        return pts.obj, pts.img
 
     def _view(self, obj: np.ndarray, pts: np.ndarray) -> View:
         W = self.size[0]
@@ -332,19 +362,13 @@ class Collector:
               min_tilt_spread: float | None = None) -> Result:
         if len(self.views) < 4:
             raise RuntimeError(f"za malo kadrow ({len(self.views)}) - potrzeba co najmniej 4, zalecane {min_views}+")
-        keep = list(range(len(self.views)))
-        rms, K, dist, per_view = self._fit(keep)
         # A smeared or misread view sits far above the rest. Leave the worst one out and fit again,
         # but never below `min_views` or three quarters of the session.
         floor = max(min_views, int(np.ceil(0.75 * len(self.views))))
-        dropped: list[tuple[int, float]] = []
-        while len(keep) > floor:
-            worst = int(np.argmax(per_view))
-            if per_view[worst] <= max(self.outlier_factor * float(np.median(per_view)), max_rms):
-                break
-            dropped.append((keep.pop(worst), per_view[worst]))
-            rms, K, dist, per_view = self._fit(keep)
-        views = [self.views[i] for i in keep]
+        fit = boards.fit_intrinsics([(v.obj, v.img) for v in self.views], self.size, cv2, max_rms_px=max_rms,
+                                    outlier_factor=self.outlier_factor, min_kept=floor)
+        rms, K, dist, per_view, dropped = fit.rms_px, fit.K, fit.dist, fit.per_view_px, fit.dropped
+        views = [self.views[i] for i in fit.kept]
         coverage = self._coverage_of(views)
         reasons = []
         if rms > max_rms:
@@ -375,15 +399,6 @@ class Collector:
                            f"(oczekiwane okolo {f0:.0f} px) - zbierz kadry od nowa")
         return Result(np.asarray(K, float), np.asarray(dist, float).ravel(), float(rms), per_view, len(views),
                       coverage, self.size, not reasons, "; ".join(reasons), dropped)
-
-    def _fit(self, keep: list[int]) -> tuple[float, np.ndarray, np.ndarray, list[float]]:
-        """(rms, K, dist, per-view errors) of the views `keep` (indices into `views`)."""
-        obj = [self.views[i].obj.astype(np.float32) for i in keep]
-        pts = [self.views[i].img.astype(np.float32) for i in keep]
-        # Przy malej liczbie kadrow trzeci wspolczynnik radialny tylko dopasowuje szum.
-        flags = cv2.CALIB_FIX_K3 if len(keep) < 15 else 0
-        out = cv2.calibrateCameraExtended(obj, pts, self.size, None, None, flags=flags)
-        return float(out[0]), out[1], out[2], [float(e) for e in np.asarray(out[7]).ravel()]
 
 
 # ------------------------------------------------------------ symulacja

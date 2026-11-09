@@ -53,3 +53,23 @@ def test_board_command_takes_a_layout(tmp_path, capsys):
     assert det is not None and len(det[0]) == 24
     assert Collector(Board.of("9x6", 0.030), sheet.shape[1::-1]).detect(sheet) is None
     assert "30.0 mm" in capsys.readouterr().out
+
+
+def test_the_approach_board_prints_upright_with_45_mm_squares(tmp_path, capsys):
+    """3x5 is taller than wide: the sheet is A4 portrait, and the `charuco` detector's board finds it."""
+    import numpy as np
+    from machinekind_twin_api import boards
+
+    out = tmp_path / "board.png"
+    assert main(["board", "--layout", "3x5", "--square-mm", "45", "--dpi", "150", "--out", str(out)]) == 0
+    assert "45.0 mm" in capsys.readouterr().out
+    sheet = cv2.imread(str(out), cv2.IMREAD_GRAYSCALE)
+    assert sheet.shape == (int(0.297 * 150 / 0.0254), int(0.210 * 150 / 0.0254))
+    _, detector = boards.charuco_detector(boards.BoardSpec(), cv2)
+    ids, pixels = boards.detect_corners(sheet, detector, cv2)
+    assert sorted(ids) == list(range(8))
+    # Neighbouring corners lie one 45 mm square apart at 150 dpi.
+    by_id = dict(zip(ids.tolist(), pixels, strict=True))
+    assert np.linalg.norm(by_id[1] - by_id[0]) == pytest.approx(45 / 25.4 * 150, abs=1.0)
+    with pytest.raises(SystemExit, match="nie miesci sie"):
+        main(["board", "--layout", "3x5", "--square-mm", "80", "--out", str(out)])

@@ -8,7 +8,9 @@ twin re-exports the same classes from `machinekind_twin.strategy` and `machineki
   `read_only_capable` marks a factory that can open its arm read-only;
 * `detector`: frames in, Detections (pixels) out, the `Detector` protocol;
 * `entry_points`: the groups under which a package registers its robots, backends, strategies and
-  detectors.
+  detectors;
+* `boards`: ChArUco board geometry, detection and intrinsics, OpenCV passed in. Import it as a module;
+  its names are not re-exported here.
 """
 
 from .backend import (
@@ -23,7 +25,7 @@ from .detector import Detection, Detector, DetectorInfo, DetectRequest, base_lab
 from .entry_points import BACKENDS, DETECTORS, ROBOTS, STRATEGIES
 from .strategy import Action, ActionLike, Decision, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 __all__ = [
     "BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext",
