@@ -1,14 +1,15 @@
 # Detector guide
 
 How the twin runs detectors and tracks the objects they report, the LLM
-detector and the seeded detector. [The workstation guide](TWIN.md) covers the
-station itself.
+detector, the seeded detector and the built-in ChArUco detector. [The workstation
+guide](TWIN.md) covers the station itself.
 
 ## Detectors and objects
 
 A detector is the fourth plugin kind, next to robots, backends and strategies.
 It is a class in an installed package, registered in the
-`machinekind_twin.detectors` entry point group. It reads camera frames and
+`machinekind_twin.detectors` entry point group. The twin registers one detector
+itself, [`charuco`](#charuco-detector). It reads camera frames and
 reports what it sees **in the image** and where. The twin turns these image
 positions into poses and tracks them. Strategies read the result as
 `Observation.objects[key]`, an `ObjectPose` in the robot's base frame with
@@ -622,3 +623,45 @@ print(hsv[v - 3:v + 4, u - 3:u + 4].reshape(-1, 3))
 Take H about 8 either side of what you see, and S and V from about two thirds
 of the lowest values up to 255. Check the shaded side of the block too. Red
 lies near both H = 0 and H = 180 and needs one range on each side.
+
+## ChArUco detector
+
+The twin registers `charuco` itself, in its own `pyproject.toml`
+(`machinekind_twin.charuco_detector`). It reports every inner corner of a
+ChArUco board that a fixed camera sees, at its sub-pixel position. The twin
+places each corner with the same camera models it places blocks with, so a
+corner carries the error a block would have there. A strategy that measures that
+error reads the corners from `Observation.objects`, such as soarm-lab's
+`calibrate_approach`.
+
+Each corner is one detection labelled `<label_prefix> c<id>`, such as
+`charuco c3`. The `c` keeps the corner number from reading as an instance
+number. The detection's height is the board's thickness.
+
+Print the board with `twin board --layout 3x5 --square-mm 45`, then measure a
+square and a marker on the print. Set what you measured in the config:
+
+```yaml
+charuco:
+  square_m: 0.045        # measured on the print [m]
+  marker_m: 0.035
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `squares_x`, `squares_y` | 3, 5 | Squares along the board's short and long side |
+| `square_m`, `marker_m` | 0.045, 0.035 | Square and marker sides as measured on the print [m] |
+| `dictionary` | `DICT_6X6_250` | OpenCV's predefined ArUco dictionary of the markers |
+| `thickness_m` | 0 | The board's top above the table [m] |
+| `label_prefix` | `charuco` | The labels' first words; must not end in a number |
+| `interval_s` | 0.5 | Shortest time between two calls [s] |
+| `pixel_error_px` | 1.0 | How far off a corner's pixel may be [px] |
+
+A package may register a detector named `charuco` too. Its entry replaces the
+twin's own, whatever order the environment lists them in. Two packages other
+than the twin that register one name still fail to load, as before.
+
+The board's geometry, the corner detection, the board's pose in a camera and the
+intrinsics fit live in `machinekind_twin_api.boards`. That module needs only
+numpy, and OpenCV is passed in, so a robot package can use it without the twin.
+The panel's lens step uses the same code.

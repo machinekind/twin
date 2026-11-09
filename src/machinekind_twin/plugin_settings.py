@@ -115,21 +115,39 @@ class PluginClass:
         return self.cls(settings)
 
 
+#: The twin's own distribution: what it registers itself is built in, and a package's entry of the same name
+#: replaces it.
+TWIN_DIST = "machinekind-twin"
+
+
 def registered(group: str, clash: str) -> dict[str, EntryPoint]:
     """Entry points of `group` by lower-cased name, not loaded yet: loading imports the package.
 
-    Two packages registering one name with different values fail; `clash` starts the error,
-    e.g. "Dwie strategie".
+    An entry of another package replaces the twin's own entry of the same name, whatever the order
+    the environment lists them in. Two other packages registering one name with different values
+    fail; `clash` starts the error, e.g. "Dwie strategie".
     """
     found: dict[str, EntryPoint] = {}
 
     for ep in entry_points(group=group):
         name = ep.name.lower()
-        if name in found and found[name].value != ep.value:
-            raise ValueError(f"{clash} o nazwie {name!r}: {found[name].value} i {ep.value}")
+        old = found.get(name)
+        if old is not None and old.value != ep.value:
+            if built_in(old) != built_in(ep):
+                found[name] = old if built_in(ep) else ep
+                continue
+            raise ValueError(f"{clash} o nazwie {name!r}: {old.value} i {ep.value}")
         found[name] = ep
 
     return found
+
+
+def built_in(ep: EntryPoint) -> bool:
+    """Whether the twin's own distribution registers `ep`."""
+    dist = getattr(ep, "dist", None)
+    if dist is None:
+        return False
+    return (dist.name or "").replace("_", "-").lower() == TWIN_DIST
 
 
 def load_class(ep: EntryPoint, method: str, where: str, contract: str) -> type:

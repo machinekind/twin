@@ -336,7 +336,7 @@ For hardware:
 | `twin demo` | Example workstation; supports `--robot`, `--path` and explicit `--force` |
 | `twin ui` | Browser panel; supports `--workspace`, `--port`, `--arm` and `--detector NAME` |
 | `twin card --tag-mm 50` | Printable calibration card |
-| `twin board --square-mm 28` | Printable ChArUco board; `--layout 7x5` for OpenCV's sample board |
+| `twin board --square-mm 28` | Printable ChArUco board; `--layout 7x5` for OpenCV's sample board, `--layout 3x5 --square-mm 45` for the `charuco` detector's board |
 | `twin calib-sim --n 5 --cameras 2` | Calibration against simulated ground truth; optional `--robot` |
 | `twin workspace` | Inspect workstation state; optional `--path` |
 | `twin export workspace/export` | Export scene, assets and station data; optional `--path` |
@@ -542,7 +542,10 @@ record, marks the summary `interrupted` and exits with 130.
 Fixed-camera calibration jointly estimates camera poses relative to the robot
 base and the card's mount in the gripper. Each real camera needs trusted
 intrinsics first. The card uses AprilTag 36h11; the twin's ChArUco board uses ArUco
-5x5, and the 7 by 5 layout of OpenCV's sample board uses ArUco 6x6.
+5x5, and the 7 by 5 layout of OpenCV's sample board uses ArUco 6x6. So does the
+3 by 5 board of the `charuco` detector ([Detector guide](DETECTORS.md#charuco-detector)).
+Board geometry, corner detection and the intrinsics fit live in
+`machinekind_twin_api.boards`, so a robot package can use them without the twin.
 The solver rejects outlier observations and refits while retaining enough
 observations per camera. See [the calibration tests](../tests/test_twin_calib.py).
 
