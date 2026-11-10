@@ -284,7 +284,9 @@ def _check(spec: RobotSpec, path: Path) -> None:
                             "obrot [rad/s])")
             break
     tag = spec.base_tag
-    # `type`, not `isinstance`: YAML `true` is a bool, and a bool is an int in Python.
+    # `type`, not `isinstance`: YAML `true` is a bool, and a bool is an int in Python. 36h11 has 587 tags.
+    if tag is not None and not (type(tag.id) is int and 0 <= tag.id <= 586):
+        problems.append("`base_tag.id`: liczba calkowita 0..586 (AprilTag 36h11)")
     if tag is not None and not (type(tag.size) in (int, float) and 0 < tag.size < np.inf):
         problems.append("`base_tag.size`: bok czarnego kwadratu [m], liczba dodatnia")
     if tag is not None and not _is_rigid(np.asarray(tag.pose, float)):

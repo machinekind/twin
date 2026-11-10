@@ -21,6 +21,7 @@ from conftest import BOT, WALKER
 from test_other_robot_base import in_arm_frame
 
 from machinekind_twin import basefix, passive, tagreach
+from machinekind_twin import scene as sc
 from machinekind_twin.backends.factory import BaseDriveArm
 from machinekind_twin.calib.simulate import look_at
 from machinekind_twin.kinematics import inverse, pose
@@ -77,12 +78,29 @@ def twin(walker):
     twin.close()
 
 
+def shown(twin: Twin, monkeypatch, shots: dict[str, tuple[float, np.ndarray]]) -> None:
+    """Each camera of `shots` has a new frame, taken at its time, showing the walker's base at its pose (arm
+    base frame). The merged pose is the cameras' mean position, as merging frames taken apart gives."""
+    img = np.zeros((2, 2, 3), np.uint8)
+
+    def frame_t(name):
+        if name not in shots:
+            return None, 0.0
+        return img, shots[name][0]
+
+    def tag_from_frames(frames, cameras, tag_id, size):
+        per = {name: shots[name][1] @ np.asarray(TAG.pose, float) for name in frames}
+        merged = next(iter(per.values())).copy()
+        merged[:3, 3] = np.mean([T[:3, 3] for T in per.values()], axis=0)
+        return tagreach.TagFix(merged, per)
+
+    monkeypatch.setattr(twin.cameras, "frame_t", frame_t)
+    monkeypatch.setattr(tagreach, "tag_from_frames", tag_from_frames)
+
+
 def seen_at(twin: Twin, monkeypatch, base: np.ndarray, taken: float) -> None:
-    """The cameras' next frames, taken at `taken`, show the walker's base at `base` (arm base frame)."""
-    T_tag = base @ np.asarray(TAG.pose, float)
-    monkeypatch.setattr(twin.cameras, "frame_t", lambda name: (np.zeros((2, 2, 3), np.uint8), taken))
-    monkeypatch.setattr(tagreach, "tag_from_frames",
-                        lambda frames, cameras, tag_id, size: tagreach.TagFix(T_tag, {"a": T_tag}))
+    """Camera a's next frame, taken at `taken`, shows the walker's base at `base` (arm base frame)."""
+    shown(twin, monkeypatch, {"a": (taken, base)})
 
 
 def trunk(twin: Twin) -> np.ndarray:
@@ -95,12 +113,13 @@ def test_the_walker_carries_tag_7_flat_on_top_of_its_trunk(walker):
 
 
 @pytest.mark.parametrize("key, value, problem", [
+    ("id", 587, "`base_tag.id`: liczba calkowita 0..586"),
     ("size", None, r"Brak kluczy w sekcji .*base_tag: \['size'\]"),
     ("size", 0.0, "`base_tag.size`: bok czarnego kwadratu"),
     ("pose", [[1.0, 0.2, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
      "`base_tag.pose` musi byc przeksztalceniem sztywnym"),
 ])
-def test_a_base_tag_missing_a_key_sized_zero_or_with_a_sheared_pose_is_refused(tmp_path, key, value, problem):
+def test_a_base_tag_with_a_bad_or_missing_key_is_refused(tmp_path, key, value, problem):
     folder = tmp_path / "walker"
     shutil.copytree(WALKER, folder)
     data = yaml.safe_load((folder / ROBOT_FILE).read_text(encoding="utf-8"))
@@ -153,13 +172,104 @@ def test_a_sighting_moves_the_copy_half_way_to_the_tag_and_shows_that_move_as_th
     seen_at(twin, monkeypatch, nudged(STOOD, dx=0.04, turn_deg=10.0), now)
     twin.locate_other("walker")
     reported = twin.other_base_pose("walker")
-    anchor = twin.tag_anchors["walker"]
+    drift = twin.other_drift("walker")
 
     assert np.allclose(trunk(twin), nudged(STOOD, dx=0.02, turn_deg=5.0))
     assert reported is not None
     assert np.allclose(reported[0], nudged(STOOD, dx=0.02, turn_deg=5.0))
-    assert anchor.drift_m == pytest.approx(0.02)
-    assert anchor.drift_deg == pytest.approx(5.0)
+    assert drift[0] == pytest.approx(0.02)
+    assert drift[1] == pytest.approx(5.0)
+
+
+def test_the_drift_follows_the_robot_walking_on_after_a_heading_correction(twin, monkeypatch):
+    now = time.monotonic()
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now))
+    seen_at(twin, monkeypatch, nudged(STOOD, turn_deg=10.0), now)
+    twin.locate_other("walker")
+    twin.set_passive_joints("walker", {}, (ODOMETRY @ flat(0.5, 0.0, 0.0), now + 0.1))
+
+    # Turned 5 degrees about where it stood, the copy is 2 x 0.5 m x sin(2.5 deg) off once 0.5 m on.
+    assert twin.other_drift("walker")[0] == pytest.approx(2 * 0.5 * np.sin(np.radians(2.5)))
+
+
+def test_each_camera_is_compared_with_the_odometry_at_its_own_frame(twin, monkeypatch):
+    now = time.monotonic()
+    ahead = ODOMETRY @ flat(0.12, 0.0, 0.0)                     # 0.4 s later at 0.3 m/s
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now - 0.4))
+    twin.set_passive_joints("walker", {}, (ahead, now))
+    shown(twin, monkeypatch, {"a": (now - 0.4, STOOD), "b": (now, ANCHOR @ ahead)})
+    twin.locate_other("walker")
+
+    assert np.allclose(twin.tag_anchors["walker"].T, ANCHOR)
+
+
+def test_a_camera_whose_frames_come_late_is_still_used_after_a_newer_frame_of_another(twin, monkeypatch):
+    now = time.monotonic()
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now - 0.3))
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now))
+    seen_at(twin, monkeypatch, STOOD, now)
+    twin.locate_other("walker")
+    shown(twin, monkeypatch, {"a": (now, STOOD), "b": (now - 0.3, nudged(STOOD, dx=0.04))})
+    twin.locate_other("walker")
+
+    assert np.allclose(twin.tag_anchors["walker"].T @ ODOMETRY, nudged(STOOD, dx=0.02))
+
+
+#: Base poses reported that long ago [s], and a frame taken that long ago: before the first pose, and 0.2 s
+#: from either pose.
+@pytest.mark.parametrize("poses_ago, frame_ago", [((0.0,), 0.05), ((0.4, 0.0), 0.2)])
+def test_a_frame_without_odometry_from_its_moment_corrects_nothing(twin, monkeypatch, poses_ago, frame_ago):
+    now = time.monotonic()
+    for ago in poses_ago:
+        twin.set_passive_joints("walker", {}, (ODOMETRY, now - ago))
+    seen_at(twin, monkeypatch, nudged(STOOD, dx=0.04), now - frame_ago)
+    twin.locate_other("walker")
+
+    assert np.allclose(twin.tag_anchors["walker"].T, ANCHOR)
+
+
+def test_a_restart_and_a_rebuild_keep_the_correction_in_the_scene_and_the_twin(twin, monkeypatch):
+    now = time.monotonic()
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now))
+    seen_at(twin, monkeypatch, nudged(STOOD, dx=0.04), now)
+    twin.locate_other("walker")
+    twin.start_passive()
+    twin.rebuild()                                              # a scene that has no base pose of it yet
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now + 0.1))
+    reported = twin.other_base_pose("walker")
+
+    assert np.allclose(trunk(twin), nudged(STOOD, dx=0.02))
+    assert reported is not None
+    assert np.allclose(reported[0], nudged(STOOD, dx=0.02))
+
+
+@pytest.mark.parametrize("edit", [lambda ws: setattr(ws.other_robot("walker"), "xyz", [0.40, 0.15, 0.0]),
+                                  lambda ws: ws.other_robots.clear()], ids=["moved", "removed"])
+def test_a_robot_moved_in_its_record_or_removed_loses_its_correction(twin, monkeypatch, edit):
+    now = time.monotonic()
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now))
+    seen_at(twin, monkeypatch, nudged(STOOD, dx=0.04), now)
+    twin.locate_other("walker")
+    edit(twin.workspace)
+    twin.rebuild()
+
+    assert "walker" not in twin.tag_anchors
+
+
+def test_two_robots_with_the_same_tag_id_are_refused(walker):
+    ws = station(walker)
+    ws.other_robots.append(RobotRecord("walker2", walker, xyz=[0.35, -0.15, 0.0]))
+
+    with pytest.raises(ValueError, match=r"tagi na podstawach robotow powtarzaja sie: \[7, 7\]"):
+        sc.compose(ws.scene_config())
+
+
+def test_a_tag_id_the_calibration_card_uses_is_refused(walker):
+    ws = station(walker)
+    ws.card["ids"] = [7, 8]
+
+    with pytest.raises(ValueError, match=r"tych uzywa karta kalibracyjna: \[7, 8\]"):
+        ws.scene_config()
 
 
 def test_a_frame_no_newer_than_the_last_one_used_changes_nothing(twin, monkeypatch):

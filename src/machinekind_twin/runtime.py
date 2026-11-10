@@ -158,16 +158,15 @@ class TagAnchor:
     (`Twin.locate_other`, `basefix`); it starts at the record's pose."""
 
     T: np.ndarray
+    #: The record's pose it started from (`RobotRecord.T_base`): an edited record starts a new anchor.
+    record: np.ndarray
     #: Its base poses with their times (`RobotBackend.base_pose`): about 2 s at 30 reads a second.
     odometry: deque[tuple[np.ndarray, float]] = field(default_factory=lambda: deque(maxlen=60))
-    #: Capture time of the newest frame already used.
-    used_t: float = 0.0
+    #: Capture time of the newest frame already used, per camera: one camera's frames may come later.
+    used_t: dict[str, float] = field(default_factory=dict)
     #: When the cameras last saw the tag (`time.monotonic()`, 0 = not yet), and how many of them.
     seen_t: float = 0.0
     seen_by: int = 0
-    #: How far the copy stands from where the record and odometry alone put it [m, deg].
-    drift_m: float = 0.0
-    drift_deg: float = 0.0
 
 
 def smoothstep(s: float) -> float:
@@ -461,7 +460,6 @@ class Twin:
         for reader in readers.values():
             reader.stop()
         self._base_poses = {}
-        self.tag_anchors = {}
 
     def passive_status(self) -> dict[str, str]:
         """Where each other robot's pose comes from now, for the panel."""
@@ -501,16 +499,16 @@ class Twin:
             if last is not None:
                 cos_turn = (np.trace(last[:3, :3].T @ T[:3, :3]) - 1) / 2
                 moved = np.linalg.norm(T[:3, 3] - last[:3, 3]) > 1e-3 or cos_turn < np.cos(np.radians(0.2))
-            if moved:
-                self.scene.set_passive_base(name, T)
             self._base_poses[name] = (T, float(base[1]))
             self._keep_odometry(rec, T, float(base[1]))
+            if moved:
+                self._show_base(name)                   # at its anchor: a rebuilt scene may not know it yet
 
     def _keep_odometry(self, rec: RobotRecord, T: np.ndarray, t: float) -> None:
         """The base poses `locate_other` needs, of a robot with a base tag; with `self.lock` held."""
         anchor = self.tag_anchors.get(rec.name)
         if anchor is None and get_spec(rec.robot).base_tag is not None:
-            anchor = TagAnchor(rec.T_base())
+            anchor = TagAnchor(rec.T_base(), rec.T_base())
             self.tag_anchors[rec.name] = anchor
         if anchor is not None:
             anchor.odometry.append((T, t))
@@ -531,30 +529,41 @@ class Twin:
         now = time.monotonic()
         for cam in cameras:
             img, t = self.cameras.frame_t(cam.name)
-            if img is not None and t > anchor.used_t and now - t <= basefix.FRAME_MAX_AGE:
+            if img is not None and t > anchor.used_t.get(cam.name, 0.0) and now - t <= basefix.FRAME_MAX_AGE:
                 frames[cam.name] = img
                 taken[cam.name] = t
+                anchor.used_t[cam.name] = t
         if not frames:
             return
-        anchor.used_t = max(taken.values())
 
         fix = tagreach.tag_from_frames(frames, cameras, tag.id, tag.size)
         if fix is None:
             return
-        t_frame = min(taken[cam] for cam in fix.per_camera)
-        measured = fix.T_tag2base @ inverse(np.asarray(tag.pose, float))
+        # Each camera on its own, oldest frame first, against the odometry at its frame: frames of a walking
+        # robot taken apart disagree, and their merged pose would invent a correction.
+        seen = sorted(fix.per_camera, key=lambda cam: taken[cam])
 
         with self.lock:
-            stood = min(anchor.odometry, key=lambda entry: abs(entry[1] - t_frame))
-            anchor.T = basefix.corrected_anchor(anchor.T, stood[0], measured)
-            anchor.seen_t = t_frame
-            anchor.seen_by = len(fix.per_camera)
-
-            latest = anchor.odometry[-1][0]
-            shift, turn = basefix.planar_error(rec.T_base() @ latest, anchor.T @ latest)
-            anchor.drift_m = float(np.linalg.norm(shift))
-            anchor.drift_deg = float(np.degrees(abs(turn)))
+            for cam in seen:
+                odometry = basefix.odometry_at(anchor.odometry, taken[cam])
+                if odometry is not None:
+                    measured = fix.per_camera[cam] @ inverse(np.asarray(tag.pose, float))
+                    anchor.T = basefix.corrected_anchor(anchor.T, odometry, measured)
+            anchor.seen_t = taken[seen[-1]]
+            anchor.seen_by = len(seen)
             self._show_base(name)
+
+    def other_drift(self, name: str) -> tuple[float, float]:
+        """How far the copy of the other robot `name` stands now from where its record and odometry alone
+        put it, in the plane [m] and in heading [deg]; zeros without a tag correction. Computed when asked:
+        after a heading correction the copy drifts on as the robot walks."""
+        with self.lock:
+            anchor = self.tag_anchors.get(name)
+            if anchor is None:
+                return 0.0, 0.0
+            latest = anchor.odometry[-1][0]
+            shift, turn = basefix.planar_error(anchor.record @ latest, anchor.T @ latest)
+        return float(np.linalg.norm(shift)), float(np.degrees(abs(turn)))
 
     def _show_base(self, name: str) -> None:
         """The copy of `name` at its anchor x its latest base pose; with `self.lock` held."""
@@ -641,6 +650,14 @@ class Twin:
                 _copy_state(old, new)
                 old.close()
                 self.scene = new
+                # An anchor outlives a rebuild and a restart of the readers: the robot did not move with them.
+                # It goes when its robot left the station or its record was moved, before the copy is placed.
+                kept = {}
+                for rec in self.workspace.other_robots:
+                    anchor = self.tag_anchors.get(rec.name)
+                    if anchor is not None and np.array_equal(anchor.record, rec.T_base()):
+                        kept[rec.name] = anchor
+                self.tag_anchors = kept
                 # A new scene stands a robot that moves its base where its model does, not where it stood.
                 for name in self._base_poses:
                     self._show_base(name)

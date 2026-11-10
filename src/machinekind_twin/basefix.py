@@ -8,6 +8,8 @@ Odometry drifts, so each sighting of the tag moves the anchor. The pattern is th
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 #: Share of the error one frame corrects: the archived note's g = 0.5 for a normal frame.
@@ -18,6 +20,9 @@ JUMP_M = 0.10
 JUMP_DEG = 30.0
 #: A frame older than this [s] is not used: the archived note skipped frames older than 0.5 s.
 FRAME_MAX_AGE = 0.5
+#: A frame further than this [s] from every stored base pose is not used: three reads at 30 a second. Past
+#: it the copy's place at the frame is a guess, and the robot's walk since then would count as drift.
+ODOMETRY_MAX_GAP = 0.1
 
 
 def planar_error(stood: np.ndarray, seen: np.ndarray) -> tuple[np.ndarray, float]:
@@ -26,6 +31,17 @@ def planar_error(stood: np.ndarray, seen: np.ndarray) -> tuple[np.ndarray, float
     shift = seen[:2, 3] - stood[:2, 3]
     turn = np.arctan2(seen[1, 0], seen[0, 0]) - np.arctan2(stood[1, 0], stood[0, 0])
     return shift, float(np.arctan2(np.sin(turn), np.cos(turn)))
+
+
+def odometry_at(odometry: Sequence[tuple[np.ndarray, float]], t: float) -> np.ndarray | None:
+    """Of the base poses `odometry` with their times, oldest first, the one nearest the time `t`; None
+    before the first one (right after a reader starts) or past `ODOMETRY_MAX_GAP`."""
+    if not odometry or t < odometry[0][1]:
+        return None
+    nearest = min(odometry, key=lambda entry: abs(entry[1] - t))
+    if abs(nearest[1] - t) > ODOMETRY_MAX_GAP:
+        return None
+    return nearest[0]
 
 
 def corrected_anchor(anchor: np.ndarray, odometry: np.ndarray, measured: np.ndarray) -> np.ndarray:

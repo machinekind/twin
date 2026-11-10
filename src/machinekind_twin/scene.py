@@ -544,13 +544,18 @@ def passive_poses(spec: RobotSpec, joints: Mapping[str, float]) -> dict[str, tup
 
 
 def _check_passive(cfg: SceneConfig) -> None:
-    """Passive robots and fixtures need names that are unique, plain and not the driven arm's prefix."""
+    """Passive robots and fixtures need names that are unique, plain and not the driven arm's prefix;
+    base tags need ids of their own."""
     names = [p.name for p in cfg.passive] + [f.name for f in cfg.fixtures]
     bad = [n for n in names if not re.fullmatch(r"[A-Za-z0-9_-]+", n) or n + "/" == PREFIX]
     if bad:
         raise ValueError(f"nazwy robotow {bad}: tylko litery, cyfry, _ i -, inne niz {PREFIX[:-1]!r}")
     if len(set(names)) != len(names):
         raise ValueError(f"nazwy robotow powtarzaja sie: {names}")
+    tags = [p.spec.base_tag.id for p in cfg.passive if p.spec.base_tag is not None]
+    if len(set(tags)) != len(tags):
+        raise ValueError(f"tagi na podstawach robotow powtarzaja sie: {tags} - kazdy robot potrzebuje "
+                         "innego id")
 
 
 def _add_passive(spec: mujoco.MjSpec, other: PassiveRobot, T_base2world: np.ndarray, sticker: bool) -> None:

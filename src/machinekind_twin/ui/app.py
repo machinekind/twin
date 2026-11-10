@@ -1597,8 +1597,9 @@ class TwinApp:
             anchor = self.twin.tag_anchors.get(r.name)
             if anchor is not None and anchor.seen_t:
                 ago = time.monotonic() - anchor.seen_t
+                drift = self.twin.other_drift(r.name)
                 tag = (f"; tag widziany {ago:.0f} s temu (kamery: {anchor.seen_by}), korekta odometrii "
-                       f"{anchor.drift_m * 100:.1f} cm, {anchor.drift_deg:.1f} st.")
+                       f"{drift[0] * 100:.1f} cm, {drift[1]:.1f} st.")
             elif anchor is not None:
                 tag = "; tag niewidoczny"
             lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "

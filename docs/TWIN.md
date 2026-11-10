@@ -815,33 +815,40 @@ base_tag:
     - [0.0, 0.0, 0.0, 1.0]
 ```
 
-The tag frame is OpenCV's marker frame, as in calibration: origin at the
-centre of the square, x right and y up in the printed image, z out of the face
-toward the viewer. The pose above lies flat on top of the body, 3 cm above its
-origin, facing up. A missing or unknown key, a size that is not positive or a
-pose that is not a rigid transform fails the load. The id must differ from the
-calibration card's ids (0 and 1) and from every other tag on the station. The
-scene draws the sticker on the copy's base body, so simulated cameras see it
-and the 3D view shows where it is expected. The exported scene (`twin export`)
-leaves it out: MJCF cannot hold its texture.
+The tag frame is OpenCV's marker frame, as in calibration: origin at the centre
+of the square, x right and y up in the printed image, z out of the face toward
+the viewer. The pose above lies flat on top of the body, 3 cm above its origin,
+facing up. A missing or unknown key, an id that is not an integer 0..586, a
+size that is not positive or a pose that is not a rigid transform fails the
+load. The station is refused when two of its robots carry the same id, or one
+carries an id of the calibration card (`card.ids`, 0 and 1 unless the station
+changes them). The scene draws the sticker on the copy's base body, so
+simulated cameras see it and the 3D view shows where it is expected. The
+exported scene (`twin export`) leaves it out: MJCF cannot hold its texture.
 
 The robot's reader looks for the tag after each read, at most five times a
 second and after that read's base velocity went out. It takes the newest frame
-of every camera with a trusted pose, newer than the last frame it used and at
-most 0.5 s old. Only the position in the plane and the heading are corrected;
-height, pitch and roll stay as odometry and the record give them. The error is
-taken against where the copy stood when the frame was taken, so a robot that
-walked on since then is not dragged back. Half of the error is corrected per
-frame; an error over 10 cm or 30 degrees is corrected at once. The correction
-moves the place of the robot's fixed frame, not its odometry, and is live state
-like the base pose: `xyz` and `yaw_deg` stay as saved.
+of every camera with a trusted pose, newer than the last frame it used from
+that camera and at most 0.5 s old. Only the position in the plane and the
+heading are corrected; height, pitch and roll stay as odometry and the record
+give them. Each camera that sees the tag corrects the copy on its own, oldest
+frame first, against where the copy stood when its frame was taken, so a robot
+that walked on since then is not dragged back. A frame taken before the
+robot's first base pose, or more than 0.1 s from every base pose the twin
+keeps, corrects nothing. Half of the error is corrected per frame; an error
+over 10 cm or 30 degrees is corrected at once. The correction moves the place
+of the robot's fixed frame, not its odometry, and is live state like the base
+pose: `xyz` and `yaw_deg` stay as saved. It outlasts saving the robots and the
+readers' restart that follows; it is dropped when the robot leaves the station
+or its `xyz` or `yaw_deg` change.
 
 The panel line says when the tag was last seen and by how many cameras, and how
-far the copy now stands from where the record and odometry alone would put it,
-or that the tag is not seen. A sticker lying flat must face the cameras: one
-seen at a grazing angle is not detected, so the cameras should look down on it.
-A robot with a tag that reports no base pose is not placed by the tag; it keeps
-`xyz` and `yaw_deg`. In code: `Twin.locate_other(name)` makes one attempt,
+far the copy stands now from where the record and odometry alone would put it
+(`Twin.other_drift(name)`, worked out from the latest base pose), or that the
+tag is not seen. A sticker lying flat must face the cameras: one seen at a
+grazing angle is not detected, so the cameras should look down on it. A robot
+with a tag that reports no base pose is not placed by the tag; it keeps `xyz`
+and `yaw_deg`. In code: `Twin.locate_other(name)` makes one attempt,
 `Twin.tag_anchors` holds the state, and `basefix` does the arithmetic.
 
 Read-only is part of the backend contract. A robot without `base_drive` has its
