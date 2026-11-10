@@ -54,11 +54,25 @@ class PassiveReader:
         self._until = 0.0
         #: Zero velocities still to send since the last command ended.
         self._zeros_left = 0
+        #: The twin's STOP (`halt`): no command goes out, whatever `drive` sets meanwhile.
+        self.halted = False
 
     def drive(self, forward: float, left: float, turn: float, seconds: float) -> None:
         """Hold this base velocity for `seconds` from now, in place of the running command."""
         self._velocity = (forward, left, turn)
         self._until = time.monotonic() + seconds
+
+    def halt(self) -> None:
+        """The twin's STOP: from the next cycle on only the trailing zeros go out, until `resume`."""
+        self.halted = True
+        self.drive(0.0, 0.0, 0.0, 0.0)
+
+    def resume(self) -> None:
+        """The STOP cleared: the robot stays still until the next command."""
+        # Zero first, lift second: a cycle that sees `halted` lifted already sees the zero, so a command set
+        # while halted never starts. The cycle reads `halted` before the command, so no lock is needed.
+        self.drive(0.0, 0.0, 0.0, 0.0)
+        self.halted = False
 
     def start(self) -> None:
         self._stop.clear()
@@ -66,9 +80,14 @@ class PassiveReader:
         self._thread.start()
 
     def stop(self, timeout: float = 2.0) -> None:
+        self.drive(0.0, 0.0, 0.0, 0.0)                  # whatever the thread still sends is a zero
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout)
+            # Still inside a backend call: it sends the last zero and disconnects once that call returns.
+            # Closing from here could put both before the command it is sending.
+            if self._thread.is_alive():
+                return
             self._thread = None
         self._close()
 
@@ -86,12 +105,14 @@ class PassiveReader:
                 arm.connect()
             joints = self._arm.read_joints()
             if self._arm.link_silent:
+                # Unheard, the robot walks no further: with the link back it waits for a new command.
+                self.drive(0.0, 0.0, 0.0, 0.0)
                 self._set(False, "brak odpowiedzi - zostaje ostatnia poza")
                 return self.period
             base = self._arm.base_pose()
             self._apply(joints, base)
 
-            live = time.monotonic() < self._until
+            live = not self.halted and time.monotonic() < self._until
             if isinstance(self._arm, BaseDriveArm) and live:
                 self._zeros_left = self.trailing_zeros
                 self._arm.send_velocity(*self._velocity)
@@ -103,6 +124,7 @@ class PassiveReader:
             self._set(True, "odczyt na zywo" + (f" ({'; '.join(faults)})" if faults else ""))
             return self.base_period if base is not None or live else self.period
         except Exception as exc:  # noqa: BLE001 - any failure keeps the last pose and retries
+            self.drive(0.0, 0.0, 0.0, 0.0)              # as with a silent link: no old command resumes
             self._set(False, f"{type(exc).__name__}: {exc} - zostaje ostatnia poza")
             self._close()
             return self.retry_s

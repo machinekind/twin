@@ -803,7 +803,8 @@ class TwinApp:
             self._notify(event, "STOP", "Ramie zatrzymane. Skasuj STOP (zolty, pod STOP-em), zeby ruszyc dalej.",
                          error=True)
         else:
-            self._notify(event, "STOP", "Ramie niepolaczone - nic nie jedzie; zadania w tle przerwane.", error=True)
+            self._notify(event, "STOP", "Ramie niepolaczone - nic nie jedzie; zadania w tle przerwane. Inne "
+                                        "roboty stoja do Skasuj STOP (zolty, pod STOP-em).", error=True)
 
     # ------------------------------------------------ kto steruje ramieniem
     def _busy(self, me: str) -> str:
@@ -1252,7 +1253,9 @@ class TwinApp:
             estop = mode == "estop"
             conn = self.twin.connected or self.twin.backend is not None      # Rozlacz takze po padnieciu petli
             armed = self.arm_engage.value
-            key = (mode, who, armed, conn, self.tcp_gizmo_on.value, self._preset_backend(),
+            # The other robots' STOP holds with no arm too, and only Skasuj STOP lifts it.
+            halted = self.twin.others_halted
+            key = (mode, who, armed, conn, halted, self.tcp_gizmo_on.value, self._preset_backend(),
                    bool(self.tcp_md.content), bool(self.home_md.content), self.twin.status.backend if conn else None)
             if key == self._arm_key and not force:
                 return
@@ -1260,7 +1263,7 @@ class TwinApp:
             set_if(self.conn_box, "visible", not conn)
             set_if(self.ctl_box, "visible", conn)
             set_if(self.arm_port, "visible", self._preset_backend() != "sim")
-            set_if(self.clear_btn, "visible", estop)
+            set_if(self.clear_btn, "visible", estop or halted)
             look = ARM_OVERRIDES.get(mode)
             self.arm_engage.set_override(look(who) if look else None)
             self.tcp_gizmo_on.on_look = GIZMO_ON_ARMED if armed else GIZMO_ON_IDLE
@@ -1514,6 +1517,13 @@ class TwinApp:
         @halt.on_click
         async def _(event):
             self.twin.stop_other(str(self.other_pick.value))
+
+        # A closed tab can no longer press STOP robota, and the panel does not know who drove from it.
+        @self.server.on_client_disconnect
+        async def _(client):
+            for rec in self.ws.other_robots:
+                if rec.base_drive:
+                    self.twin.stop_other(rec.name)
 
     def _fill_other(self) -> None:
         """The editor's fields from the picked robot, or defaults for a new one."""

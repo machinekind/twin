@@ -396,6 +396,9 @@ class Twin:
         self._readers: dict[str, PassiveReader] = {}
         #: Why a robot with a backend has no reader, by name.
         self._passive_notes: dict[str, str] = {}
+        #: The STOP of the other robots (`estop` to `clear_estop`). The arm's supervisor holds only the arm's,
+        #: and with no arm connected there is none.
+        self.others_halted = False
         #: The latest `RobotBackend.base_pose` of each other robot, with its time; live, never saved.
         self._base_poses: dict[str, tuple[np.ndarray, float]] = {}
         #: The loop's collision checker for the clearance to other robots and fixtures, on the scene's model.
@@ -483,18 +486,21 @@ class Twin:
             raise ValueError(f"{name}: jazda z panelu wylaczona - zaznacz ja w edytorze robota")
         if reader is None or not reader.ok:
             raise ValueError(f"{name}: brak polaczenia z backendem robota - nie ma komu wyslac predkosci")
-        if self.safety_state is SafetyState.ESTOP:
+        if self.others_halted:
             raise ValueError(f"{name}: STOP awaryjny jest zatrzasniety - skasuj go, zeby jechac")
         if not np.isfinite([forward, left, turn, seconds]).all():
             raise ValueError(f"{name}: predkosc i czas jazdy musza byc skonczonymi liczbami")
 
+        # A STOP that lands after the check above halted the reader, which then sends none of this.
         top = get_spec(rec.robot).base_max_vel or (0.0, 0.0, 0.0)     # without a limit it may not move
         reader.drive(float(np.clip(forward, -top[0], top[0])), float(np.clip(left, -top[1], top[1])),
                      float(np.clip(turn, -top[2], top[2])), min(seconds, self.drive_max_s))
 
-        # A STOP that latched between the check above and the command must win.
-        if self.safety_state is SafetyState.ESTOP:
-            self.stop_other(name)
+    def _halt_others(self) -> None:
+        """STOP for every other robot, arm or no arm: none drives until `clear_estop`."""
+        self.others_halted = True
+        for reader in list(self._readers.values()):
+            reader.halt()
 
     def stop_other(self, name: str) -> None:
         """Zero base velocity for the other robot `name`, from its reader's next cycle."""
@@ -1294,10 +1300,7 @@ class Twin:
             with self._sup_lock:
                 sup.trigger_estop()
 
-        # Other robots stop also when no arm is connected, and after the latch: `drive_other` checks
-        # the latch again once it has set its command.
-        for name in list(self._readers):
-            self.stop_other(name)
+        self._halt_others()
 
         if sup is None:
             return
@@ -1313,6 +1316,11 @@ class Twin:
         dalo sie wypuscic z panelu (emulator: 3 proby, 3 razy STOP po ~0 ms). Bit bledu,
         ktory serwo trzyma do ponownego wlaczenia momentu, kasuje dopiero "Polacz".
         """
+        # Readers first: a drive click in between is refused by the latch, not silently zeroed by `resume`.
+        for reader in list(self._readers.values()):
+            reader.resume()
+        self.others_halted = False
+
         if self._supervisor is not None:
             with self._sup_lock:
                 self._supervisor.clear_estop()
@@ -1727,6 +1735,8 @@ class Twin:
             logger.exception("Petla ramienia przerwana")
             reason = f"{type(exc).__name__}: {exc}"
             self.status = RobotStatus(False, self.status.backend, error=reason)
+            # The station broke under the arm: the other robots stop too, until someone looks and clears STOP.
+            self._halt_others()
             # Martwa petla nie wysyla juz nic - wlasciciel (identyfikacja, polityka,
             # fala) musi sie o tym dowiedziec, a nie pisac dalej cele w proznie.
             with self._own_lock:

@@ -828,8 +828,14 @@ that direction; another click replaces the running one. **STOP robota** stops
 it. The robot's reader sends the command 30 times a second while it lasts, then
 zero velocity three times, and then nothing: on some robots a zero keeps the
 sender in command, so an idle panel stops talking. The panel's **STOP** stops
-every other robot too, also with no arm connected, and while it is latched the
-twin refuses to drive one. Closing the twin or saving the robots sends a driven
+every other robot too and latches for them, also with no arm connected: the
+twin refuses to drive one, and no reader sends a command, until **Skasuj STOP**
+(it then shows under STOP). Connecting or disconnecting the arm leaves the
+latch as it is, and an arm's control loop that fails sets it as well. A
+command clicked while it is latched never starts. A read with no reply, or one
+that fails, ends the running command: when the link is back the robot stands
+until the next click. Closing a browser tab with the panel stops every driven
+robot, without the latch. Closing the twin or saving the robots sends a driven
 robot one zero before its backend closes. In code: `Twin.drive_other(name,
 forward, left, turn, seconds)`, clamped to `base_max_vel`, and
 `Twin.stop_other(name)`.
