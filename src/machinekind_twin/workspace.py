@@ -41,7 +41,7 @@ from .config import from_mapping
 from .fixtures import FixtureSpec, camera_site, get_fixture, placed, yaw_pose
 from .kinematics import inverse
 from .paths import data_path
-from .robots import RobotSpec, default_robot, get_spec
+from .robots import RobotSpec, default_robot, driven_spec, get_spec
 from .scene import PREFIX, CameraView, Fixture, Look, PassiveRobot, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
@@ -60,8 +60,9 @@ _OFFSET_SPECS: dict[tuple[str, tuple[tuple[str, float], ...]], tuple[RobotSpec, 
 
 
 def _spec_with_offsets(robot: str, offsets: tuple[tuple[str, float], ...]) -> RobotSpec:
-    """`get_spec(robot)` with `offsets`: one object per description and offsets, a new one when either changes."""
-    base = get_spec(robot)
+    """`driven_spec(robot)` with `offsets`: one object per description and offsets, a new one when
+    either changes."""
+    base = driven_spec(robot)
     if not offsets:
         return base
     hit = _OFFSET_SPECS.get((robot, offsets))

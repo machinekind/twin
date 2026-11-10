@@ -497,6 +497,7 @@ class Session:
                 sub.append(b)
         self._links = [(int(m.body_parentid[b]), b) for b in sub]
         self._roll_jid = m.joint(kin.prefix + self._roll).id if self._roll else None
+        assert spec.hand_body is not None                   # a driven arm has one (`robots.driven_spec`)
         self._hand = spec.hand_body
 
     # --------------------------------------------------------------- stan

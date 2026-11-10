@@ -106,7 +106,7 @@ SHEARED = [[1.0, 0.5, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.
 
 
 @pytest.mark.parametrize("changes, error", [
-    ({"tcp_site": None}, "Brak kluczy.*tcp_site"),
+    ({"base_body": None}, "Brak kluczy.*base_body"),
     ({"tcp_frame": "tcp"}, "Nieznane klucze.*tcp_frame"),
     ({"root": "/elsewhere"}, "root"),
     ({"max_vel": {"j1": 90.0, "j2": 90.0}}, "max_vel.*gripper"),

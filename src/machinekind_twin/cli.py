@@ -500,8 +500,9 @@ DEMO_WORKSPACE = Path("examples") / "twin.sim.json"
 
 
 def _installed_robot(name: str | None) -> str | None:
-    """Ramie z --robot albo pierwsze zainstalowane; None (i komunikat), gdy nie ma go w srodowisku."""
-    from .robots import INSTALL_HINT, default_robot, robot_folders
+    """The arm from --robot, else the first installed one; None (after a message) when it is not
+    installed or the twin cannot drive it."""
+    from .robots import INSTALL_HINT, default_robot, driven_spec, robot_folders
 
     installed = robot_folders()
     robot = (name or default_robot()).lower()
@@ -509,6 +510,11 @@ def _installed_robot(name: str | None) -> str | None:
         known = ", ".join(installed) or "zadne"
         print(f"Ramie {robot!r} nie jest zainstalowane (zainstalowane: {known}) - {INSTALL_HINT}.",
               file=sys.stderr)
+        return None
+    try:
+        driven_spec(robot)
+    except ValueError as exc:
+        print(f"{exc}.", file=sys.stderr)
         return None
     return robot
 

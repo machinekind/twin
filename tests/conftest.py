@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import tomllib
-from machinekind_twin_api.entry_points import DETECTORS
+from machinekind_twin_api.entry_points import DETECTORS, ROBOTS
 
 from machinekind_twin.robots import reload_robots
 
@@ -24,6 +24,8 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 TESTBOT = EXAMPLES / "robots" / "testbot"
 #: The test robot's name, as its package registers it.
 BOT = "testbot"
+#: The watch-only test robot's folder: a trunk on a free joint and one leg, no tool point.
+WALKER = Path(__file__).resolve().parent / "robots" / "walker"
 #: The test strategy's package: a strategy with its settings dataclass.
 SWING = EXAMPLES / "strategies" / "swing"
 #: The example detector's package: a colour cube, settings in a dataclass.
@@ -126,6 +128,14 @@ def install_detector(install_dist, dist: str, source: str) -> str:
 def testbot():
     """The test robot (`examples/robots/testbot`, installed for the session): its robot folder and backend."""
     return BOT
+
+
+@pytest.fixture
+def walker(install_dist):
+    """The watch-only test robot (`tests/robots/walker`), installed: a module whose `DIR` is its folder."""
+    install_dist("walker-robot", {ROBOTS: {"walker": "walker_robot:DIR"}},
+                 {"walker_robot": f"DIR = {str(WALKER)!r}\n"})
+    return "walker"
 
 
 @pytest.fixture

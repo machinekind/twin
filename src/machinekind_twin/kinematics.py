@@ -89,7 +89,8 @@ class RobotKinematics:
         self.hi = m.jnt_range[ids, 1].copy()
         #: Maska stawow ramienia (bez chwytaka) - tylko nimi rusza IK.
         self.arm = np.array([name != spec.gripper for name in spec.joints])
-        self.site_id = m.site(prefix + spec.tcp_site).id
+        #: -1 on a watch-only robot: `scene.passive_poses` needs only its bodies, nothing reaches the TCP.
+        self.site_id = -1 if spec.tcp_site is None else m.site(prefix + spec.tcp_site).id
         self.base_id = m.body(prefix + spec.base_body).id
         self._approach = np.asarray(spec.tcp_approach, float)
         self._closing = np.asarray(spec.tcp_closing, float)
