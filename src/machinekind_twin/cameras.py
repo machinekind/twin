@@ -12,7 +12,6 @@ to inna geometria i poza kamery wyszlaby z blednym znakiem.
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 import time
 from collections.abc import Callable, Collection
@@ -22,15 +21,14 @@ import cv2
 import numpy as np
 
 from . import camera_controls
-from .camera_stream import CameraStream
+from .camera_stream import CameraStream, index_backend
 from .config import CameraConfig
 from .workspace import CameraRecord, Workspace
 
 logger = logging.getLogger(__name__)
 
-#: Na Windows DirectShow otwiera kamere w ulamku sekundy; domyslny MSMF potrafi
-#: kilka sekund, a przy indeksie bez urzadzenia wisi jeszcze dluzej.
-_BACKEND = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+#: The backend the stream opens a camera index with, so the probe numbers cameras the same way.
+_BACKEND = index_backend()
 
 
 def video_indices(dev: Path = Path("/dev"), max_index: int = 6) -> list[int]:
@@ -94,7 +92,7 @@ def open_live(record: CameraRecord) -> _Live:
 class _Live:
     def __init__(self, record: CameraRecord):
         cfg = CameraConfig(source=record.source, width=record.width, height=record.height,
-                           fps=record.fps, mirror=False, controls=record.controls)
+                           fps=record.fps, mirror=False, controls=record.applied_controls())
         self.stream = CameraStream(cfg)
         self.stream.open()
 
@@ -186,18 +184,48 @@ class CameraHub:
                     self._live[name] = open_live(rec)
                     self._applied.pop(name, None)       # the open applied the controls again
                     self._errors.pop(name, None)
+                    self._check_lens(rec, getattr(self._live[name], "controls_applied", None))
                 except Exception as exc:                  # brak urzadzenia, zajete, zly indeks
                     self._errors[name] = str(exc)
                     logger.warning("Kamera %s (%s) nie otworzyla sie: %s", name, rec.source, exc)
 
-    def apply_controls(self, name: str) -> camera_controls.Applied:
-        """Sets the workspace camera's controls now, on the device, without reopening its stream."""
+    def apply_controls(self, name: str, controls: camera_controls.CameraControls | None = None,
+                       ) -> camera_controls.Applied:
+        """Sets controls on the workspace camera now, without reopening its stream.
+
+        Without `controls`, the camera's own (`CameraRecord.applied_controls`): the result is what
+        `controls_applied` reports, and it decides whether the camera's lens holds (`focus_problem`).
+        """
         rec = self.workspace.camera(name)
         if rec.simulated:
             return camera_controls.Applied(skipped="kamera symulowana")
-        done = camera_controls.apply(rec.source, rec.controls)
-        self._applied[name] = done
+        own = controls is None
+        wanted = rec.applied_controls() if controls is None else controls
+        with self._lock:
+            live = self._live.get(name)
+        stream = getattr(live, "stream", None)
+        done = stream.apply_controls(wanted) if stream is not None else camera_controls.apply(rec.source, wanted)
+        if own:
+            self._applied[name] = done
+            self._check_lens(rec, done)
         return done
+
+    def focus_range(self, name: str) -> camera_controls.Range | None:
+        """The values the camera's focus takes; None when it cannot tell."""
+        rec = self.workspace.camera(name)
+        with self._lock:
+            live = self._live.get(name)
+        stream = getattr(live, "stream", None)
+        return stream.focus_range() if stream is not None else camera_controls.focus_range(rec.source)
+
+    @staticmethod
+    def _check_lens(rec: CameraRecord, done: camera_controls.Applied | None) -> None:
+        """Whether the camera's lens holds this session: its focus must be the one it was measured at."""
+        focus = rec.lens_focus
+        problem = "" if focus is None else camera_controls.lens_focus_problem(focus, done)
+        if problem and problem != rec.focus_problem:
+            logger.warning("Kamera %s: obiektyw niewazny w tej sesji: %s", rec.name, problem)
+        rec.focus_problem = problem
 
     def controls_applied(self, name: str) -> camera_controls.Applied | None:
         """What the last open or `apply_controls` did with the camera's controls; None = nothing yet."""

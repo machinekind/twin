@@ -295,6 +295,52 @@ def test_intrinsics_abort_keeps_K_and_the_result_goes_to_the_measured_camera(app
         app.intr_job.state = jobs.IDLE
 
 
+def test_a_lens_measured_at_a_locked_focus_keeps_that_focus_and_says_when_it_does_not_hold(app, monkeypatch):
+    from machinekind_twin import camera_controls as cc
+    from machinekind_twin.calib.focus import FocusLock
+    from machinekind_twin.camera_controls import CameraControls
+    from machinekind_twin.workspace import CameraRecord
+
+    class Res:
+        K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
+        dist = np.zeros(5)
+        rms_px, n_views, coverage, trusted, reason, dropped = 0.3, 14, 0.7, True, "", []
+
+    reads = {"autofocus": 0, "focus_absolute": 40}
+    sent = []
+
+    def apply(source, controls, **kw):
+        sent.append(controls)
+        return cc.Applied(ok=["autofocus", "focus_absolute"], read=dict(reads))
+
+    monkeypatch.setattr(cc, "apply", apply)
+    app.ws.add_camera(CameraRecord("kamf", "1", enabled=False))   # a real camera, not opened in a test
+    try:
+        app._tick_slow()
+        ij = app.intr_job
+        lock = FocusLock(40, True, [(0, 10.0), (40, 90.0)], "ostrosc 40 (najostrzejsza z przeszukania)")
+        ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "kamf", "focus": lock}
+        app._tick_calibration()
+        rec = app.ws.camera("kamf")
+        assert rec.controls == CameraControls(autofocus=False, focus_absolute=40) and rec.lens_focus == 40
+        assert sent[-1] == CameraControls(autofocus=False, focus_absolute=40) and rec.focus_problem == ""
+        assert "Ostrosc: ostrosc 40 (najostrzejsza z przeszukania)" in app.intr_md.content
+        reads["focus_absolute"] = 35                    # the camera did not keep it
+        ij.result, ij.data = Res(), {"camera": "kamf", "focus": lock}
+        app._tick_calibration()
+        assert "Obiektyw niewazny w tej sesji:** ostrosc 35, a obiektyw zmierzony przy 40" in app.intr_md.content
+        assert rec.intrinsics_problem().startswith("obiektyw niewazny w tej sesji")
+        app._refresh_cameras(select="kamf")
+        assert "obiektyw niewazny w tej sesji:** ostrosc 35" in app.cam_info.content
+        ij.state, ij.data = jobs.FAILED, {"camera": "kamf", "focus_error": "autofokus nie wylacza sie: STALL"}
+        app._tick_calibration()
+        assert app.intr_md.content == ("**Ostrosc nie zablokowana:** autofokus nie wylacza sie: STALL - obiektyw "
+                                       "nie zmierzony.")
+    finally:
+        app.ws.remove_camera("kamf")
+        app.intr_job.state = jobs.IDLE
+
+
 def test_the_wave_takes_the_card_size_from_the_tag_and_how_far_it_sticks_out(app, monkeypatch):
     """A 100 mm tag 110 mm out: the wave keeps THAT card off the table, not the default 70 x 110 mm one."""
     monkeypatch.setattr(jobs, "run_card_calibration", lambda job, twin, cameras, quick: None)

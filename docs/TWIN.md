@@ -224,10 +224,14 @@ precedence for that hardware.
    reliably. A frame is taken only while the board stands still: set it, hold it,
    move on (the dots turn orange while it moves). Views that disagree with the rest
    are left out of the fit. Each session's frames and per-view errors are kept in
-   `workspace/intrinsics/<camera>-<time>/`. Turn autofocus off first: a lens that
-   refocuses changes its focal length between frames. In **Kamery**, folder
-   **Ustawienia kamery**, set autofocus off and a fixed focus; the twin sets them
-   whenever it opens the camera ([Camera controls](#camera-controls)). Compute/save the result,
+   `workspace/intrinsics/<camera>-<time>/`. The step locks the focus before the
+   first view, because a lens that refocuses changes its focal length: it turns
+   autofocus off and sets the focus from the camera's settings, or, when they hold
+   none, steps the focus through its range and keeps the sharpest value. Lay the
+   board flat in the middle of the image for that part (up to about 30 s). The
+   chosen focus goes into the camera's settings and into the lens result; the twin
+   sets it whenever it opens the camera ([Camera controls](#camera-controls)). A
+   camera with a fixed focus skips the lock. Compute/save the result,
    then repeat for the next camera. A saved
    lens file can be loaded only at its matching resolution. Untrusted intrinsics
    block camera-pose calibration.
@@ -788,6 +792,7 @@ knows only the format and the commands.
   stand.json                        the setup
   calib/poses/<time>.json           camera poses and servo zero offsets (the pose preset format)
   calib/lens/<camera>/<time>.json   one camera's K and distortion, with the resolution they belong to
+                                    and the focus they were measured at
   calib/dynamics/<time>.json        identified servo dynamics
   station/                          `twin export` of the stand, for training
 ```
@@ -884,9 +889,9 @@ work on a copy of its folder.
 
 ### Camera controls
 
-A camera record can carry `controls`. The twin sets them on a V4L2 camera
-whenever it opens one, and again on **Zastosuj i zapisz** in the panel. A
-script that sets focus before the twin starts is no longer needed.
+A camera record can carry `controls`. The twin sets them whenever it opens the
+camera, and again on **Zastosuj i zapisz** in the panel, then reads each one back.
+A script that sets focus before the twin starts is no longer needed.
 
 | Control | Value |
 |---|---|
@@ -895,11 +900,26 @@ script that sets focus before the twin starts is no longer needed.
 | `auto_exposure` | `true` (aperture priority, the UVC auto mode) or `false` (manual) |
 | `exposure_absolute` | Exposure time in 100 µs units; turns auto exposure off |
 
-A control left out keeps the camera's own setting. The twin uses the
-`VIDIOC_S_CTRL` ioctl on the device node, so it needs Linux and a `/dev/...`
-source or a camera index. Elsewhere, for example on macOS, nothing is set. A
-control the camera refuses is logged, and the panel shows it under the camera's
-settings.
+A control left out keeps the camera's own setting. How the twin reaches the
+camera depends on the OS; none needs an extra package or root:
+
+| OS | Source | How |
+|---|---|---|
+| Linux | a `/dev/...` path or a camera index | V4L2 ioctls on the device node |
+| macOS | a camera index (OpenCV's AVFoundation order) | UVC requests to the camera's USB device through IOKit |
+| Windows | a camera index | OpenCV's DirectShow properties; focus only, no exposure |
+
+On macOS the index leads to the camera's USB port, so two identical cameras keep
+their own settings. Built-in and network cameras have no UVC controls and are
+left alone. A control the camera refuses, or one that reads back another value,
+is logged, and the panel shows it under the camera's settings.
+
+A lens result measured at a locked focus carries it (`intrinsics_info.focus`).
+On open the twin sets that focus when the camera's `controls` set none. If the
+camera then does not report autofocus off and that focus, the panel says so and
+the lens and the camera's pose are not trusted for the session: step 2 waits and
+the table map leaves the camera out until the focus holds again. A lens result
+without a focus is used as before.
 
 ## Historical notes
 

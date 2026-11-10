@@ -360,15 +360,29 @@ def test_ui_with_a_stand_loads_it_and_starts_the_panel(tmp_path, monkeypatch, ca
 
 # ------------------------------------------------------------------ camera controls
 class FakeIoctl:
-    def __init__(self, refuse: set[int] = frozenset()):
+    """A V4L2 camera behind `ioctl`: S_CTRL stores a value (and is recorded), G_CTRL reads it, QUERYCTRL
+    describes it; a control in `refuse` does not exist."""
+
+    def __init__(self, refuse: set[int] = frozenset(), reads: dict[int, int] | None = None):
         self.calls: list[tuple[int, int, int, int]] = []
         self.refuse = refuse
+        self.values: dict[int, int] = {}
+        #: What G_CTRL reports instead of the stored value.
+        self.reads = reads or {}
 
     def __call__(self, fd, request, arg):
-        cid, value = struct.unpack("=Ii", arg)
+        cid = struct.unpack_from("=I", arg)[0]
         if cid in self.refuse:
             raise OSError(errno.EINVAL, "Invalid argument")
-        self.calls.append((fd, request, cid, value))
+        if request == cc.VIDIOC_S_CTRL:
+            self.calls.append((fd, request, cid, struct.unpack("=Ii", arg)[1]))
+            self.values[cid] = struct.unpack("=Ii", arg)[1]
+            return arg
+        if request == cc.VIDIOC_G_CTRL:
+            return struct.pack("=Ii", cid, self.reads.get(cid, self.values.get(cid, 0)))
+        if request == cc.VIDIOC_QUERYCTRL:
+            return struct.pack("=II32siiiiI2I", cid, 1, b"focus", 0, 250, 5, 0, 0, 0, 0)
+        raise OSError(errno.ENOTTY, "Inappropriate ioctl for device")
 
 
 def test_camera_controls_are_set_through_v4l2_in_order():
@@ -389,7 +403,7 @@ def test_camera_controls_are_set_through_v4l2_in_order():
 def test_camera_controls_are_skipped_off_linux_and_for_sources_that_are_not_v4l2():
     ioctl = FakeIoctl()
     controls = CameraControls(autofocus=False)
-    assert cc.apply("/dev/video0", controls, platform="darwin", ioctl=ioctl).skipped == "tylko Linux (V4L2)"
+    assert "nie kamera" in cc.apply("/dev/video0", controls, platform="darwin", ioctl=ioctl).skipped
     assert cc.apply("nagranie.mp4", controls, platform="linux", ioctl=ioctl).skipped
     assert cc.apply("/dev/video0", CameraControls(), platform="linux", ioctl=ioctl) == cc.Applied()
     assert ioctl.calls == []
@@ -430,7 +444,7 @@ def test_a_camera_gets_its_controls_when_the_twin_opens_it(monkeypatch):
 
     applied = []
     monkeypatch.setattr(camera_stream.cv2, "VideoCapture", FakeCapture)
-    monkeypatch.setattr(cc, "apply", lambda source, controls: applied.append((source, controls)) or cc.Applied())
+    monkeypatch.setattr(cc, "apply", lambda source, controls, **kw: applied.append((source, controls)) or cc.Applied())
     controls = CameraControls(autofocus=False, focus_absolute=30)
     stream = camera_stream.CameraStream(CameraConfig(source="/dev/video3", controls=controls)).open()
     stream.close()
@@ -449,6 +463,106 @@ def test_camera_controls_round_trip_through_the_workspace_file(tmp_path):
     (tmp_path / "twin.json").write_text(json.dumps({"robot": BOT, "cameras": cams}), encoding="utf-8")
     with pytest.raises(ValueError, match="Nieznane klucze"):
         Workspace.load(tmp_path / "twin.json")
+
+
+class LiveStandIn:
+    """An open camera stream: what its open did with the camera's controls."""
+
+    def __init__(self, done: cc.Applied):
+        self.controls_applied = done
+        self.error, self.is_running = None, True
+
+    def close(self) -> None:
+        pass
+
+
+def a_lens_at_focus(focus: int | None, **kw) -> CameraRecord:
+    info = {"rms_px": 0.3, "trusted": True, "reason": ""} | ({} if focus is None else {"focus": focus})
+    return CameraRecord("kam", "/dev/video0", K=nominal_K(640, 480).tolist(), intrinsics_from="szachownica",
+                        intrinsics_info=info, T_cam2base=np.eye(4).tolist(),
+                        calibration={"trusted": True, "reason": ""}, **kw)
+
+
+def test_the_twin_sets_the_lenss_focus_on_open_and_trusts_the_lens_only_when_it_reads_back(monkeypatch):
+    from machinekind_twin import cameras
+
+    rec = a_lens_at_focus(30)
+    assert rec.applied_controls() == CameraControls(autofocus=False, focus_absolute=30)
+    assert a_lens_at_focus(30, controls=CameraControls(focus_absolute=45)).applied_controls().focus_absolute == 45
+    assert a_lens_at_focus(30, controls=CameraControls(autofocus=True)).applied_controls().autofocus
+    ws = Workspace(robot=BOT)
+    ws.add_camera(rec)
+    opened = []
+    held = cc.Applied(ok=["autofocus", "focus_absolute"], read={"autofocus": 0, "focus_absolute": 30})
+    monkeypatch.setattr(cameras, "open_live", lambda record: opened.append(record) or LiveStandIn(held))
+    hub = cameras.CameraHub(ws)
+    hub.sync()
+    assert opened == [rec] and rec.focus_problem == "" and rec.trusted and rec.intrinsics_problem() == ""
+    moved = cc.Applied(ok=["autofocus"], failed={"focus_absolute": "odczyt 35 zamiast 30"},
+                       read={"autofocus": 0, "focus_absolute": 35})
+    hub.close()
+    monkeypatch.setattr(cameras, "open_live", lambda record: LiveStandIn(moved))
+    hub = cameras.CameraHub(ws)
+    hub.sync()
+    assert "odczyt 35 zamiast 30" in rec.focus_problem and not rec.trusted
+    assert rec.intrinsics_problem().startswith("obiektyw niewazny w tej sesji")
+    assert "focus_problem" not in ws.to_dict()["cameras"][0]
+    # Applying the camera's own controls again decides anew; controls given for a moment do not.
+    sent = []
+    monkeypatch.setattr(cc, "apply", lambda source, controls, **kw: sent.append(controls) or held)
+    hub.close()
+    assert hub.apply_controls("kam", CameraControls(autofocus=False, focus_absolute=90)) is held
+    assert rec.focus_problem and hub.controls_applied("kam") is None
+    hub.apply_controls("kam")
+    assert sent[-1] == CameraControls(autofocus=False, focus_absolute=30) and rec.focus_problem == ""
+    assert hub.controls_applied("kam") is held
+
+
+def test_a_lens_without_a_focus_is_trusted_as_before_whatever_the_controls_do(monkeypatch):
+    from machinekind_twin import cameras
+
+    rec = a_lens_at_focus(None, controls=CameraControls(autofocus=False, focus_absolute=0))
+    assert rec.lens_focus is None and rec.applied_controls() == rec.controls
+    ws = Workspace(robot=BOT)
+    ws.add_camera(rec)
+    monkeypatch.setattr(cameras, "open_live", lambda record: LiveStandIn(cc.Applied(skipped="brak sterowania")))
+    hub = cameras.CameraHub(ws)
+    hub.sync()
+    assert rec.focus_problem == "" and rec.trusted and rec.intrinsics_problem() == ""
+
+
+def test_a_live_camera_opens_with_the_controls_its_lens_needs(monkeypatch):
+    from machinekind_twin import cameras
+
+    seen = []
+
+    class Stream:
+        def __init__(self, cfg):
+            seen.append(cfg)
+            self.controls_applied = cc.Applied()
+
+        def open(self):
+            return self
+
+    monkeypatch.setattr(cameras, "CameraStream", Stream)
+    cameras.open_live(a_lens_at_focus(40))
+    assert seen[0].controls == CameraControls(autofocus=False, focus_absolute=40) and seen[0].mirror is False
+
+
+def test_the_lens_focus_is_kept_in_the_workspace_file_and_the_stand(tmp_path):
+    ws = a_workspace(tmp_path)
+    ws.camera("kamera1").intrinsics_info["focus"] = 30
+    ws.camera("kamera1").focus_problem = "ostrosc 35, a obiektyw zmierzony przy 30"
+    ws.save()
+    data = json.loads(ws.path.read_text(encoding="utf-8"))
+    cam = next(c for c in data["cameras"] if c["name"] == "kamera1")
+    assert cam["intrinsics_info"]["focus"] == 30 and "focus_problem" not in cam
+    again = Workspace.load(ws.path).camera("kamera1")
+    assert again.lens_focus == 30 and again.focus_problem == ""
+    st.save(ws, tmp_path / "stand")
+    entry = st.load(tmp_path / "stand").lens["kamera1"]
+    assert entry["intrinsics_info"]["focus"] == 30
+    assert st.load(tmp_path / "stand").workspace().camera("kamera1").lens_focus == 30
 
 
 def test_the_panel_shows_the_stand_and_saves_camera_settings_to_it(tmp_path):

@@ -7,6 +7,7 @@ when detection is slower than the camera.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +24,20 @@ class Frame:
     image: np.ndarray
     timestamp: float
     index: int
+
+
+def index_backend(platform: str | None = None) -> int:
+    """The OpenCV backend for a camera index, so the index means what `camera_controls` takes it for.
+
+    DirectShow on Windows (it also opens a camera in a fraction of a second, where the default MSMF
+    takes seconds), AVFoundation on macOS, any (V4L2) elsewhere.
+    """
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        return cv2.CAP_DSHOW
+    if platform == "darwin":
+        return cv2.CAP_AVFOUNDATION
+    return cv2.CAP_ANY
 
 
 def _is_device_path(source: int | str) -> bool:
@@ -61,6 +76,8 @@ class CameraStream:
             # A device path (/dev/videoN or the stable /dev/v4l/by-id/...) is a camera, not a
             # file. The V4L2 index shifts every time something is plugged into USB; by-id does not.
             cap = cv2.VideoCapture(str(source), cv2.CAP_V4L2)
+        elif isinstance(source, int):
+            cap = cv2.VideoCapture(source, index_backend())
         else:
             cap = cv2.VideoCapture(source)
         if not cap.isOpened():
@@ -81,13 +98,20 @@ class CameraStream:
             except cv2.error:  # pragma: no cover - backend dependent
                 pass
             # After the format: some cameras reset their controls when it changes.
-            self.controls_applied = camera_controls.apply(self.cfg.source, self.cfg.controls)
+            self.controls_applied = camera_controls.apply(self.cfg.source, self.cfg.controls, cap=cap)
 
         self._cap = cap
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self._thread.start()
         return self
+
+    def apply_controls(self, controls: camera_controls.CameraControls | None) -> camera_controls.Applied:
+        """Sets `controls` on the open camera now (Windows needs its open capture for that)."""
+        return camera_controls.apply(self.cfg.source, controls, cap=self._cap)
+
+    def focus_range(self) -> camera_controls.Range | None:
+        return camera_controls.focus_range(self.cfg.source, cap=self._cap)
 
     def __enter__(self) -> "CameraStream":
         return self.open()
