@@ -633,6 +633,16 @@ masking the moving arm. It detects translation, rotation and scale changes and
 requires consecutive agreeing checks before declaring a moved camera. Relocalize
 that camera from the calibration tab. Old frames do not count as live input.
 
+Some cameras stand on a mount that sways while the arm moves, such as a pole on
+the arm's base plate. Tick **Chwiejny statyw** for such a camera in the Kamery
+tab. The watcher then judges it only after the arm has stood still for 1.5 s.
+It never shows the red "moved" alarm for it and never withdraws a trust by hand.
+A shift above 1.5 times the camera's tolerance (default 4 px) in three agreeing
+checks gives a calm notice instead. The notice gives the shift in pixels and in
+millimetres on the table, and points to **Kamera poruszona** for a quick
+re-measure. The camera's details show its largest shift over the last minute.
+`twin.json` and `stand.json` keep the setting as `wobbly` and `wobble_px`.
+
 Camera rendering uses the full intrinsic matrix, including the principal point.
 The AprilTag detector corrects its half-pixel corner convention before solving
 poses. Use segmentation geometry to check projection accuracy; colored blob
