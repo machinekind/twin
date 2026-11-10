@@ -112,7 +112,7 @@ launch with:
 uv run twin --config configs/local.yaml ui
 ```
 
-The twin reads `safety`, `robot` and optional `joints` overrides. Robot descriptions
+The twin reads `safety`, `robot`, `wave` and optional `joints` overrides. Robot descriptions
 supply the joints, limits, gripper range and home pose. Other YAML sections belong
 to the backend, strategy or detector with that name (`feetech:`, `a1x:`, `swing:`,
 `cube:`, etc.). A strategy and a detector with the same name share a section, and
@@ -180,6 +180,24 @@ Connection starts from confirmed measurements without an automatic Home move.
 A joint initially outside configured limits is left in place and brought back
 under supervision when commanded. Hardware-reported limits constrain configured
 limits where the backend provides them.
+
+### Gripper strength
+
+A cardboard card needs a firm grip and a hard plastic block a gentle one. A task
+sets its own grip strength for as long as it has the arm. The calibration wave
+reads it from the config file's `wave:` section. A strategy that has the setting
+reads it from its own section, as the SO-101's block strategies do. The twin hands
+it to the backend in its control loop. The stand's own grip comes back when the
+task ends, stops, fails or is replaced, and when STOP, Home, Connect or Disconnect
+takes the arm. The panel's manual gripper always uses the stand's own grip.
+
+The scale is the backend's. On the SO-101 it is the gripper servo's P gain, Feetech
+register 21, from 1 to 254. The squeeze on a held object is about P times how far
+the goal lies past it. The stand's own grip is the backend's setting,
+`feetech: p_gain: {gripper: ...}`. Set it to the softest grip any task needs. Tasks
+then only raise it, so nothing left in the jaws is squeezed harder after a task
+ends. A backend or robot that cannot change the grip ignores the setting, and the
+log says so.
 
 ### Remote access and camera streams
 
@@ -579,6 +597,14 @@ When the wave cannot solve, the panel says which camera saw the card how often,
 facing which way and from where, or that it never saw it.
 `workspace/ostatnia_fala.json` keeps the whole record: every pose with its phase
 and place, the map (`mapa`), and the reason in `blad`.
+
+The gripper holds the card with `wave.grip_strength` from the config file, 16 by
+default ([Gripper strength](#gripper-strength)). The wave reads it at every start,
+so an edit needs no restart. 0 keeps the stand's own grip. The wave closes the jaw
+to 0 on the card. A goal just past the card would not hold it better. The squeeze
+is P times how far the goal lies past the card, and the servo's overload
+protection trips on that same squeeze, whatever mix of P and distance makes it.
+Closing to 0 also keeps the squeeze steadier when the cardboard gives a little.
 
 The `wave` section of `twin.json` tells the wave what to keep out of. Keep-out
 boxes are in the arm's base frame in metres: x forward, y left, z up from the

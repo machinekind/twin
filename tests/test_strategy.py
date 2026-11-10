@@ -522,3 +522,111 @@ def test_the_arm_taken_while_the_strategy_starts_still_gets_it_a_stop(twin):
     assert plugin.stopped.startswith("przerwana")
     assert twin.owner is None
     assert not runner.status.running
+
+
+# --------------------------------------------------------------------------- grip strength
+
+
+class Gripping(Plugin):
+    """A strategy that grips with its own strength (`Strategy.grip_strength`)."""
+
+    def __init__(self, answer, grip_strength):
+        super().__init__(answer)
+        self.grip_strength = grip_strength
+
+
+def _fail(obs):
+    raise ZeroDivisionError("act padl")
+
+
+@pytest.mark.parametrize("end", ["done", "stop", "estop", "home", "error"])
+def test_a_strategys_grip_strength_holds_for_its_run_and_the_stands_comes_back_however_it_ends(twin, monkeypatch, end):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    ticks = []
+
+    def act(obs):
+        ticks.append(obs.step)
+        if end == "error" and len(ticks) > 3:
+            return _fail(obs)
+        return Action(target={}, done=end == "done" and len(ticks) > 3, success=True)
+
+    plugin = Gripping(act, grip_strength=8)
+    runner = StrategyRunner(twin, plugin)
+    runner.start(threaded=False)
+    drive(twin, runner, 0.1)
+    assert arm.grips == [8]                                    # in place before the run's first ticks
+
+    if end == "stop":
+        runner.stop()
+    elif end == "estop":
+        twin.estop("STOP z panelu")
+    elif end == "home":
+        twin.home()
+    drive(twin, runner, 0.5)
+
+    assert not runner.status.running and plugin.stopped
+    assert arm.grips == [8, None]
+
+
+def test_the_next_strategy_gets_its_own_grip_or_the_stands(twin, monkeypatch):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+
+    first = StrategyRunner(twin, Gripping(answer({}), grip_strength=8))
+    first.start(threaded=False)
+    drive(twin, first, 0.2)
+    first.stop()
+    second = StrategyRunner(twin, Gripping(answer({}), grip_strength=24))
+    second.start(threaded=False)
+    drive(twin, second, 0.2)
+    assert arm.grips == [8, 24]                                # replaced: the old grip does not stay
+
+    second.stop()
+    third = StrategyRunner(twin, Plugin(answer({})))           # a strategy without grip_strength: the stand's
+    third.start(threaded=False)
+    drive(twin, third, 0.2)
+    assert arm.grips == [8, 24, None]
+
+
+def test_a_strategy_without_a_grip_clears_one_its_owner_left(twin, monkeypatch):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim(twin_strategy.OWNER)
+    twin.set_grip_strength(12, owner=twin_strategy.OWNER)
+    twin.step(TWIN_PERIOD)
+
+    runner = StrategyRunner(twin, Plugin(answer({})))          # same owner: the claim alone keeps the grip
+    runner.start(threaded=False)
+    drive(twin, runner, 0.2)
+
+    assert runner.status.running
+    assert arm.grips == [12, None]
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "16"])
+def test_a_bad_grip_strength_refuses_the_run_and_the_strategy_still_hears_stop(twin, monkeypatch, bad):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    plugin = Gripping(answer({"j1": 30.0}), grip_strength=bad)
+    runner = StrategyRunner(twin, plugin)
+
+    with pytest.raises(ValueError, match="grip_strength"):
+        runner.start(threaded=False)
+    drive(twin, runner, 0.2)
+
+    assert runner.status.stopped_code == "refused" and plugin.stopped
+    assert twin.owner is None and not twin._engaged
+    assert arm.grips == []
+
+
+def test_grip_strength_on_the_simulated_arm_is_ignored_with_a_note(twin, caplog):
+    twin.connect("sim", threaded=False)
+    runner = StrategyRunner(twin, Gripping(answer({}), grip_strength=8))
+
+    with caplog.at_level("INFO", logger="machinekind_twin.runtime"):
+        runner.start(threaded=False)
+        drive(twin, runner, 0.2)
+
+    assert runner.status.running
+    assert any("nie zmienia sily chwytaka" in r.getMessage() for r in caplog.records)

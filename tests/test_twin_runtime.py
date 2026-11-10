@@ -77,6 +77,9 @@ class FakeArm(RobotBackend):
         self._grip_cmd: float | None = None     # jak A1X: rozkaz rowny zglaszanemu nic nie ustala
         self._grip_sent = False                 # jak A1X `_g_target`: strumien chwytaka ruszyl
         self._on = False
+        #: Every `set_grip_strength` the twin made, in order; `grip_ok` False plays a backend that cannot.
+        self.grips: list[int | None] = []
+        self.grip_ok = True
 
     def connect(self):
         self._on = True
@@ -174,6 +177,10 @@ class FakeArm(RobotBackend):
 
     def gripper_measured(self):
         return self.grip_measured
+
+    def set_grip_strength(self, strength):
+        self.grips.append(strength)
+        return self.grip_ok
 
     def gripper_known(self):
         return self.grip_measured or self._grip_cmd is not None
@@ -957,3 +964,207 @@ def test_hold_command_stops_the_arm_where_its_command_is_and_keeps_the_gripper_g
     assert twin.status.command["gripper"] == pytest.approx(0.0)
     with pytest.raises(RuntimeError):
         twin.hold_command(owner="panel")
+
+
+# ------------------------------------------------------------ grip strength
+def test_an_owners_grip_strength_reaches_the_backend_once_in_the_loop_and_release_restores_the_stands(twin, monkeypatch):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("zadanie")
+
+    assert twin.set_grip_strength(12, owner="zadanie")
+    assert arm.grips == []                                     # only the loop talks to the backend
+    run(twin, 0.2)
+    assert arm.grips == [12]                                   # once, not every tick
+
+    twin.release("zadanie")
+    run(twin, 0.2)
+    assert arm.grips == [12, None]
+
+
+@pytest.mark.parametrize("take", ["estop", "home", "preempt", "reconnect", "disconnect"])
+def test_stop_home_preempt_reconnect_and_disconnect_restore_the_stands_grip(twin, monkeypatch, take):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("zadanie")
+    twin.set_grip_strength(16, owner="zadanie")
+    run(twin, 0.1)
+
+    if take == "estop":
+        twin.estop("STOP z panelu")
+    elif take == "home":
+        twin.home()
+    elif take == "preempt":
+        twin.preempt("inne zadanie")
+    elif take == "reconnect":
+        connect_fake(twin, monkeypatch, arm)
+    else:
+        twin.disconnect()
+        assert arm.grips == [16, None]                         # before the port closes
+        connect_fake(twin, monkeypatch, arm)
+    run(twin, 0.2)
+
+    assert twin.owner is None
+    assert arm.grips == [16, None]
+    twin.clear_estop()
+    twin.claim("panel")                                        # the next owner gets the stand's grip
+    run(twin, 0.2)
+    assert arm.grips == [16, None]
+
+
+def test_a_dead_loop_leaves_the_grip_to_the_next_connect(twin, monkeypatch):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("zadanie")
+    twin.set_grip_strength(16, owner="zadanie")
+    run(twin, 0.1)
+
+    def broken():
+        raise OSError("port")
+    monkeypatch.setattr(arm, "read_joints", broken)
+    twin.step(DT)
+    assert not twin.connected and twin.owner is None
+    twin.disconnect()
+
+    assert arm.grips == [16]                                   # no write to a port that just failed
+
+
+def test_grip_strength_belongs_to_the_owner_and_a_new_owner_starts_with_the_stands(twin, monkeypatch):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    assert not twin.set_grip_strength(12, owner="zadanie")     # nobody's arm: refused, nothing changes
+    twin.claim("panel")
+    assert not twin.set_grip_strength(12, owner="zadanie")
+    run(twin, 0.2)
+    assert arm.grips == []
+
+    for bad in (0, -3, 2.5, True, "16"):
+        with pytest.raises(ValueError):
+            twin.set_grip_strength(bad, owner="panel")         # type: ignore[arg-type]
+
+    twin.set_grip_strength(20, owner="panel")
+    twin.set_grip_strength(None, owner="panel")                # changed its mind before a tick: nothing sent
+    run(twin, 0.2)
+    assert arm.grips == []
+
+
+def test_a_backend_that_cannot_change_the_grip_is_asked_once_and_the_log_says_so(twin, monkeypatch, caplog):
+    arm = FakeArm()
+    arm.grip_ok = False
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("zadanie")
+    twin.set_grip_strength(12, owner="zadanie")
+
+    with caplog.at_level("INFO", logger="machinekind_twin.runtime"):
+        run(twin, 0.3)
+
+    assert arm.grips == [12]
+    assert any("nie zmienia sily chwytaka" in r.getMessage() for r in caplog.records)
+    assert twin.status.connected and twin.owner == "zadanie"
+
+
+def test_a_backend_that_raises_on_grip_strength_does_not_stop_the_loop(twin, monkeypatch, caplog):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+
+    def broken(strength):
+        raise OSError("port")
+    monkeypatch.setattr(arm, "set_grip_strength", broken)
+    twin.claim("zadanie")
+    twin.set_grip_strength(12, owner="zadanie")
+    run(twin, 0.3)
+
+    assert twin.connected and twin.owner == "zadanie"
+    assert any("set_grip_strength" in r.getMessage() for r in caplog.records)
+
+
+def test_a_robot_without_a_gripper_skips_grip_strength_with_a_note(twin, monkeypatch, caplog):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    monkeypatch.setattr(twin, "_grip", None)
+    twin.claim("zadanie")
+    twin.set_grip_strength(12, owner="zadanie")
+
+    with caplog.at_level("INFO", logger="machinekind_twin.runtime"):
+        run(twin, 0.2)
+
+    assert arm.grips == []
+    assert any("bez chwytaka" in r.getMessage() for r in caplog.records)
+
+
+def test_grip_strength_waits_for_a_silent_link_instead_of_queueing_a_write(twin, monkeypatch):
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    twin.claim("zadanie")
+    arm.silent = 10
+    run(twin, 0.1)
+    twin.set_grip_strength(12, owner="zadanie")
+    run(twin, 0.2)
+    assert arm.grips == []                                     # the link is down: nothing goes out
+
+    run(twin, 1.0)
+    assert arm.grips == [12]                                   # confirmed again: it goes out
+
+
+def test_the_wave_holds_the_card_with_its_grip_strength_and_the_stands_comes_back_after_it(twin, monkeypatch, tmp_path):
+    """`wave.grip_strength` from the config file while the wave has the arm; the stand's own after it ends,
+    on STOP and on an error."""
+    from types import SimpleNamespace
+
+    import machinekind_twin.calib.session as session_mod
+    from machinekind_twin.ui import jobs
+
+    arm = FakeArm()
+    connect_fake(twin, monkeypatch, arm)
+    during: list[list[int | None]] = []
+
+    def fake_session(end: str):
+        class Session:
+            def __init__(self, *a, **kw):
+                self.done = False
+
+            def step(self):
+                run(twin, 0.1)
+                during.append(list(arm.grips))
+                if end == "stop":
+                    twin.estop("STOP z panelu")
+                    raise RuntimeError("fala przerwana")
+                if end == "error":
+                    raise ZeroDivisionError("blad sesji")
+                self.done = True
+                return SimpleNamespace(progress={}, index=1, aim=None, phase="", seen={}, note="")
+
+            def status(self):
+                return {}
+
+            def solve(self):
+                return "wynik"
+        return Session
+
+    config = tmp_path / "local.yaml"
+    config.write_text("wave:\n  grip_strength: 20\n", encoding="utf-8")
+    monkeypatch.setenv("MACHINEKIND_TWIN_CONFIG", str(config))
+    for end, want_state in (("done", jobs.DONE), ("stop", jobs.CANCELLED), ("error", jobs.FAILED)):
+        arm.grips.clear()
+        twin.clear_estop()
+        monkeypatch.setattr(session_mod, "Session", fake_session(end))
+        job = jobs.Job("fala")
+        twin.claim(jobs.CALIB_OWNER, preempt=job.stop)         # as the panel takes the arm for the wave
+        job.start(lambda j: jobs.run_card_calibration(j, twin, [], quick=True))
+        assert job.wait(30.0)
+        run(twin, 0.2)
+
+        assert job.state == want_state and twin.owner is None
+        assert during[-1] == [20]                              # the card is held with the wave's strength
+        assert arm.grips == [20, None]                         # and the stand's comes back after the wave
+
+    config.write_text("wave:\n  grip_strength: 0\n", encoding="utf-8")   # 0: the stand's own throughout
+    arm.grips.clear()
+    twin.clear_estop()
+    monkeypatch.setattr(session_mod, "Session", fake_session("done"))
+    twin.claim(jobs.CALIB_OWNER)
+    job = jobs.Job("fala")
+    job.start(lambda j: jobs.run_card_calibration(j, twin, [], quick=True))
+    assert job.wait(30.0)
+    run(twin, 0.2)
+    assert job.state == jobs.DONE and arm.grips == []

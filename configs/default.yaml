@@ -10,8 +10,8 @@
 # Wlasne wartosci trzymaj w kopii: configs/local.yaml (jest w .gitignore) -
 # wystarczy w niej sekcja, ktora zmieniasz, np. tylko `robot:`.
 #
-# Every section other than `safety` and `robot` belongs to the backend, strategy or detector
-# with that name. A strategy and a detector with the same name share one section.
+# Every section other than `safety`, `robot`, `wave` and `joints` belongs to the backend, strategy
+# or detector with that name. A strategy and a detector with the same name share one section.
 
 safety:
   hold_timeout_s: 0.4       # brak dloni dluzej -> zamrozenie ruchu
@@ -27,6 +27,12 @@ safety:
 robot:
   backend: sim         # sim albo wtyczka backendu z pakietu ramienia (twin check)
   port: null           # port ramienia, np. COM5, /dev/ttyACM0; lacze CAN: can0, xcan
+
+# The calibration wave (Kalibracja, step 2).
+wave:
+  grip_strength: 16    # how hard the gripper holds the card while the wave runs, in the backend's
+                       # scale (SO-101: the gripper servo's P gain, Feetech register 21, 1..254);
+                       # the stand's own comes back after the wave; 0 keeps the stand's own
 
 # Kazda inna sekcja nalezy do backendu albo strategii o tej nazwie. Backend sprawdza swoja sam;
 # sekcja strategii (np. `swing:`) wypelnia formularz jej ustawien w panelu (zakladka Strategie),

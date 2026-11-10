@@ -213,6 +213,10 @@ class PluginBackend(RobotBackend):
     def velocities(self) -> dict[str, float] | None:
         return self._call("velocities", super().velocities)
 
+    def set_grip_strength(self, strength: int | None) -> bool:
+        fn = getattr(self.plugin, "set_grip_strength", None)
+        return bool(fn(strength)) if fn is not None else False
+
     def step(self, dt: float) -> None:
         fn = getattr(self.plugin, "step", None)
         if fn is not None:

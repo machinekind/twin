@@ -29,6 +29,9 @@ A joint that cannot follow its command (a collision, a blocked or limp servo) is
 tracking guard, for every owner: it triggers STOP, which takes the arm from the runner. What counts
 as success, and how far a goal may be, is the task's business inside the strategy.
 
+A strategy's `grip_strength` holds while its run has the arm (`Twin.set_grip_strength`); the stand's
+own comes back when the run ends, however it ends.
+
 Pass `episode=EpisodeOptions(...)` to record a run; recording is disabled by default.
 A worker writes compressed JSON Lines without blocking control on disk I/O. See docs/EPISODES.md.
 `status.stopped_code` provides a stable termination code, independent of the human-readable reason.
@@ -291,10 +294,23 @@ class StrategyRunner:
             self._tell_strategy(self.status.stopped_because)
             raise RuntimeError(f"ramie odebrane ({self.status.stopped_because})")
 
+        self._set_grip(run)
         if not self.twin.set_engaged(True, owner=self.owner):
             reason = self._preempt_reason() or f"ramie ma: {self.twin.owner or 'nikt'}"
             self._finish(run, f"przerwana: {reason}", code="preempted")
             raise RuntimeError(f"ramie odebrane ({reason})")
+
+    def _set_grip(self, run: _Run) -> None:
+        """The strategy's `grip_strength`, or the stand's own, for as long as the run has the arm."""
+        set_grip = getattr(self.twin, "set_grip_strength", None)
+        if set_grip is None:
+            return
+
+        try:
+            set_grip(getattr(self.strategy, "grip_strength", None), owner=self.owner)
+        except ValueError as exc:
+            self._finish(run, f"strategia odmowila: {exc}", code="refused")
+            raise
 
     # ------------------------------------------------------------------- loop
 
