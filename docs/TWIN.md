@@ -783,6 +783,12 @@ read from its own bus:
 - `joints` [app units]: the fixed pose, or the last pose read. Joints left out
   take the robot's home pose.
 
+A robot description without `tcp_site` and `hand_body`, such as a walking
+robot or a cart, can only be listed here. The twin refuses it as the working
+arm, in `twin.json` and in `--robot`. A floating top body (a `<freejoint>`)
+stays where the model puts it relative to `xyz` and `yaw_deg`; gravity does
+not move it.
+
 Read-only is part of the backend contract. The twin opens the backend only when
 its factory is marked `read_only_capable`. It sets `BackendContext.read_only`,
 and the backend then writes nothing to the arm: no torque, no goals, no

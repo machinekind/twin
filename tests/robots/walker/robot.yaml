@@ -1,0 +1,15 @@
+# A watch-only test robot: a trunk on a free joint and one leg. No tool point, hand, gripper or
+# cameras: the twin shows it next to the arm (`other_robots`) and never drives it.
+name: walker
+title: Robot kroczacy (testowy)
+mjcf: walker.xml
+
+joints: [hip, knee]
+gripper: null
+base_body: trunk
+
+home: {hip: 0.0, knee: 0.0}
+limits:
+  hip: [-90.0, 90.0]
+  knee: [-120.0, 0.0]
+max_vel: {hip: 120.0, knee: 120.0}

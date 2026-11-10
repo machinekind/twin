@@ -147,12 +147,13 @@ class RobotSpec:
     joints: tuple[str, ...]
     #: Which joint is the gripper (app units 0..100); None = no gripper.
     gripper: str | None
-    #: Tool point site: IK solves for its pose and the panel aims it.
-    tcp_site: str
-    #: Body that carries the calibration card held in the jaws.
-    hand_body: str
     #: Base body: the frame in which camera poses and targets are given.
     base_body: str
+    #: Tool point site: IK solves for its pose and the panel aims it. Left out together with
+    #: `hand_body`, the robot is `watch_only`.
+    tcp_site: str | None = None
+    #: Body that carries the calibration card held in the jaws.
+    hand_body: str | None = None
     #: The robot's folder; `robot.yaml` never sets it.
     root: Path = Path()
     #: Rest pose in app units.
@@ -207,6 +208,11 @@ class RobotSpec:
     def arm_joints(self) -> tuple[str, ...]:
         return tuple(j for j in self.joints if j != self.gripper)
 
+    @property
+    def watch_only(self) -> bool:
+        """No tool point: the robot can stand next to the arm (`other_robots`), never be the arm."""
+        return self.tcp_site is None
+
 
 def load_robot(folder: str | Path) -> RobotSpec:
     """The description in `folder/robot.yaml`, checked against itself and its model file."""
@@ -229,6 +235,9 @@ def _check(spec: RobotSpec, path: Path) -> None:
     problems = []
     if not spec.joints or len(joints) != len(spec.joints):
         problems.append("`joints` musi byc niepusta lista bez powtorzen")
+    if (spec.tcp_site is None) != (spec.hand_body is None):
+        problems.append("`tcp_site` i `hand_body` podaj oba albo zaden (bez nich robot moze byc tylko "
+                        "innym robotem stanowiska, `other_robots`)")
     if spec.gripper is not None and spec.gripper not in joints:
         problems.append(f"chwytak {spec.gripper!r} nie jest na liscie `joints`")
     if spec.gripper is not None and spec.gripper_range_q is None:
@@ -339,10 +348,19 @@ def get_spec(name: str) -> RobotSpec:
     return spec
 
 
+def driven_spec(name: str) -> RobotSpec:
+    """`get_spec(name)` for the arm the twin drives, which a watch-only robot cannot be."""
+    spec = get_spec(name)
+    if spec.watch_only:
+        raise ValueError(f"Robot {spec.name!r} nie ma punktu narzedzia (`tcp_site`) - moze stac tylko jako "
+                         "inny robot stanowiska (`other_robots`), nie jako ramie")
+    return spec
+
+
 def default_robot() -> str:
-    """The robot a new workspace starts with: the first one an installed package registers,
-    `FALLBACK_ROBOT` when none is (loading it then names what to install)."""
-    return next(iter(robot_folders()), FALLBACK_ROBOT)
+    """The robot a new workspace starts with: the first one an installed package registers that is
+    not watch-only, `FALLBACK_ROBOT` when none is (loading it then names what to install)."""
+    return next((name for name in robot_folders() if not get_spec(name).watch_only), FALLBACK_ROBOT)
 
 
 def robots() -> dict[str, RobotSpec]:
