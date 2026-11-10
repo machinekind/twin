@@ -419,9 +419,11 @@ class RobotRecord:
     name: str
     #: Robot description from an installed package (`robots.robot_folders`).
     robot: str
-    #: Base position relative to the driven arm's base [m]: x forward, y left, z up.
+    #: Base position relative to the driven arm's base [m]: x forward, y left, z up. A robot that moves
+    #: its base (`RobotBackend.base_pose`): its fixed frame, where an identity base pose stands.
     xyz: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    #: Base rotation about the vertical axis relative to the driven arm's base [deg].
+    #: Base rotation about the vertical axis relative to the driven arm's base [deg]; of the fixed frame
+    #: for a robot that moves its base.
     yaw_deg: float = 0.0
     #: Backend of the robot's package, opened read-only; None = the fixed pose `joints`.
     backend: str | None = None

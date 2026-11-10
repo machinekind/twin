@@ -1540,8 +1540,15 @@ class TwinApp:
         for r in self.ws.other_robots:
             x, y, z = (float(v) for v in r.xyz)
             source = f"{r.backend} {r.port or ''}".strip() if r.backend else "stala poza"
+            now = ""
+            base = self.twin.other_base_pose(r.name)
+            if base is not None:
+                T = base[0]
+                heading = np.degrees(np.arctan2(T[1, 0], T[0, 0]))
+                now = f", podstawa teraz x {T[0, 3]:+.3f}, y {T[1, 3]:+.3f} m, obrot {heading:.0f} st."
             lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
-                         f"obrot {r.yaw_deg:.0f} st.; {_html.escape(source)}: {_html.escape(status.get(r.name, ''))}")
+                         f"obrot {r.yaw_deg:.0f} st.{now}; {_html.escape(source)}: "
+                         f"{_html.escape(status.get(r.name, ''))}")
         return "\n".join(lines) or "Brak innych robotow w scenie."
 
     def _on_tcp_gizmo(self) -> None:

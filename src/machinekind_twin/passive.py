@@ -1,7 +1,8 @@
 """Joints of the robots the twin only watches, read from their backends opened read-only.
 
 Each such robot gets its own thread (`PassiveReader`): open the backend read-only, read it about ten
-times a second, hand every fresh pose on. When the backend cannot be opened or a read fails, the
+times a second, hand every fresh pose on. A robot that reports where its base is (`base_pose`) walks
+or drives, so it is read thirty times a second. When the backend cannot be opened or a read fails, the
 robot keeps its last pose, `status` says why, and the reader tries again a few seconds later.
 """
 
@@ -11,21 +12,25 @@ import logging
 import threading
 from collections.abc import Callable
 
+import numpy as np
+
 from .backends.factory import ReadOnlyArm
 
 logger = logging.getLogger(__name__)
 
 
 class PassiveReader:
-    """Reads one robot's joints in a thread and hands them to `apply`. Never sends anything."""
+    """Reads one robot's joints and base pose in a thread and hands them to `apply`. Never sends anything."""
 
     #: Pause between reads [s].
     period = 0.1
+    #: Pause after a read that brought a base pose [s].
+    base_period = 1 / 30
     #: Pause before opening the backend again after a failure [s].
     retry_s = 3.0
 
     def __init__(self, name: str, open_arm: Callable[[], ReadOnlyArm],
-                 apply: Callable[[dict[str, float]], None]):
+                 apply: Callable[[dict[str, float], tuple[np.ndarray, float] | None], None]):
         self.name = name
         self._open = open_arm
         self._apply = apply
@@ -65,10 +70,11 @@ class PassiveReader:
             if self._arm.link_silent:
                 self._set(False, "brak odpowiedzi - zostaje ostatnia poza")
                 return self.period
-            self._apply(joints)
+            base = self._arm.base_pose()
+            self._apply(joints, base)
             faults = self._arm.faults()
             self._set(True, "odczyt na zywo" + (f" ({'; '.join(faults)})" if faults else ""))
-            return self.period
+            return self.period if base is None else self.base_period
         except Exception as exc:  # noqa: BLE001 - any failure keeps the last pose and retries
             self._set(False, f"{type(exc).__name__}: {exc} - zostaje ostatnia poza")
             self._close()

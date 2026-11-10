@@ -168,7 +168,9 @@ class MemoryArm:
 ```
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
-`efforts`, `set_grip_strength`, ...); `RobotBackend` documents what each one means.
+`efforts`, `set_grip_strength`, `base_pose`, ...); `RobotBackend` documents what each one means.
+`base_pose`, added in 0.1.8, is for a robot that moves its base (a walking robot, a cart): where
+its base is in the robot's own fixed frame, and when that was measured.
 
 The twin may open a backend only to watch an arm it does not drive, such as a second arm next to
 the working one. It does so only for a factory marked `@read_only_capable`, with
