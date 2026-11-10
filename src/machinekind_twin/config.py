@@ -1,11 +1,11 @@
 """Twin configuration: dataclasses and YAML loading.
 
-`TwinConfig` holds what the twin itself reads: safety, which backend and port to use, and the
-joint table of the robot it runs. Every other top-level mapping in the file belongs to the backend
-plugin, strategy or detector with that name. `TwinConfig.sections` keeps these mappings raw, keyed
-by section name. A backend validates its own section. `strategies` and `detectors` build a
-plugin's settings from the section with its name. A backend, a strategy and a detector with the
-same name read the same section.
+`TwinConfig` holds what the twin itself reads: safety, which backend and port to use, how hard the
+calibration wave grips its card, and the joint table of the robot it runs. Every other top-level
+mapping in the file belongs to the backend plugin, strategy or detector with that name.
+`TwinConfig.sections` keeps these mappings raw, keyed by section name. A backend validates its own
+section. `strategies` and `detectors` build a plugin's settings from the section with its name. A
+backend, a strategy and a detector with the same name read the same section.
 `from_mapping` is the strict dataclass builder the twin uses for its sections, and the backends
 still in this repository use it for theirs.
 """
@@ -103,11 +103,27 @@ class RobotConfig:
 
 
 @dataclass
+class WaveSettings:
+    """The `wave:` section: how the calibration wave holds its card."""
+
+    #: How hard the gripper holds the card while the wave has the arm, in the backend's scale
+    #: (`RobotBackend.set_grip_strength`; SO-101: the gripper servo's P gain, Feetech register 21,
+    #: 1..254). The stand's own comes back when the wave ends. 0 keeps the stand's own.
+    grip_strength: int = 16
+
+    def __post_init__(self) -> None:
+        value = self.grip_strength
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"wave.grip_strength: liczba calkowita od 0 (0 = sila stanowiska), jest {value!r}")
+
+
+@dataclass
 class TwinConfig:
     """What the twin reads, plus the raw sections that belong to backend plugins."""
 
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     robot: RobotConfig = field(default_factory=RobotConfig)
+    wave: WaveSettings = field(default_factory=WaveSettings)
     #: The joint table of the robot the twin runs; `robots.robot_config` fills it from the description.
     joints: dict[str, JointConfig] = field(default_factory=dict)
     #: Every other top-level mapping of the file, by name and unvalidated. Each backend plugin,
@@ -205,6 +221,11 @@ def read_config_data(path: str | Path | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Plik konfiguracyjny {path} musi zawierac mapowanie YAML")
     return raw
+
+
+def wave_settings(path: str | Path | None = None) -> WaveSettings:
+    """The config file's `wave:` section, read now: an edit takes effect at the next wave."""
+    return from_mapping(WaveSettings, read_config_data(path).get("wave") or {}, "wave")
 
 
 def load_config(

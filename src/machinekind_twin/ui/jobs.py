@@ -185,11 +185,15 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
     `WaveConfig.clearance` from everything in the twin's scene that is not the arm (table, objects,
     another robot). While it runs, `job.data["status"]` has a line per camera; at the end
     `job.data["explain"]` says what each camera saw, and the record goes to `ostatnia_fala.json`.
+
+    The gripper holds the card with the config's `wave.grip_strength` (`config.WaveSettings`), read at
+    every start; the twin puts the stand's own back when the wave ends, is stopped or fails.
     """
     from .. import scene as sc
     from ..calib.card import perturb, pinch_point
     from ..calib.session import Session, WaveConfig
     from ..collision import CollisionChecker
+    from ..config import wave_settings
     from ..kinematics import RobotKinematics
 
     ws = twin.workspace
@@ -203,6 +207,7 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
     before = dict(twin.extras)                           # np. kostka polozona wczesniej - wroci po fali
     session = None
     try:
+        grip = wave_settings().grip_strength
         if simulated:
             truth = perturb(nominal, np.random.default_rng(int(time.time())))
             twin.configure(**before, with_card=True, card_pose=truth)
@@ -219,6 +224,8 @@ def run_card_calibration(job: Job, twin, cameras: list[str], quick: bool = False
         job.data["intrinsics"] = intr
         session = Session(_OwnedArm(twin, job), _CameraSubset(twin.cameras, cameras), intr, twin.scene.kin, card,
                           nominal, checker, cfg, seed=int(time.time()) % 10_000)
+        if grip:
+            twin.set_grip_strength(grip, owner=CALIB_OWNER)
         while not session.done:
             if job.cancel.is_set():
                 job.message = interrupted_by_operator(job, twin, CALIB_OWNER) or "fala przerwana"

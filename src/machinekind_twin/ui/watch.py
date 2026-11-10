@@ -18,9 +18,18 @@ sama korelacja fazowa nie widziala obrotu wokol osi optycznej ani ruchu wzdluz
 niej (srodek kadru stoi, brzegi jada). Zmierzone na kadrze 640x480: obrot
 o 3 st. przesuwal narozniki o 21 px, a korelacja zglaszala 1,6 px; zblizenie
 o 4% - 16 px naroznikow i 0,55 px korelacji. Prog 3 px nie ruszal.
+
+A camera on a wobbly mount (`CameraWatch.set_wobbly`) sways while the arm moves and may tilt with
+the arm's pose. Its checks count only with the arm still, and a lasting shift is a notice
+(`CameraWatch.drifted`), never `moved`.
 """
 
 from __future__ import annotations
+
+import itertools
+import time
+from collections import deque
+from collections.abc import Collection
 
 import cv2
 import mujoco
@@ -52,6 +61,25 @@ def arm_mask(scene, camera: str, dilate: int = 9) -> np.ndarray:
     if dilate:
         mask = cv2.dilate(mask.astype(np.uint8), np.ones((dilate, dilate), np.uint8)) > 0
     return mask
+
+
+def arm_still(history: list[tuple[float, dict[str, float]]], since: float, max_speed: float,
+              skip: Collection[str] = (), min_dt: float = 0.1) -> bool:
+    """No joint in `history` ((time, {joint: value}), oldest first) moved faster than `max_speed`
+    [units/s] from `since` on; joints in `skip` aside. No readings means nothing moved.
+
+    Readings are compared at least `min_dt` apart: one reading repeated between servo reads, then
+    a jump, would look faster than the joint was.
+    """
+    start = max((k for k, (t, _) in enumerate(history) if t <= since), default=0)
+    picked: list[tuple[float, dict[str, float]]] = []
+    for t, joints in history[start:]:
+        if not picked or t - picked[-1][0] >= min_dt:
+            picked.append((t, joints))
+    for (t0, a), (t1, b) in itertools.pairwise(picked):
+        if any(abs(v - a[j]) > max_speed * (t1 - t0) for j, v in b.items() if j in a and j not in skip):
+            return False
+    return True
 
 
 _DISTORT_MAPS: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
@@ -287,6 +315,14 @@ class CameraWatch:
     #: kadru - kazdy naroznik w obu na tyle samo, z dokladnoscia do `agree_px`. Reka czy tulow
     #: operatora w kadrze nie stoi w miejscu przez dwa sprawdzenia, a przestawiona kamera tak.
     agree_px = 3.0
+    #: Wobbly mounts: a shift counts past this multiple of the camera's tolerance...
+    wobble_factor = 1.5
+    #: ...in this many consecutive, agreeing checks with the arm still.
+    wobble_checks = 3
+    #: How long the arm stands still before a check of a wobbly camera counts [s]: the mount settles.
+    settle_s = 1.5
+    #: How far back `wander` looks [s].
+    wander_s = 60.0
 
     def __init__(self, threshold_px: float = 3.0, scale: float = 0.5):
         self.threshold = threshold_px
@@ -300,6 +336,12 @@ class CameraWatch:
         #: Przesuniecia naroznikow (4, 2) [px] z poprzedniego sprawdzenia; None - kadr nie pasuje.
         self._prev: dict[str, np.ndarray | None] = {}
         self._moved: dict[str, bool] = {}
+        #: Cameras on a wobbly mount and their tolerance [px] (`set_wobbly`).
+        self._wobbly: dict[str, float] = {}
+        #: Wobbly cameras: still checks in a row past the limit, the notice, and recent (time, shift).
+        self._streak: dict[str, int] = {}
+        self._drifted: dict[str, float] = {}
+        self._seen: dict[str, deque[tuple[float, float]]] = {}
 
     @property
     def refs(self) -> dict[str, np.ndarray]:
@@ -323,13 +365,26 @@ class CameraWatch:
 
     def forget(self, name: str) -> None:
         self._levels.pop(name, None)
+        self._wobbly.pop(name, None)
+        self._reset(name)
+
+    def set_wobbly(self, name: str, tolerance_px: float | None) -> None:
+        """Puts `name` on a wobbly mount with `tolerance_px`, or back on a steady one (None).
+        A change starts the camera's judgement afresh."""
+        if self._wobbly.get(name) == tolerance_px:
+            return
+        if tolerance_px is None:
+            self._wobbly.pop(name, None)
+        else:
+            self._wobbly[name] = float(tolerance_px)
         self._reset(name)
 
     def _reset(self, name: str) -> None:
-        for d in (self.shift, self.detail, self._prev, self._moved):
+        for d in (self.shift, self.detail, self._prev, self._moved, self._streak, self._drifted, self._seen):
             d.pop(name, None)
 
-    def check(self, name: str, img: np.ndarray, mask: np.ndarray | None = None) -> float | None:
+    def check(self, name: str, img: np.ndarray, mask: np.ndarray | None = None, still: bool = True,
+              now: float | None = None) -> float | None:
         """Najwieksze przesuniecie naroznika kadru wzgledem odniesienia [px pelnej rozdzielczosci] albo None.
 
         `inf`, gdy kadru nie da sie dopasowac do odniesienia (inna scena, zaslonieta
@@ -353,6 +408,9 @@ class CameraWatch:
         Zostaje przypadek graniczny: w kadrze ubogim w teksture (gladki blat z symulacji)
         reka 20% zaslaniajaca jedyna mocna krawedz (tyl blatu) daje dalej 35-39 px -
         przed falszywym alarmem chroni wtedy wymog dwoch zgodnych sprawdzen (`moved`).
+
+        Only for a camera on a wobbly mount (`set_wobbly`): `still` says the arm stood still for the
+        frame, and `now` is the check's time [s] for `wander`.
         """
         lv = self._levels.get(name)
         if lv is None or img is None:
@@ -396,20 +454,59 @@ class CameraWatch:
         else:
             disp, shift, rot, scale = None, float("inf"), float("nan"), float("nan")
         prev, self._prev[name] = self._prev.get(name, "brak"), disp
-        if shift <= self.threshold:
-            self._moved[name] = False
-        elif not isinstance(prev, str) and (
-                (prev is None and disp is None)
-                or (prev is not None and disp is not None
-                    and float(np.linalg.norm(prev - disp, axis=1).max()) <= self.agree_px)):
-            self._moved[name] = True
-        # Ponad progiem, ale inaczej niz poprzednio: stan bez zmian - potwierdzona przestawiona
-        # kamera nie "wraca", gdy ktos przejdzie przed nia, a niepotwierdzona czeka.
+        if name in self._wobbly:
+            self._wobble(name, shift, self._same(prev, disp), still, time.monotonic() if now is None else now)
+            waiting = self._streak.get(name, 0) > 0 and name not in self._drifted
+        else:
+            if shift <= self.threshold:
+                self._moved[name] = False
+            elif self._same(prev, disp):
+                self._moved[name] = True
+            # Ponad progiem, ale inaczej niz poprzednio: stan bez zmian - potwierdzona przestawiona
+            # kamera nie "wraca", gdy ktos przejdzie przed nia, a niepotwierdzona czeka.
+            waiting = shift > self.threshold and not self._moved.get(name, False)
         self.shift[name] = shift
         self.detail[name] = dict(dx=float(dx) / s0, dy=float(dy) / s0, rot_deg=rot, scale=scale,
-                                 cc=cc, response=float(response),
-                                 waiting=bool(shift > self.threshold and not self._moved.get(name, False)))
+                                 cc=cc, response=float(response), waiting=bool(waiting))
         return shift
+
+    def _same(self, prev: np.ndarray | None | str, disp: np.ndarray | None) -> bool:
+        """This check shows the same frame motion as the previous one (`agree_px`); "brak" = no previous."""
+        if isinstance(prev, str):
+            return False
+        if prev is None or disp is None:
+            return prev is None and disp is None
+        return float(np.linalg.norm(prev - disp, axis=1).max()) <= self.agree_px
+
+    def _wobble(self, name: str, shift: float, same: bool, still: bool, now: float) -> None:
+        """One check of a wobbly camera. Checks with the arm moving, shifts within the tolerance and
+        shifts that come and go never count; `wobble_checks` agreeing still checks past
+        `wobble_factor` x tolerance make the notice, a still check within the tolerance clears it."""
+        seen = self._seen.setdefault(name, deque())
+        seen.append((now, shift))
+        while seen[0][0] < now - self.wander_s:
+            seen.popleft()
+        tol = self._wobbly[name]
+        if not still or tol < shift <= self.wobble_factor * tol:
+            self._streak[name] = 0
+        elif shift <= tol:
+            self._streak[name] = 0
+            self._drifted.pop(name, None)
+        else:
+            self._streak[name] = self._streak.get(name, 0) + 1 if same else 1
+            if self._streak[name] >= self.wobble_checks:
+                self._drifted[name] = shift
+
+    def drifted(self, name: str) -> float | None:
+        """The shift [px] a wobbly camera's picture stands at, well past its tolerance with the arm still:
+        a notice. None = no notice."""
+        return self._drifted.get(name)
+
+    def wander(self, name: str, now: float | None = None) -> float | None:
+        """The largest shift [px] a wobbly camera's checks measured over the last `wander_s`; None = none."""
+        now = time.monotonic() if now is None else now
+        recent = [s for t, s in self._seen.get(name, ()) if t >= now - self.wander_s and np.isfinite(s)]
+        return max(recent) if recent else None
 
     def moved(self, name: str) -> bool:
         """Kamera przestawiona: dwa kolejne sprawdzenia ponad progiem i zgodne (`agree_px`).
@@ -419,5 +516,7 @@ class CameraWatch:
         korelacji 0,86-0,97 i panel wolal "Kamera przestawiona" przy kazdym siegnieciu do
         stanowiska (zmierzone na kadrach z blizniaka). Wagi odpornosciowe zbijaja wiekszosc
         z nich ponizej progu; to, co zostaje, nie powtarza sie w nastepnym sprawdzeniu.
+
+        A camera on a wobbly mount is never moved; its lasting shift is `drifted`.
         """
         return self._moved.get(name, False)

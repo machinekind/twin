@@ -72,6 +72,8 @@ def _spec_with_offsets(robot: str, offsets: tuple[tuple[str, float], ...]) -> Ro
 #: Poziome pole widzenia typowej kamerki internetowej - tylko do nominalnych
 #: intrynsyk, zanim kamera zobaczy szachownice.
 NOMINAL_HFOV_DEG = 65.0
+#: Default tolerance [px] of a camera on a wobbly mount (`CameraRecord.wobble_px`).
+WOBBLE_PX = 4.0
 
 
 def nominal_K(width: int, height: int, hfov_deg: float = NOMINAL_HFOV_DEG) -> np.ndarray:
@@ -167,6 +169,11 @@ class CameraRecord:
     #: Wynik ostatniej kalibracji polozenia: rms_px, spread_deg, n_obs, trusted, reason, time.
     calibration: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
+    #: The mount sways when the arm moves (Kamery > Chwiejny statyw): the move watch judges the camera
+    #: only with the arm still, and a lasting shift is a notice that leaves the pose's trust alone.
+    wobbly: bool = False
+    #: How far [px] a wobbly camera's picture may wander with the arm still.
+    wobble_px: float = WOBBLE_PX
     #: Tylko kamery symulowane: gdzie kamera NAPRAWDE stoi w blizniaku (ustawiana
     #: w panelu). Kalibracja jej nie zna - wyznacza `T_cam2base` z kadrow, tak
     #: jak dla prawdziwej kamery - wiec wynik da sie ocenic wzgledem prawdy.
@@ -822,6 +829,11 @@ class Workspace:
                 cam.pop("controls")
             else:
                 cam["controls"] = rec.controls.to_dict()
+            # Written only when set: a steady camera's record stays as it was.
+            if not rec.wobbly:
+                cam.pop("wobbly")
+            if rec.wobble_px == WOBBLE_PX:
+                cam.pop("wobble_px")
         return json.loads(json.dumps(data))
 
     def save(self, path: str | Path | None = None) -> Path:

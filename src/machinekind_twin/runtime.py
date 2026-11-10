@@ -238,6 +238,8 @@ class _LoopState:
     #: Po milczeniu: pierwszy swiezy odczyt czeka na potwierdzenie nastepnym (i od kiedy czeka).
     confirm: dict[str, float] | None = None
     confirm_since: float | None = None
+    #: The grip strength last handed to the backend (`Twin.set_grip_strength`); None = the backend's own.
+    grip_strength: int | None = None
     #: Lacze wrocilo po utracie (STOP): potwierdzona poza idzie przez `hold_measured`, nie `reseed`.
     recover_hold: bool = False
     #: Petla stoi (lacze niepotwierdzone) - `Twin.move` nie liczy wtedy czasu rampy.
@@ -369,6 +371,8 @@ class Twin:
         self._preempt_note = ""
         #: Wlasciciel -> dlaczego odebrano mu ramie (do odmow jego spoznionych rozkazow).
         self._lost: dict[str, str] = {}
+        #: The current owner's grip strength (`set_grip_strength`); None = the stand's own.
+        self._grip_strength: int | None = None
         self._fault = ""
         self._note, self._note_t = "", 0.0
         self._base_limits: dict[str, tuple[float, float]] = {}
@@ -610,13 +614,31 @@ class Twin:
             if self._owner == owner:
                 self._owner, self._preempt_cb = None, None
                 self._lost.pop(owner, None)
+                self._grip_strength = None
 
     def _new_owner(self) -> None:
         """Ramie bierze nowy wlasciciel (pod `_own_lock`): stare powody i odciazenie chwytaka nieaktualne."""
         self._preempt_note = ""
         self._target_by = None
         self._grip_floor = None
+        self._grip_strength = None
         self._warnings.pop("grip_eased", None)
+
+    def set_grip_strength(self, strength: int | None, owner: str) -> bool:
+        """How hard the gripper holds while `owner` has the arm (`RobotBackend.set_grip_strength`).
+
+        None = the stand's own. The loop hands it to the backend before its next send. The stand's own
+        comes back as soon as `owner` loses the arm: release, STOP, Home, another owner, (re)connect,
+        disconnect, a dead loop. False = `owner` does not have the arm; nothing changes.
+        """
+        bad = isinstance(strength, bool) or not isinstance(strength, int) or strength < 1
+        if strength is not None and bad:
+            raise ValueError(f"grip_strength: liczba calkowita od 1 albo brak, jest {strength!r}")
+        with self._own_lock:
+            if self._owner != owner:
+                return False
+            self._grip_strength = strength
+        return True
 
     def preempt(self, reason: str) -> None:
         """Odbiera ramie wlascicielowi: ramie staje w ZMIERZONEJ pozie, sterownik dostaje `preempt`.
@@ -631,6 +653,7 @@ class Twin:
             if self._owner is not None:
                 self._lost[self._owner] = reason
             self._owner, self._preempt_cb = None, None
+            self._grip_strength = None
             self._gen += 1
             self._gen_reason = self._preempt_note = reason
         with self._sup_lock:                               # razem - takt petli nie wejdzie miedzy nie
@@ -899,11 +922,17 @@ class Twin:
     def disconnect(self) -> None:
         if self._backend is not None:
             self.preempt("rozlaczenie")
+        alive = self.connected                             # a dead loop's backend is left alone
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+            alive = alive and not self._thread.is_alive()
             self._thread = None
         if self._backend is not None:
+            ls = self._ls
+            if alive and ls is not None and ls.grip_strength is not None:
+                # The loop stopped before it could put the stand's own grip back.
+                self._push_grip_strength(self._backend, ls, None)
             try:
                 self._backend.disconnect()
             except Exception:                           # pragma: no cover - rozlaczenie nie moze wysypac UI
@@ -1578,6 +1607,8 @@ class Twin:
                 command = sup.command
             if engaged or report.state in _MOVING:
                 ls.moved = True
+            if not frozen and self._grip_strength != ls.grip_strength:
+                self._push_grip_strength(b, ls, self._grip_strength)
             # Prawdziwe ramie po "polacz bez ruchu" trzyma cel wpisany przy polaczeniu
             # (tam, gdzie stoi) - do pierwszego ruchu nic nie wysylamy: backend przycina
             # rozkaz do limitow, wiec staw spoza nich dostawal skok od razu po polaczeniu.
@@ -1632,6 +1663,7 @@ class Twin:
                 if self._owner is not None:
                     self._lost[self._owner] = f"petla ramienia padla: {reason}"
                 self._owner, self._preempt_cb = None, None
+                self._grip_strength = None
                 self._gen += 1
                 self._gen_reason = self._preempt_note = f"petla ramienia padla: {reason}"
             self._engaged, self._target = False, None
@@ -1641,6 +1673,24 @@ class Twin:
                 else:
                     self._call_preempt(cb)
             return False
+
+    def _push_grip_strength(self, b: RobotBackend, ls: _LoopState, want: int | None) -> None:
+        """Hands `want` (None = the stand's own) to the backend, once per change. Never raises."""
+        ls.grip_strength = want
+        if self._grip is None:
+            if want is not None:
+                logger.info("Robot bez chwytaka - sila chwytaka %d pominieta", want)
+            return
+        fn = getattr(b, "set_grip_strength", None)
+        try:
+            done = bool(fn(want)) if fn is not None else False
+        except Exception:                                  # the grip must never stop the loop
+            logger.exception("set_grip_strength(%s) backendu rzucilo wyjatek", want)
+            return
+        if done:
+            logger.info("Sila chwytaka: %s", "wlasna stanowiska" if want is None else want)
+        elif want is not None:                             # nothing to put back where it never changed
+            logger.info("Backend %s nie zmienia sily chwytaka - %d pominieta", b.info.name, want)
 
     def _confirm_after_silence(self, sup: SafetySupervisor, ls: _LoopState, now: float) -> None:
         """Swiezy odczyt po milczeniu lacza: petla rusza dopiero po DWOCH kolejnych zgodnych.
