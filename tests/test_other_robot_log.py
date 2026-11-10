@@ -4,6 +4,7 @@ the odometry's drift can be read against the cameras afterwards (`drivelog`, `Tw
 from __future__ import annotations
 
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -33,6 +34,28 @@ def twin(walker):
 
 def lines(path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+class FullDisk:
+    """A log file on a full disk: no line goes in, and closing it closes the real file."""
+
+    def __init__(self, real):
+        self.real = real
+        self.closed = False
+
+    def write(self, text: str) -> int:
+        raise OSError(28, "No space left on device")
+
+    def close(self) -> None:
+        self.real.close()
+        self.closed = True
+
+
+def on_a_full_disk(twin: Twin) -> FullDisk:
+    """The walker's running log, from now on on a full disk."""
+    log = twin.drive_logs["walker"]
+    log["file"] = FullDisk(log["file"])
+    return log["file"]
 
 
 def walk(twin: Twin, start: float) -> None:
@@ -123,8 +146,10 @@ def test_the_summary_reads_back_the_path_the_sightings_and_the_final_and_largest
     walk(twin, start)
     seen_at(twin, monkeypatch, nudged(there, dx=0.04), start + 0.2)
     twin.locate_other("walker")                                  # half of 4 cm: the copy 2 cm off odometry
-    seen_at(twin, monkeypatch, there, start + 0.21)
+    twin.set_passive_joints("walker", {}, (LEG[-1], start + 0.25))
+    seen_at(twin, monkeypatch, there, start + 0.25)
     twin.locate_other("walker")                                  # half of those 2 cm back: 1 cm off
+    twin.set_passive_joints("walker", {}, (LEG[-1], start + 0.3))
     twin.log_drive("walker", False)
     summary = drivelog.summary(path)
 
@@ -133,6 +158,87 @@ def test_the_summary_reads_back_the_path_the_sightings_and_the_final_and_largest
     assert summary["sightings"] == 2
     assert summary["drift_m"] == pytest.approx(0.01)
     assert summary["max_drift_m"] == pytest.approx(0.02)
+
+
+def test_the_end_line_and_the_summary_give_the_same_numbers(twin, monkeypatch):
+    start = time.monotonic()
+    path = twin.log_drive("walker", True)
+    walk(twin, start)
+    seen_at(twin, monkeypatch, nudged(ANCHOR @ LEG[-1], dx=0.03, turn_deg=7.0), start + 0.2)
+    twin.locate_other("walker")
+    twin.set_passive_joints("walker", {}, (LEG[-1] @ flat(0.2, 0.0, 0.0), start + 0.3))
+    twin.log_drive("walker", False)
+    end = lines(path)[-1]["end"]
+    summary = drivelog.summary(path)
+
+    assert summary is not None
+    assert end == {"path_m": summary["path_m"], "sightings": summary["sightings"],
+                   "drift_m": summary["drift_m"], "drift_deg": summary["drift_deg"]}
+
+
+def test_the_end_line_comes_from_running_totals_not_from_the_file_read_back(twin, tmp_path):
+    path = twin.log_drive("walker", True)
+    walk(twin, time.monotonic())
+    moved = path.rename(tmp_path / "moved.jsonl")              # the open file writes on under its new name
+    twin.log_drive("walker", False)
+
+    assert lines(moved)[-1]["end"]["path_m"] == pytest.approx(0.7)
+
+
+def test_the_final_drift_is_the_drift_at_the_last_pose_after_walking_on_from_the_sighting(twin, monkeypatch):
+    now = time.monotonic()
+    path = twin.log_drive("walker", True)
+    twin.set_passive_joints("walker", {}, (ODOMETRY, now))
+    seen_at(twin, monkeypatch, nudged(STOOD, turn_deg=10.0), now)
+    twin.locate_other("walker")
+    twin.set_passive_joints("walker", {}, (ODOMETRY @ flat(0.5, 0.0, 0.0), now + 0.1))
+    twin.log_drive("walker", False)
+
+    # Turned 5 degrees about where it stood, the copy is 2 x 0.5 m x sin(2.5 deg) off once 0.5 m on.
+    assert lines(path)[-1]["end"]["drift_m"] == pytest.approx(2 * 0.5 * np.sin(np.radians(2.5)), abs=1e-6)
+
+
+def test_a_line_the_disk_refuses_drops_the_log_and_keeps_why(twin):
+    twin.log_drive("walker", True)
+    file = on_a_full_disk(twin)
+    twin.set_passive_joints("walker", {}, (ODOMETRY, time.monotonic()))
+
+    assert twin.drive_logs == {}
+    assert file.closed
+    assert "No space left on device" in twin.drive_log_notes["walker"]
+
+
+def test_a_log_the_disk_refuses_to_end_still_lets_the_readers_stop(twin):
+    twin.log_drive("walker", True)
+    file = on_a_full_disk(twin)
+    twin.stop_passive()
+
+    assert file.closed
+    assert "No space left on device" in twin.drive_log_notes["walker"]
+
+
+def test_an_off_that_lands_while_the_log_is_opening_still_ends_it(twin, monkeypatch):
+    opening = threading.Event()
+    release = threading.Event()
+    start = drivelog.start
+
+    def slow_start(*args):
+        opening.set()
+        release.wait(5.0)
+        return start(*args)
+
+    monkeypatch.setattr(drivelog, "start", slow_start)
+    on = threading.Thread(target=twin.log_drive, args=("walker", True))
+    on.start()
+    opening.wait(5.0)
+    off = threading.Thread(target=twin.log_drive, args=("walker", False))
+    off.start()
+    off.join(0.1)                                               # an off that does not wait is done by now
+    release.set()
+    on.join(5.0)
+    off.join(5.0)
+
+    assert twin.drive_logs == {}
 
 
 def test_twin_episode_prints_the_summary_of_a_drive_log(twin, capsys):

@@ -431,6 +431,8 @@ class Twin:
         #: robot's reader thread writes its lines, with `self.lock` held, and a log joins and leaves this dict
         #: under that lock, opened before it joins and closed after it leaves.
         self.drive_logs: dict[str, dict[str, Any]] = {}
+        #: Why the last drive log of a robot ended by itself (its file could not be written), by name.
+        self.drive_log_notes: dict[str, str] = {}
         #: The loop's collision checker for the clearance to other robots and fixtures, on the scene's model.
         self._clearance: CollisionChecker | None = None
 
@@ -466,10 +468,8 @@ class Twin:
         for reader in readers.values():
             reader.stop()
         with self.lock:
-            logs = list(self.drive_logs.values())
-            self.drive_logs = {}
-        for log in logs:
-            drivelog.end(log)
+            for name in list(self.drive_logs):
+                self._drive_log(name, drivelog.end, last=True)
         self._base_poses = {}
 
     def passive_status(self) -> dict[str, str]:
@@ -515,13 +515,30 @@ class Twin:
             if moved:
                 self._show_base(name)                   # at its anchor: a rebuilt scene may not know it yet
 
-            log = self.drive_logs.get(name)
-            if log is not None:
+            if name in self.drive_logs:
                 anchor = self.tag_anchors.get(name)
                 fixed = rec.T_base() if anchor is None else anchor.T
                 reader = self._readers.get(name)
                 velocity = None if reader is None else reader.velocity()
-                drivelog.pose_line(log, float(base[1]), T, fixed @ T, velocity)
+                self._drive_log(name, drivelog.pose_line, float(base[1]), T, fixed @ T, velocity)
+
+    def _drive_log(self, name: str, write: Callable[..., None], *args: Any, last: bool = False) -> None:
+        """`write(log, *args)` into the drive log of `name` if one runs, with `self.lock` held; `last` ends
+        it. A log that fails is dropped and why is kept (`drive_log_notes`): a full disk must stop neither the
+        robot's reader nor the twin's shutdown."""
+        log = self.drive_logs.get(name)
+        if log is None:
+            return
+        try:
+            write(log, *args)
+        except Exception as exc:  # noqa: BLE001 - whatever the disk says, the robot and the twin go on
+            logger.warning("Robot %s: zapis przejazdu przerwany: %s", name, exc)
+            self.drive_log_notes[name] = f"{type(exc).__name__}: {exc}"
+            last = True
+        finally:
+            if last:
+                del self.drive_logs[name]
+                drivelog.close(log)
 
     def _keep_odometry(self, rec: RobotRecord, T: np.ndarray, t: float) -> None:
         """The base poses `locate_other` needs, of a robot with a base tag; with `self.lock` held."""
@@ -568,10 +585,10 @@ class Twin:
                 if odometry is not None:
                     measured = fix.per_camera[cam] @ inverse(np.asarray(tag.pose, float))
                     anchor.T = basefix.corrected_anchor(anchor.T, odometry, measured)
-                    log = self.drive_logs.get(name)
-                    if log is not None:
+                    if name in self.drive_logs:
                         drift = self.other_drift(name)
-                        drivelog.tag_line(log, taken[cam], measured, len(seen), drift[0], drift[1])
+                        self._drive_log(name, drivelog.tag_line, taken[cam], measured, len(seen), drift[0],
+                                        drift[1])
             anchor.seen_t = taken[seen[-1]]
             anchor.seen_by = len(seen)
             self._show_base(name)
@@ -633,20 +650,20 @@ class Twin:
     def log_drive(self, name: str, on: bool) -> Path | None:
         """Turns the drive log of the other robot `name` on or off (`drivelog`), a new file in the episodes
         folder; a log already on keeps running. The file's path while it is on."""
-        if not on:
-            with self.lock:
-                log = self.drive_logs.pop(name, None)
-            if log is not None:
-                drivelog.end(log)
-            return None
+        # Each step whole under the lock: an "off" landing inside an "on" left a log running with its box
+        # unticked. Opening a file there is brief.
+        with self.lock:
+            if not on:
+                self._drive_log(name, drivelog.end, last=True)
+                return None
 
-        log = self.drive_logs.get(name)
-        if log is None:
-            rec = self.workspace.other_robot(name)
-            log = drivelog.start(episodes_dir(self.workspace.path), rec, get_spec(rec.robot).base_tag)
-            with self.lock:
+            log = self.drive_logs.get(name)
+            if log is None:
+                rec = self.workspace.other_robot(name)
+                log = drivelog.start(episodes_dir(self.workspace.path), rec, get_spec(rec.robot).base_tag)
                 self.drive_logs[name] = log
-        return log["path"]
+                self.drive_log_notes.pop(name, None)
+            return log["path"]
 
     def other_base_pose(self, name: str) -> tuple[np.ndarray, float] | None:
         """Where the other robot `name`'s base body is now in the driven arm's base frame (its record's pose,

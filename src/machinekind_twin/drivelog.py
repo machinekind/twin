@@ -11,9 +11,10 @@ from typing import Any
 
 import numpy as np
 
+from . import basefix
 from .episode import JOINT_DIGITS, METRE_DIGITS, SECOND_DIGITS, _rounded
 from .robots import BaseTag
-from .scene import _quat
+from .scene import _quat, _rotmat
 from .workspace import RobotRecord
 
 #: The header's `format`: what tells a drive log from an episode log.
@@ -29,6 +30,7 @@ def start(folder: Path, rec: RobotRecord, tag: BaseTag | None) -> dict[str, Any]
     path = folder / f"other-{rec.name}-{now:%Y%m%d-%H%M%S}.jsonl"
     # Line buffered: a twin that dies mid-drive leaves every line but the one it was writing.
     log = {"file": path.open("x", encoding="utf-8", buffering=1), "path": path, "t0": time.monotonic()}
+    log.update(_totals(rec.T_base()))
 
     _write(log, {"format": FORMAT, "version": 1, "robot": rec.name, "description": rec.robot,
                  "xyz": [float(v) for v in rec.xyz], "yaw_deg": float(rec.yaw_deg),
@@ -40,32 +42,37 @@ def start(folder: Path, rec: RobotRecord, tag: BaseTag | None) -> dict[str, Any]
 def pose_line(log: dict[str, Any], t: float, odometry: np.ndarray, base: np.ndarray,
               velocity: tuple[float, float, float] | None) -> None:
     """A base pose the robot reported at `t` (`time.monotonic()`), and the base velocity command running."""
-    _write(log, {"t": _rounded(t - log["t0"], SECOND_DIGITS), "odometry": _pose(odometry),
-                 "base": _pose(base), "velocity": _rounded(velocity, METRE_DIGITS)})
+    _line(log, {"t": _rounded(t - log["t0"], SECOND_DIGITS), "odometry": _pose(odometry),
+                "base": _pose(base), "velocity": _rounded(velocity, METRE_DIGITS)})
 
 
 def tag_line(log: dict[str, Any], t: float, measured: np.ndarray, cameras: int, drift_m: float,
              drift_deg: float) -> None:
-    """A sighting of the base tag in frames taken at `t`, and the drift after the correction it made."""
-    _write(log, {"t": _rounded(t - log["t0"], SECOND_DIGITS), "tag": {
+    """A sighting of the base tag in a frame taken at `t`, and the drift right after its correction."""
+    _line(log, {"t": _rounded(t - log["t0"], SECOND_DIGITS), "tag": {
         "base": _pose(measured), "cameras": cameras, "drift_m": _rounded(drift_m, METRE_DIGITS),
         "drift_deg": _rounded(drift_deg, JOINT_DIGITS)}})
 
 
 def end(log: dict[str, Any]) -> None:
-    """The last line, whose `t` is the drive's length, and the file closed."""
-    # Read back from the file, so the end line says what `summary` and `twin episode` say.
-    done = summary(log["path"])
-    assert done is not None
+    """The last line, from the running totals, whose `t` is the drive's length. The caller closes the file."""
+    done = _done(log)
     _write(log, {"t": _rounded(time.monotonic() - log["t0"], SECOND_DIGITS), "end": {
-        "path_m": _rounded(done["path_m"], METRE_DIGITS), "sightings": done["sightings"],
-        "drift_m": done["drift_m"], "drift_deg": done["drift_deg"]}})
-    log["file"].close()
+        "path_m": done["path_m"], "sightings": done["sightings"], "drift_m": done["drift_m"],
+        "drift_deg": done["drift_deg"]}})
+
+
+def close(log: dict[str, Any]) -> None:
+    """The file closed. On a full disk the buffered rest is lost; the file is closed all the same."""
+    try:
+        log["file"].close()
+    except OSError:
+        pass
 
 
 def summary(path: Path) -> dict[str, Any] | None:
     """A drive log read back: its length [s], the path by odometry [m], the sightings, and the final and
-    largest drift [m, deg], None without a sighting. None when the file is not a drive log."""
+    largest drift [m, deg]. None when the file is not a drive log."""
     with path.open("rb") as file:
         try:
             header = json.loads(file.readline())
@@ -73,19 +80,62 @@ def summary(path: Path) -> dict[str, Any] | None:
             return None                                 # a compressed episode log, or no JSON at all
         if not isinstance(header, dict) or header.get("format") != FORMAT:
             return None
-        lines = [json.loads(line) for line in file if line.strip()]
+        record = RobotRecord(header["robot"], header["description"], xyz=header["xyz"],
+                             yaw_deg=header["yaw_deg"])
+        totals = _totals(record.T_base())
+        for line in file:                               # one at a time: a long drive need not fit in memory
+            if line.strip():
+                _count(totals, json.loads(line))
+    return _done(totals)
+
+
+def _totals(record: np.ndarray) -> dict[str, Any]:
+    """Running totals before the first line, of a robot whose record puts its fixed frame at `record`."""
+    return {"record": record, "t": 0.0, "xy": None, "path_m": 0.0, "sightings": 0, "drift_m": 0.0,
+            "drift_deg": 0.0, "max_drift_m": 0.0, "max_drift_deg": 0.0}
+
+
+def _line(log: dict[str, Any], line: dict[str, Any]) -> None:
+    _write(log, line)
+    _count(log, line)
+
+
+def _count(totals: dict[str, Any], line: dict[str, Any]) -> None:
+    """One line into the running totals: the log counts what it writes (`_line`), `summary` what it reads,
+    so the end line and `summary` agree."""
+    totals["t"] = line["t"]
+    if "tag" in line:
+        totals["sightings"] += 1
+    if "odometry" not in line:
+        return
 
     # In the plane: a walking trunk bobs up and down, and that covers no distance.
-    walked = [line["odometry"]["position"][:2] for line in lines if "odometry" in line]
-    steps = np.diff(np.reshape(walked, (-1, 2)), axis=0)
-    drift_m = [line["tag"]["drift_m"] for line in lines if "tag" in line]
-    drift_deg = [line["tag"]["drift_deg"] for line in lines if "tag" in line]
+    xy = np.asarray(line["odometry"]["position"][:2], float)
+    if totals["xy"] is not None:
+        totals["path_m"] += float(np.linalg.norm(xy - totals["xy"]))
+    totals["xy"] = xy
 
-    return {"duration_s": lines[-1]["t"] if lines else 0.0,
-            "path_m": float(np.linalg.norm(steps, axis=1).sum()),
-            "sightings": len(drift_m),
-            "drift_m": drift_m[-1] if drift_m else None, "drift_deg": drift_deg[-1] if drift_deg else None,
-            "max_drift_m": max(drift_m, default=None), "max_drift_deg": max(drift_deg, default=None)}
+    # From the line itself, not from the last sighting: the robot walks on, and the drift with it.
+    shift, turn = basefix.planar_error(totals["record"] @ _matrix(line["odometry"]), _matrix(line["base"]))
+    totals["drift_m"] = float(np.linalg.norm(shift))
+    totals["drift_deg"] = float(np.degrees(abs(turn)))
+    totals["max_drift_m"] = max(totals["max_drift_m"], totals["drift_m"])
+    totals["max_drift_deg"] = max(totals["max_drift_deg"], totals["drift_deg"])
+
+
+def _done(totals: dict[str, Any]) -> dict[str, Any]:
+    return {"duration_s": totals["t"], "path_m": _rounded(totals["path_m"], METRE_DIGITS),
+            "sightings": totals["sightings"], "drift_m": _rounded(totals["drift_m"], METRE_DIGITS),
+            "drift_deg": _rounded(totals["drift_deg"], JOINT_DIGITS),
+            "max_drift_m": _rounded(totals["max_drift_m"], METRE_DIGITS),
+            "max_drift_deg": _rounded(totals["max_drift_deg"], JOINT_DIGITS)}
+
+
+def _matrix(pose: dict[str, Any]) -> np.ndarray:
+    T = np.eye(4)
+    T[:3, :3] = _rotmat(pose["quaternion"])
+    T[:3, 3] = pose["position"]
+    return T
 
 
 def _pose(T: np.ndarray) -> dict[str, Any]:

@@ -215,11 +215,13 @@ drive down, so the drift can be measured afterwards. Tick **Zapisuj przejazd**
 in the panel's **Inne roboty** folder for the robot picked there, or call
 `Twin.log_drive(name, True)`; the robot's panel line names the file while it is
 written. Unticking it, saving the robots and closing the twin write the last
-line. The file is `other-<robot>-<YYYYmmdd-HHMMSS>.jsonl` in the episodes folder:
-plain JSON Lines, written a line at a time, without compression.
+line. A log that cannot be written, on a full disk say, ends by itself: its file
+is closed, the robot and the twin go on, and the panel line says why. The file
+is `other-<robot>-<YYYYmmdd-HHMMSS>.jsonl` in the episodes folder: plain JSON
+Lines, written a line at a time, without compression.
 
 `t` is seconds since the log started, taken from when the pose was measured or
-the tag's frames were taken, so a tag line may carry an earlier `t` than the
+the tag's frame was taken, so a tag line may carry an earlier `t` than the
 pose line before it. Poses are a position [m] and a quaternion (w, x, y, z).
 The first line is the header: the robot's name and description, its record's
 `xyz` and `yaw_deg`, its `base_tag` or null, the start time and the units.
@@ -237,9 +239,9 @@ being commanded (forward, left, turn), or null when none is.
 {"t":0.199732,"odometry":{"position":[0.3,0.4,0.27],"quaternion":[0.707107,0.0,0.0,0.707107]},"base":{"position":[-0.05,0.45,0.27],"quaternion":[0.0,0.0,0.0,1.0]},"velocity":null}
 ```
 
-One line for every sighting of the tag that corrected the copy: the base pose the
-cameras measured in the driven arm's base frame, how many cameras saw the tag,
-and the drift after the correction.
+One line for every camera whose sighting of the tag corrected the copy: the base
+pose that camera measured in the driven arm's base frame, how many cameras saw
+the tag in the same attempt, and the drift right after the correction.
 
 ```json
 {"t":0.199732,"tag":{"base":{"position":[-0.01,0.45,0.27],"quaternion":[0.0,0.0,0.0,1.0]},"cameras":1,"drift_m":0.02,"drift_deg":0.0}}
@@ -247,21 +249,24 @@ and the drift after the correction.
 
 The last line: `t` is the drive's length, `path_m` the path odometry reports in
 the plane (a walking trunk's bobbing is no distance), the number of sightings
-and the final drift.
+and the drift at the last pose line.
 
 ```json
 {"t":84.2,"end":{"path_m":3.1,"sightings":230,"drift_m":0.041,"drift_deg":3.2}}
 ```
 
 The drift is how far the copy stands from where the record and odometry alone
-would put it, in the plane [m] and in heading [deg]. It counts from when the twin
-started reading the robot, not from the log's start, and the first sightings
-also take up any error in the record's `xyz` and `yaw_deg`. Odometry's own drift
-over the drive is therefore the change from the first sighting to the last. A
-correction moves half of the error the cameras see (all of it past 10 cm or 30
-degrees), so the drift trails the cameras by a few frames. A tag line's `base`
-against the `base` of the pose line nearest its `t` is the error the cameras saw
-before that correction.
+would put it, in the plane [m] and in heading [deg]. For every pose line it is
+worked out from that line's `odometry` and `base` and the header's `xyz` and
+`yaw_deg`: the final drift is the last pose line's, right also when the robot
+walked on after the last sighting, and the largest drift the largest of them. It
+counts from when the twin started reading the robot, not from the log's start,
+and the first sightings also take up any error in the record's `xyz` and
+`yaw_deg`. Odometry's own drift over the drive is therefore the change from the
+first sighting to the last. A correction moves half of the error the cameras see
+(all of it past 10 cm or 30 degrees), so the drift trails the cameras by a few
+frames. A tag line's `base` against the `base` of the pose line nearest its `t`
+is the error the cameras saw before that correction.
 
 `twin episode <file>` prints a drive log's length, path, sightings, and final and
 largest drift; `drivelog.summary(path)` gives the same numbers. `twin episode`

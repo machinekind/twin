@@ -1613,7 +1613,12 @@ class TwinApp:
             elif anchor is not None:
                 tag = "; tag niewidoczny"
             log = self.twin.drive_logs.get(r.name)
-            writing = "" if log is None else f"; zapis przejazdu: {_html.escape(log['path'].name)}"
+            note = self.twin.drive_log_notes.get(r.name)
+            writing = ""
+            if log is not None:
+                writing = f"; zapis przejazdu: {_html.escape(log['path'].name)}"
+            elif note is not None:
+                writing = f"; zapis przejazdu przerwany: {_html.escape(note)}"
             lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
                          f"obrot {r.yaw_deg:.0f} st.{now}; {_html.escape(source)}: "
                          f"{_html.escape(status.get(r.name, ''))}{drive}{tag}{writing}")
