@@ -38,9 +38,11 @@ from .calib.card import Card
 from .calib.session import WaveLimits
 from .camera_controls import CameraControls
 from .config import from_mapping
+from .fixtures import FixtureSpec, camera_site, get_fixture, placed, yaw_pose
+from .kinematics import inverse
 from .paths import data_path
 from .robots import RobotSpec, default_robot, get_spec
-from .scene import PREFIX, CameraView, Look, PassiveRobot, SceneConfig, Table
+from .scene import PREFIX, CameraView, Fixture, Look, PassiveRobot, SceneConfig, Table
 
 #: Domyslny plik stanowiska. W klonie repozytorium liczony od jego korzenia,
 #: zeby panel odpalony z innego katalogu nie zaczynal od pustego stanowiska.
@@ -177,6 +179,11 @@ class CameraRecord:
     #: Why the lens does not hold in this session: its focus is not locked on the camera ("" = it is,
     #: or the lens carries no focus). Set by the camera hub when it opens the camera; never saved.
     focus_problem: str = field(default="", compare=False, repr=False)
+    #: The fixture this camera sits on (`FixtureRecord.name`), `<fixture>/<site>` when it has several
+    #: camera sites; None = it stands on its own.
+    fixture: str | None = None
+    #: T_cam2base of that site, set by the workspace (`Workspace.mount_cameras`); never saved.
+    mount: list[list[float]] | None = field(default=None, compare=False, repr=False)
 
     @property
     def calibrated(self) -> bool:
@@ -187,8 +194,17 @@ class CameraRecord:
         return self.source == "sim"
 
     def true_pose(self) -> np.ndarray | None:
-        """Poza, z ktorej kamera widzi scene: prawda dla symulowanej, kalibracja dla prawdziwej."""
-        T = self.sim_pose if self.simulated and self.sim_pose is not None else self.T_cam2base
+        """Poza, z ktorej kamera widzi scene: prawda dla symulowanej, kalibracja dla prawdziwej.
+
+        A camera on a fixture stands at the fixture's site until then: a simulated one without
+        `sim_pose` stands there, a real one until the wave measures it.
+        """
+        if self.simulated and self.sim_pose is not None:
+            T = self.sim_pose
+        elif self.simulated or self.T_cam2base is None:
+            T = self.mount if self.mount is not None else self.T_cam2base
+        else:
+            T = self.T_cam2base
         return None if T is None else np.asarray(T, float)
 
     @property
@@ -419,6 +435,55 @@ class RobotRecord:
         return PassiveRobot(self.name, get_spec(self.robot), self.T_base(), dict(self.joints))
 
 
+#: `FixtureRecord.on` for a fixture standing on the table rather than on a robot.
+ON_TABLE = "table"
+
+
+@dataclass
+class FixtureRecord:
+    """A static part of the station from a robot package (`fixtures`), e.g. a camera mount.
+
+    It stands on a robot (its pose relative to that robot's base) or on the table (relative to the
+    table top's centre). Its pose is a placement the description names, or `xyz` and `yaw_deg`.
+    """
+
+    #: Its name in the scene (`<name>/<part>`) and in the camera records that sit on it.
+    name: str
+    #: `<robot>/<fixture>`: a fixture folder of an installed robot package.
+    fixture: str
+    #: "robot" (the driven arm), the name of another robot, or "table".
+    on: str = PREFIX.rstrip("/")
+    #: A placement of the description (e.g. "left"); None = its first.
+    placement: str | None = None
+    #: The parts from the bottom up; None = the description's stack.
+    parts: list[str] | None = None
+    #: Position [m] in the frame of what it stands on; set, it replaces `placement`, with `yaw_deg` [deg].
+    xyz: list[float] | None = None
+    yaw_deg: float = 0.0
+    #: Colour of all its parts; None = the description's.
+    rgba: list[float] | None = None
+
+    def spec(self) -> FixtureSpec:
+        return get_fixture(self.fixture)
+
+    def T_local(self, robot: str | None) -> np.ndarray:
+        """Its pose in the frame of what it stands on; `robot` is that robot's description, None = the table."""
+        if self.xyz is not None:
+            return yaw_pose(self.xyz, self.yaw_deg)
+        spec = self.spec()
+        if robot is None or robot.lower() != spec.robot:
+            on = "stole" if robot is None else f"robocie {robot}"
+            raise ValueError(f"mocowanie {self.name}: polozenia {spec.ref} sa wzgledem {spec.robot}, a stoi na {on}"
+                             " - podaj xyz")
+        if not spec.placements:
+            raise ValueError(f"mocowanie {self.name}: {spec.ref} nie ma nazwanych polozen - podaj xyz")
+        name = self.placement or next(iter(spec.placements))
+        if name not in spec.placements:
+            raise ValueError(f"mocowanie {self.name}: {spec.ref} nie ma polozenia {name!r} "
+                             f"(sa: {', '.join(spec.placements)})")
+        return spec.placements[name].T()
+
+
 @dataclass
 class Workspace:
     #: Ramie z zainstalowanego pakietu (`robots.robot_folders`); nowe stanowisko bierze
@@ -450,6 +515,9 @@ class Workspace:
     #: Other robots of the station, which the twin only watches (`RobotRecord`). Empty = the driven
     #: arm alone; such a workspace saves without this key, as before.
     other_robots: list[RobotRecord] = field(default_factory=list)
+    #: Static parts of the station from robot packages, e.g. a camera mount (`FixtureRecord`). Empty =
+    #: none; such a workspace saves without this key.
+    fixtures: list[FixtureRecord] = field(default_factory=list)
     #: The stand folder this workspace was loaded from (absolute path); None = no stand, as before.
     stand: str | None = None
     path: Path | None = field(default=None, compare=False, repr=False)
@@ -485,6 +553,45 @@ class Workspace:
                 return rec
         raise KeyError(f"brak robota {name!r} w stanowisku")
 
+    def fixture(self, name: str) -> FixtureRecord:
+        for rec in self.fixtures:
+            if rec.name == name:
+                return rec
+        raise KeyError(f"brak mocowania {name!r} w stanowisku")
+
+    def fixture_pose(self, rec: FixtureRecord) -> np.ndarray:
+        """The fixture's frame in the driven arm's base frame."""
+        if rec.on == ON_TABLE:
+            t = self.table_obj()
+            return inverse(yaw_pose([*t.base_xy, 0.0], np.degrees(t.base_yaw))) @ rec.T_local(None)
+        if rec.on == PREFIX.rstrip("/"):
+            return rec.T_local(self.robot)
+        try:
+            other = self.other_robot(rec.on)
+        except KeyError:
+            raise ValueError(f"mocowanie {rec.name}: stoi na {rec.on!r}, a nie ma takiego robota "
+                             f"(robot, {ON_TABLE} albo nazwa z other_robots)") from None
+        return other.T_base() @ rec.T_local(other.robot)
+
+    def placed_fixtures(self) -> list[Fixture]:
+        """The fixtures as part of the scene."""
+        return [placed(rec.spec(), rec.name, self.fixture_pose(rec), rec.parts, rec.rgba)
+                for rec in self.fixtures]
+
+    def mount_cameras(self) -> None:
+        """Puts every camera that names a fixture at that fixture's camera site (`CameraRecord.mount`)."""
+        for cam in self.cameras:
+            cam.mount = None
+            if cam.fixture is None:
+                continue
+            name, _, site = cam.fixture.partition("/")
+            try:
+                rec = self.fixture(name)
+            except KeyError:
+                raise ValueError(f"kamera {cam.name}: mocowanie {name!r} - nie ma go w stanowisku") from None
+            T = self.fixture_pose(rec) @ camera_site(rec.spec(), rec.parts, site or None)
+            cam.mount = T.tolist()
+
     def card_obj(self) -> Card:
         data = dict(self.card)
         data["ids"] = tuple(data.get("ids", (0, 1)))
@@ -508,6 +615,8 @@ class Workspace:
             raise ValueError(f"kamera {record.name!r} juz jest w stanowisku")
         self._refuse_robot_camera_names([record])
         self.cameras.append(record)
+        if record.fixture is not None:
+            self.mount_cameras()
         return record
 
     def _refuse_robot_camera_names(self, records: list[CameraRecord]) -> None:
@@ -530,18 +639,20 @@ class Workspace:
         return f"{stem}{k}"
 
     def scene_config(self, *, with_card: bool = False, **extra: Any) -> SceneConfig:
-        """The scene of this workspace: table, arm and every ENABLED camera with a known pose.
+        """The scene of this workspace: table, arm, other robots, fixtures and every ENABLED camera
+        with a known pose (measured, or its fixture's site).
 
         A real camera named like a camera on the arm rides on the arm, never fixed to the base, so
         it gets no view whatever `T_cam2base` it has (from a wave or a preset matched by name).
         """
         self._refuse_robot_camera_names(self.cameras)
+        self.mount_cameras()
         on_arm = self.spec().cameras
         fixed = [c for c in self.cameras if c.enabled and c.name not in on_arm]
         views = [v for c in fixed for v in [c.view()] if v is not None]
         cfg = SceneConfig(self.spec(), table=self.table_obj(), cameras=views,
                           card=self.card_obj() if with_card else None, look=self.look,
-                          passive=[r.placed() for r in self.other_robots])
+                          passive=[r.placed() for r in self.other_robots], fixtures=self.placed_fixtures())
         for key, value in extra.items():
             setattr(cfg, key, value)
         return cfg
@@ -698,10 +809,15 @@ class Workspace:
         data.pop("path", None)
         if not data["other_robots"]:
             data.pop("other_robots")
+        if not data["fixtures"]:
+            data.pop("fixtures")
         if data["stand"] is None:
             data.pop("stand")
         for cam, rec in zip(data["cameras"], self.cameras):
             cam.pop("focus_problem", None)
+            cam.pop("mount", None)
+            if rec.fixture is None:
+                cam.pop("fixture")
             if rec.controls.empty:
                 cam.pop("controls")
             else:
@@ -747,7 +863,8 @@ class Workspace:
         cams = [camera_record(c, f"{target}: cameras") for c in data.pop("cameras", [])]
         others = [from_mapping(RobotRecord, r, f"{target}: other_robots")
                   for r in data.pop("other_robots", [])]
-        known = {f for f in cls.__dataclass_fields__ if f not in ("cameras", "other_robots", "path")}
+        fixtures = [from_mapping(FixtureRecord, f, f"{target}: fixtures") for f in data.pop("fixtures", [])]
+        known = {f for f in cls.__dataclass_fields__ if f not in ("cameras", "other_robots", "fixtures", "path")}
         unknown = set(data) - known
         if unknown:
             raise ValueError(f"nieznane pola w {target}: {sorted(unknown)}")
@@ -755,8 +872,9 @@ class Workspace:
             data["look"] = from_mapping(Look, data["look"], f"{target}: look")
         if "wave" in data:
             data["wave"] = from_mapping(WaveLimits, data["wave"], f"{target}: wave")
-        ws = cls(cameras=cams, other_robots=others, **data)
+        ws = cls(cameras=cams, other_robots=others, fixtures=fixtures, **data)
         ws.path = target
+        ws.mount_cameras()
         if ws.calib_preset is None and ws.stand is None:    # a stand names its poses itself
             newest = ws.presets()
             if newest:

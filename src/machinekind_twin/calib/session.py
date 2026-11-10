@@ -23,10 +23,12 @@ How the wave finds the cameras (it assumes nothing about where they stand):
   solutions of the square, kept when it reprojects the others). One or a mirrored PnP no
   longer steers the wave. A pose that later sightings contradict, or that `max_misses` aimed
   poses in a row do not confirm, is dropped and the camera is searched for again.
+* **A mount is a rough pose.** A camera on a fixture starts with the fixture's camera site as its
+  rough pose (`mounts()` of the camera source); its sightings refit that pose or drop it.
 * **Safe moves.** Card corners and the gripper stay `table_margin` above the table, the arm
   stays out of the stand's keep-out boxes and inside its base turn range (`WaveLimits`), at
   every pose and along every move. A `CollisionChecker` adds self-collisions and a clearance
-  from everything else in the scene (the table, objects, another robot).
+  from everything else in the scene (the table, objects, another robot, a fixture).
 
 Poses are drawn in JOINT space (every one is reachable; the SO-101 has five joints), and the
 roll joint is set analytically so the card faces where it should: the same for five and six axes.
@@ -416,6 +418,12 @@ class Session:
         self.keep_frames = keep_frames
         self.obs: list[Observation] = []
         self.progress = {name: CameraProgress() for name in self.intrinsics}
+        # Cameras whose source knows where they are mounted (`mounts()`, {camera: T_cam2base}) start with
+        # that rough pose; sightings refit it or drop it, as any other.
+        mounts = getattr(cameras, "mounts", None)
+        for name, T in (mounts() if callable(mounts) else {}).items():
+            if name in self.progress:
+                self.progress[name].rough = np.asarray(T, float)
         self.index = 0
         spec = kin.spec
         self._home = dict(spec.home)
@@ -945,6 +953,8 @@ class Session:
         K, dist = self.intrinsics[cam]
         S = [p.sightings[i] for i in p.inliers]
         assert p.rough is not None
+        if not S:                                       # a rough pose from the mount, nothing agrees yet
+            return
         p.rough = self._fit_pose(np.stack([self._corners_base(s) for s in S]),
                                  np.stack([np.asarray(s.corners, float) for s in S]), p.rough, K, dist)
 
@@ -1129,6 +1139,9 @@ class Session:
         for cam, p in self.progress.items():
             if p.ready(cfg):
                 out[cam] = f"gotowa: {p.obs} obserwacji z {p.poses} poz, rozrzut {p.spread():.0f} st."
+            elif p.rough is not None and not p.sightings:
+                x, y, z = p.rough[:3, 3]
+                out[cam] = f"z mocowania (ok. x {x:+.2f}, y {y:+.2f}, z {z:.2f} m) - jeszcze nie widziala karty"
             elif p.rough is not None:
                 x, y, z = p.rough[:3, 3]
                 out[cam] = (f"namierzona (ok. x {x:+.2f}, y {y:+.2f}, z {z:.2f} m): {p.obs}/{cfg.min_obs} obserwacji, "
