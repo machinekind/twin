@@ -636,3 +636,48 @@ def test_the_panel_shows_the_stand_and_saves_camera_settings_to_it(tmp_path):
         assert not app.cam_ctl_box.visible
     finally:
         app.close()
+
+
+def test_a_wobbly_mount_ticked_in_the_panel_reaches_the_stand_and_survives_a_restart(tmp_path):
+    """Kamery > Chwiejny statyw and its tolerance: in the workspace file and the bound stand, and back in a
+    restarted panel. Cameras without it keep their records as they were."""
+    pytest.importorskip("viser")
+    from test_twin_ui import _change, free_port
+
+    from machinekind_twin.ui.app import TwinApp
+
+    ws = a_workspace(tmp_path)
+    ws.camera("kamera1").enabled = False                # no device to open in a test
+    folder = tmp_path / "stand"
+    st.save(ws, folder, name="biurko")
+    app = TwinApp(ws.path, host="127.0.0.1", port=free_port())
+    try:
+        app._refresh_cameras(select="kamera1")
+        assert not app.cam_wobbly.value and not app.cam_wobble_px.visible
+        _change(app, "Chwiejny statyw", True)
+        assert app.cam_wobble_px.visible and app.cam_wobble_px.value == 4.0
+        _change(app, "Tolerancja statywu [px]", 6.0)
+        assert "chwiejny statyw, tolerancja 6 px" in app.cam_detail.content
+    finally:
+        app.close()
+
+    for cams in (json.loads(ws.path.read_text(encoding="utf-8"))["cameras"],
+                 json.loads((folder / st.STAND_FILE).read_text(encoding="utf-8"))["cameras"]):
+        by_name = {c["name"]: c for c in cams}
+        assert by_name["kamera1"]["wobbly"] is True and by_name["kamera1"]["wobble_px"] == 6.0
+        assert not {"wobbly", "wobble_px"} & set(by_name["sym-lewa"])
+    for w in (Workspace.load(ws.path), st.load(folder).workspace()):
+        assert w.camera("kamera1").wobbly and w.camera("kamera1").wobble_px == 6.0
+        assert not w.camera("sym-lewa").wobbly
+    again = TwinApp(ws.path, host="127.0.0.1", port=free_port())
+    try:
+        again._refresh_cameras(select="kamera1")
+        assert again.cam_wobbly.value and again.cam_wobble_px.value == 6.0 and again.cam_wobble_px.visible
+    finally:
+        again.close()
+
+    data = json.loads((folder / st.STAND_FILE).read_text(encoding="utf-8"))
+    data["cameras"][2]["wobble_px"] = 0
+    (folder / st.STAND_FILE).write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(st.StandError, match=r"cameras\[2\] \(kamera1\)\.wobble_px: oczekiwano liczby > 0"):
+        st.load(folder)

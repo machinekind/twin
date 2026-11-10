@@ -7,6 +7,7 @@ uchwyt TCP na tej samej galezi IK, kalibracja i zadania w tle.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import threading
 import time
@@ -944,6 +945,78 @@ def test_a_focus_that_does_not_hold_wins_over_a_trust_by_hand(app):
         assert rec.trusted and rec.intrinsics_problem() == ""
     finally:
         app.ws.remove_camera("kf")
+
+
+# ------------------------------------------------------------------ wobbly mount
+def _change(app, label: str, value) -> _Event:
+    """A panel input changed by hand: the value, then its callbacks with a client, as from the browser."""
+    hs = [h for h in app.server.gui._gui_input_handle_from_uuid.values() if getattr(h, "label", None) == label]
+    assert len(hs) == 1, label
+    hs[0].value = value                                 # from code: the callbacks see no client
+    ev = _Event()
+    for cb in hs[0]._impl.update_cb:
+        cb(ev)
+    return ev
+
+
+def _arm_history(app, moving: bool) -> None:
+    """The panel's joint history of the last 2 s: the arm driving at 30 deg/s, or standing."""
+    now = time.monotonic()
+    with app._hist_lock:
+        app._joint_hist.clear()
+        for k in range(60):
+            app._joint_hist.append((now - 2.0 + k / 30, {"j1": 10.0 + (k if moving else 0.0)}))
+
+
+def test_a_wobbly_camera_never_blinks_red_and_keeps_its_trust_by_hand(app, monkeypatch):
+    """Ticked "Chwiejny statyw": shakes while the arm moves and tilts that return raise nothing. A shift
+    that lasts with the arm still is a calm notice pointing to the quick re-measure; the trust stays."""
+    from test_twin_watch import IMG, shifted
+
+    from machinekind_twin.workspace import Workspace
+
+    notes = []
+    monkeypatch.setattr(app, "_notify", lambda event, title, body, error=False: notes.append((title, body, error)))
+    rec = a_camera_after_a_wave("kw", lens_trusted=True)
+    rec.T_cam2base = _look_at_pose([0.25, -0.05, 0.45], [0.25, 0.0, 0.0]).tolist()
+    app.ws.add_camera(rec)
+
+    def ticks(tx: float, n: int, moving: bool) -> None:
+        _arm_history(app, moving)
+        for _ in range(n):
+            app._tick_watch({"kw": shifted(IMG, tx)})
+
+    try:
+        app._refresh_cameras(select="kw")
+        _click(app, "Zaufaj polozeniu")
+        _change(app, "Chwiejny statyw", True)
+        assert rec.wobbly and app.cam_wobble_px.visible and rec.pose_by_hand
+        app.watch.remember("kw", IMG)
+        notes.clear()
+
+        ticks(15.0, 3, moving=True)                     # the mount sways while the arm drives
+        for _ in range(2):
+            ticks(9.0, 2, moving=False)                 # a pose tilts it, then the arm goes back
+            ticks(0.0, 1, moving=False)
+        app._render_cameras()
+        assert notes == [] and not app.watch.moved("kw") and app.watch.drifted("kw") is None
+        assert "SKALIBROWANA (RECZNIE)" in app.cams_html.content and "PORUSZONA" not in app.cams_html.content
+        assert "kamera przestawiona" not in app._status_text()
+
+        ticks(8.0, 3, moving=False)                     # a shift that lasts with the arm still
+        assert [(t, e) for t, _, e in notes] == [("Kamera przesunieta", False)]
+        assert re.match(r"kw przesunieta o ok\. 8 px \(ok\. \d+ mm na stole\) przy stojacym ramieniu\. "
+                        r"Szybki pomiar tylko tej kamery: Kalibracja > Kamera poruszona\.", notes[0][1])
+        assert re.search(r"kw przesunieta o ok\. 8 px \(ok\. \d+ mm na stole\) - Kalibracja > Kamera poruszona",
+                         app._status_text())
+        assert "PRZESUNIETA" in app.cams_html.content and "PORUSZONA" not in app.cams_html.content
+        assert app._moved_cameras() == ["kw"] and not app.watch.moved("kw")
+        assert rec.trusted and rec.pose_by_hand and Workspace.load(app.ws.path).camera("kw").pose_by_hand
+        assert re.search(r"chwiejny statyw, tolerancja 4 px; najwieksze przesuniecie w ostatniej minucie: "
+                         r"1[45]\.\d px", app.cam_detail.content)
+    finally:
+        app.watch.forget("kw")
+        app.ws.remove_camera("kw")
 
 
 def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):

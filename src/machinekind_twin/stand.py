@@ -35,7 +35,7 @@ from .camera_controls import CameraControls
 from .config import from_mapping
 from .dynamics import Dynamics
 from .scene import PREFIX, Look, Table
-from .workspace import CameraRecord, RobotRecord, Workspace, default_path, stamp_name
+from .workspace import WOBBLE_PX, CameraRecord, RobotRecord, Workspace, default_path, stamp_name
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,8 @@ def _cameras(cams: Any, where: str) -> list[str]:
     names: list[str] = []
     for i, c in enumerate(cams):
         w = f"{where}[{i}]"
-        _keys(c, w, ("name", "source", "width", "height"), ("fps", "enabled", "controls", "sim_pose"))
+        _keys(c, w, ("name", "source", "width", "height"),
+              ("fps", "enabled", "controls", "sim_pose", "wobbly", "wobble_px"))
         _file_name(c["name"], f"{w}.name")
         if c["name"] in names:
             _fail(f"{w}.name", f"kamera {c['name']!r} juz jest w stanowisku")
@@ -215,6 +216,10 @@ def _cameras(cams: Any, where: str) -> list[str]:
                 _positive_int(c[key], f"{w}.{key}")
         if "enabled" in c:
             _flag(c["enabled"], f"{w}.enabled")
+        if "wobbly" in c:
+            _flag(c["wobbly"], f"{w}.wobbly")
+        if "wobble_px" in c and not (_is_num(c["wobble_px"]) and c["wobble_px"] > 0):
+            _fail(f"{w}.wobble_px", f"oczekiwano liczby > 0, jest {c['wobble_px']!r}")
         if "controls" in c:
             _keys(c["controls"], f"{w}.controls", (), _CONTROLS)
             try:
@@ -428,6 +433,7 @@ class Stand:
             simulated = c["source"] == "sim"
             ws.cameras.append(CameraRecord(
                 c["name"], c["source"], c["width"], c["height"], c.get("fps", 30), enabled=c.get("enabled", True),
+                wobbly=c.get("wobbly", False), wobble_px=c.get("wobble_px", WOBBLE_PX),
                 controls=CameraControls(**c.get("controls", {})), sim_pose=c.get("sim_pose") if simulated else None))
         for cam, lens in copy.deepcopy(self.lens).items():
             rec = ws.camera(cam)
@@ -499,6 +505,10 @@ def stand_data(ws: Workspace, keep: dict[str, Any], calib: dict[str, Any]) -> di
     for c in ws.cameras:
         cam: dict[str, Any] = {"name": c.name, "source": c.source, "width": c.width, "height": c.height,
                                "fps": c.fps, "enabled": c.enabled}
+        if c.wobbly:
+            cam["wobbly"] = True
+        if c.wobble_px != WOBBLE_PX:
+            cam["wobble_px"] = c.wobble_px
         if not c.controls.empty:
             cam["controls"] = c.controls.to_dict()
         if c.simulated and c.sim_pose is not None:

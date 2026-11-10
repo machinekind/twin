@@ -47,14 +47,14 @@ from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
 from ..robots import get_spec, robot_config
-from ..workspace import CameraRecord, RobotRecord, Workspace, nominal_K, when_text
+from ..workspace import WOBBLE_PX, CameraRecord, RobotRecord, Workspace, nominal_K, when_text
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
 from .detector_tab import NOTHING_RUNNING, DetectorTab
 from .strategy_tab import StrategyTab
 from .stream import FrameServer
-from .watch import CameraWatch, arm_mask, distort_mask
+from .watch import CameraWatch, arm_mask, arm_still, distort_mask
 
 #: Gotowe obiektywy z innych kalibracji (pliki tekstowe: K, dystorsja) - do wczytania w kroku 1.
 LENS_DIR = REPO_ROOT / "assets" / "calib"
@@ -173,6 +173,16 @@ def thumb(img: np.ndarray, width: int) -> np.ndarray:
 def _px(shift: float) -> str:
     """Przesuniecie kadru z `CameraWatch` do tabeli; nieskonczone = kadr nie pasuje do odniesienia."""
     return f"{shift:.1f} px" if np.isfinite(shift) else "kadr nie pasuje do odniesienia"
+
+
+def _table_mm(rec: CameraRecord, px: float) -> float | None:
+    """About how far [mm] `px` pixels reach on the table where the camera's optical axis meets it.
+    None when the axis misses the table top (z = 0 in the base frame)."""
+    T = rec.true_pose()
+    if T is None or T[2, 2] >= 0 or T[2, 3] <= 0:
+        return None
+    K, _ = rec.intrinsics()
+    return px * (T[2, 3] / -T[2, 2]) / K[0, 0] * 1000.0
 
 
 #: Parametry dynamiki w panelu: (pole `Dynamics`, etykieta).
@@ -880,6 +890,10 @@ class TwinApp:
         moved = [c.name for c in self.ws.cameras if c.enabled and self.watch.moved(c.name)]
         if moved:
             parts.append(f"**kamera przestawiona: {', '.join(moved)}**")
+        drifted = [self._drift_text(c) for c in self.ws.cameras
+                   if c.enabled and self.watch.drifted(c.name) is not None]
+        if drifted:
+            parts.append(f"{'; '.join(drifted)} - Kalibracja > Kamera poruszona")
         if self.strategies.running:
             parts.append(f"Strategia: jedzie ({self.strategies.runner.status.step} krokow)")
         running = sorted(self.perception.running())
@@ -1636,6 +1650,15 @@ class TwinApp:
                                               "w stanowisku razem z kalibracja. Zmiana przebudowuje scene.")
             self.cam_enabled = _Toggle(en, on_look=CAM_ON, off_look=CAM_OFF)
             self.cam_enabled.value = True
+            self.cam_wobbly = g.add_checkbox(
+                "Chwiejny statyw", False,
+                hint="Kamera na statywie, ktory chwieje sie, gdy ramie jedzie. Straznik ocenia ja tylko przy "
+                     "stojacym ramieniu i nie alarmuje na czerwono: wyraznie przesuniety obraz daje spokojna "
+                     "uwage, a reczne zaufanie zostaje.")
+            self.cam_wobble_px = g.add_number(
+                "Tolerancja statywu [px]", WOBBLE_PX, min=1.0, max=50.0, step=0.5, visible=False,
+                hint="O tyle obraz moze sie przesunac przy stojacym ramieniu. Uwaga pojawia sie dopiero, gdy "
+                     "przesuniecie wyraznie wieksze trzyma sie przez kilka sprawdzen.")
             self.cam_sim_box = g.add_folder(None)
             with self.cam_sim_box:
                 mv = g.add_button(MOVE_OFF[0], hint="Kamera symulowana: uchwyt w 3D - przeciagnij, zeby ja przestawic "
@@ -1725,6 +1748,19 @@ class TwinApp:
                 self.twin.rebuild()
                 self.twin.cameras.sync()
                 self._refresh_cameras()
+
+        def mount_changed(event):
+            if event.client is None:
+                return                                  # set from code on choosing a camera
+            rec = self._cam()
+            if rec is not None:
+                rec.wobbly, rec.wobble_px = bool(self.cam_wobbly.value), float(self.cam_wobble_px.value)
+                self._save()
+                self.watch.set_wobbly(rec.name, rec.wobble_px if rec.wobbly else None)
+                self._refresh_cameras()
+
+        for box in (self.cam_wobbly, self.cam_wobble_px):
+            box.on_update(self._safe(mount_changed))
 
         @self.cam_move.on_update
         def _(event):
@@ -2031,6 +2067,8 @@ class TwinApp:
             return "BEZ OBRAZU", "tw-bad"
         if self.watch.moved(c.name):
             return "PORUSZONA", "tw-bad"
+        if self.watch.drifted(c.name) is not None:
+            return "PRZESUNIETA", "tw-warn"
         if not c.calibrated:
             return "DO KALIBRACJI", "tw-sim" if c.simulated else "tw-none"
         if c.trusted:
@@ -2052,6 +2090,8 @@ class TwinApp:
             return "WYLACZONA", "tw-none"
         if c.calibrated and self.watch.moved(c.name):
             return "PORUSZONA", "tw-bad"
+        if c.calibrated and self.watch.drifted(c.name) is not None:
+            return "POLOZENIE: PRZESUNIETE", "tw-warn"
         if not c.calibrated:
             return "POLOZENIE: KROK 2", "tw-none"
         if c.trusted and not c.intrinsics_problem():
@@ -2247,6 +2287,8 @@ class TwinApp:
             self.cam_gizmo.visible = False
             return
         self.cam_enabled.value = rec.enabled
+        self.cam_wobbly.value, self.cam_wobble_px.value = rec.wobbly, rec.wobble_px
+        set_if(self.cam_wobble_px, "visible", rec.wobbly)
         set_if(self.cam_ctl_box, "visible", not rec.simulated)
         if rec.name != self._ctl_cam:
             self._fill_controls(rec)
@@ -2260,6 +2302,9 @@ class TwinApp:
             info = (f"**poruszona** od kalibracji (obraz przesunal sie o "
                     f"{_px(self.watch.shift.get(rec.name, float('inf')))}) - zakladka **Kalibracja**, "
                     f"pomaranczowy przycisk")
+        elif self.watch.drifted(rec.name) is not None:
+            info = (f"{self._drift_text(rec)} przy stojacym ramieniu - szybki pomiar: **Kalibracja** > "
+                    f"**Kamera poruszona**")
         elif not rec.calibrated:
             info = "jeszcze nieskalibrowana - dalej zakladka **Kalibracja**"
         elif rec.trusted:
@@ -2298,6 +2343,10 @@ class TwinApp:
         sh = self.watch.shift.get(rec.name)
         if sh is not None:
             lines.append(f"przesuniecie kadru od odniesienia: {_px(sh)}")
+        if rec.wobbly:
+            most = self.watch.wander(rec.name)
+            lines.append(f"chwiejny statyw, tolerancja {rec.wobble_px:g} px" + (
+                "" if most is None else f"; najwieksze przesuniecie w ostatniej minucie: {_px(most)}"))
         self.cam_detail.content = "  \n".join(lines)
         T = rec.true_pose()
         # Wylaczonej kamery nie ma w scenie - uchwyt przy niej przebudowywal scene co ruch myszy.
@@ -2607,9 +2656,10 @@ class TwinApp:
         return [c.name for c in self.ws.cameras if c.enabled and c.name in live and c.name not in on_arm]
 
     def _moved_cameras(self) -> list[str]:
+        """Cameras for the quick re-measure: moved, or on a wobbly mount and shifted with the arm still."""
         on_arm = self._arm_cameras()
-        return [c.name for c in self.ws.cameras
-                if c.enabled and c.calibrated and c.name not in on_arm and self.watch.moved(c.name)]
+        return [c.name for c in self.ws.cameras if c.enabled and c.calibrated and c.name not in on_arm
+                and (self.watch.moved(c.name) or self.watch.drifted(c.name) is not None)]
 
     def _truth_cameras(self) -> list[CameraRecord]:
         """Symulowane, ktorym skrot "pomin" cos da: nieskalibrowane, niepewne albo poruszone."""
@@ -3588,11 +3638,19 @@ class TwinApp:
         for c in self.ws.cameras:
             if c.name not in frames or c.name not in self.watch.refs:
                 continue
-            was = self.watch.moved(c.name)
+            self.watch.set_wobbly(c.name, c.wobble_px if c.wobbly else None)
+            was, drifted = self.watch.moved(c.name), self.watch.drifted(c.name) is not None
             with self.frame_lock:
                 t = self.frame_times.get(c.name)
             mask = (self._arm_masks([c.name], t) or {}).get(c.name)
-            self.watch.check(c.name, frames[c.name], mask)
+            # Only a wobbly mount needs to know whether the arm stood still.
+            still = {"still": self._arm_still(t)} if c.wobbly else {}
+            self.watch.check(c.name, frames[c.name], mask, **still)
+            if (self.watch.drifted(c.name) is not None) != drifted:
+                changed = True
+                if not drifted:
+                    self._notify(None, "Kamera przesunieta", f"{self._drift_text(c)} przy stojacym ramieniu. "
+                                 "Szybki pomiar tylko tej kamery: Kalibracja > Kamera poruszona.")
             if self.watch.moved(c.name) != was:
                 changed = True
                 if not was and c.pose_by_hand:
@@ -3608,6 +3666,24 @@ class TwinApp:
             self._save()
         if changed:
             self._refresh_cameras()
+        elif (rec := self._cam()) is not None and rec.wobbly:
+            self._select_camera()                       # its details show how far it wandered lately
+
+    def _arm_still(self, t: float | None) -> bool:
+        """The arm stood still from `CameraWatch.settle_s` before the frame at `t` (None = now) until now:
+        the panel's joint history, at the twin's own still speed (`Twin.move_still_speed`)."""
+        since = (time.monotonic() if t is None else t) - self.watch.settle_s
+        skip = () if self.twin.spec.gripper is None else (self.twin.spec.gripper,)
+        return arm_still(self._hist(), since, self.twin.move_still_speed, skip)
+
+    def _drift_text(self, rec: CameraRecord) -> str:
+        """A wobbly camera's notice in plain words: "kamera3 przesunieta o ok. 6 px (ok. 4 mm na stole)"."""
+        shift = self.watch.drifted(rec.name)
+        if shift is None or not np.isfinite(shift):
+            return f"{rec.name}: obraz nie pasuje do odniesienia"
+        mm = _table_mm(rec, shift)
+        text = f"{rec.name} przesunieta o ok. {shift:.0f} px"
+        return text if mm is None else f"{text} (ok. {mm:.0f} mm na stole)"
 
     def _guard(self, what: str, fn, *args):
         """Blad jednego odswiezenia nie moze zabic petli panelu - pod nim jezdzi ramie."""
