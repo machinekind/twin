@@ -124,6 +124,20 @@ class RobotCamera:
 
 
 @dataclass(frozen=True)
+class BaseTag:
+    """An AprilTag (36h11) sticker on the base body of a robot that moves its base: the station's
+    cameras see it, and the twin pulls the copy to where it is (`Twin.locate_other`)."""
+
+    #: Not the calibration card's ids (0 and 1), nor any other tag's on the station.
+    id: int
+    #: Side of the black square [m], measured on the print.
+    size: float
+    #: T_tag2base, 4x4: the tag's frame in `base_body`'s frame. The tag frame (`calib.tags`): origin
+    #: at the centre, x right, y up, z out of the face toward the viewer.
+    pose: Matrix4
+
+
+@dataclass(frozen=True)
 class Connection:
     """One way the panel offers to connect the arm: a backend plugin and its port."""
 
@@ -184,6 +198,8 @@ class RobotSpec:
     #: Highest base speed the twin may command (`RobotBackend.send_velocity`): forward, sideways [m/s]
     #: and turning [rad/s]. None = the twin never drives this robot's base.
     base_max_vel: tuple[float, float, float] | None = None
+    #: A tag on `base_body` that corrects the drift of the base pose its backend reports; None = none.
+    base_tag: BaseTag | None = None
     #: Gripper 0..100 maps linearly onto (closed, open) in the gripper joint's MJCF units.
     gripper_range_q: tuple[float, float] | None = None
     #: MJCF joints coupled to another joint: joint -> (app joint, ratio). Kinematics writes them
@@ -267,6 +283,15 @@ def _check(spec: RobotSpec, path: Path) -> None:
             problems.append("`base_max_vel`: trzy skonczone liczby >= 0 (do przodu, w bok [m/s], "
                             "obrot [rad/s])")
             break
+    tag = spec.base_tag
+    # `type`, not `isinstance`: YAML `true` is a bool, and a bool is an int in Python. 36h11 has 587 tags.
+    if tag is not None and not (type(tag.id) is int and 0 <= tag.id <= 586):
+        problems.append("`base_tag.id`: liczba calkowita 0..586 (AprilTag 36h11)")
+    if tag is not None and not (type(tag.size) in (int, float) and 0 < tag.size < np.inf):
+        problems.append("`base_tag.size`: bok czarnego kwadratu [m], liczba dodatnia")
+    if tag is not None and not _is_rigid(np.asarray(tag.pose, float)):
+        problems.append("`base_tag.pose` musi byc przeksztalceniem sztywnym (obrot, przesuniecie, "
+                        "ostatni wiersz 0 0 0 1)")
     if not spec.mjcf_path.is_file():
         problems.append(f"nie ma pliku modelu {spec.mjcf_path}")
     else:

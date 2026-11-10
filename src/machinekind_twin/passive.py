@@ -36,12 +36,18 @@ class PassiveReader:
     #: Zero velocities sent after a command ends. Then the reader goes silent: on some robots a zero
     #: keeps the twin in command, and an idle panel must not hold it.
     trailing_zeros = 3
+    #: Shortest pause between two calls of `locate` [s].
+    locate_period = 0.2
 
     def __init__(self, name: str, open_arm: Callable[[], ReadOnlyArm],
-                 apply: Callable[[dict[str, float], tuple[np.ndarray, float] | None], None]):
+                 apply: Callable[[dict[str, float], tuple[np.ndarray, float] | None], None],
+                 locate: Callable[[], None] | None = None):
         self.name = name
         self._open = open_arm
         self._apply = apply
+        #: Looks for the robot's base tag in the cameras' frames (`Twin.locate_other`); None = no tag.
+        self._locate = locate
+        self._locate_at = 0.0
         self._arm: ReadOnlyArm | None = None
         #: The last read was fresh and applied.
         self.ok = False
@@ -119,6 +125,8 @@ class PassiveReader:
             elif isinstance(self._arm, BaseDriveArm) and self._zeros_left > 0:
                 self._zeros_left -= 1
                 self._arm.send_velocity(0.0, 0.0, 0.0)
+            # After the velocity: a tag search takes tens of milliseconds and must not delay a command.
+            self._locate_due()
 
             faults = self._arm.faults()
             self._set(True, "odczyt na zywo" + (f" ({'; '.join(faults)})" if faults else ""))
@@ -128,6 +136,15 @@ class PassiveReader:
             self._set(False, f"{type(exc).__name__}: {exc} - zostaje ostatnia poza")
             self._close()
             return self.retry_s
+
+    def _locate_due(self) -> None:
+        if self._locate is None or time.monotonic() < self._locate_at:
+            return
+        self._locate_at = time.monotonic() + self.locate_period
+        try:
+            self._locate()
+        except Exception:                               # a failed search leaves the backend open
+            logger.exception("Robot %s: blad przy szukaniu taga na podstawie", self.name)
 
     def _set(self, ok: bool, status: str) -> None:
         if status != self.status and not ok:

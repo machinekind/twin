@@ -15,3 +15,14 @@ limits:
   knee: [-120.0, 0.0]
 max_vel: {hip: 120.0, knee: 120.0}
 base_max_vel: [0.3, 0.2, 0.6]
+
+# Flat on top of the trunk (0.03 m above its centre), facing up, its x along the trunk's. An 8 cm
+# square: with its white margin the sticker is 10 cm, the trunk's width.
+base_tag:
+  id: 7
+  size: 0.08
+  pose:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.03]
+    - [0.0, 0.0, 0.0, 1.0]

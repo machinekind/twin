@@ -659,6 +659,14 @@ class Workspace:
         """
         self._refuse_robot_camera_names(self.cameras)
         self.mount_cameras()
+        # The card lies on the station even when the scene leaves it out, and the cameras would take its tag
+        # for the robot's.
+        card = self.card_obj()
+        for rec in self.other_robots:
+            tag = get_spec(rec.robot).base_tag
+            if tag is not None and tag.id in card.ids:
+                raise ValueError(f"tag na podstawie robota {rec.name} ma id {tag.id}, a tych uzywa karta "
+                                 f"kalibracyjna: {list(card.ids)} - daj mu inne id w robot.yaml")
         on_arm = self.spec().cameras
         fixed = [c for c in self.cameras if c.enabled and c.name not in on_arm]
         views = [v for c in fixed for v in [c.view()] if v is not None]
