@@ -18,6 +18,7 @@ jedzie tu jako strategia `policy` z zakladki Strategie.
 
 from __future__ import annotations
 
+import dataclasses
 import html as _html
 import logging
 import threading
@@ -1641,8 +1642,9 @@ class TwinApp:
                                                                      "w 100 us; puste = bez zmian. Wylacza auto "
                                                                      "ekspozycje.")
                 ctl_apply = g.add_button("Zastosuj i zapisz", icon=viser.Icon.DEVICE_FLOPPY,
-                                         hint="Ustawia kamere teraz i przy kazdym otwarciu (Linux, V4L2). Zapisane w "
-                                              "stanowisku - skrypt ustawiajacy ostrosc przed startem nie jest potrzebny.")
+                                         hint="Ustawia kamere teraz i przy kazdym otwarciu (Linux, macOS; Windows "
+                                              "tylko ostrosc). Zapisane w stanowisku - skrypt ustawiajacy ostrosc "
+                                              "przed startem nie jest potrzebny.")
                 self.cam_ctl_md = g.add_markdown("")
         g.add_divider()
         g.add_markdown("**Dodaj kamere**")
@@ -2143,6 +2145,8 @@ class TwinApp:
             info = "jeszcze nieskalibrowana - dalej zakladka **Kalibracja**"
         elif rec.trusted:
             info = "skalibrowana - gotowa do uzycia"
+        elif rec.focus_problem and rec.calibration.get("trusted"):
+            info = "kalibracja niepewna w tej sesji: ostrosc inna niz przy pomiarze obiektywu"
         else:
             why = (rec.calibration.get("reason", "") if not rec.calibration.get("trusted")
                    else "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz")
@@ -2151,6 +2155,8 @@ class TwinApp:
             from ..calib.handeye import pose_error
             dt, dr = pose_error(np.asarray(rec.sim_pose), np.asarray(rec.T_cam2base))
             info += f"  \nod prawdy symulacji: **{dt * 1000:.2f} mm, {np.degrees(dr):.3f} st.**"
+        if rec.focus_problem:
+            info += f"  \n**obiektyw niewazny w tej sesji:** {rec.focus_problem}"
         err = self.twin.cameras.error(rec.name)
         if err:
             info += f"  \n**blad kamery:** {err}"
@@ -2223,7 +2229,8 @@ class TwinApp:
                 "Raz dla kazdej kamery; ramie stoi.\n\n"
                 "1. Pobierz szachownice i wydrukuj ja w skali **100%** (bez \"dopasuj do strony\").\n"
                 "2. Zmierz linijka bok jednego kwadratu na wydruku i wpisz go nizej.\n"
-                "3. Kliknij **Zacznij** (przy kilku kamerach najpierw wybierz kamere).\n"
+                "3. Poloz szachownice na stole w srodku obrazu kamery i kliknij **Zacznij** (przy kilku "
+                "kamerach najpierw wybierz kamere). Kamera najpierw sama ustawia i blokuje ostrosc.\n"
                 "4. Pokazuj szachownice kamerze, az licznik dojdzie do 12, potem **Gotowe**.")
             self.intr_sheet_box = g.add_folder(None)
             with self.intr_sheet_box:
@@ -2367,9 +2374,11 @@ class TwinApp:
             board = self._board()
             solve_evt = threading.Event()
             save_to = self._lens_session_dir(name)
+            # Focus first: a lens holds only at the focus it was measured at.
+            lock = jobs.focus_lock_step(self.twin.cameras, name, rec.controls.focus_absolute)
             self.intr_job.start(lambda job: jobs.run_intrinsics(job, self.twin.cameras, name, board,
                                                                  (rec.width, rec.height), solve=solve_evt,
-                                                                 save_to=save_to))
+                                                                 save_to=save_to, lock_focus=lock))
             self._intr_solve = solve_evt
             self.intr_md.content = ""
             self.calib_ask.reset()
@@ -2487,21 +2496,42 @@ class TwinApp:
         return [c for c in self.ws.cameras if c.enabled and c.simulated and c.sim_pose is not None
                 and (not c.trusted or self.watch.moved(c.name))]
 
-    def _set_lens(self, rec: CameraRecord, res: intr.Result) -> None:
+    def _set_lens(self, rec: CameraRecord, res: intr.Result, lock=None) -> None:
         """Zapis obiektywu (K, dystorsja) kamery - z szachownicy albo z pliku. Poza ustalona ze starym K
-        przestaje byc zaufana: krok 2 trzeba powtorzyc."""
+        przestaje byc zaufana: krok 2 trzeba powtorzyc.
+
+        `lock` (`calib.focus.FocusLock`) is the focus the views were taken at: it goes into the lens and
+        into the camera's controls, so the twin sets it on every open."""
         rec.K, rec.dist = res.K.tolist(), res.dist.tolist()
         rec.intrinsics_from = "szachownica"
         self._simreal_px.pop(rec.name, None)            # nowe K - Sim-Real do sprawdzenia od nowa
         rec.intrinsics_info = {"rms_px": res.rms_px, "n_views": res.n_views, "coverage": res.coverage,
                                "trusted": res.trusted, "reason": res.reason, "dropped": len(res.dropped),
                                "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if lock is not None and lock.focus is not None:
+            rec.intrinsics_info["focus"] = int(lock.focus)
+            rec.controls = dataclasses.replace(rec.controls, autofocus=False, focus_absolute=int(lock.focus))
+        elif lock is not None and lock.autofocus_off:
+            rec.controls = dataclasses.replace(rec.controls, autofocus=False)
+        self._ctl_cam = None                            # the settings fields show the new controls
         if rec.calibrated:
             rec.calibration["reason"] = "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
             rec.calibration["trusted"] = False
         self._save()
+        if not rec.simulated:
+            self.twin.cameras.apply_controls(rec.name)  # sets the lens's focus and checks it holds
         self.twin.rebuild()
         self._refresh_cameras()
+
+    def _restore_controls(self, name: str | None) -> None:
+        """The camera's own controls back after a lens session that ended without a result (the focus
+        lock may have moved the focus)."""
+        try:
+            rec = self.ws.camera(name or "")
+        except KeyError:
+            return
+        if not rec.simulated:
+            self.twin.cameras.apply_controls(rec.name)
 
     def _lens_session_dir(self, name: str) -> Path | None:
         """Where step 1 keeps a session's frames: `<workspace>/intrinsics/<camera>-<time>/`."""
@@ -2868,7 +2898,12 @@ class TwinApp:
                     for u, v in det[1]:
                         cv2.circle(vis, (int(u), int(v)), 3, colour, -1)
                 self.intr_img.image = thumb(vis, 480)
-            if col is not None:
+            if col is None:
+                self.intr_md.content = (
+                    f"**Ostrosc kamery {ij.data.get('camera', '')}:** {ij.message}  \n"
+                    f"Szachownica lezy na stole w srodku obrazu? Nie ruszaj jej, az kamera zablokuje ostrosc "
+                    f"(do ok. 30 s).")
+            else:
                 self.intr_md.content = (
                     f"**Pokazuj szachownice kamerze {ij.data.get('camera', '')}: ustaw, zatrzymaj na chwile, "
                     f"przestaw.** W kazdym rogu obrazu, blisko i daleko, pochylona w lewo, w prawo, w gore i w dol. "
@@ -2886,22 +2921,30 @@ class TwinApp:
             except KeyError:
                 self.intr_md.content = f"**Kamery {name} juz nie ma** - nic nie zapisano"
                 return
-            self._set_lens(rec, res)
+            lock = ij.data.get("focus")
+            self._set_lens(rec, res, lock)
             left_out = (f" Pominiete ujecia (odstawaly od reszty): {len(res.dropped)} z "
                         f"{res.n_views + len(res.dropped)}." if res.dropped else "")
             where = f"  \nKadry tej sesji: `{ij.data['save_to']}`" if ij.data.get("save_to") else ""
-            self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze.{left_out}{where}" if res.trusted else
-                                    f"Obiektyw **{name}**: wynik niepewny ({res.reason}).{left_out} Zmierz jeszcze "
-                                    f"raz - wiecej pochylen i rogow obrazu.{where}")
+            focus = f"  \nOstrosc: {lock.note}." if lock is not None and lock.note else ""
+            if rec.focus_problem:
+                focus += f"  \n**Obiektyw niewazny w tej sesji:** {rec.focus_problem}."
+            self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze.{left_out}{focus}{where}" if res.trusted
+                                    else f"Obiektyw **{name}**: wynik niepewny ({res.reason}).{left_out} Zmierz "
+                                    f"jeszcze raz - wiecej pochylen i rogow obrazu.{focus}{where}")
             todo = self._lens_todo()
             if todo and self.intr_cam.value not in todo:
                 self.intr_cam.value = todo[0]           # nastepna kamera bez obiektywu
         elif ij.state == jobs.FAILED and ij.data.get("saved") != "err":
-            self.intr_md.content = f"**Nie udalo sie:** {ij.error}"
+            why = ij.data.get("focus_error")
+            self.intr_md.content = (f"**Ostrosc nie zablokowana:** {why} - obiektyw nie zmierzony." if why else
+                                    f"**Nie udalo sie:** {ij.error}")
             ij.data["saved"] = "err"
+            self._restore_controls(ij.data.get("camera"))
         elif ij.state == jobs.CANCELLED and ij.data.get("saved") != "cancel":
             self.intr_md.content = "Anulowano - kamera bez zmian."
             ij.data["saved"] = "cancel"
+            self._restore_controls(ij.data.get("camera"))
         self._render_calibration()
 
     # ================================================================== mapa

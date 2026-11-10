@@ -114,10 +114,14 @@ class CameraRecord:
     #: w panelu). Kalibracja jej nie zna - wyznacza `T_cam2base` z kadrow, tak
     #: jak dla prawdziwej kamery - wiec wynik da sie ocenic wzgledem prawdy.
     sim_pose: list[list[float]] | None = None
-    #: Wynik kalibracji intrynsyk: rms_px, n_views, coverage, trusted, reason, time.
+    #: Wynik kalibracji intrynsyk: rms_px, n_views, coverage, trusted, reason, time; `focus` when the
+    #: lens was measured at a locked focus.
     intrinsics_info: dict[str, Any] = field(default_factory=dict)
-    #: Focus and exposure the twin sets whenever it opens this camera (V4L2 only).
+    #: Focus and exposure the twin sets whenever it opens this camera (`camera_controls`).
     controls: CameraControls = field(default_factory=CameraControls)
+    #: Why the lens does not hold in this session: its focus is not locked on the camera ("" = it is,
+    #: or the lens carries no focus). Set by the camera hub when it opens the camera; never saved.
+    focus_problem: str = field(default="", compare=False, repr=False)
 
     @property
     def calibrated(self) -> bool:
@@ -140,10 +144,23 @@ class CameraRecord:
         pliku, inna sciezka niz krok 1 w panelu) zostawialo poze z nominalnego K
         jako zaufana. Poza bez zapisanego K (sprzed zapisu K przy pozie) - werdykt jak byl.
         """
-        if not self.calibration.get("trusted", False):
+        if not self.calibration.get("trusted", False) or self.focus_problem:
             return False
         used = self.calibration.get("K")
         return used is None or same_intrinsics((used, self.calibration.get("dist")), self.intrinsics())
+
+    @property
+    def lens_focus(self) -> int | None:
+        """The focus the lens was measured at; None for a lens measured without a locked focus."""
+        focus = self.intrinsics_info.get("focus")
+        return None if focus is None else int(focus)
+
+    def applied_controls(self) -> CameraControls:
+        """The controls the twin sets on open: `controls`, with the lens's focus where they set no focus."""
+        focus = self.lens_focus
+        if focus is None or self.controls.focus_absolute is not None or self.controls.autofocus:
+            return self.controls
+        return replace(self.controls, autofocus=False, focus_absolute=focus)
 
     def intrinsics(self) -> tuple[np.ndarray, np.ndarray | None]:
         K = np.asarray(self.K, float) if self.K is not None else nominal_K(self.width, self.height)
@@ -162,6 +179,8 @@ class CameraRecord:
         if not self.intrinsics_info.get("trusted", False):
             why = self.intrinsics_info.get("reason", "")
             return "intrynsyki z niezaufanej sesji ChArUco" + (f" ({why})" if why else "") + " - powtorz krok 1"
+        if self.focus_problem:
+            return f"obiektyw niewazny w tej sesji: {self.focus_problem}"
         return ""
 
     def fit_problem(self, used: tuple[Any, Any] | None) -> str:
@@ -514,6 +533,7 @@ class Workspace:
         if data["stand"] is None:
             data.pop("stand")
         for cam, rec in zip(data["cameras"], self.cameras):
+            cam.pop("focus_problem", None)
             if rec.controls.empty:
                 cam.pop("controls")
             else:

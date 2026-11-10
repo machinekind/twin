@@ -322,7 +322,8 @@ def _dump_wave(twin, session, fit, error: str = "") -> None:
 
 
 def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], period: float = 0.25,
-                   solve: threading.Event | None = None, save_to: Path | None = None) -> Any:
+                   solve: threading.Event | None = None, save_to: Path | None = None,
+                   lock_focus: Callable[[Job], Any] | None = None) -> Any:
     """Zbiera kadry tablicy ChArUco z kamery, dopoki panel nie powie `solve`, potem liczy K.
 
     `job.cancel` PRZERYWA bez liczenia (wynik None, zadanie "przerwane"). Wczesniej
@@ -334,13 +335,32 @@ def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], per
     A frame is taken only once the board stands still (`STILL_PX`): smeared corners spoil K.
     With `save_to`, each frame taken goes there as `kadr-NN.png` and the fit as `sesja.json`,
     so a session that came out untrusted can be looked at afterwards.
+
+    `lock_focus(job)` runs before any view is taken (`focus_lock_step`): it locks the camera's focus
+    and returns a `calib.focus.FocusLock`, kept in `job.data["focus"]`. When the focus does not lock,
+    the job fails with the reason in `job.data["focus_error"]` and nothing is measured.
     """
     import cv2
 
+    from ..calib.focus import FocusLockError
     from ..calib.intrinsics import Collector
 
     solve = solve if solve is not None else threading.Event()
     job.data["camera"] = camera
+    if lock_focus is not None:
+        job.message = "ustawiam ostrosc"
+        try:
+            job.data["focus"] = lock_focus(job)
+        except FocusLockError as exc:
+            if job.cancel.is_set():
+                job.message = "przerwane - K bez zmian"
+                return None
+            job.data["focus_error"] = str(exc)
+            raise
+        if job.cancel.is_set():
+            job.message = "przerwane - K bez zmian"
+            return None
+        job.progress = 0.0
     col = Collector(board, size, still_px=STILL_PX)
     job.data["collector"] = col
     if save_to is not None:
@@ -371,8 +391,32 @@ def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], per
     job.message = "liczenie K"
     res = col.solve()
     if save_to is not None:
-        _save_lens_session(save_to, board, size, res)
+        _save_lens_session(save_to, board, size, res, job.data.get("focus"))
     return res
+
+
+def focus_lock_step(hub, camera: str, wanted: int | None, **options: Any) -> Callable[[Job], Any]:
+    """The `lock_focus` step of `run_intrinsics` for the hub's camera `camera` (`calib.focus.lock_focus`).
+
+    `wanted` is the focus in the camera's record; None sweeps for the sharpest one. The frames the
+    sweep looks at go to `job.data["last"]` for the panel. `options` go to `lock_focus`.
+    """
+    from ..calib.focus import lock_focus
+
+    def step(job: Job) -> Any:
+        def grab() -> tuple[Any, float]:
+            img, t = hub.frame_t(camera)
+            if img is not None:
+                job.data["last"] = img
+            return img, t
+
+        def report(text: str, part: float) -> None:
+            job.message, job.progress = text, part
+
+        return lock_focus(lambda controls: hub.apply_controls(camera, controls), grab, wanted=wanted,
+                          focus_range=hub.focus_range(camera), cancel=job.cancel, report=report, **options)
+
+    return step
 
 
 #: Largest median corner shift [px] between two frames `run_intrinsics` reads (0.25 s apart) for the
@@ -380,8 +424,9 @@ def run_intrinsics(job: Job, hub, camera: str, board, size: tuple[int, int], per
 STILL_PX = 2.0
 
 
-def _save_lens_session(folder: Path, board, size: tuple[int, int], res) -> None:
-    """`sesja.json` next to the frames of a lens session: the board, the fit and every view's error."""
+def _save_lens_session(folder: Path, board, size: tuple[int, int], res, focus=None) -> None:
+    """`sesja.json` next to the frames of a lens session: the board, the fit, every view's error and the
+    focus lock (`calib.focus.FocusLock`), when there was one."""
     left_out = dict(res.dropped)
     kept = iter(res.per_view_px)
     views = [{"view": i, "px": left_out[i], "left_out": True} if i in left_out else
@@ -391,6 +436,8 @@ def _save_lens_session(folder: Path, board, size: tuple[int, int], res) -> None:
             "size": list(size), "rms_px": res.rms_px, "trusted": res.trusted, "reason": res.reason,
             "coverage": res.coverage, "K": np.asarray(res.K).tolist(), "dist": np.asarray(res.dist).ravel().tolist(),
             "views": views}
+    if focus is not None:
+        data["focus"] = {"focus": focus.focus, "note": focus.note, "swept": [list(vs) for vs in focus.swept]}
     try:
         (folder / "sesja.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     except OSError as exc:

@@ -43,7 +43,7 @@ class CameraConfig:
     fourcc: str | None = "MJPG"
     #: Loop a video file (for demos without a camera).
     loop_video: bool = True
-    #: Focus and exposure set on a V4L2 camera after it opens (`camera_controls.apply`).
+    #: Focus and exposure set on the camera after it opens (`camera_controls.apply`).
     controls: CameraControls | None = None
 
 

@@ -70,6 +70,7 @@ include = [
     "packages/machinekind_twin_seeded",
     "examples/detectors",
     "examples/strategies",
+    "src/machinekind_twin/calib/focus.py",
     "src/machinekind_twin/camera_controls.py",
     "src/machinekind_twin/charuco_detector.py",
     "src/machinekind_twin/detection.py",
@@ -87,6 +88,7 @@ include = [
     "src/machinekind_twin/tracks.py",
     "src/machinekind_twin/ui/detector_tab.py",
     "src/machinekind_twin/ui/plugin_form.py",
+    "src/machinekind_twin/uvc_mac.py",
     "src/machinekind_twin/waypoints.py",
 ]
 
