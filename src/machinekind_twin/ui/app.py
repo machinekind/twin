@@ -2578,8 +2578,11 @@ class TwinApp:
         return name
 
     def _lens_todo(self) -> list[str]:
-        """Prawdziwe wlaczone kamery bez zmierzonego obiektywu (krok 1)."""
-        return [c.name for c in self.ws.cameras if c.enabled and not c.simulated and c.intrinsics_problem()]
+        """Prawdziwe wlaczone kamery bez zmierzonego obiektywu (krok 1).
+        Cameras on the arm are left out: step 2 does not use them, so their lens must not hold it back."""
+        on_arm = self._arm_cameras()
+        return [c.name for c in self.ws.cameras
+                if c.enabled and not c.simulated and c.name not in on_arm and c.intrinsics_problem()]
 
     def _wave_block(self) -> str:
         """Dlaczego krok 2 nie moze teraz ruszyc ("" = moze) - przycisk wylaczony z tym powodem."""

@@ -718,6 +718,23 @@ def test_lens_from_file_lands_on_the_chosen_camera_and_refuses_another_resolutio
         app.ws.remove_camera("u1")
 
 
+def test_a_camera_on_the_arm_without_a_lens_does_not_hold_back_step_2(app, monkeypatch):
+    """Step 2 leaves the cameras on the arm out, so a wrist camera with only a nominal lens must not block
+    it; a fixed camera without a lens still does."""
+    from machinekind_twin.workspace import CameraRecord
+
+    monkeypatch.setattr(app, "_arm_cameras", lambda: {"w1"})
+    app.ws.add_camera(CameraRecord("w1", "6", 1280, 720))
+    app.ws.add_camera(CameraRecord("u2", "7", 1280, 720))
+    try:
+        todo = app._lens_todo()
+        assert "w1" not in todo and "u2" in todo
+        assert "w1" not in app._wave_block()
+    finally:
+        app.ws.remove_camera("w1")
+        app.ws.remove_camera("u2")
+
+
 def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):
     """Brio i uEye przegrywaly wyscig z resetem USB przy starcie panelu i zostawaly BEZ OBRAZU,
     az ktos wylaczyl i wlaczyl kamere w panelu. Panel probuje sam, co HEAL_S, poki jest blad."""
