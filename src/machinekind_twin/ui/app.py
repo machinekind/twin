@@ -68,6 +68,11 @@ PANEL_OWNER = "panel"
 #: "Inne roboty": the picker's entry for a new robot and the joint source without a backend.
 NEW_ROBOT = "(nowy)"
 FIXED_POSE = "stala poza"
+#: "Inne roboty": a drive button -> the share of `base_max_vel` (forward, left, turn) it commands.
+DRIVE = {"Przod": (1.0, 0.0, 0.0), "Tyl": (-1.0, 0.0, 0.0), "W lewo": (0.0, 1.0, 0.0),
+         "W prawo": (0.0, -1.0, 0.0), "Obrot w lewo": (0.0, 0.0, 1.0), "Obrot w prawo": (0.0, 0.0, -1.0)}
+#: How long one drive click drives [s].
+DRIVE_S = 2.0
 #: Najwiekszy skok stawu [st.] miedzy kolejnymi rozwiazaniami IK uchwytu TCP. Zmierzone:
 #: przeciagniecie uchwytu o 1-2 cm z shoulder_pan ~108 st. dawalo "poprawne" IK na
 #: drugiej galezi - 178-180 st. zmiany, cale ramie przez stol w ~1,3 s.
@@ -798,7 +803,8 @@ class TwinApp:
             self._notify(event, "STOP", "Ramie zatrzymane. Skasuj STOP (zolty, pod STOP-em), zeby ruszyc dalej.",
                          error=True)
         else:
-            self._notify(event, "STOP", "Ramie niepolaczone - nic nie jedzie; zadania w tle przerwane.", error=True)
+            self._notify(event, "STOP", "Ramie niepolaczone - nic nie jedzie; zadania w tle przerwane. Inne "
+                                        "roboty stoja do Skasuj STOP (zolty, pod STOP-em).", error=True)
 
     # ------------------------------------------------ kto steruje ramieniem
     def _busy(self, me: str) -> str:
@@ -1178,7 +1184,7 @@ class TwinApp:
         # --- stol (zawsze, zwiniete)
         with g.add_folder("Stanowisko (stol)", expand_by_default=False):
             self._build_table()
-        with g.add_folder("Inne roboty (tylko odczyt)", expand_by_default=False):
+        with g.add_folder("Inne roboty", expand_by_default=False):
             self._build_others()
 
         self.twin.set_speed(self.arm_speed.value)
@@ -1247,7 +1253,9 @@ class TwinApp:
             estop = mode == "estop"
             conn = self.twin.connected or self.twin.backend is not None      # Rozlacz takze po padnieciu petli
             armed = self.arm_engage.value
-            key = (mode, who, armed, conn, self.tcp_gizmo_on.value, self._preset_backend(),
+            # The other robots' STOP holds with no arm too, and only Skasuj STOP lifts it.
+            halted = self.twin.others_halted
+            key = (mode, who, armed, conn, halted, self.tcp_gizmo_on.value, self._preset_backend(),
                    bool(self.tcp_md.content), bool(self.home_md.content), self.twin.status.backend if conn else None)
             if key == self._arm_key and not force:
                 return
@@ -1255,7 +1263,7 @@ class TwinApp:
             set_if(self.conn_box, "visible", not conn)
             set_if(self.ctl_box, "visible", conn)
             set_if(self.arm_port, "visible", self._preset_backend() != "sim")
-            set_if(self.clear_btn, "visible", estop)
+            set_if(self.clear_btn, "visible", estop or halted)
             look = ARM_OVERRIDES.get(mode)
             self.arm_engage.set_override(look(who) if look else None)
             self.tcp_gizmo_on.on_look = GIZMO_ON_ARMED if armed else GIZMO_ON_IDLE
@@ -1414,14 +1422,15 @@ class TwinApp:
 
     # ------------------------------------------------------- inne roboty
     def _build_others(self) -> None:
-        """Robots of the station the twin only watches: list, editor, status of their joints."""
+        """Other robots of the station: list, editor, status of their joints, driving a walking one."""
         from ..backends.factory import backends
         from ..robots import robot_folders
 
         g = self.server.gui
-        g.add_markdown("Roboty stojace obok ramienia. Blizniak nimi nie steruje: stawy z zapisanej pozy albo "
-                       "z ich backendu TYLKO DO ODCZYTU (nic nie wysyla na ich magistrale). Ramie nie podjedzie "
-                       f"blizej niz {sc.PASSIVE_CLEARANCE * 100:.0f} cm.")
+        g.add_markdown("Roboty stojace obok ramienia. Ich stawy blizniak TYLKO CZYTA, z zapisanej pozy albo "
+                       "z backendu robota. Robota z zaznaczona Jazda z panelu mozna prowadzic predkoscia "
+                       "podstawy (przyciski pod edytorem). Ramie nie podjedzie blizej niz "
+                       f"{sc.PASSIVE_CLEARANCE * 100:.0f} cm.")
         self.others_md = g.add_markdown("")
         self.other_pick = g.add_dropdown("Robot", (NEW_ROBOT, *(r.name for r in self.ws.other_robots)),
                                          initial_value=NEW_ROBOT,
@@ -1443,9 +1452,19 @@ class TwinApp:
         self.other_joints = g.add_text("Stala poza", "",
                                        hint="staw=wartosc po przecinku [st., chwytak 0..100]; brakujace z pozy "
                                             "domowej. Przy backendzie: ostatnia odczytana poza.")
+        self.other_base_drive = g.add_checkbox("Jazda z panelu", False,
+                                               hint="Przyciski nizej jezdza podstawa robota; backend musi to "
+                                                    "umiec, opis robota miec base_max_vel.")
         save = g.add_button("Zapisz robota", icon=viser.Icon.CHECK, color="gray",
                             hint="Zapisuje robota w stanowisku, przebudowuje scene i wznawia odczyty.")
         remove = g.add_button("Usun robota", icon=viser.Icon.TRASH, color="gray", hint="Usuwa robota ze sceny.")
+        self.other_speed = g.add_slider("Predkosc [% maks.]", 5, 100, 5, 30,
+                                        hint="Czesc base_max_vel z opisu robota.")
+        drive = g.add_button_group("Jazda (2 s)", tuple(DRIVE),
+                                   hint="Robot wybrany wyzej jedzie 2 s w tym kierunku, z predkoscia z "
+                                        "suwaka; kolejny klik zastepuje poprzedni. Po 2 s robot staje.")
+        halt = g.add_button("STOP robota", icon=viser.Icon.HAND_STOP, color="red",
+                            hint="Zatrzymuje wybranego robota od razu. STOP blizniaka zatrzymuje wszystkie.")
         self._fill_other()
 
         @self.other_pick.on_update
@@ -1481,6 +1500,31 @@ class TwinApp:
             self.other_pick.value = NEW_ROBOT
             self._notify(event, "Inne roboty", f"{name} usuniety ze sceny.")
 
+        # Both in viser's event loop, not its thread pool: a click held up there behind a scene rebuild
+        # would start the robot after a later STOP robota.
+        @drive.on_click
+        async def _(event):
+            try:
+                name = str(self.other_pick.value)
+                top = get_spec(self.ws.other_robot(name).robot).base_max_vel or (0.0, 0.0, 0.0)
+                unit = DRIVE[str(drive.value)]
+                share = float(self.other_speed.value) / 100.0
+                self.twin.drive_other(name, unit[0] * share * top[0], unit[1] * share * top[1],
+                                      unit[2] * share * top[2], DRIVE_S)
+            except Exception as exc:
+                self._notify(event, "Blad", f"{type(exc).__name__}: {exc}", error=True)
+
+        @halt.on_click
+        async def _(event):
+            self.twin.stop_other(str(self.other_pick.value))
+
+        # A closed tab can no longer press STOP robota, and the panel does not know who drove from it.
+        @self.server.on_client_disconnect
+        async def _(client):
+            for rec in self.ws.other_robots:
+                if rec.base_drive:
+                    self.twin.stop_other(rec.name)
+
     def _fill_other(self) -> None:
         """The editor's fields from the picked robot, or defaults for a new one."""
         name = self.other_pick.value
@@ -1501,6 +1545,7 @@ class TwinApp:
         self.other_source.value = source
         self.other_port.value = rec.port or ""
         self.other_joints.value = _joints_text({**get_spec(rec.robot).home, **rec.joints})
+        self.other_base_drive.value = rec.base_drive
 
     def _other_from_fields(self) -> RobotRecord:
         robot = str(self.other_robot.value)
@@ -1516,7 +1561,8 @@ class TwinApp:
         source = str(self.other_source.value)
         return RobotRecord(self.other_name.value.strip(), robot, xyz=[float(v) for v in self.other_xyz.value],
                            yaw_deg=float(self.other_yaw.value), backend=None if source == FIXED_POSE else source,
-                           port=self.other_port.value.strip() or None, joints=joints)
+                           port=self.other_port.value.strip() or None, joints=joints,
+                           base_drive=bool(self.other_base_drive.value))
 
     def _apply_others(self, others: list[RobotRecord]) -> None:
         """New list of other robots: checked by building the scene, then saved, rebuilt and read again."""
@@ -1546,9 +1592,10 @@ class TwinApp:
                 T = base[0]
                 heading = np.degrees(np.arctan2(T[1, 0], T[0, 0]))
                 now = f", podstawa teraz x {T[0, 3]:+.3f}, y {T[1, 3]:+.3f} m, obrot {heading:.0f} st."
+            drive = "; jazda z panelu" if r.base_drive else ""
             lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
                          f"obrot {r.yaw_deg:.0f} st.{now}; {_html.escape(source)}: "
-                         f"{_html.escape(status.get(r.name, ''))}")
+                         f"{_html.escape(status.get(r.name, ''))}{drive}")
         return "\n".join(lines) or "Brak innych robotow w scenie."
 
     def _on_tcp_gizmo(self) -> None:

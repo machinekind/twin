@@ -758,11 +758,11 @@ from the description.
 
 ## Other robots in the scene
 
-A second arm next to the working one is part of the station. The twin does not
-drive it, but it stands in the scene: in the 3D view, in simulated camera
+A second arm next to the working one is part of the station. The twin never
+drives its joints, but it stands in the scene: in the 3D view, in simulated camera
 frames, in every collision check and in the arm masks, so detectors never
 report it as an object. List it under `other_robots` in `twin.json`, or in the
-panel: **Ramie**, folder **Inne roboty (tylko odczyt)**. The working arm stays
+panel: **Ramie**, folder **Inne roboty**. The working arm stays
 `robot`, `backend` and `port`. A workspace without the key is the working arm
 alone, as before. This one has a second SO-101 19 cm to the working arm's left,
 read from its own bus:
@@ -770,7 +770,7 @@ read from its own bus:
 ```json
 "other_robots": [
   {"name": "lewe", "robot": "so101", "xyz": [0.0, 0.19, 0.0], "yaw_deg": 0.0,
-   "backend": "feetech", "port": "/dev/ttyACM1", "joints": {}}
+   "backend": "feetech", "port": "/dev/ttyACM1", "joints": {}, "base_drive": false}
 ]
 ```
 
@@ -782,6 +782,8 @@ read from its own bus:
   `null` keeps the fixed pose in `joints`.
 - `joints` [app units]: the fixed pose, or the last pose read. Joints left out
   take the robot's home pose.
+- `base_drive`: the panel may drive this robot by base velocity (see below).
+  A file without the key means `false`.
 
 A robot description without `tcp_site` and `hand_body`, such as a walking
 robot or a cart, can only be listed here. The twin refuses it as the working
@@ -798,13 +800,50 @@ reads such a robot 30 times a second instead of 10. The pose is live state:
 `twin.json` and stand files never hold it. `base_body` must be a top-level body
 of the robot's model.
 
-Read-only is part of the backend contract. The twin opens the backend only when
-its factory is marked `read_only_capable`. It sets `BackendContext.read_only`,
-and the backend then writes nothing to the arm: no torque, no goals, no
-settings. The twin holds such a backend as a `ReadOnlyArm`, which only
-connects, reads and disconnects. A backend without the mark is refused, and the
-robot keeps its fixed pose. When the bus is missing or a read fails, the robot
-keeps its last pose, the panel says why, and the twin retries every few seconds.
+Read-only is part of the backend contract. A robot without `base_drive` has its
+backend opened only when its factory is marked `read_only_capable`. The twin sets
+`BackendContext.read_only`, and the backend then writes nothing to the arm: no
+torque, no goals, no settings. The twin holds such a backend as a `ReadOnlyArm`,
+which only connects, reads and disconnects. A backend without the mark is
+refused, and the robot keeps its fixed pose. When the bus is missing or a read
+fails, the robot keeps its last pose, the panel says why, and the twin retries
+every few seconds.
+
+A walking robot can be driven from the panel. The robot walks on its own
+controller; the twin only says how fast, and joint targets never go to another
+robot. Its record sets `base_drive` (the checkbox **Jazda z panelu** in the
+robot editor), and its description gives `base_max_vel: [forward, sideways,
+turn]`, the highest speeds the twin may command [m/s, m/s, rad/s]. The twin then
+opens its backend with `BackendContext.base_drive` instead of `read_only`, only
+when its factory is marked `base_drive_capable`, and holds it as a
+`BaseDriveArm`: it reads the robot as before and can send it a base velocity,
+`send_velocity(forward, left, turn)` in the robot's base frame, and nothing
+else. A backend without the mark, or a description without `base_max_vel`, is
+refused, and the panel says why.
+
+Below the editor, for the robot picked in the dropdown, **Predkosc [% maks.]**
+sets the share of `base_max_vel`. Each of **Przod**, **Tyl**, **W lewo**,
+**W prawo**, **Obrot w lewo** and **Obrot w prawo** drives it for 2 seconds in
+that direction; another click replaces the running one. **STOP robota** stops
+it. The robot's reader sends the command 30 times a second while it lasts, then
+zero velocity three times, and then nothing: on some robots a zero keeps the
+sender in command, so an idle panel stops talking. The panel's **STOP** stops
+every other robot too and latches for them, also with no arm connected: the
+twin refuses to drive one, and no reader sends a command, until **Skasuj STOP**
+(it then shows under STOP). Connecting or disconnecting the arm leaves the
+latch as it is, and an arm's control loop that fails sets it as well. A
+command clicked while it is latched never starts. A read with no reply, or one
+that fails, ends the running command: when the link is back the robot stands
+until the next click. Closing a browser tab with the panel stops every driven
+robot, without the latch. Closing the twin or saving the robots sends a driven
+robot one zero before its backend closes. In code: `Twin.drive_other(name,
+forward, left, turn, seconds)`, clamped to `base_max_vel`, and
+`Twin.stop_other(name)`.
+
+The backend must stop the robot by itself when the calls cease. The twin
+repeats the command at least ten times a second while the robot should move
+and sends zeros to stop it; a twin that hangs, crashes or loses the link must
+not leave the robot walking on its last command.
 
 The copy is welded in place, so physics never moves it, and contacts with it
 are real. Its collision geoms reach 2 cm further out (`scene.PASSIVE_CLEARANCE`).
@@ -972,7 +1011,7 @@ entry identical to an existing one is not written again.
 | `format` | Format version, currently 1. A newer version than the twin knows is refused |
 | `name`, `description` | What the stand is; `name` is required |
 | `obsolete` | `false`, or `{"reason": "...", "date": "YYYY-MM-DD"}` for a stand that no longer matches reality (both keys optional; `true` also works) |
-| `robots` | Exactly one driven arm (`read_only: false`): `robot`, `backend`, `port`, optional `home`. It is the origin of the stand and has no name or pose. Other robots (`read_only: true`) have `name`, `robot`, `xyz` [m], `yaw_deg`, `backend`, `port` and, without a backend, a fixed pose in `joints`, as in [Other robots](#other-robots-in-the-scene) |
+| `robots` | Exactly one driven arm (`read_only: false`): `robot`, `backend`, `port`, optional `home`. It is the origin of the stand and has no name or pose. Other robots (`read_only: true`) have `name`, `robot`, `xyz` [m], `yaw_deg`, `backend`, `port`, optional `base_drive` (`true` = the panel may drive it by base velocity) and, without a backend, a fixed pose in `joints`, as in [Other robots](#other-robots-in-the-scene) |
 | `cameras` | `name`, `source` (prefer the stable `/dev/v4l/by-id/...` path), `width`, `height`, `fps`, `enabled`, optional `controls`, `sim_pose` for a simulated camera, and `fixture` for a camera on a fixture |
 | `fixtures` | Static parts of the stand, such as a camera mount, as in [Fixtures](#fixtures-in-the-scene). Optional |
 | `table`, `card`, `look` | As in `twin.json` |

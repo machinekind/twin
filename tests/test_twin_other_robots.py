@@ -55,7 +55,8 @@ def test_other_robots_round_trip_and_unknown_keys_fail(tmp_path):
     path = ws.save(tmp_path / "twin.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["other_robots"] == [{"name": "lewe", "robot": BOT, "xyz": LEFT, "yaw_deg": 0.0,
-                                     "backend": "testbot", "port": "/dev/ttyACM1", "joints": {"j1": 10.0}}]
+                                     "backend": "testbot", "port": "/dev/ttyACM1", "joints": {"j1": 10.0},
+                                     "base_drive": False}]
     assert Workspace.load(path).other_robots == ws.other_robots
     assert [r.name for r in Workspace.load(path).robots()] == ["robot", "lewe"]
 

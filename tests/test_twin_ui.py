@@ -6,6 +6,7 @@ uchwyt TCP na tej samej galezi IK, kalibracja i zadania w tle.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import socket
@@ -24,6 +25,7 @@ from conftest import BOT
 
 from machinekind_twin.episode import EpisodeLog
 from machinekind_twin.ui import jobs
+from machinekind_twin.workspace import RobotRecord
 
 
 def free_port() -> int:
@@ -422,7 +424,9 @@ def _click(app, label: str) -> _Event:
     assert len(hs) == 1, label
     ev = _Event()
     for cb in hs[0]._impl.update_cb:
-        cb(ev)
+        out = cb(ev)
+        if asyncio.iscoroutine(out):
+            asyncio.run(out)                                   # an async handler, like the drive buttons
     return ev
 
 
@@ -580,6 +584,41 @@ def test_another_robot_is_added_read_and_removed_from_the_panel(app):
         if app.ws.other_robots:
             app._apply_others([])
         app.other_pick.value = "(nowy)"
+
+
+def test_a_drive_click_on_a_robot_not_marked_for_driving_says_why(app):
+    try:
+        app._apply_others([RobotRecord("lewe", BOT, xyz=[0.0, 0.19, 0.0])])
+        app.other_pick.value = "lewe"
+        ev = _click(app, "Jazda (2 s)")
+    finally:
+        app._apply_others([])
+        app.other_pick.value = "(nowy)"
+
+    assert "jazda z panelu wylaczona" in ev.client.notes[0][1]
+
+
+def test_with_no_arm_a_stop_shows_skasuj_stop_which_lifts_it_for_the_other_robots(app):
+    try:
+        app.twin.estop("test")
+        app._render_arm()
+        shown = app.clear_btn.visible
+        _click(app, "Skasuj STOP")
+    finally:
+        app.twin.clear_estop()
+
+    assert shown
+    assert not app.twin.others_halted
+
+
+def test_a_closed_browser_tab_stops_every_robot_the_panel_drives(app, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(app.ws, "other_robots", [RobotRecord("walker", BOT, base_drive=True)])
+    monkeypatch.setattr(app.twin, "stop_other", stopped.append)
+    for cb in app.server._client_disconnect_cb:
+        asyncio.run(cb(_Client()))
+
+    assert stopped == ["walker"]
 
 
 def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):

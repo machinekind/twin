@@ -20,8 +20,8 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import numpy as np
 
-__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "read_only_capable",
-           "supports_read_only"]
+__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "base_drive_capable",
+           "read_only_capable", "supports_base_drive", "supports_read_only"]
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -49,6 +49,10 @@ class BackendContext:
     #: in `connect` and `disconnect` (no torque, no goals, no settings), and `send_joints` raises.
     #: The twin sets it only for a factory marked with `read_only_capable`.
     read_only: bool = False
+    #: True: the twin reads this robot and sends it base velocities (`send_velocity`), nothing else.
+    #: `read_only` is then False, and `send_joints` must still raise. The twin sets it only for a
+    #: factory marked with `base_drive_capable`.
+    base_drive: bool = False
 
 
 def read_only_capable(factory: _F) -> _F:
@@ -62,6 +66,17 @@ def supports_read_only(factory: Any) -> bool:
     return getattr(factory, "supports_read_only", False) is True
 
 
+def base_drive_capable(factory: _F) -> _F:
+    """Marks a backend factory that honours `BackendContext.base_drive`."""
+    factory.supports_base_drive = True  # type: ignore[attr-defined]
+    return factory
+
+
+def supports_base_drive(factory: Any) -> bool:
+    """Whether `factory` is marked with `base_drive_capable`."""
+    return getattr(factory, "supports_base_drive", False) is True
+
+
 @runtime_checkable
 class BackendPlugin(Protocol):
     """What a backend from another package implements; units as in `BackendContext`.
@@ -70,8 +85,8 @@ class BackendPlugin(Protocol):
     with the meaning given on `RobotBackend`: `info` (an object with `name`, `description`,
     `simulated`), `link_silent` (or `_link_silent`), `faults()`, `joint_limits()`, `set_joint_limits(limits)`,
     `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`, `set_grip_strength(strength)`,
-    `base_pose()`. Any other public method stays reachable through the wrapper (the panel looks some up
-    by name).
+    `base_pose()`, `send_velocity(forward, left, turn)`. Any other public method stays reachable through
+    the wrapper (the panel looks some up by name).
     """
 
     def connect(self) -> None: ...
@@ -216,6 +231,16 @@ class RobotBackend(ABC):
         clock; a backend that gets a sender's stamp converts it. The pose REPLACES the body's pose in
         the model file. None = the robot does not move its base, or no pose yet. Must not raise."""
         return None
+
+    def send_velocity(self, forward: float, left: float, turn: float) -> None:
+        """The base velocity the robot should hold, in its base frame: forward and left [m/s], turn [rad/s].
+
+        For a robot that walks or drives on its own controller (`BackendContext.base_drive`). The twin
+        repeats the call at least ten times a second while the robot should move and sends zeros to stop.
+        The backend must stop the robot by itself when the calls cease: the twin may hang, crash or lose
+        the link, and its last command must not keep the robot going.
+        """
+        raise NotImplementedError(f"{type(self).__name__} nie jezdzi podstawa (send_velocity)")
 
     def step(self, dt: float) -> None:  # noqa: B027 - does nothing by default
         """One simulation step. A real robot ignores it: reality advances on its own."""

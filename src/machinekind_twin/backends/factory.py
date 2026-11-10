@@ -29,7 +29,7 @@ from importlib.metadata import EntryPoint, entry_points
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from machinekind_twin_api.backend import supports_read_only
+from machinekind_twin_api.backend import supports_base_drive, supports_read_only
 from machinekind_twin_api.entry_points import BACKENDS
 
 from ..config import TwinConfig
@@ -96,20 +96,32 @@ def create_backend(cfg: TwinConfig, spec: RobotSpec) -> RobotBackend:
     return backend if isinstance(backend, RobotBackend) else PluginBackend(backend, name)
 
 
-def open_read_only(cfg: TwinConfig, spec: RobotSpec, backend: str, port: str | None) -> ReadOnlyArm:
-    """Backend `backend` of robot `spec` on `port`, created read-only; not connected yet.
+def open_read_only(cfg: TwinConfig, spec: RobotSpec, backend: str, port: str | None,
+                   base_drive: bool = False) -> ReadOnlyArm:
+    """Backend `backend` of robot `spec` on `port`, created read-only, or with `base_drive` to send base
+    velocities as well (a `BaseDriveArm`); not connected yet.
 
-    Refused, before the plugin is even created, unless its factory is marked `read_only_capable`.
+    Refused, before the plugin is even created, unless its factory is marked `read_only_capable`
+    (`base_drive_capable` with `base_drive`).
     """
     name = backend.lower()
     if name == "sim":
         raise ValueError("`sim` nie ma czego czytac - wybierz stala poze albo backend sprzetu")
     factory = _factory(name, backend)
-    if not supports_read_only(factory):
+    if base_drive and not supports_base_drive(factory):
+        raise ValueError(f"backend {name!r} nie umie jezdzic podstawa robota (base_drive) - zaktualizuj "
+                         "jego pakiet albo wylacz jazde z panelu; do tego czasu robot stoi w stalej pozie")
+    if base_drive and spec.base_max_vel is None:
+        raise ValueError(f"opis robota {spec.name} nie ma base_max_vel - blizniak nie wie, jak szybko "
+                         "moze nim jezdzic; do tego czasu robot stoi w stalej pozie")
+    if not base_drive and not supports_read_only(factory):
         raise ValueError(f"backend {name!r} nie umie czytac ramienia bez zapisu (read_only) - "
                          "zaktualizuj jego pakiet; do tego czasu robot stoi w stalej pozie")
-    ctx = dataclasses.replace(backend_context(cfg, spec, name), port=port or None, read_only=True)
-    return ReadOnlyArm(factory(ctx), name)
+
+    ctx = dataclasses.replace(backend_context(cfg, spec, name), port=port or None, read_only=not base_drive,
+                              base_drive=base_drive)
+    plugin = factory(ctx)
+    return BaseDriveArm(plugin, name) if base_drive else ReadOnlyArm(plugin, name)
 
 
 class ReadOnlyArm:
@@ -145,6 +157,13 @@ class ReadOnlyArm:
     def base_pose(self) -> tuple[np.ndarray, float] | None:
         fn = getattr(self._plugin, "base_pose", None)
         return fn() if fn is not None else None
+
+
+class BaseDriveArm(ReadOnlyArm):
+    """A backend the twin reads and sends base velocities to (`BackendContext.base_drive`); never joints."""
+
+    def send_velocity(self, forward: float, left: float, turn: float) -> None:
+        self._plugin.send_velocity(forward, left, turn)
 
 
 class PluginBackend(RobotBackend):

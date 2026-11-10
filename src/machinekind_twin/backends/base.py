@@ -17,9 +17,11 @@ from machinekind_twin_api.backend import (
     BackendPlugin,
     RobotBackend,
     RobotInfo,
+    base_drive_capable,
     read_only_capable,
+    supports_base_drive,
     supports_read_only,
 )
 
-__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "read_only_capable",
-           "supports_read_only"]
+__all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "base_drive_capable",
+           "read_only_capable", "supports_base_drive", "supports_read_only"]

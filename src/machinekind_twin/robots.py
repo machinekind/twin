@@ -181,6 +181,9 @@ class RobotSpec:
     limits: dict[str, tuple[float, float]] = field(default_factory=dict)
     #: Highest commanded speed [app units / s].
     max_vel: dict[str, float] = field(default_factory=dict)
+    #: Highest base speed the twin may command (`RobotBackend.send_velocity`): forward, sideways [m/s]
+    #: and turning [rad/s]. None = the twin never drives this robot's base.
+    base_max_vel: tuple[float, float, float] | None = None
     #: Gripper 0..100 maps linearly onto (closed, open) in the gripper joint's MJCF units.
     gripper_range_q: tuple[float, float] | None = None
     #: MJCF joints coupled to another joint: joint -> (app joint, ratio). Kinematics writes them
@@ -258,6 +261,12 @@ def _check(spec: RobotSpec, path: Path) -> None:
     for table, names in named.items():
         if names - joints:
             problems.append(f"`{table}` wymienia stawy spoza `joints`: {sorted(names - joints)}")
+    for v in spec.base_max_vel or ():
+        # YAML `true` is a bool, and a bool is an int in Python.
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) or v < 0:
+            problems.append("`base_max_vel`: trzy skonczone liczby >= 0 (do przodu, w bok [m/s], "
+                            "obrot [rad/s])")
+            break
     if not spec.mjcf_path.is_file():
         problems.append(f"nie ma pliku modelu {spec.mjcf_path}")
     else:

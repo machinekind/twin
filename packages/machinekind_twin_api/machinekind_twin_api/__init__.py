@@ -18,18 +18,21 @@ from .backend import (
     BackendPlugin,
     RobotBackend,
     RobotInfo,
+    base_drive_capable,
     read_only_capable,
+    supports_base_drive,
     supports_read_only,
 )
 from .detector import Detection, Detector, DetectorInfo, DetectRequest, base_label, instance_key
 from .entry_points import BACKENDS, DETECTORS, ROBOTS, STRATEGIES
 from .strategy import Action, ActionLike, Decision, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
-__version__ = "0.1.8"
+__version__ = "0.1.9"
 
 __all__ = [
     "BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext",
     "BackendPlugin", "Decision", "DetectRequest", "Detection", "Detector", "DetectorInfo", "Frame",
     "ObjectPose", "Observation", "RobotBackend", "RobotInfo", "RunInfo", "S", "Strategy", "__version__",
-    "base_label", "instance_key", "read_only_capable", "supports_read_only",
+    "base_drive_capable", "base_label", "instance_key", "read_only_capable", "supports_base_drive",
+    "supports_read_only",
 ]

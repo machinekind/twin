@@ -409,7 +409,7 @@ class CameraRecord:
 
 @dataclass
 class RobotRecord:
-    """One robot of the station besides the driven arm, which the twin only watches.
+    """One robot of the station besides the driven arm, whose joints the twin only watches.
 
     `robot`, `backend` and `port` mean what they mean for the driven arm (`Workspace`). The backend
     is opened read-only (`BackendContext.read_only`); without one the robot keeps `joints`.
@@ -431,6 +431,8 @@ class RobotRecord:
     #: Joint values [app units]: the fixed pose, or the last pose read from `backend`.
     #: Joints not given take the robot's home pose.
     joints: dict[str, float] = field(default_factory=dict)
+    #: The panel may drive this robot by base velocity (`Twin.drive_other`).
+    base_drive: bool = False
 
     def T_base(self) -> np.ndarray:
         """Base pose in the driven arm's base frame (4x4)."""
@@ -522,7 +524,7 @@ class Workspace:
     #: What the calibration wave must keep out of on this stand (`calib.session.WaveLimits`): keep-out
     #: boxes in the base frame [m] and the base's turn range [degrees]. Empty = only the arm's own limits.
     wave: WaveLimits = field(default_factory=WaveLimits)
-    #: Other robots of the station, which the twin only watches (`RobotRecord`). Empty = the driven
+    #: Other robots of the station, whose joints the twin only watches (`RobotRecord`). Empty = the driven
     #: arm alone; such a workspace saves without this key, as before.
     other_robots: list[RobotRecord] = field(default_factory=list)
     #: Static parts of the station from robot packages, e.g. a camera mount (`FixtureRecord`). Empty =
