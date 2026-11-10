@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from importlib.metadata import EntryPoint, entry_points
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from machinekind_twin_api.backend import supports_read_only
 from machinekind_twin_api.entry_points import BACKENDS
 
@@ -140,6 +141,10 @@ class ReadOnlyArm:
             return list(fn()) if fn is not None else []
         except Exception as exc:  # noqa: BLE001 - never raises, like `RobotBackend.faults`
             return [f"{type(exc).__name__}: {exc}"]
+
+    def base_pose(self) -> tuple[np.ndarray, float] | None:
+        fn = getattr(self._plugin, "base_pose", None)
+        return fn() if fn is not None else None
 
 
 class PluginBackend(RobotBackend):

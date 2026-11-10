@@ -171,6 +171,9 @@ class PassiveRobot:
     spec: RobotSpec
     T_base: np.ndarray
     joints: dict[str, float] = field(default_factory=dict)
+    #: Where `Scene.set_passive_base` last put its base body, in its own fixed frame; None = as in the
+    #: model file.
+    base: np.ndarray | None = None
 
     @property
     def prefix(self) -> str:
@@ -267,6 +270,22 @@ class Scene:
             self.model.body_pos[b] = pos
             self.model.body_quat[b] = quat
         robot.joints = dict(joints)
+        mujoco.mj_kinematics(self.model, self.data)
+
+    def set_passive_base(self, name: str, T: np.ndarray) -> None:
+        """Puts the passive robot `name`'s base body at `T` in its own fixed frame, in place of its
+        pose in the model file (`RobotBackend.base_pose`); its limbs follow."""
+        robot = self.passive[name]
+        b = self.model.body(robot.prefix + robot.spec.base_body).id
+        # `_add_passive`'s mount frame compiles into a top-level body's own pose: parent world, world
+        # coordinates. A lower body's pose is relative to its parent, which stays where it is.
+        if self.model.body_parentid[b] != 0:
+            raise ValueError(f"{robot.spec.name}: podstawa {robot.spec.base_body!r} nie jest cialem "
+                             "najwyzszego poziomu modelu - nie moze sie przesuwac")
+        T_world = self.T_base2world @ robot.T_base @ T
+        self.model.body_pos[b] = T_world[:3, 3]
+        self.model.body_quat[b] = _quat(T_world[:3, :3])
+        robot.base = T
         mujoco.mj_kinematics(self.model, self.data)
 
     # ------------------------------------------------------------ ramie

@@ -18,6 +18,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
+import numpy as np
+
 __all__ = ["BackendContext", "BackendPlugin", "RobotBackend", "RobotInfo", "read_only_capable",
            "supports_read_only"]
 
@@ -67,8 +69,9 @@ class BackendPlugin(Protocol):
     Required: `connect`, `disconnect`, `read_joints`, `send_joints`, `is_connected`. Optional,
     with the meaning given on `RobotBackend`: `info` (an object with `name`, `description`,
     `simulated`), `link_silent` (or `_link_silent`), `faults()`, `joint_limits()`, `set_joint_limits(limits)`,
-    `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`, `set_grip_strength(strength)`.
-    Any other public method stays reachable through the wrapper (the panel looks some up by name).
+    `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`, `set_grip_strength(strength)`,
+    `base_pose()`. Any other public method stays reachable through the wrapper (the panel looks some up
+    by name).
     """
 
     def connect(self) -> None: ...
@@ -206,6 +209,13 @@ class RobotBackend(ABC):
         read-only, the servo did not take it): the twin logs it and goes on. Must not raise.
         """
         return False
+
+    def base_pose(self) -> tuple[np.ndarray, float] | None:
+        """The 4x4 pose of `base_body` in the robot's own fixed frame (where its odometry counts from:
+        x forward, y left, z up, metres) and when it was measured on this machine's `time.monotonic()`
+        clock; a backend that gets a sender's stamp converts it. The pose REPLACES the body's pose in
+        the model file. None = the robot does not move its base, or no pose yet. Must not raise."""
+        return None
 
     def step(self, dt: float) -> None:  # noqa: B027 - does nothing by default
         """One simulation step. A real robot ignores it: reality advances on its own."""

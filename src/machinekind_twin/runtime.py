@@ -392,6 +392,8 @@ class Twin:
         self._readers: dict[str, PassiveReader] = {}
         #: Why a robot with a backend has no reader, by name.
         self._passive_notes: dict[str, str] = {}
+        #: The latest `RobotBackend.base_pose` of each other robot, with its time; live, never saved.
+        self._base_poses: dict[str, tuple[np.ndarray, float]] = {}
         #: The loop's collision checker for the clearance to other robots and fixtures, on the scene's model.
         self._clearance: CollisionChecker | None = None
 
@@ -423,6 +425,7 @@ class Twin:
         readers, self._readers = self._readers, {}
         for reader in readers.values():
             reader.stop()
+        self._base_poses = {}
 
     def passive_status(self) -> dict[str, str]:
         """Where each other robot's pose comes from now, for the panel."""
@@ -434,19 +437,47 @@ class Twin:
                              else self._passive_notes.get(rec.name, "odczyt wylaczony"))
         return out
 
-    def set_passive_joints(self, name: str, joints: Mapping[str, float]) -> None:
-        """New joints [app units] of the other robot `name`: in the workspace (its last pose) and the scene."""
+    def set_passive_joints(self, name: str, joints: Mapping[str, float],
+                           base: tuple[np.ndarray, float] | None = None) -> None:
+        """New joints [app units] of the other robot `name`: in the workspace (its last pose) and the scene.
+        `base` is where its base is (`RobotBackend.base_pose`): kept with its time, and in the scene."""
         try:
             rec = self.workspace.other_robot(name)
         except KeyError:
             return                                      # removed from the station meanwhile
         joints = {k: float(v) for k, v in joints.items()}
-        if rec.joints.keys() == joints.keys() and all(abs(rec.joints[k] - v) < 0.2 for k, v in joints.items()):
-            return                                      # servo noise: the scene stays as it is
-        rec.joints = joints
+        # Servo noise (under 0.2 units) and odometry jitter (under 1 mm and 0.2 deg) leave the scene as it is.
+        noise = (rec.joints.keys() == joints.keys()
+                 and all(abs(rec.joints[k] - v) < 0.2 for k, v in joints.items()))
+        if not noise:
+            rec.joints = joints
         with self.lock:
-            if name in self.scene.passive:
+            if name not in self.scene.passive:
+                return
+            if not noise:
                 self.scene.set_passive_joints(name, joints)
+            if base is None:
+                return
+
+            T = np.array(base[0], float)                # a copy: a backend may reuse its array
+            last = self.scene.passive[name].base
+            moved = True
+            if last is not None:
+                cos_turn = (np.trace(last[:3, :3].T @ T[:3, :3]) - 1) / 2
+                moved = np.linalg.norm(T[:3, 3] - last[:3, 3]) > 1e-3 or cos_turn < np.cos(np.radians(0.2))
+            if moved:
+                self.scene.set_passive_base(name, T)
+            self._base_poses[name] = (T, float(base[1]))
+
+    def other_base_pose(self, name: str) -> tuple[np.ndarray, float] | None:
+        """Where the other robot `name`'s base body is now in the driven arm's base frame (its record's pose
+        x `RobotBackend.base_pose`), and when it was measured (`time.monotonic()`); None without one."""
+        rec = self.workspace.other_robot(name)
+        with self.lock:
+            latest = self._base_poses.get(name)
+        if latest is None:
+            return None
+        return rec.T_base() @ latest[0], latest[1]
 
     def _too_close(self, command: Mapping[str, float], ls: _LoopState) -> str:
         """Why `command` may not go out: it brings the arm too close to another robot or a fixture

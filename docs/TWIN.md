@@ -789,6 +789,15 @@ arm, in `twin.json` and in `--robot`. A floating top body (a `<freejoint>`)
 stays where the model puts it relative to `xyz` and `yaw_deg`; gravity does
 not move it.
 
+A robot that moves its base reports where it is: its backend's `base_pose()`
+gives the pose of `base_body` in the robot's own fixed frame, the one its
+odometry counts from. `xyz` and `yaw_deg` then place that frame in the station:
+with an identity pose the base stands exactly there. The copy in the scene
+follows, limbs included, and the panel shows where the base is now. The twin
+reads such a robot 30 times a second instead of 10. The pose is live state:
+`twin.json` and stand files never hold it. `base_body` must be a top-level body
+of the robot's model.
+
 Read-only is part of the backend contract. The twin opens the backend only when
 its factory is marked `read_only_capable`. It sets `BackendContext.read_only`,
 and the backend then writes nothing to the arm: no torque, no goals, no
