@@ -280,6 +280,7 @@ def _set(key, value):
     (lambda d, f: d["robots"][0].update(xyz=[0, 0, 0]), "jest poczatkiem ukladu stanowiska"),
     (lambda d, f: d["robots"][1].update(name="robot"), "robots[1].name: tylko litery"),
     (lambda d, f: d["robots"][1].update(xyz=[0, 1]), "robots[1].xyz: oczekiwano listy 3 liczb"),
+    (lambda d, f: d["robots"][1].update(base_drive="tak"), "robots[1].base_drive: oczekiwano true albo false"),
     (_set("obsolete", {"date": "3.11.2026"}), "obsolete.date: oczekiwano daty RRRR-MM-DD"),
     (lambda d, f: d["table"].update(legs=4), "table: Nieznane klucze"),
     (lambda d, f: d["wave"].update(base_turn=[60.0, -90.0]), "stand.json: wave: wave.base_turn: od < do"),

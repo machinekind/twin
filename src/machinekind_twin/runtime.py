@@ -13,8 +13,9 @@ Kazdy rozkaz przechodzi przez `safety.SafetySupervisor`: limity pozycji
 i predkosci, stop awaryjny i plynny powrot do domu.
 
 Other robots of the station stand in the scene too (`Workspace.other_robots`). The twin never
-drives them: their joints come from a fixed pose or from their backend opened read-only
-(`start_passive`), and the loop refuses a command that brings the arm too close to one.
+drives their joints: they come from a fixed pose or from their backend opened read-only
+(`start_passive`), and the loop refuses a command that brings the arm too close to one. A walking
+robot marked `base_drive` takes base velocities from the panel (`drive_other`).
 
 Ramieniem steruje naraz JEDEN wlasciciel (`claim`/`release`): panel (suwaki
 ze sprzeglem), polityka, fala kalibracyjna albo identyfikacja. Bez tego
@@ -253,6 +254,9 @@ class Twin:
     #: przerywany [s]. Zmierzone: jeden niemy serwo przez socket:// blokowal
     #: odczyt na 1,75 s, a nastepny takt wysylal skok 28 st. na shoulder_pan.
     max_gap = 0.5
+    #: The longest one `drive_other` command may run [s]. The robot's own dead-man covers a twin that
+    #: died; this covers a caller that asked for minutes and then went idle.
+    drive_max_s = 5.0
     #: Straznik rozjazdu dla KAZDEGO wlasciciela (nie tylko polityki): staw ramienia dalej
     #: od wyslanego rozkazu niz tyle stopni przez `track_err_s` sekund = STOP. Zmierzone
     #: w emulatorze: serwo, ktore stracilo moment bez bitu bledu, konczylo `Twin.move`
@@ -415,7 +419,8 @@ class Twin:
                 continue
             taken.add(rec.port)
             spec = get_spec(rec.robot)
-            opener = functools.partial(open_read_only, robot_config(spec), spec, rec.backend, rec.port)
+            opener = functools.partial(open_read_only, robot_config(spec), spec, rec.backend, rec.port,
+                                       rec.base_drive)
             reader = PassiveReader(rec.name, opener, functools.partial(self.set_passive_joints, rec.name))
             self._readers[rec.name] = reader
             reader.start()
@@ -468,6 +473,34 @@ class Twin:
             if moved:
                 self.scene.set_passive_base(name, T)
             self._base_poses[name] = (T, float(base[1]))
+
+    def drive_other(self, name: str, forward: float, left: float, turn: float, seconds: float) -> None:
+        """Drives the other robot `name` at this base velocity [m/s, m/s, rad/s] in its base frame, clamped
+        to its `base_max_vel`, for `seconds`, in place of the running command. Its reader sends it."""
+        rec = self.workspace.other_robot(name)
+        reader = self._readers.get(name)
+        if not rec.base_drive:
+            raise ValueError(f"{name}: jazda z panelu wylaczona - zaznacz ja w edytorze robota")
+        if reader is None or not reader.ok:
+            raise ValueError(f"{name}: brak polaczenia z backendem robota - nie ma komu wyslac predkosci")
+        if self.safety_state is SafetyState.ESTOP:
+            raise ValueError(f"{name}: STOP awaryjny jest zatrzasniety - skasuj go, zeby jechac")
+        if not np.isfinite([forward, left, turn, seconds]).all():
+            raise ValueError(f"{name}: predkosc i czas jazdy musza byc skonczonymi liczbami")
+
+        top = get_spec(rec.robot).base_max_vel or (0.0, 0.0, 0.0)     # without a limit it may not move
+        reader.drive(float(np.clip(forward, -top[0], top[0])), float(np.clip(left, -top[1], top[1])),
+                     float(np.clip(turn, -top[2], top[2])), min(seconds, self.drive_max_s))
+
+        # A STOP that latched between the check above and the command must win.
+        if self.safety_state is SafetyState.ESTOP:
+            self.stop_other(name)
+
+    def stop_other(self, name: str) -> None:
+        """Zero base velocity for the other robot `name`, from its reader's next cycle."""
+        reader = self._readers.get(name)
+        if reader is not None:
+            reader.drive(0.0, 0.0, 0.0, 0.0)
 
     def other_base_pose(self, name: str) -> tuple[np.ndarray, float] | None:
         """Where the other robot `name`'s base body is now in the driven arm's base frame (its record's pose
@@ -1257,12 +1290,19 @@ class Twin:
 
     def estop(self, reason: str = "STOP awaryjny") -> None:
         sup = self._supervisor
+        if sup is not None:
+            with self._sup_lock:
+                sup.trigger_estop()
+
+        # Other robots stop also when no arm is connected, and after the latch: `drive_other` checks
+        # the latch again once it has set its command.
+        for name in list(self._readers):
+            self.stop_other(name)
+
         if sup is None:
             return
-        # Najpierw sam STOP (natychmiast), potem odebranie ramienia i trzymanie
-        # zmierzonej pozy - STOP trzymal ostatni rozkaz, czyli po kolizji docisk.
-        with self._sup_lock:
-            sup.trigger_estop()
+        # Po samym STOP (natychmiast) odebranie ramienia i trzymanie zmierzonej pozy - STOP trzymal
+        # ostatni rozkaz, czyli po kolizji docisk.
         self.preempt(reason)
 
     def clear_estop(self) -> None:

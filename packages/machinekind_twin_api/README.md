@@ -168,16 +168,25 @@ class MemoryArm:
 ```
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
-`efforts`, `set_grip_strength`, `base_pose`, ...); `RobotBackend` documents what each one means.
-`base_pose`, added in 0.1.8, is for a robot that moves its base (a walking robot, a cart): where
-its base is in the robot's own fixed frame, and when that was measured.
+`efforts`, `set_grip_strength`, `base_pose`, `send_velocity`, ...); `RobotBackend` documents what each
+one means. `base_pose`, added in 0.1.8, is for a robot that moves its base (a walking robot, a cart):
+where its base is in the robot's own fixed frame, and when that was measured.
 
 The twin may open a backend only to watch an arm it does not drive, such as a second arm next to
 the working one. It does so only for a factory marked `@read_only_capable`, with
 `BackendContext.read_only` set. Such a backend then writes nothing to the hardware, also not in
-`connect` and `disconnect`: no torque, no goals, no settings. `send_joints` raises. Complete, tested examples live in
-the twin's repository: `examples/robots/arm6`, `examples/robots/testbot`, `examples/strategies/swing`
-and `examples/detectors/cube`.
+`connect` and `disconnect`: no torque, no goals, no settings. `send_joints` raises.
+
+The twin may also drive a walking robot by base velocity, added in 0.1.9. It does so only for a
+factory marked `@base_drive_capable`, with `BackendContext.base_drive` set and `read_only` not.
+The backend then reads the robot and takes `send_velocity(forward, left, turn)`, the base velocity
+to hold in the robot's base frame [m/s, m/s, rad/s]; `send_joints` still raises. The twin repeats
+the call at least ten times a second while the robot should move and sends zeros to stop. When the
+calls cease, the backend must stop the robot by itself: a twin that hangs or loses the link must
+not leave it walking.
+
+Complete, tested examples live in the twin's repository: `examples/robots/arm6`,
+`examples/robots/testbot`, `examples/strategies/swing` and `examples/detectors/cube`.
 
 ## A detector
 

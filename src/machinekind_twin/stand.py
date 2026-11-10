@@ -177,7 +177,8 @@ def _robots(robots: Any, where: str) -> None:
             _fail(w, f"oczekiwano obiektu, jest {_kind(r)}")
         _flag(r.get("read_only", False), f"{w}.read_only")
         if r.get("read_only", False):
-            _keys(r, w, ("name", "robot"), ("read_only", "xyz", "yaw_deg", "backend", "port", "joints"))
+            _keys(r, w, ("name", "robot"), ("read_only", "xyz", "yaw_deg", "backend", "port", "joints",
+                                            "base_drive"))
             name = r["name"]
             if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name + "/" == PREFIX:
                 _fail(f"{w}.name", f"tylko litery, cyfry, _ i -, inna niz {PREFIX[:-1]!r}; jest {name!r}")
@@ -188,6 +189,7 @@ def _robots(robots: Any, where: str) -> None:
                 _number(r["yaw_deg"], f"{w}.yaw_deg")
             if "joints" in r:
                 _numbers(r["joints"], f"{w}.joints")
+            _flag(r.get("base_drive", False), f"{w}.base_drive")
         else:
             driven += 1
             extra = sorted(set(r) & {"name", "xyz", "yaw_deg", "joints"})
@@ -473,7 +475,8 @@ class Stand:
         d = copy.deepcopy(self.data)
         driven = next(r for r in d["robots"] if not r.get("read_only", False))
         others = [RobotRecord(r["name"], r["robot"], xyz=r.get("xyz", [0.0, 0.0, 0.0]), yaw_deg=r.get("yaw_deg", 0.0),
-                              backend=r.get("backend"), port=r.get("port"), joints=dict(r.get("joints", {})))
+                              backend=r.get("backend"), port=r.get("port"), joints=dict(r.get("joints", {})),
+                              base_drive=r.get("base_drive", False))
                   for r in d["robots"] if r.get("read_only", False)]
         fixtures = [FixtureRecord(**f) for f in d.get("fixtures", [])]
         ws = Workspace(robot=driven["robot"], backend=driven.get("backend") or "sim", port=driven.get("port"),
@@ -559,6 +562,8 @@ def stand_data(ws: Workspace, keep: dict[str, Any], calib: dict[str, Any]) -> di
                                  "yaw_deg": r.yaw_deg, "backend": r.backend, "port": r.port}
         if r.backend is None and r.joints:
             other["joints"] = r.joints              # a fixed pose; a live robot's last reading is not setup
+        if r.base_drive:
+            other["base_drive"] = True
         robots.append(other)
     cameras = []
     for c in ws.cameras:

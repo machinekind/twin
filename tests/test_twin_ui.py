@@ -6,6 +6,7 @@ uchwyt TCP na tej samej galezi IK, kalibracja i zadania w tle.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import socket
@@ -24,6 +25,7 @@ from conftest import BOT
 
 from machinekind_twin.episode import EpisodeLog
 from machinekind_twin.ui import jobs
+from machinekind_twin.workspace import RobotRecord
 
 
 def free_port() -> int:
@@ -422,7 +424,9 @@ def _click(app, label: str) -> _Event:
     assert len(hs) == 1, label
     ev = _Event()
     for cb in hs[0]._impl.update_cb:
-        cb(ev)
+        out = cb(ev)
+        if asyncio.iscoroutine(out):
+            asyncio.run(out)                                   # an async handler, like the drive buttons
     return ev
 
 
@@ -580,6 +584,18 @@ def test_another_robot_is_added_read_and_removed_from_the_panel(app):
         if app.ws.other_robots:
             app._apply_others([])
         app.other_pick.value = "(nowy)"
+
+
+def test_a_drive_click_on_a_robot_not_marked_for_driving_says_why(app):
+    try:
+        app._apply_others([RobotRecord("lewe", BOT, xyz=[0.0, 0.19, 0.0])])
+        app.other_pick.value = "lewe"
+        ev = _click(app, "Jazda (2 s)")
+    finally:
+        app._apply_others([])
+        app.other_pick.value = "(nowy)"
+
+    assert "jazda z panelu wylaczona" in ev.client.notes[0][1]
 
 
 def test_wave_starts_on_one_click_in_sim_and_needs_a_second_click_on_a_real_arm(app, monkeypatch):
