@@ -1465,6 +1465,9 @@ class TwinApp:
                                         "suwaka; kolejny klik zastepuje poprzedni. Po 2 s robot staje.")
         halt = g.add_button("STOP robota", icon=viser.Icon.HAND_STOP, color="red",
                             hint="Zatrzymuje wybranego robota od razu. STOP blizniaka zatrzymuje wszystkie.")
+        self.other_log = g.add_checkbox("Zapisuj przejazd", False,
+                                        hint="Odometria wybranego robota i widzenia jego taga do pliku w "
+                                             "folderze episodes; twin episode <plik> podsumuje przejazd.")
         self._fill_other()
 
         @self.other_pick.on_update
@@ -1518,6 +1521,11 @@ class TwinApp:
         async def _(event):
             self.twin.stop_other(str(self.other_pick.value))
 
+        @self.other_log.on_update
+        @self._safe
+        def _(event):
+            self.twin.log_drive(str(self.other_pick.value), bool(self.other_log.value))
+
         # A closed tab can no longer press STOP robota, and the panel does not know who drove from it.
         @self.server.on_client_disconnect
         async def _(client):
@@ -1546,6 +1554,7 @@ class TwinApp:
         self.other_port.value = rec.port or ""
         self.other_joints.value = _joints_text({**get_spec(rec.robot).home, **rec.joints})
         self.other_base_drive.value = rec.base_drive
+        self.other_log.value = name in self.twin.drive_logs
 
     def _other_from_fields(self) -> RobotRecord:
         robot = str(self.other_robot.value)
@@ -1577,6 +1586,7 @@ class TwinApp:
         self._simreal_px.clear()
         self.twin.rebuild()
         self.twin.start_passive()
+        self.other_log.value = False                    # restarting the readers ended every drive log
         names = (NEW_ROBOT, *(r.name for r in others))
         self.other_pick.options = names
 
@@ -1602,9 +1612,16 @@ class TwinApp:
                        f"{drift[0] * 100:.1f} cm, {drift[1]:.1f} st.")
             elif anchor is not None:
                 tag = "; tag niewidoczny"
+            log = self.twin.drive_logs.get(r.name)
+            note = self.twin.drive_log_notes.get(r.name)
+            writing = ""
+            if log is not None:
+                writing = f"; zapis przejazdu: {_html.escape(log['path'].name)}"
+            elif note is not None:
+                writing = f"; zapis przejazdu przerwany: {_html.escape(note)}"
             lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
                          f"obrot {r.yaw_deg:.0f} st.{now}; {_html.escape(source)}: "
-                         f"{_html.escape(status.get(r.name, ''))}{drive}{tag}")
+                         f"{_html.escape(status.get(r.name, ''))}{drive}{tag}{writing}")
         return "\n".join(lines) or "Brak innych robotow w scenie."
 
     def _on_tcp_gizmo(self) -> None:
