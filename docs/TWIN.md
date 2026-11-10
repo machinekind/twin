@@ -889,7 +889,9 @@ until the next click. Closing a browser tab with the panel stops every driven
 robot, without the latch. Closing the twin or saving the robots sends a driven
 robot one zero before its backend closes. In code: `Twin.drive_other(name,
 forward, left, turn, seconds)`, clamped to `base_max_vel`, and
-`Twin.stop_other(name)`.
+`Twin.stop_other(name)`. **Zapisuj przejazd** below them writes a drive of the
+picked robot to a file, its odometry and tag sightings line by line, so the
+drift can be measured afterwards ([drive log](EPISODES.md#drive-log-of-another-robot)).
 
 The backend must stop the robot by itself when the calls cease. The twin
 repeats the command at least ten times a second while the robot should move

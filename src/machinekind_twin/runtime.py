@@ -40,6 +40,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import mujoco
@@ -48,10 +49,11 @@ import numpy as np
 from .safety import SafetyState, SafetySupervisor
 from .backends import create_backend, open_read_only
 from .backends.base import RobotBackend, RobotInfo
-from . import basefix, tagreach
+from . import basefix, drivelog, tagreach
 from . import scene as sc
 from .cameras import CameraHub
 from .clock import Clock, VirtualClock, WallClock
+from .episode import episodes_dir
 from .kinematics import inverse
 from .passive import PassiveReader
 from .perception import perception_cameras
@@ -425,6 +427,10 @@ class Twin:
         self._base_poses: dict[str, tuple[np.ndarray, float]] = {}
         #: Each other robot with a base tag that reports its base pose: where its fixed frame stands now.
         self.tag_anchors: dict[str, TagAnchor] = {}
+        #: The drive logs being written (`log_drive`), by robot name. A log needs no lock of its own: only its
+        #: robot's reader thread writes its lines, with `self.lock` held, and a log joins and leaves this dict
+        #: under that lock, opened before it joins and closed after it leaves.
+        self.drive_logs: dict[str, dict[str, Any]] = {}
         #: The loop's collision checker for the clearance to other robots and fixtures, on the scene's model.
         self._clearance: CollisionChecker | None = None
 
@@ -459,6 +465,11 @@ class Twin:
         readers, self._readers = self._readers, {}
         for reader in readers.values():
             reader.stop()
+        with self.lock:
+            logs = list(self.drive_logs.values())
+            self.drive_logs = {}
+        for log in logs:
+            drivelog.end(log)
         self._base_poses = {}
 
     def passive_status(self) -> dict[str, str]:
@@ -503,6 +514,14 @@ class Twin:
             self._keep_odometry(rec, T, float(base[1]))
             if moved:
                 self._show_base(name)                   # at its anchor: a rebuilt scene may not know it yet
+
+            log = self.drive_logs.get(name)
+            if log is not None:
+                anchor = self.tag_anchors.get(name)
+                fixed = rec.T_base() if anchor is None else anchor.T
+                reader = self._readers.get(name)
+                velocity = None if reader is None else reader.velocity()
+                drivelog.pose_line(log, float(base[1]), T, fixed @ T, velocity)
 
     def _keep_odometry(self, rec: RobotRecord, T: np.ndarray, t: float) -> None:
         """The base poses `locate_other` needs, of a robot with a base tag; with `self.lock` held."""
@@ -549,6 +568,10 @@ class Twin:
                 if odometry is not None:
                     measured = fix.per_camera[cam] @ inverse(np.asarray(tag.pose, float))
                     anchor.T = basefix.corrected_anchor(anchor.T, odometry, measured)
+                    log = self.drive_logs.get(name)
+                    if log is not None:
+                        drift = self.other_drift(name)
+                        drivelog.tag_line(log, taken[cam], measured, len(seen), drift[0], drift[1])
             anchor.seen_t = taken[seen[-1]]
             anchor.seen_by = len(seen)
             self._show_base(name)
@@ -606,6 +629,24 @@ class Twin:
         reader = self._readers.get(name)
         if reader is not None:
             reader.drive(0.0, 0.0, 0.0, 0.0)
+
+    def log_drive(self, name: str, on: bool) -> Path | None:
+        """Turns the drive log of the other robot `name` on or off (`drivelog`), a new file in the episodes
+        folder; a log already on keeps running. The file's path while it is on."""
+        if not on:
+            with self.lock:
+                log = self.drive_logs.pop(name, None)
+            if log is not None:
+                drivelog.end(log)
+            return None
+
+        log = self.drive_logs.get(name)
+        if log is None:
+            rec = self.workspace.other_robot(name)
+            log = drivelog.start(episodes_dir(self.workspace.path), rec, get_spec(rec.robot).base_tag)
+            with self.lock:
+                self.drive_logs[name] = log
+        return log["path"]
 
     def other_base_pose(self, name: str) -> tuple[np.ndarray, float] | None:
         """Where the other robot `name`'s base body is now in the driven arm's base frame (its record's pose,

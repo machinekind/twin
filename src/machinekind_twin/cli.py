@@ -215,6 +215,7 @@ def _episode(a: argparse.Namespace) -> int:
 
     Without a path it reports the newest log next to the workspace file.
     """
+    from . import drivelog
     from .episode import EpisodeLog, episodes_dir
     from .episode_report import report
 
@@ -224,8 +225,10 @@ def _episode(a: argparse.Namespace) -> int:
         return 1
 
     if target.is_dir():
-        logs = sorted([*target.glob("*.jsonl"), *target.glob("*.jsonl.zst")],
-                      key=lambda path: _natural(path.name.split(".jsonl")[0]), reverse=True)
+        found = [*target.glob("*.jsonl"), *target.glob("*.jsonl.zst")]
+        # Drive logs (`drivelog`) are no strategy runs, and by their name they would sort as the newest.
+        runs = [path for path in found if not path.name.startswith("other-")]
+        logs = sorted(runs, key=lambda path: _natural(path.name.split(".jsonl")[0]), reverse=True)
         if not logs:
             print(f"no episode logs in {target}", file=sys.stderr)
             return 1
@@ -235,6 +238,14 @@ def _episode(a: argparse.Namespace) -> int:
         target = logs[0]
 
     try:
+        drive = drivelog.summary(target)
+        if drive is not None:
+            print(f"Przejazd {target.name}: {drive['duration_s']:.1f} s, droga wg odometrii "
+                  f"{drive['path_m']:.2f} m, widzen taga: {drive['sightings']}")
+            if drive["sightings"]:
+                print(f"Dryf na koncu {drive['drift_m'] * 100:.1f} cm, {drive['drift_deg']:.1f} st.; "
+                      f"najwiekszy {drive['max_drift_m'] * 100:.1f} cm, {drive['max_drift_deg']:.1f} st.")
+            return 0
         log = EpisodeLog.load(target)
     except (OSError, ValueError) as exc:
         print(f"twin episode: {exc}", file=sys.stderr)

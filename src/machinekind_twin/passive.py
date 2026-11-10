@@ -80,6 +80,10 @@ class PassiveReader:
         self.drive(0.0, 0.0, 0.0, 0.0)
         self.halted = False
 
+    def velocity(self) -> tuple[float, float, float] | None:
+        """The base velocity being commanded now; None when no command runs."""
+        return self._velocity if not self.halted and time.monotonic() < self._until else None
+
     def start(self) -> None:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name=f"robot-{self.name}", daemon=True)
