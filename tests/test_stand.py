@@ -565,6 +565,52 @@ def test_the_lens_focus_is_kept_in_the_workspace_file_and_the_stand(tmp_path):
     assert st.load(tmp_path / "stand").workspace().camera("kamera1").lens_focus == 30
 
 
+def test_a_trust_by_hand_reaches_the_stand_and_survives_a_panel_restart(tmp_path):
+    """Trusted in the panel: the workspace file and the bound stand get it (new entries, history kept), and a
+    restarted panel, or the stand loaded elsewhere, still trusts the lens and the pose."""
+    pytest.importorskip("viser")
+    from test_twin_ui import WAVE_TIME, _click, a_camera_after_a_wave, free_port
+
+    from machinekind_twin.ui.app import TwinApp
+
+    ws = a_workspace(tmp_path)
+    ws.remove_camera("kamera1")
+    ws.add_camera(a_camera_after_a_wave("kamera1", enabled=False))   # no device to open in a test
+    ws.add_camera(CameraRecord("kamera2", "/dev/video-k2", 640, 480, enabled=False))
+    folder = tmp_path / "stand"
+    st.save(ws, folder, name="biurko")
+    before = files(folder)
+    app = TwinApp(ws.path, host="127.0.0.1", port=free_port())
+    try:
+        app._refresh_cameras(select="kamera1")
+        _click(app, "Zaufaj obiektywowi")
+        _click(app, "Zaufaj polozeniu")
+        app._refresh_cameras(select="kamera2")
+        _click(app, "Zaufaj obiektywowi")
+    finally:
+        app.close()
+
+    def trusted_by_hand(w: Workspace) -> None:
+        k1, k2 = w.camera("kamera1"), w.camera("kamera2")
+        assert k1.lens_by_hand and k1.pose_by_hand and k1.trusted and k1.intrinsics_problem() == ""
+        assert k1.calibration["rms_px"] == 1.79 and k1.calibration["time"] == WAVE_TIME
+        assert k2.lens_by_hand and k2.K == nominal_K(640, 480).tolist() and k2.intrinsics_problem() == ""
+
+    trusted_by_hand(Workspace.load(ws.path))
+    trusted_by_hand(st.load(folder).workspace())
+    now = files(folder)
+    assert set(before) < set(now) and all(now[f] == before[f] for f in before if f != st.STAND_FILE)
+    calib = json.loads(now[st.STAND_FILE])["calib"]
+    assert f"calib/poses/{calib['poses']}.json" not in before and "kamera2" in calib["lens"]
+    again = TwinApp(ws.path, host="127.0.0.1", port=free_port())
+    try:
+        again._refresh_cameras(select="kamera1")
+        assert "**zaufany recznie**" in again.trust_md.content and "**zaufane recznie**" in again.trust_md.content
+        assert again.lens_untrust.visible and again.pose_untrust.visible
+    finally:
+        again.close()
+
+
 def test_the_panel_shows_the_stand_and_saves_camera_settings_to_it(tmp_path):
     pytest.importorskip("viser")
     from test_twin_ui import _click, free_port

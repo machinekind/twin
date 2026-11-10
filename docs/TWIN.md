@@ -143,7 +143,7 @@ through the browser's animation loop, which can pause in a background tab.
 | Tab | Purpose |
 |---|---|
 | **Ramię** (Arm) | Backend/port, **Połącz** (Connect), **UZBRÓJ** (Arm manual controls), joint sliders, 3D IK handle, **Dom** (Home), **Ustaw dom = tu** (Set home here) and **Rozłącz** (Disconnect) |
-| **Kamery** (Cameras) | Add USB or simulated cameras, preview streams, enable/remove cameras, move simulated cameras in 3D and inspect their status |
+| **Kamery** (Cameras) | Add USB or simulated cameras, preview streams, enable/remove cameras, move simulated cameras in 3D, inspect their status and trust a lens or pose by hand ([Trust by hand](#trust-by-hand)) |
 | **Kalibracja** (Calibration) | Step 1: lens intrinsics; step 2: camera poses from a tagged card in the gripper; save/discard results and relocalize moved cameras |
 | **Mapa** (Map) | Stitched tabletop view, the objects that running detectors track and a tag-on-table reach action |
 | **Dynamika** (Dynamics) | Record supervised excitation, fit servo dynamics and save the result to the workstation |
@@ -552,6 +552,27 @@ Board geometry, corner detection and the intrinsics fit live in
 `machinekind_twin_api.boards`, so a robot package can use them without the twin.
 The solver rejects outlier observations and refits while retaining enough
 observations per camera. See [the calibration tests](../tests/test_twin_calib.py).
+
+### Trust by hand
+
+Fixed gates decide whether a result is trusted, such as a residual under 0.6 px
+for a lens and under 1.5 px for a wave. Some stands never pass them. For the
+selected camera, the Kamery tab shows each result's residual and time, with
+**Zaufaj obiektywowi** and **Zaufaj położeniu** and the buttons that undo them.
+A trust by hand sets `trusted` in `intrinsics_info` or `calibration` and keeps
+the measured numbers. `reason` records that a person decided, when, and the
+reason that was there before. The workspace file and the stand keep it like any
+other result.
+
+A camera on the arm has no pose in the base frame, so it gets the lens button
+only. A nominal lens can be trusted too. The twin then writes the nominal K into
+the camera. The pose button waits for a trusted lens.
+
+A trust by hand goes away when its basis changes: a new lens, new servo zero
+offsets or a moved camera. A pose trust also goes when the lens trust is
+withdrawn. The reason then says why. A focus that does not hold in this session
+([Camera controls](#camera-controls)) still makes the lens and the pose
+untrusted for the session.
 
 ### Calibration wave
 

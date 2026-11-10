@@ -187,7 +187,8 @@ def _workspace(a: argparse.Namespace) -> int:
         print("  kamery: brak  (przyklad w symulacji z dwiema kamerami: twin demo)")
     for cam in ws.cameras:
         cal = cam.calibration
-        state = ("zaufana" if cam.trusted else f"NIEZAUFANA ({cal.get('reason', '')})") if cam.calibrated \
+        trusted = "zaufana recznie" if cam.pose_by_hand else "zaufana"
+        state = (trusted if cam.trusted else f"NIEZAUFANA ({cal.get('reason', '')})") if cam.calibrated \
             else "nieskalibrowana"
         rms = f", residuum {cal['rms_px']:.2f} px" if "rms_px" in cal else ""
         print(f"  kamera {cam.name}: zrodlo {cam.source}, {cam.width}x{cam.height}, "
