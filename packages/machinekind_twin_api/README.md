@@ -110,10 +110,19 @@ class Hold(Strategy[HoldSettings]):
 ```
 
 `Strategy` is a protocol with defaults, meant to be subclassed: `settings` None, `start` and
-`stop` doing nothing, `time_limit_s` None. `settings` is a plain class attribute, so a subclass
-sets it as `Hold` does. Subclassing also lets a type checker (pyright, mypy) check `act`, `start`
-and `stop` against the contract. At runtime the twin does not need the base class: it requires
-`hz` and `act`, and checks `settings` when the class has one.
+`stop` doing nothing, `time_limit_s` and `grip_strength` None. `settings` is a plain class
+attribute, so a subclass sets it as `Hold` does. Subclassing also lets a type checker (pyright,
+mypy) check `act`, `start` and `stop` against the contract. At runtime the twin does not need the
+base class: it requires `hz` and `act`, and checks `settings` when the class has one.
+
+### Grip strength
+
+A strategy that grips something sets `grip_strength`, usually from a field of its settings. It is
+how hard the gripper holds while the run has the arm, in the backend's scale. On the SO-101 it is
+the gripper servo's P gain, so a hard block wants a lower value than a cardboard card. The twin
+reads it after `start`, hands it to the backend (`RobotBackend.set_grip_strength`) and puts the
+stand's own back when the run ends, however it ends. None keeps the stand's own. A backend that
+cannot change it ignores it, and the twin logs that.
 
 ### Model decisions
 
@@ -159,7 +168,7 @@ class MemoryArm:
 ```
 
 `BackendPlugin` lists the optional methods (`faults`, `joint_limits`, `set_joint_limits`,
-`efforts`, ...); `RobotBackend` documents what each one means.
+`efforts`, `set_grip_strength`, ...); `RobotBackend` documents what each one means.
 
 The twin may open a backend only to watch an arm it does not drive, such as a second arm next to
 the working one. It does so only for a factory marked `@read_only_capable`, with

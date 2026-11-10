@@ -25,7 +25,7 @@ from .detector import Detection, Detector, DetectorInfo, DetectRequest, base_lab
 from .entry_points import BACKENDS, DETECTORS, ROBOTS, STRATEGIES
 from .strategy import Action, ActionLike, Decision, Frame, ObjectPose, Observation, RunInfo, S, Strategy
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 __all__ = [
     "BACKENDS", "DETECTORS", "ROBOTS", "STRATEGIES", "Action", "ActionLike", "BackendContext",

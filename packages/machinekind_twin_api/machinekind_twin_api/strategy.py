@@ -155,8 +155,8 @@ class Strategy(Protocol[S]):
 
     Subclass it with the settings type as the parameter, `class Mine(Strategy[MineSettings])`, and
     define `hz` and `act`. The base supplies defaults for the rest: `settings` is None, `start` and
-    `stop` do nothing, `time_limit_s` is None. A type checker checks each member a subclass defines
-    against this contract.
+    `stop` do nothing, `time_limit_s` and `grip_strength` are None. A type checker checks each member
+    a subclass defines against this contract.
 
     `settings` is a plain class attribute holding the dataclass of what the operator sets for one
     run, so a subclass overrides it with `settings = MineSettings`; `S` is invariant for that. The
@@ -175,6 +175,10 @@ class Strategy(Protocol[S]):
     settings: type[S] | None = None
     #: End the run after this many seconds; None = no limit of the strategy's own.
     time_limit_s: float | None = None
+    #: How hard the gripper holds while this run has the arm, in the backend's scale
+    #: (`RobotBackend.set_grip_strength`); None keeps the stand's own. The twin reads it once, after
+    #: `start`, and puts the stand's own back when the run ends, however it ends.
+    grip_strength: int | None = None
 
     def start(self, run: RunInfo, obs: Observation) -> None:
         """Before the first tick. Raise to refuse the run."""

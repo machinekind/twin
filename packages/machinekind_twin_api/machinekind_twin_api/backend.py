@@ -67,8 +67,8 @@ class BackendPlugin(Protocol):
     Required: `connect`, `disconnect`, `read_joints`, `send_joints`, `is_connected`. Optional,
     with the meaning given on `RobotBackend`: `info` (an object with `name`, `description`,
     `simulated`), `link_silent` (or `_link_silent`), `faults()`, `joint_limits()`, `set_joint_limits(limits)`,
-    `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`. Any other public
-    method stays reachable through the wrapper (the panel looks some up by name).
+    `gripper_range_q()`, `calibration_warnings()`, `efforts()`, `velocities()`, `set_grip_strength(strength)`.
+    Any other public method stays reachable through the wrapper (the panel looks some up by name).
     """
 
     def connect(self) -> None: ...
@@ -193,6 +193,19 @@ class RobotBackend(ABC):
         None = not measured by this backend, or the reading is stale/frozen (callers then differentiate positions).
         """
         return None
+
+    def set_grip_strength(self, strength: int | None) -> bool:
+        """How hard the gripper holds from now on, in this backend's scale; None puts its own back.
+
+        The scale is the hardware's. On a position-controlled servo it is the position loop's P gain:
+        the squeeze on a held object is about P times how far the goal lies past it (Feetech STS:
+        register 21, 1..254). The backend's own value is the one it had before the first call.
+
+        The twin calls this from its control loop, between `read_joints` and `send_joints`, so a backend
+        needs no lock for it. False = this backend or arm cannot (no gripper, no such setting,
+        read-only, the servo did not take it): the twin logs it and goes on. Must not raise.
+        """
+        return False
 
     def step(self, dt: float) -> None:  # noqa: B027 - does nothing by default
         """One simulation step. A real robot ignores it: reality advances on its own."""

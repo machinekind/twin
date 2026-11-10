@@ -205,6 +205,7 @@ def test_a_subclass_gets_the_defaults_of_the_protocol():
     assert Hold.settings is SwingSettings
     assert Nothing.settings is None
     assert hold.time_limit_s is None
+    assert hold.grip_strength is None
     assert hold.start(run, obs) is None
     assert hold.act(obs).target == {"j1": 3.0}
     assert hold.stop("done") is None
@@ -453,6 +454,7 @@ def test_a_robot_backend_subclass_gets_the_optional_defaults():
         assert arm.joint_limits() == {}
         assert arm.gripper_range_q() is None
         assert arm.efforts() is None and arm.velocities() is None
+        assert arm.set_grip_strength(8) is False and arm.set_grip_strength(None) is False
 
     assert not arm.is_connected
     assert isinstance(arm, BackendPlugin)
