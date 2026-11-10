@@ -36,6 +36,8 @@ import copy
 import functools
 import logging
 import threading
+import time
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -46,12 +48,15 @@ import numpy as np
 from .safety import SafetyState, SafetySupervisor
 from .backends import create_backend, open_read_only
 from .backends.base import RobotBackend, RobotInfo
+from . import basefix, tagreach
 from . import scene as sc
 from .cameras import CameraHub
 from .clock import Clock, VirtualClock, WallClock
+from .kinematics import inverse
 from .passive import PassiveReader
+from .perception import perception_cameras
 from .robots import RobotSpec, get_spec, robot_config
-from .workspace import Workspace
+from .workspace import RobotRecord, Workspace
 
 if TYPE_CHECKING:
     from .collision import CollisionChecker
@@ -145,6 +150,24 @@ class RobotStatus:
     #: Ostrzezenia bez STOP-u, trwale do czasu, az przestana obowiazywac (np. kalibracja
     #: chwytaka backendu inna niz blizniaka, chwytak odciazony po przeciazeniu).
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TagAnchor:
+    """Where another robot's fixed frame stands in the driven arm's base frame, pulled by its base tag
+    (`Twin.locate_other`, `basefix`); it starts at the record's pose."""
+
+    T: np.ndarray
+    #: Its base poses with their times (`RobotBackend.base_pose`): about 2 s at 30 reads a second.
+    odometry: deque[tuple[np.ndarray, float]] = field(default_factory=lambda: deque(maxlen=60))
+    #: Capture time of the newest frame already used.
+    used_t: float = 0.0
+    #: When the cameras last saw the tag (`time.monotonic()`, 0 = not yet), and how many of them.
+    seen_t: float = 0.0
+    seen_by: int = 0
+    #: How far the copy stands from where the record and odometry alone put it [m, deg].
+    drift_m: float = 0.0
+    drift_deg: float = 0.0
 
 
 def smoothstep(s: float) -> float:
@@ -401,6 +424,8 @@ class Twin:
         self.others_halted = False
         #: The latest `RobotBackend.base_pose` of each other robot, with its time; live, never saved.
         self._base_poses: dict[str, tuple[np.ndarray, float]] = {}
+        #: Each other robot with a base tag that reports its base pose: where its fixed frame stands now.
+        self.tag_anchors: dict[str, TagAnchor] = {}
         #: The loop's collision checker for the clearance to other robots and fixtures, on the scene's model.
         self._clearance: CollisionChecker | None = None
 
@@ -424,7 +449,9 @@ class Twin:
             spec = get_spec(rec.robot)
             opener = functools.partial(open_read_only, robot_config(spec), spec, rec.backend, rec.port,
                                        rec.base_drive)
-            reader = PassiveReader(rec.name, opener, functools.partial(self.set_passive_joints, rec.name))
+            locate = functools.partial(self.locate_other, rec.name) if spec.base_tag is not None else None
+            reader = PassiveReader(rec.name, opener, functools.partial(self.set_passive_joints, rec.name),
+                                   locate)
             self._readers[rec.name] = reader
             reader.start()
 
@@ -434,6 +461,7 @@ class Twin:
         for reader in readers.values():
             reader.stop()
         self._base_poses = {}
+        self.tag_anchors = {}
 
     def passive_status(self) -> dict[str, str]:
         """Where each other robot's pose comes from now, for the panel."""
@@ -476,6 +504,68 @@ class Twin:
             if moved:
                 self.scene.set_passive_base(name, T)
             self._base_poses[name] = (T, float(base[1]))
+            self._keep_odometry(rec, T, float(base[1]))
+
+    def _keep_odometry(self, rec: RobotRecord, T: np.ndarray, t: float) -> None:
+        """The base poses `locate_other` needs, of a robot with a base tag; with `self.lock` held."""
+        anchor = self.tag_anchors.get(rec.name)
+        if anchor is None and get_spec(rec.robot).base_tag is not None:
+            anchor = TagAnchor(rec.T_base())
+            self.tag_anchors[rec.name] = anchor
+        if anchor is not None:
+            anchor.odometry.append((T, t))
+
+    def locate_other(self, name: str) -> None:
+        """One attempt to pull the other robot `name` to where the trusted cameras see its base tag
+        (`basefix`). Its reader calls it; tag detection in images runs outside `self.lock`."""
+        anchor = self.tag_anchors.get(name)
+        if anchor is None:
+            return                                      # no base tag, or no base pose yet
+        rec = self.workspace.other_robot(name)
+        tag = get_spec(rec.robot).base_tag
+        assert tag is not None                          # an anchor is made only for a robot with one
+
+        cameras = perception_cameras(self.workspace)
+        frames: dict[str, np.ndarray] = {}
+        taken: dict[str, float] = {}
+        now = time.monotonic()
+        for cam in cameras:
+            img, t = self.cameras.frame_t(cam.name)
+            if img is not None and t > anchor.used_t and now - t <= basefix.FRAME_MAX_AGE:
+                frames[cam.name] = img
+                taken[cam.name] = t
+        if not frames:
+            return
+        anchor.used_t = max(taken.values())
+
+        fix = tagreach.tag_from_frames(frames, cameras, tag.id, tag.size)
+        if fix is None:
+            return
+        t_frame = min(taken[cam] for cam in fix.per_camera)
+        measured = fix.T_tag2base @ inverse(np.asarray(tag.pose, float))
+
+        with self.lock:
+            stood = min(anchor.odometry, key=lambda entry: abs(entry[1] - t_frame))
+            anchor.T = basefix.corrected_anchor(anchor.T, stood[0], measured)
+            anchor.seen_t = t_frame
+            anchor.seen_by = len(fix.per_camera)
+
+            latest = anchor.odometry[-1][0]
+            shift, turn = basefix.planar_error(rec.T_base() @ latest, anchor.T @ latest)
+            anchor.drift_m = float(np.linalg.norm(shift))
+            anchor.drift_deg = float(np.degrees(abs(turn)))
+            self._show_base(name)
+
+    def _show_base(self, name: str) -> None:
+        """The copy of `name` at its anchor x its latest base pose; with `self.lock` held."""
+        robot = self.scene.passive.get(name)
+        latest = self._base_poses.get(name)
+        if robot is None or latest is None:
+            return
+        anchor = self.tag_anchors.get(name)
+        if anchor is not None:
+            robot.T_base = anchor.T
+        self.scene.set_passive_base(name, latest[0])
 
     def drive_other(self, name: str, forward: float, left: float, turn: float, seconds: float) -> None:
         """Drives the other robot `name` at this base velocity [m/s, m/s, rad/s] in its base frame, clamped
@@ -509,14 +599,17 @@ class Twin:
             reader.drive(0.0, 0.0, 0.0, 0.0)
 
     def other_base_pose(self, name: str) -> tuple[np.ndarray, float] | None:
-        """Where the other robot `name`'s base body is now in the driven arm's base frame (its record's pose
-        x `RobotBackend.base_pose`), and when it was measured (`time.monotonic()`); None without one."""
+        """Where the other robot `name`'s base body is now in the driven arm's base frame (its record's pose,
+        or its `TagAnchor`, x `RobotBackend.base_pose`), and when it was measured (`time.monotonic()`);
+        None without one."""
         rec = self.workspace.other_robot(name)
         with self.lock:
             latest = self._base_poses.get(name)
+            anchor = self.tag_anchors.get(name)
         if latest is None:
             return None
-        return rec.T_base() @ latest[0], latest[1]
+        fixed = rec.T_base() if anchor is None else anchor.T
+        return fixed @ latest[0], latest[1]
 
     def _too_close(self, command: Mapping[str, float], ls: _LoopState) -> str:
         """Why `command` may not go out: it brings the arm too close to another robot or a fixture
@@ -548,6 +641,9 @@ class Twin:
                 _copy_state(old, new)
                 old.close()
                 self.scene = new
+                # A new scene stands a robot that moves its base where its model does, not where it stood.
+                for name in self._base_poses:
+                    self._show_base(name)
                 self._view = None
                 self.version += 1
         self.renderer.call(job)

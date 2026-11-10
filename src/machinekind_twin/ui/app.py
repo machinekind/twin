@@ -1593,9 +1593,17 @@ class TwinApp:
                 heading = np.degrees(np.arctan2(T[1, 0], T[0, 0]))
                 now = f", podstawa teraz x {T[0, 3]:+.3f}, y {T[1, 3]:+.3f} m, obrot {heading:.0f} st."
             drive = "; jazda z panelu" if r.base_drive else ""
+            tag = ""
+            anchor = self.twin.tag_anchors.get(r.name)
+            if anchor is not None and anchor.seen_t:
+                ago = time.monotonic() - anchor.seen_t
+                tag = (f"; tag widziany {ago:.0f} s temu (kamery: {anchor.seen_by}), korekta odometrii "
+                       f"{anchor.drift_m * 100:.1f} cm, {anchor.drift_deg:.1f} st.")
+            elif anchor is not None:
+                tag = "; tag niewidoczny"
             lines.append(f"- **{_html.escape(r.name)}** ({r.robot}) x {x:+.3f}, y {y:+.3f}, z {z:+.3f} m, "
                          f"obrot {r.yaw_deg:.0f} st.{now}; {_html.escape(source)}: "
-                         f"{_html.escape(status.get(r.name, ''))}{drive}")
+                         f"{_html.escape(status.get(r.name, ''))}{drive}{tag}")
         return "\n".join(lines) or "Brak innych robotow w scenie."
 
     def _on_tcp_gizmo(self) -> None:

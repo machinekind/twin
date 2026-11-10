@@ -34,6 +34,7 @@ import mujoco
 import numpy as np
 
 from .calib.card import Card
+from .calib.tags import MARKER_FRACTION
 from .calib.tags import render as render_tag
 from .kinematics import RobotKinematics, inverse, pose
 from .robots import RobotCamera, RobotSpec
@@ -552,8 +553,9 @@ def _check_passive(cfg: SceneConfig) -> None:
         raise ValueError(f"nazwy robotow powtarzaja sie: {names}")
 
 
-def _add_passive(spec: mujoco.MjSpec, other: PassiveRobot, T_base2world: np.ndarray) -> None:
-    """A copy of `other`'s model, welded at its pose: no joints, actuators, sensors or cameras."""
+def _add_passive(spec: mujoco.MjSpec, other: PassiveRobot, T_base2world: np.ndarray, sticker: bool) -> None:
+    """A copy of `other`'s model, welded at its pose: no joints, actuators, sensors or cameras. With
+    `sticker`, its base tag on its base body (`RobotSpec.base_tag`)."""
     robot = mujoco.MjSpec.from_file(str(other.spec.mjcf_path))
     for body, (pos, quat) in passive_poses(other.spec, other.joints).items():
         b = robot.body(body)
@@ -570,6 +572,22 @@ def _add_passive(spec: mujoco.MjSpec, other: PassiveRobot, T_base2world: np.ndar
             g.margin = g.gap = PASSIVE_CLEARANCE
     for name in _OPTIONS:                                   # the scene keeps the driven arm's options
         setattr(robot.option, name, getattr(spec.option, name))
+    tag = other.spec.base_tag
+    if sticker and tag is not None:
+        _add_tag_plate_mesh(robot, tag.size / MARKER_FRACTION)
+        T_tag = np.asarray(tag.pose, float)
+        g = robot.body(other.spec.base_body).add_geom()
+        g.name = "base_tag"
+        g.type = mujoco.mjtGeom.mjGEOM_MESH
+        g.meshname = "tag_plate"
+        g.material = _add_tag_material(robot, tag.id)
+        # Lying exactly on the body the plate would flicker (z-fighting) and a detector would see white.
+        # The card draws its body thinner; a robot's body stays as modelled, so the sticker floats 0.5 mm out.
+        g.pos = T_tag[:3, 3] + 0.0005 * T_tag[:3, 2]
+        g.quat = _quat(T_tag[:3, :3])
+        g.contype = g.conaffinity = 0
+        g.mass = 0.0
+        g.group = 1
     T = T_base2world @ np.asarray(other.T_base, float)
     mount = spec.worldbody.add_frame()
     mount.pos, mount.quat = T[:3, 3], _quat(T[:3, :3])
@@ -626,8 +644,9 @@ def _rotmat(quat) -> np.ndarray:
     return R.reshape(3, 3)
 
 
-def compose(cfg: SceneConfig) -> mujoco.MjSpec:
-    """Composes the scene from scratch as an `MjSpec`, without compiling it."""
+def compose(cfg: SceneConfig, *, stickers: bool = True) -> mujoco.MjSpec:
+    """Composes the scene from scratch as an `MjSpec`, without compiling it. `stickers=False` leaves out
+    the other robots' base tags."""
     _check_camera_names(cfg)
     _check_passive(cfg)
     t = cfg.table
@@ -751,7 +770,7 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
 
     # Last, so every id of the scene without them stays as it was.
     for other in cfg.passive:
-        _add_passive(spec, other, T_base2world)
+        _add_passive(spec, other, T_base2world, stickers)
     for fixture in cfg.fixtures:
         _add_fixture(spec, fixture, T_base2world)
 
@@ -787,7 +806,8 @@ def export(cfg: SceneConfig, folder: str | Path) -> Path:
     # A fixture's mesh files are absolute already.
     others = {p.prefix: (mesh_dir(p.spec), Path(p.name)) for p in cfg.passive}
     others.update({f.prefix: (Path(), Path(f.name)) for f in cfg.fixtures})
-    spec = compose(cfg)
+    # A base tag's texture lives in memory, like the card's: MJCF cannot hold it.
+    spec = compose(cfg, stickers=False)
     for mesh in spec.meshes:
         source, sub = next((v for k, v in others.items() if mesh.name.startswith(k)), (meshes, Path()))
         (assets / sub).mkdir(exist_ok=True)
