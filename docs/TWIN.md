@@ -767,11 +767,11 @@ in that check; it meets the other arm only in physics.
 
 ## Fixtures in the scene
 
-A fixture is a static part of the stand, such as a camera mount. It comes with a
-robot package, stands in the scene like another robot, and every collision check
-keeps the same 2 cm from it: the calibration wave, teleoperation, staged homing
-and the control loop's guard, which refuses a command that brings the arm closer.
-The 3D view and simulated camera frames show it. List it under `fixtures` in
+A fixture is a static part of the stand, such as a camera mount. A robot package
+brings it, and it stands in the scene like another robot. The calibration wave,
+teleoperation, staged homing and the control loop's guard all keep the same 2 cm
+from it. The guard refuses a command that brings the arm closer. The 3D view and
+simulated camera frames show the fixture. List it under `fixtures` in
 `twin.json` or `stand.json`; a workspace without the key has none. This one is the
 SO-101 overhead camera mount from the `soarm` package, two pole parts on the
 arm's left, with `kamera3` on it:
