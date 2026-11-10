@@ -21,4 +21,4 @@ testbot = "testbot.backend:create"
 include = ["testbot*"]
 
 [tool.setuptools.package-data]
-testbot = ["robot/*"]
+testbot = ["robot/*", "robot/fixtures/*/*"]

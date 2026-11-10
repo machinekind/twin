@@ -649,7 +649,7 @@ fails the workstation load. On the twin's SO-101 model a positive `shoulder_pan`
 turns the arm toward -y, to its right.
 
 Besides the boxes, the wave keeps 2 cm from every body in the twin's scene that
-is not the arm itself: the table, objects, or a second robot model. The collision
+is not the arm itself: the table, objects, a second robot model or a fixture. The collision
 check grows those bodies' primitive geoms by that clearance, so a body added to
 the scene needs no box. Mesh-only geoms get a best-effort margin. The card and
 the gripper also stay 4 cm above the table top.
@@ -801,6 +801,69 @@ already is. The arm then holds where it stands, its owner loses it, and the
 panel shows the reason. Moves away are allowed. A block held in the jaws is not
 in that check; it meets the other arm only in physics.
 
+## Fixtures in the scene
+
+A fixture is a static part of the stand, such as a camera mount. A robot package
+brings it, and it stands in the scene like another robot. The calibration wave,
+teleoperation, staged homing and the control loop's guard all keep the same 2 cm
+from it. The guard refuses a command that brings the arm closer. The 3D view and
+simulated camera frames show the fixture. List it under `fixtures` in
+`twin.json` or `stand.json`; a workspace without the key has none. This one is the
+SO-101 overhead camera mount from the `soarm` package, two pole parts on the
+arm's left, with `kamera3` on it:
+
+```json
+"fixtures": [
+  {"name": "slup", "fixture": "so101/overhead_cam_32", "placement": "left", "parts": ["bottom", "top"]}
+]
+```
+
+- `name`: its prefix in the scene (`slup/<part>`): letters, digits, `_`, `-`,
+  unique among robots and fixtures.
+- `fixture`: `<robot>/<name>`, a fixture folder of an installed robot package.
+- `on`: `robot` (the working arm, the default), the name of another robot, or
+  `table`.
+- `placement`: a named pose from the fixture's description, relative to the
+  robot it stands on, for example `left` or `right`. Default: its first.
+- `parts`: the parts from the bottom up. Default: the description's `stack`.
+- `xyz` [m] and `yaw_deg` [deg]: an explicit pose that replaces `placement`, in
+  the frame of what the fixture stands on. On the table, from the table top's
+  centre; required there.
+- `rgba`: the colour of all its parts.
+
+A camera record names the fixture it sits on with `"fixture": "slup"`, or
+`"slup/<site>"` when the fixture has several camera sites. Until the wave
+measures the camera, the twin shows it at that site, and the wave starts from
+that pose instead of searching for the camera. A measured pose always wins;
+trust rules do not change. A simulated camera without `sim_pose` stands at the
+site.
+
+A robot package brings fixtures in its robot folder, one folder each:
+`fixtures/<name>/fixture.yaml` and the meshes it names. Lengths are in metres.
+
+```yaml
+name: pole
+title: Slup
+parts:
+  foot:
+    mesh: foot.stl                 # optional; without it the colliders are drawn
+    top: [0.0, 0.0, 0.01]          # where the next part sits
+    colliders:
+      plate: {pos: [0.0, 0.0, 0.005], size: [0.03, 0.03, 0.005]}   # box centre and half sizes
+  head:
+    colliders:
+      head: {pos: [0.02, 0.0, 0.025], size: [0.04, 0.02, 0.025]}
+    cameras:
+      camera: [[0, -1, 0, 0.05], [-1, 0, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]   # T_cam2part, OpenCV axes
+stack: [foot, head]
+placements:                        # in the base frame of the robot whose folder holds it
+  left: {xyz: [0.0, 0.15, 0.0], yaw_deg: 0.0}
+```
+
+Each part's frame sits at the `top` of the part below it, so a stand can list
+another stack of the same parts. Only the colliders collide: collision checks
+grow boxes by their clearance, and a mesh cannot grow.
+
 ## Scene look
 
 The `look` section in `twin.json` sets the scene's lights and the headlight.
@@ -895,7 +958,8 @@ entry identical to an existing one is not written again.
 | `name`, `description` | What the stand is; `name` is required |
 | `obsolete` | `false`, or `{"reason": "...", "date": "YYYY-MM-DD"}` for a stand that no longer matches reality (both keys optional; `true` also works) |
 | `robots` | Exactly one driven arm (`read_only: false`): `robot`, `backend`, `port`, optional `home`. It is the origin of the stand and has no name or pose. Other robots (`read_only: true`) have `name`, `robot`, `xyz` [m], `yaw_deg`, `backend`, `port` and, without a backend, a fixed pose in `joints`, as in [Other robots](#other-robots-in-the-scene) |
-| `cameras` | `name`, `source` (prefer the stable `/dev/v4l/by-id/...` path), `width`, `height`, `fps`, `enabled`, optional `controls`, and `sim_pose` for a simulated camera |
+| `cameras` | `name`, `source` (prefer the stable `/dev/v4l/by-id/...` path), `width`, `height`, `fps`, `enabled`, optional `controls`, `sim_pose` for a simulated camera, and `fixture` for a camera on a fixture |
+| `fixtures` | Static parts of the stand, such as a camera mount, as in [Fixtures](#fixtures-in-the-scene). Optional |
 | `table`, `card`, `look` | As in `twin.json` |
 | `wave` | The calibration wave's keep-out boxes and base turn range, as in [Calibration wave](#calibration-wave). Optional; without it the wave keeps only the arm's own limits |
 | `calib` | The current entries: `poses`, `lens` per camera, `dynamics`. A missing entry means none |

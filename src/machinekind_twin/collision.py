@@ -22,10 +22,10 @@ get the clearance as a collision margin, which MuJoCo honours only for some pair
 that must be kept clear primitive collision geoms. As before, pairs touching at rest (the base
 on the table) are allowed.
 
-Other robots of the station (`scene.PassiveRobot`) are obstacles like the table, and their
-collision geoms reach `PASSIVE_CLEARANCE` further out, so every check keeps that gap from them,
-with or without a `clearance`. A `clearance` grows them only by what it adds beyond that gap.
-`closer` is the twin loop's guard against driving into one.
+Other robots of the station (`scene.PassiveRobot`) and fixtures (`scene.Fixture`, e.g. a camera
+mount) are obstacles like the table, and their collision geoms reach `PASSIVE_CLEARANCE` further out,
+so every check keeps that gap from them, with or without a `clearance`. A `clearance` grows them only
+by what it adds beyond that gap. `closer` is the twin loop's guard against driving into one.
 """
 
 from __future__ import annotations
@@ -56,7 +56,9 @@ class CollisionChecker:
                 p = m.body_parentid[p]
             in_robot[b] = p == base
         self.robot_geom = in_robot[m.geom_bodyid]
-        self.passive_geom = scene.passive_geom
+        #: Geoms of other robots and fixtures: their margin keeps `PASSIVE_CLEARANCE` already.
+        self.kept_geom = scene.kept_geom
+        self.fixture_geom = scene.fixture_geom
         #: How far each geom was grown [m]: a contact with it comes that much early.
         self.grown = np.zeros(m.ngeom)
         if self.clearance > 0:
@@ -72,8 +74,8 @@ class CollisionChecker:
                          int(G.mjGEOM_CAPSULE), int(G.mjGEOM_CYLINDER), int(G.mjGEOM_PLANE)):
                 m.geom_margin[g] = max(float(m.geom_margin[g]), self.clearance)
                 continue
-            # A passive robot's margin keeps PASSIVE_CLEARANCE already: grow it only by the rest.
-            c = self.clearance - (PASSIVE_CLEARANCE if self.passive_geom[g] else 0.0)
+            # Another robot's or a fixture's margin keeps PASSIVE_CLEARANCE already: grow it only by the rest.
+            c = self.clearance - (PASSIVE_CLEARANCE if self.kept_geom[g] else 0.0)
             if c <= 0:
                 continue
             if t in (int(G.mjGEOM_BOX), int(G.mjGEOM_ELLIPSOID)):
@@ -165,26 +167,32 @@ class CollisionChecker:
         return None
 
     def passive_gap(self, joints: Mapping[str, float]) -> tuple[float, str] | None:
-        """The arm's closest approach to a passive robot in this pose, when nearer than
+        """The arm's closest approach to another robot or a fixture in this pose, when nearer than
         `PASSIVE_CLEARANCE` (or a larger `clearance`): (distance [m], negative = overlap; what meets
         what). None = farther."""
-        if not self.passive_geom.any():
-            return None
+        near = self._nearest(joints) if self.kept_geom.any() else None
+        return None if near is None else (near[0], near[1])
+
+    def _nearest(self, joints: Mapping[str, float]) -> tuple[float, str, bool] | None:
+        """`passive_gap` and whether the nearest is a fixture."""
         near = [(dist, pair) for pair, dist in self._contacts(joints).items()
-                if self.passive_geom[list(pair)].any()]
+                if self.kept_geom[list(pair)].any()]
         if not near:
             return None
         dist, pair = min(near)
-        return dist, self._describe(pair)
+        return dist, self._describe(pair), bool(self.fixture_geom[list(pair)].any())
 
     def closer(self, start: Mapping[str, float], end: Mapping[str, float]) -> str | None:
-        """Why the step from `start` to `end` is refused: `end` is within `PASSIVE_CLEARANCE` of a passive
-        robot and nearer to it than `start`. None = allowed, so the arm can always back away."""
-        near = self.passive_gap(end)
+        """Why the step from `start` to `end` is refused: `end` is within `PASSIVE_CLEARANCE` of another
+        robot or a fixture and nearer to it than `start`. None = allowed, so the arm can always back away."""
+        if not self.kept_geom.any():
+            return None
+        near = self._nearest(end)
         if near is None:
             return None
-        was = self.passive_gap(start)
+        was = self._nearest(start)
         if was is not None and near[0] >= was[0] - 1e-4:
             return None
-        return (f"za blisko innego robota: {near[1]} "
+        what = "elementu stanowiska" if near[2] else "innego robota"
+        return (f"za blisko {what}: {near[1]} "
                 f"({max(near[0], 0.0) * 100:.1f} cm, minimum {PASSIVE_CLEARANCE * 100:.0f} cm)")

@@ -1,7 +1,7 @@
 """Stands: one folder that describes a physical stand and everything measured on it.
 
-    stand.json                        the setup: robots, cameras with their controls, table, card, look,
-                                      the calibration wave's limits
+    stand.json                        the setup: robots, cameras with their controls, fixtures, table, card,
+                                      look, the calibration wave's limits
     calib/poses/<time>.json           camera poses with the servo zero offsets they were fitted with
                                       (the workspace's pose presets, same format)
     calib/lens/<camera>/<time>.json   one camera's lens: K and distortion at one resolution
@@ -35,7 +35,16 @@ from .camera_controls import CameraControls
 from .config import from_mapping
 from .dynamics import Dynamics
 from .scene import PREFIX, Look, Table
-from .workspace import WOBBLE_PX, CameraRecord, RobotRecord, Workspace, default_path, stamp_name
+from .workspace import (
+    ON_TABLE,
+    WOBBLE_PX,
+    CameraRecord,
+    FixtureRecord,
+    RobotRecord,
+    Workspace,
+    default_path,
+    stamp_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +56,8 @@ LENS = Path("calib") / "lens"
 DYNAMICS = Path("calib") / "dynamics"
 STATION = "station"
 #: Key order of a written `stand.json`.
-_ORDER = ("format", "name", "description", "obsolete", "robots", "cameras", "table", "card", "look", "wave",
-          "calib")
+_ORDER = ("format", "name", "description", "obsolete", "robots", "cameras", "fixtures", "table", "card", "look",
+          "wave", "calib")
 _CONTROLS = tuple(f.name for f in fields(CameraControls))
 #: One writer at a time: panel callbacks save from several threads.
 _LOCK = threading.Lock()
@@ -204,7 +213,7 @@ def _cameras(cams: Any, where: str) -> list[str]:
     for i, c in enumerate(cams):
         w = f"{where}[{i}]"
         _keys(c, w, ("name", "source", "width", "height"),
-              ("fps", "enabled", "controls", "sim_pose", "wobbly", "wobble_px"))
+              ("fps", "enabled", "controls", "sim_pose", "wobbly", "wobble_px", "fixture"))
         _file_name(c["name"], f"{w}.name")
         if c["name"] in names:
             _fail(f"{w}.name", f"kamera {c['name']!r} juz jest w stanowisku")
@@ -230,6 +239,47 @@ def _cameras(cams: Any, where: str) -> list[str]:
             if c["source"] != "sim":
                 _fail(f"{w}.sim_pose", "tylko dla kamery symulowanej (source: sim)")
             _matrix(c["sim_pose"], f"{w}.sim_pose", 4)
+        _text(c.get("fixture"), f"{w}.fixture", null=True)
+    return names
+
+
+_FIXTURE_KEYS = ("on", "placement", "parts", "xyz", "yaw_deg", "rgba")
+
+
+def _fixtures(fixtures: Any, where: str, robots: list[str]) -> list[str]:
+    """Checks `fixtures` against the stand's robot names; returns the fixture names."""
+    if not isinstance(fixtures, list):
+        _fail(where, f"oczekiwano listy, jest {_kind(fixtures)}")
+    names: list[str] = []
+    for i, f in enumerate(fixtures):
+        w = f"{where}[{i}]"
+        _keys(f, w, ("name", "fixture"), _FIXTURE_KEYS)
+        name = f["name"]
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name + "/" == PREFIX:
+            _fail(f"{w}.name", f"tylko litery, cyfry, _ i -, inna niz {PREFIX[:-1]!r}; jest {name!r}")
+        if name in names or name in robots:
+            _fail(f"{w}.name", f"nazwa {name!r} jest juz zajeta przez robota albo inne mocowanie")
+        names.append(name)
+        w = f"{where}[{i}] ({name})"
+        _text(f["fixture"], f"{w}.fixture")
+        if not re.fullmatch(r"[^/]+/[^/]+", f["fixture"]):
+            _fail(f"{w}.fixture", f"oczekiwano <robot>/<mocowanie>, jest {f['fixture']!r}")
+        on = f.get("on", PREFIX[:-1])
+        if on not in (PREFIX[:-1], ON_TABLE, *robots):
+            _fail(f"{w}.on", f"{PREFIX[:-1]!r}, {ON_TABLE!r} albo nazwa robota tylko do odczytu, jest {on!r}")
+        if on == ON_TABLE and f.get("xyz") is None:
+            _fail(f"{w}.xyz", "mocowanie na stole potrzebuje xyz (od srodka blatu)")
+        _text(f.get("placement"), f"{w}.placement", null=True)
+        parts = f.get("parts")
+        if parts is not None and (not isinstance(parts, list) or not parts
+                                  or not all(isinstance(p, str) and p for p in parts)):
+            _fail(f"{w}.parts", f"oczekiwano niepustej listy nazw czesci, jest {parts!r}")
+        if f.get("xyz") is not None:
+            _vector(f["xyz"], f"{w}.xyz", 3)
+        if "yaw_deg" in f:
+            _number(f["yaw_deg"], f"{w}.yaw_deg")
+        if f.get("rgba") is not None:
+            _vector(f["rgba"], f"{w}.rgba", 4)
     return names
 
 
@@ -250,7 +300,7 @@ def _calib(calib: Any, where: str, cameras: list[str]) -> None:
 def validate(data: Any, where: str = STAND_FILE) -> dict[str, Any]:
     """Checks a parsed `stand.json`; raises `StandError` naming the key and the problem."""
     _keys(data, where, ("format", "name", "robots"),
-          ("description", "obsolete", "cameras", "table", "card", "look", "wave", "calib"))
+          ("description", "obsolete", "cameras", "fixtures", "table", "card", "look", "wave", "calib"))
     fmt = data["format"]
     if not isinstance(fmt, int) or isinstance(fmt, bool) or fmt < 1:
         _fail(f"{where}: format", f"oczekiwano liczby calkowitej >= 1, jest {fmt!r}")
@@ -261,6 +311,12 @@ def validate(data: Any, where: str = STAND_FILE) -> dict[str, Any]:
     obsolete_info(data, where)
     _robots(data["robots"], f"{where}: robots")
     cameras = _cameras(data.get("cameras", []), f"{where}: cameras")
+    others = [r["name"] for r in data["robots"] if r.get("read_only", False)]
+    fixtures = _fixtures(data.get("fixtures", []), f"{where}: fixtures", others)
+    for i, c in enumerate(data.get("cameras", [])):
+        if c.get("fixture") is not None and c["fixture"].partition("/")[0] not in fixtures:
+            _fail(f"{where}: cameras[{i}] ({c['name']}).fixture",
+                  f"nie ma mocowania {c['fixture'].partition('/')[0]!r} w fixtures ({', '.join(fixtures) or 'brak'})")
     if "table" in data:
         _dataclass(Table, data["table"], f"{where}: table")
     if "card" in data:
@@ -419,8 +475,9 @@ class Stand:
         others = [RobotRecord(r["name"], r["robot"], xyz=r.get("xyz", [0.0, 0.0, 0.0]), yaw_deg=r.get("yaw_deg", 0.0),
                               backend=r.get("backend"), port=r.get("port"), joints=dict(r.get("joints", {})))
                   for r in d["robots"] if r.get("read_only", False)]
+        fixtures = [FixtureRecord(**f) for f in d.get("fixtures", [])]
         ws = Workspace(robot=driven["robot"], backend=driven.get("backend") or "sim", port=driven.get("port"),
-                       home=driven.get("home"), other_robots=others, stand=str(self.folder))
+                       home=driven.get("home"), other_robots=others, fixtures=fixtures, stand=str(self.folder))
         if "table" in d:
             ws.table = d["table"]
         if "card" in d:
@@ -434,7 +491,8 @@ class Stand:
             ws.cameras.append(CameraRecord(
                 c["name"], c["source"], c["width"], c["height"], c.get("fps", 30), enabled=c.get("enabled", True),
                 wobbly=c.get("wobbly", False), wobble_px=c.get("wobble_px", WOBBLE_PX),
-                controls=CameraControls(**c.get("controls", {})), sim_pose=c.get("sim_pose") if simulated else None))
+                controls=CameraControls(**c.get("controls", {})), sim_pose=c.get("sim_pose") if simulated else None,
+                fixture=c.get("fixture")))
         for cam, lens in copy.deepcopy(self.lens).items():
             rec = ws.camera(cam)
             rec.K, rec.dist = lens["K"], lens.get("dist")
@@ -451,6 +509,7 @@ class Stand:
             ws.calib_preset = d["calib"]["poses"]
         if self.dynamics is not None:
             ws.dynamics = dict(self.dynamics)
+        ws.mount_cameras()
         return ws
 
 
@@ -513,10 +572,14 @@ def stand_data(ws: Workspace, keep: dict[str, Any], calib: dict[str, Any]) -> di
             cam["controls"] = c.controls.to_dict()
         if c.simulated and c.sim_pose is not None:
             cam["sim_pose"] = c.sim_pose
+        if c.fixture is not None:
+            cam["fixture"] = c.fixture
         cameras.append(cam)
     out = {"format": FORMAT, "name": keep["name"], "description": keep.get("description", ""),
            "obsolete": keep.get("obsolete", False), "robots": robots, "cameras": cameras,
            "table": ws.table, "card": ws.card, "look": asdict(ws.look), "wave": asdict(ws.wave), "calib": calib}
+    if ws.fixtures:
+        out["fixtures"] = [{k: v for k, v in asdict(f).items() if v is not None} for f in ws.fixtures]
     return json.loads(json.dumps(out))
 
 

@@ -392,7 +392,7 @@ class Twin:
         self._readers: dict[str, PassiveReader] = {}
         #: Why a robot with a backend has no reader, by name.
         self._passive_notes: dict[str, str] = {}
-        #: The loop's collision checker for the clearance to other robots, on the current scene's model.
+        #: The loop's collision checker for the clearance to other robots and fixtures, on the scene's model.
         self._clearance: CollisionChecker | None = None
 
     # ------------------------------------------------------------ inne roboty
@@ -449,10 +449,12 @@ class Twin:
                 self.scene.set_passive_joints(name, joints)
 
     def _too_close(self, command: Mapping[str, float], ls: _LoopState) -> str:
-        """Why `command` may not go out: it brings the arm too close to another robot ("" = it may)."""
+        """Why `command` may not go out: it brings the arm too close to another robot or a fixture
+        ("" = it may)."""
         scene = self.scene
         start = ls.last_sent or ls.measured
-        if not scene.passive or all(abs(v - start.get(k, np.inf)) < 1e-9 for k, v in command.items()):
+        if not (scene.passive or scene.cfg.fixtures) or all(abs(v - start.get(k, np.inf)) < 1e-9
+                                                            for k, v in command.items()):
             return ""
         checker = self._clearance
         if checker is None or checker.model is not scene.model:

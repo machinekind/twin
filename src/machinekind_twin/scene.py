@@ -17,6 +17,8 @@ Konwencje, ktorych trzeba pilnowac:
   i site'y maja w scenie nazwy `robot/<nazwa>`.
 * Other robots of the station (`PassiveRobot`) come in under their own name as prefix
   (`<name>/<body>`), welded in place: the twin never drives them.
+* Fixtures (`Fixture`, e.g. a camera mount) come in the same way (`<name>/<part>`): static bodies with
+  visual meshes and box colliders that keep `PASSIVE_CLEARANCE`, like another robot.
 """
 
 from __future__ import annotations
@@ -175,6 +177,40 @@ class PassiveRobot:
         return self.name + "/"
 
 
+@dataclass(frozen=True)
+class Collider:
+    """A box that stands for a fixture part in collision checks: centre and half sizes [m] in the part's frame."""
+
+    pos: tuple[float, float, float]
+    size: tuple[float, float, float]
+
+
+@dataclass
+class FixturePart:
+    """One part of a fixture: an optional visual mesh in metres and its colliders, in the part's frame."""
+
+    name: str
+    #: The part's frame in the fixture's frame.
+    T: np.ndarray
+    mesh: Path | None = None
+    colliders: dict[str, Collider] = field(default_factory=dict)
+    rgba: tuple[float, float, float, float] = (0.2, 0.2, 0.2, 1.0)
+
+
+@dataclass
+class Fixture:
+    """A static body of the station that is not a robot, e.g. a camera mount. Its frame stands at `T_base`
+    in the driven arm's base frame. Only the colliders collide; meshes cannot grow by a clearance."""
+
+    name: str
+    parts: list[FixturePart]
+    T_base: np.ndarray
+
+    @property
+    def prefix(self) -> str:
+        return self.name + "/"
+
+
 @dataclass
 class SceneConfig:
     robot: RobotSpec
@@ -194,6 +230,8 @@ class SceneConfig:
     look: Look = field(default_factory=Look)
     #: Robots the twin does not drive (`PassiveRobot`); empty = the driven arm alone.
     passive: list[PassiveRobot] = field(default_factory=list)
+    #: Static bodies of the station (`Fixture`); empty = none.
+    fixtures: list[Fixture] = field(default_factory=list)
 
 
 class Scene:
@@ -215,6 +253,10 @@ class Scene:
         #: Geoms of the passive robots, and of every robot (driven and passive), per geom id.
         self.passive_geom = np.array([any(n.startswith(p.prefix) for p in cfg.passive) for n in bodies], bool)
         self.robot_geom = np.array([n.startswith(PREFIX) for n in bodies], bool) | self.passive_geom
+        #: Geoms of the fixtures, and every geom each collision check keeps `PASSIVE_CLEARANCE` from.
+        self.fixture_geom = np.array([any(n.startswith(f.prefix) for f in cfg.fixtures) for n in bodies],
+                                     bool)
+        self.kept_geom = self.passive_geom | self.fixture_geom
 
     # ------------------------------------------------------------ inne roboty
     def set_passive_joints(self, name: str, joints: Mapping[str, float]) -> None:
@@ -482,8 +524,8 @@ def passive_poses(spec: RobotSpec, joints: Mapping[str, float]) -> dict[str, tup
 
 
 def _check_passive(cfg: SceneConfig) -> None:
-    """Passive robots need names that are unique, plain and not the driven arm's prefix."""
-    names = [p.name for p in cfg.passive]
+    """Passive robots and fixtures need names that are unique, plain and not the driven arm's prefix."""
+    names = [p.name for p in cfg.passive] + [f.name for f in cfg.fixtures]
     bad = [n for n in names if not re.fullmatch(r"[A-Za-z0-9_-]+", n) or n + "/" == PREFIX]
     if bad:
         raise ValueError(f"nazwy robotow {bad}: tylko litery, cyfry, _ i -, inne niz {PREFIX[:-1]!r}")
@@ -513,6 +555,36 @@ def _add_passive(spec: mujoco.MjSpec, other: PassiveRobot, T_base2world: np.ndar
     mount = spec.worldbody.add_frame()
     mount.pos, mount.quat = T[:3, 3], _quat(T[:3, :3])
     spec.attach(robot, prefix=other.prefix, frame=mount)
+
+
+def _add_fixture(spec: mujoco.MjSpec, fixture: Fixture, T_base2world: np.ndarray) -> None:
+    """A static body per part: the mesh to look at, the colliders to keep clear of."""
+    for part in fixture.parts:
+        T = T_base2world @ np.asarray(fixture.T_base, float) @ np.asarray(part.T, float)
+        body = spec.worldbody.add_body()
+        body.name = fixture.prefix + part.name
+        body.pos, body.quat = T[:3, 3], _quat(T[:3, :3])
+        if part.mesh is not None:
+            mesh = spec.add_mesh()
+            mesh.name = body.name
+            mesh.file = str(Path(part.mesh).resolve())
+            g = body.add_geom()
+            g.name = body.name
+            g.type = mujoco.mjtGeom.mjGEOM_MESH
+            g.meshname = mesh.name
+            g.rgba = list(part.rgba)
+            g.contype = g.conaffinity = 0
+            g.group = 1
+        for name, box in part.colliders.items():
+            g = body.add_geom()
+            g.name = f"{body.name}/{name}"
+            g.type = mujoco.mjtGeom.mjGEOM_BOX
+            g.pos, g.size = list(box.pos), list(box.size)
+            # Seen only when the part has no mesh to show.
+            g.rgba = list(part.rgba) if part.mesh is None else [0.0, 0.0, 0.0, 0.0]
+            g.group = 1 if part.mesh is None else 3
+            g.margin = g.gap = PASSIVE_CLEARANCE
+            _stiff_contact(g)
 
 
 def _check_camera_names(cfg: SceneConfig) -> None:
@@ -661,6 +733,8 @@ def compose(cfg: SceneConfig) -> mujoco.MjSpec:
     # Last, so every id of the scene without them stays as it was.
     for other in cfg.passive:
         _add_passive(spec, other, T_base2world)
+    for fixture in cfg.fixtures:
+        _add_fixture(spec, fixture, T_base2world)
 
     return spec
 
@@ -690,8 +764,10 @@ def export(cfg: SceneConfig, folder: str | Path) -> Path:
         return Path(robot.modelfiledir) / robot.meshdir
 
     meshes = mesh_dir(cfg.robot)
-    # A passive robot's meshes go to `assets/<name>/`: another robot may use the same file names.
+    # A passive robot's or a fixture's meshes go to `assets/<name>/`: another may use the same file names.
+    # A fixture's mesh files are absolute already.
     others = {p.prefix: (mesh_dir(p.spec), Path(p.name)) for p in cfg.passive}
+    others.update({f.prefix: (Path(), Path(f.name)) for f in cfg.fixtures})
     spec = compose(cfg)
     for mesh in spec.meshes:
         source, sub = next((v for k, v in others.items() if mesh.name.startswith(k)), (meshes, Path()))

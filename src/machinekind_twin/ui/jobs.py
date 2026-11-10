@@ -103,6 +103,13 @@ class _CameraSubset:
         """{kamera: (kadr albo None, chwila kadru wg time.monotonic)} - dla `session.still_frames`."""
         return {n: self.hub.frame_t(n) for n in self.names}
 
+    def mounts(self) -> dict[str, np.ndarray]:
+        """T_cam2base of the cameras that sit on a fixture, at its camera site: where the wave aims first."""
+        ws = self.hub.workspace
+        ws.mount_cameras()
+        return {c.name: np.asarray(c.mount, float) for c in ws.cameras
+                if c.name in self.names and c.mount is not None}
+
 
 #: Wlasciciele ramienia (`Twin.claim`) zadan w tle.
 CALIB_OWNER, SYSID_OWNER = "kalibracja", "identyfikacja"
