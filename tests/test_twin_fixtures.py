@@ -271,6 +271,16 @@ def test_the_wave_starts_from_the_mount():
     assert session.progress["gora"].rough == pytest.approx(np.asarray(ws.camera("gora").mount))
 
 
+def test_the_wave_job_hands_the_wave_the_mounts_of_its_cameras():
+    from machinekind_twin.ui.jobs import _CameraSubset
+
+    ws = station()
+    ws.add_camera(CameraRecord("gora", source="sim", fixture="slup"))
+    ws.add_camera(CameraRecord("bok", source="sim"))
+    mounts = _CameraSubset(SimpleNamespace(workspace=ws), ["gora", "bok"]).mounts()
+    assert list(mounts) == ["gora"] and mounts["gora"] == pytest.approx(ws.camera("gora").true_pose())
+
+
 # ----------------------------------------------------------------------- panel
 class _SceneRecorder:
     """A viser scene API that records what the 3D view adds: (method, name)."""
