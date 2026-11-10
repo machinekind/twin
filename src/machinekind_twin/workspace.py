@@ -82,6 +82,61 @@ def stamp_name(stamp: str) -> str:
     return stamp.replace("-", "").replace(":", "").replace("T", "-")
 
 
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def when_text(stamp: str) -> str:
+    """A stored time for the panel: 2026-11-10T17:27:03 -> "10.11 17:27", with the year when it is not this one."""
+    try:
+        t = time.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return str(stamp)
+    year = "" if t.tm_year == time.localtime().tm_year else f".{t.tm_year}"
+    return f"{t.tm_mday:02d}.{t.tm_mon:02d}{year} {t.tm_hour:02d}:{t.tm_min:02d}"
+
+
+def px_text(value: Any) -> str:
+    """Pixels the Polish way: 1.79 -> "1,8 px", 0.42 -> "0,42 px"."""
+    v = float(value)
+    return (f"{v:.2f}" if v < 1 else f"{v:.1f}").replace(".", ",") + " px"
+
+
+def by_hand(info: dict[str, Any]) -> bool:
+    """`calibration` or `intrinsics_info` is trusted because a person said so (`set_by_hand`)."""
+    manual = info.get("manual")
+    return isinstance(manual, dict) and bool(manual.get("trusted")) and bool(info.get("trusted"))
+
+
+def set_by_hand(info: dict[str, Any], trusted: bool, text: str, now: str | None = None) -> None:
+    """Trusts or distrusts `calibration` / `intrinsics_info` by hand; the measured numbers stay.
+
+    `manual` keeps the verdict from before the first decision by hand: the reason says what the person
+    did, when, and what the verdict was. Going back to that verdict drops `manual` and restores it.
+    """
+    manual = info.get("manual")
+    if isinstance(manual, dict):
+        was, was_trusted = str(manual.get("was", "")), bool(manual.get("was_trusted", False))
+    else:
+        was, was_trusted = str(info.get("reason", "") or ""), bool(info.get("trusted", False))
+    if trusted == was_trusted:
+        info.pop("manual", None)
+        info["trusted"], info["reason"] = was_trusted, was
+        return
+    now = now or _now()
+    info["trusted"] = trusted
+    info["reason"] = f"{text} {when_text(now)}" + (f" (wczesniej: {was})" if was else "")
+    info["manual"] = {"trusted": trusted, "time": now, "was": was, "was_trusted": was_trusted}
+
+
+def clear_trust(info: dict[str, Any], reason: str) -> None:
+    """Trust taken away by a rule (new lens, servo offsets, moved camera); a trust by hand says it is gone."""
+    if by_hand(info):
+        reason = f"reczne zaufanie cofniete: {reason}"
+    info.pop("manual", None)
+    info["trusted"], info["reason"] = False, reason
+
+
 def same_intrinsics(a: tuple[Any, Any], b: tuple[Any, Any]) -> bool:
     """Te same intrynsyki (K, dist)? Brak dystorsji (None) = same zera; JSON gubi tylko ostatnie bity."""
     Ka, Kb = np.asarray(a[0], float), np.asarray(b[0], float)
@@ -167,14 +222,127 @@ class CameraRecord:
         dist = None if self.dist is None else np.asarray(self.dist, float)
         return K, dist
 
-    def intrinsics_problem(self) -> str:
-        """Dlaczego K tej kamery nie wystarcza do ZAUFANEJ pozy ("" = wystarcza).
+    @property
+    def lens_measured(self) -> bool:
+        """K comes from a ChArUco session or a lens file, not the nominal field of view."""
+        return self.intrinsics_from == "szachownica" and self.K is not None
 
-        Symulowana zna swoje prawdziwe K. Prawdziwa - tylko z zaufanej sesji ChArUco.
+    @property
+    def lens_by_hand(self) -> bool:
+        return by_hand(self.intrinsics_info)
+
+    @property
+    def pose_by_hand(self) -> bool:
+        return by_hand(self.calibration)
+
+    @property
+    def lens_trusted(self) -> bool:
+        """The stored lens verdict is "trusted" (focus in this session aside)."""
+        return bool(self.intrinsics_info.get("trusted")) and (self.lens_measured or self.lens_by_hand)
+
+    def trust_lens(self, now: str | None = None) -> None:
+        """Trusts the lens by hand. A nominal lens gets its K written down, so it travels with the camera."""
+        if self.simulated:
+            raise ValueError("kamera symulowana zna swoj obiektyw")
+        if self.lens_trusted:
+            return
+        if self.lens_measured:
+            set_by_hand(self.intrinsics_info, True, "zaufane recznie", now)
+            return
+        K, _ = self.intrinsics()
+        self.K, self.dist, self.intrinsics_from = K.tolist(), None, "nominalne"
+        self.intrinsics_info = {}
+        set_by_hand(self.intrinsics_info, True, "nominalny, zaufany recznie", now)
+
+    def distrust_lens(self, now: str | None = None) -> None:
+        """Withdraws the lens's trust by hand; a nominal lens trusted by hand goes back to no K at all.
+        A trusted pose stands on the lens, so it is withdrawn too."""
+        if not self.lens_trusted:
+            return
+        if not self.lens_measured and self.lens_by_hand:
+            self.K, self.dist, self.intrinsics_info = None, None, {}
+        else:
+            set_by_hand(self.intrinsics_info, False, "zaufanie cofniete recznie", now)
+        if self.calibrated and self.calibration.get("trusted"):
+            self.withdraw_pose("zaufanie do obiektywu cofniete")
+
+    def pose_trust_problem(self) -> str:
+        """Why the pose cannot be trusted by hand now ("" = it can)."""
+        if not self.calibrated:
+            return "brak polozenia - najpierw krok 2"
+        used = self.calibration.get("K")
+        if used is not None and not same_intrinsics((used, self.calibration.get("dist")), self.intrinsics()):
+            return "polozenie liczone z innym obiektywem - zrob krok 2 jeszcze raz"
+        problem = self.intrinsics_problem()
+        return f"najpierw obiektyw: {problem}" if problem else ""
+
+    def trust_pose(self, now: str | None = None) -> None:
+        """Trusts the pose by hand; refused while the lens it stands on is not trusted (`pose_trust_problem`)."""
+        if self.calibration.get("trusted"):
+            return
+        problem = self.pose_trust_problem()
+        if problem:
+            raise ValueError(problem)
+        set_by_hand(self.calibration, True, "zaufane recznie", now)
+
+    def distrust_pose(self, now: str | None = None) -> None:
+        """Withdraws the pose's trust by hand; after a trust by hand the measured verdict comes back."""
+        if self.calibration.get("trusted"):
+            set_by_hand(self.calibration, False, "zaufanie cofniete recznie", now)
+
+    def withdraw_pose(self, reason: str) -> None:
+        """The pose stops being trusted for `reason`; a trust by hand is withdrawn too."""
+        clear_trust(self.calibration, reason)
+
+    def pose_problem(self) -> str:
+        """Why the pose is not trusted right now ("" = it is, or there is none)."""
+        if not self.calibrated or self.trusted:
+            return ""
+        if not self.calibration.get("trusted"):
+            return str(self.calibration.get("reason", "") or "niepewne")
+        if self.focus_problem:
+            return f"obiektyw niewazny w tej sesji: {self.focus_problem}"
+        return "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
+
+    def lens_quality(self) -> str:
+        """The lens in plain words: residual and when it was measured, or that it is nominal."""
+        if self.simulated:
+            return "symulowany"
+        if not self.lens_measured:
+            return "nominalny (bez pomiaru)"
+        ii = self.intrinsics_info
+        manual = ii.get("manual")
+        base = str(manual.get("was", "")) if isinstance(manual, dict) else str(ii.get("reason", "") or "")
+        from_file = base.startswith("z pliku ")
+        parts = [base] if from_file else []
+        if ii.get("rms_px"):
+            parts.append(f"residuum {px_text(ii['rms_px'])}")
+        if ii.get("time"):
+            parts.append(f"{'wczytane' if from_file else 'zmierzone'} {when_text(ii['time'])}")
+        return ", ".join(parts) or "zmierzony"
+
+    def pose_quality(self) -> str:
+        """The pose in plain words: residual and when it was measured."""
+        c = self.calibration
+        if not self.calibrated:
+            return "brak polozenia"
+        source = str(c.get("source", "") or "")
+        parts = [source] if source else []
+        if c.get("rms_px") is not None and not source:
+            parts.append(f"residuum {px_text(c['rms_px'])}")
+        if c.get("time"):
+            parts.append(f"{'wpisane' if source else 'zmierzone'} {when_text(c['time'])}")
+        return ", ".join(parts) or "bez opisu pomiaru"
+
+    def intrinsics_problem(self) -> str:
+        """Why this camera's K is not enough for a TRUSTED pose ("" = it is).
+
+        A simulated camera knows its true K. A real one needs a trusted ChArUco session or lens file, or
+        a lens trusted by hand (`trust_lens`). A focus that does not hold in this session wins over both.
         """
         if self.simulated:
             return ""
-        if self.intrinsics_from != "szachownica" or self.K is None:
+        if not self.lens_measured and not self.lens_by_hand:
             return "intrynsyki nominalne - najpierw krok 1 (tablica ChArUco)"
         if not self.intrinsics_info.get("trusted", False):
             why = self.intrinsics_info.get("reason", "")
@@ -302,7 +470,7 @@ class Workspace:
         names = []
         for rec in self.cameras:
             if rec.calibrated and rec.name not in keep and rec.calibration.get("trusted"):
-                rec.calibration["trusted"], rec.calibration["reason"] = False, reason
+                rec.withdraw_pose(reason)
                 names.append(rec.name)
         return names
 

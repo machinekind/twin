@@ -735,6 +735,217 @@ def test_a_camera_on_the_arm_without_a_lens_does_not_hold_back_step_2(app, monke
         app.ws.remove_camera("u2")
 
 
+# ------------------------------------------------------------------ trust by hand
+YEAR = time.localtime().tm_year
+WAVE_TIME = f"{YEAR}-11-10T17:27:03"
+
+
+def a_camera_after_a_wave(name: str, lens_trusted: bool = False, focus: int | None = None, enabled: bool = True):
+    """A real camera with a measured lens and a pose the wave did not trust. Its source is no device, and
+    nothing in these tests opens it (the panel opens cameras on `cameras.sync`, never called here)."""
+    from machinekind_twin.workspace import CameraRecord, nominal_K
+
+    K = nominal_K(640, 480)
+    K[0, 0] += 40.0
+    info = {"rms_px": 0.42 if lens_trusted else 0.8, "n_views": 14, "coverage": 0.6, "trusted": lens_trusted,
+            "reason": "" if lens_trusted else "rozrzut pochylen 9 st. < 20 st.", "time": f"{YEAR}-11-10T16:05:00"}
+    if focus is not None:
+        info["focus"] = focus
+    T = np.eye(4)
+    T[:3, 3] = [0.6, 0.0, 0.4]
+    return CameraRecord(name, f"/dev/video-{name}", K=K.tolist(), dist=[0.0] * 5, intrinsics_from="szachownica",
+                        intrinsics_info=info, T_cam2base=T.tolist(), enabled=enabled,
+                        calibration={"rms_px": 1.79, "max_px": 4.0, "n_obs": 40, "spread_deg": 20.0,
+                                     "trusted": False, "reason": "residuum 1.79 px > 1.5 px", "time": WAVE_TIME,
+                                     "tag_size": 0.05, "K": K.tolist(), "dist": [0.0] * 5})
+
+
+def _used_by_the_map(app, rec) -> bool:
+    from machinekind_twin.perception import perception_cameras
+
+    return rec.name in [c.name for c in perception_cameras(app.ws)]
+
+
+def test_lens_and_pose_are_trusted_by_hand_and_the_trust_withdrawn(app):
+    """A wave over the residual gate and an untrusted lens session: one click each trusts them, the measured
+    numbers stay and the reason says it was a person; the opposite click brings the measured verdict back."""
+    rec = app.ws.add_camera(a_camera_after_a_wave("kz"))
+    try:
+        app._refresh_cameras(select="kz")
+        assert app.lens_trust.visible and not app.lens_untrust.visible
+        assert app.pose_trust.visible and app.pose_trust.disabled and not app.pose_untrust.visible
+        assert "residuum 0,80 px, zmierzone 10.11 16:05 - niezaufany: rozrzut pochylen" in app.trust_md.content
+        assert "residuum 1,8 px, zmierzone 10.11 17:27 - niezaufane: residuum 1.79 px" in app.trust_md.content
+        assert "Zaufaj polozeniu niedostepne: najpierw obiektyw" in app.trust_md.content
+
+        ev = _click(app, "Zaufaj obiektywowi")
+        ii = rec.intrinsics_info
+        assert ii["trusted"] and ii["rms_px"] == 0.8 and rec.lens_by_hand and rec.intrinsics_problem() == ""
+        assert ii["reason"].startswith("zaufane recznie ") and "(wczesniej: rozrzut pochylen" in ii["reason"]
+        assert ev.client.notes[-1] == ("Zaufanie", "kz: obiektyw zaufany recznie.")
+        assert "OBIEKTYW OK (RECZNIE)" in app.calib_html.content
+        assert not app.lens_trust.visible and app.lens_untrust.visible and not app.pose_trust.disabled
+
+        _click(app, "Zaufaj polozeniu")
+        cal = rec.calibration
+        assert rec.trusted and rec.pose_by_hand and cal["rms_px"] == 1.79 and cal["time"] == WAVE_TIME
+        assert cal["reason"].startswith("zaufane recznie ") and "(wczesniej: residuum 1.79 px" in cal["reason"]
+        assert _used_by_the_map(app, rec)
+        assert "POLOZENIE OK (RECZNIE)" in app.calib_html.content
+        assert "SKALIBROWANA (RECZNIE)" in app.cams_html.content
+        assert "**zaufane recznie**" in app.trust_md.content and "(pomiar: residuum 1.79 px" in app.trust_md.content
+        saved = json.loads(app.ws.path.read_text(encoding="utf-8"))
+        assert next(c for c in saved["cameras"] if c["name"] == "kz")["calibration"]["trusted"]
+
+        _click(app, "Cofnij zaufanie do polozenia")
+        assert not cal["trusted"] and cal["reason"] == "residuum 1.79 px > 1.5 px" and "manual" not in cal
+        assert not _used_by_the_map(app, rec) and app.pose_trust.visible
+        _click(app, "Cofnij zaufanie do obiektywu")
+        assert not ii["trusted"] and ii["reason"] == "rozrzut pochylen 9 st. < 20 st." and "manual" not in ii
+        assert rec.intrinsics_problem().startswith("intrynsyki z niezaufanej sesji")
+    finally:
+        app.ws.remove_camera("kz")
+
+
+def test_a_measured_trust_can_be_withdrawn_and_given_back(app):
+    """Also a trust written into the workspace file by hand: its reason shows and comes back with it."""
+    rec = app.ws.add_camera(a_camera_after_a_wave("kt", lens_trusted=True))
+    rec.calibration.update(trusted=True, reason="", rms_px=0.6)
+    try:
+        app._refresh_cameras(select="kt")
+        assert app.pose_untrust.visible and not app.pose_trust.visible
+        _click(app, "Cofnij zaufanie do polozenia")
+        assert not rec.trusted and rec.calibration["reason"].startswith("zaufanie cofniete recznie ")
+        _click(app, "Zaufaj polozeniu")
+        assert rec.trusted and not rec.pose_by_hand and rec.calibration["reason"] == ""
+
+        rec.calibration["reason"] = "wpisane w pliku"
+        app._render_cameras()
+        assert "zmierzone 10.11 17:27 - zaufane (wpisane w pliku)" in app.trust_md.content
+        _click(app, "Cofnij zaufanie do polozenia")
+        assert "(wczesniej: wpisane w pliku)" in rec.calibration["reason"]
+        _click(app, "Zaufaj polozeniu")
+        assert rec.trusted and rec.calibration["reason"] == "wpisane w pliku" and "manual" not in rec.calibration
+    finally:
+        app.ws.remove_camera("kt")
+
+
+def test_withdrawing_the_lens_trust_withdraws_the_pose_that_stands_on_it(app):
+    rec = app.ws.add_camera(a_camera_after_a_wave("kl"))
+    try:
+        app._refresh_cameras(select="kl")
+        _click(app, "Zaufaj obiektywowi")
+        _click(app, "Zaufaj polozeniu")
+        assert rec.trusted and _used_by_the_map(app, rec)
+        ev = _click(app, "Cofnij zaufanie do obiektywu")
+        assert ev.client.notes[-1][1] == "kl: zaufanie do obiektywu cofniete, polozenie tez przestalo byc zaufane."
+        assert not rec.trusted and not _used_by_the_map(app, rec) and "manual" not in rec.calibration
+        assert rec.calibration["reason"] == "reczne zaufanie cofniete: zaufanie do obiektywu cofniete"
+        assert app.pose_trust.visible and app.pose_trust.disabled
+    finally:
+        app.ws.remove_camera("kl")
+
+
+def test_the_wrist_camera_gets_only_the_lens_option_and_its_nominal_lens_can_be_trusted(app):
+    """A camera on the arm has no pose in the base frame. Its lens is nominal: trusting it writes the nominal
+    K down, so code that needs a lens works with it, and withdrawing goes back to no K."""
+    from machinekind_twin.workspace import CameraRecord, nominal_K
+
+    assert "wrist" in app._arm_cameras()
+    rec = app.ws.add_camera(CameraRecord("wrist", "/dev/video-wrist", 640, 480, enabled=False))
+    rec.T_cam2base = np.eye(4).tolist()                 # e.g. from a preset matched by name: meaningless here
+    rec.calibration = {"trusted": False, "reason": "residuum 3.00 px > 1.5 px", "rms_px": 3.0}
+    try:
+        app._refresh_cameras(select="wrist")
+        assert app.lens_trust.visible and not app.pose_trust.visible and not app.pose_untrust.visible
+        assert "nominalny (bez pomiaru) - niezaufany" in app.trust_md.content
+        assert "kamera jedzie na ramieniu" in app.trust_md.content
+        _click(app, "Zaufaj obiektywowi")
+        assert rec.K == nominal_K(640, 480).tolist() and rec.intrinsics_from == "nominalne"
+        assert rec.intrinsics_info["reason"].startswith("nominalny, zaufany recznie ")
+        assert rec.intrinsics_problem() == "" and rec.lens_by_hand and "OBIEKTYW OK (RECZNIE)" in app.calib_html.content
+        assert "nominalny (bez pomiaru) - **zaufany recznie**" in app.trust_md.content
+        assert "residuum" not in app.cam_detail.content     # no measurement to show for a nominal lens
+        ev = _click(app, "Zaufaj polozeniu")                # hidden, and refused if called anyway
+        assert ev.client.notes[-1][0] == "Blad" and "na ramieniu" in ev.client.notes[-1][1]
+        assert not rec.calibration["trusted"]
+        _click(app, "Cofnij zaufanie do obiektywu")
+        assert rec.K is None and rec.intrinsics_info == {} and rec.intrinsics_problem().startswith("intrynsyki nominalne")
+    finally:
+        app.ws.remove_camera("wrist")
+
+
+def test_a_trust_by_hand_goes_with_a_new_lens_new_servo_zeros_or_a_moved_camera(app, monkeypatch):
+    from machinekind_twin import camera_controls as cc
+    from machinekind_twin.workspace import Workspace
+
+    class Res:
+        K = np.array([[610.0, 0, 320], [0, 611.0, 240], [0, 0, 1]])
+        dist = np.zeros(5)
+        rms_px, n_views, coverage, trusted, reason, dropped = 0.3, 14, 0.7, True, "", []
+
+    monkeypatch.setattr(cc, "apply", lambda source, controls, **kw: cc.Applied())
+    rec = app.ws.add_camera(a_camera_after_a_wave("km", lens_trusted=True))
+    try:
+        app._refresh_cameras(select="km")
+        _click(app, "Zaufaj polozeniu")
+        assert rec.pose_by_hand
+        ij = app.intr_job                                   # a new lens: the old pose no longer holds
+        ij.state, ij.result, ij.data = jobs.DONE, Res(), {"camera": "km"}
+        app._tick_calibration()
+        assert not rec.calibration["trusted"] and "manual" not in rec.calibration
+        assert rec.calibration["reason"] == ("reczne zaufanie cofniete: obiektyw zmierzony po ustaleniu polozenia "
+                                             "- zrob krok 2 jeszcze raz")
+
+        rec.calibration["K"], rec.calibration["dist"] = rec.K, rec.dist     # as if the wave ran with the new lens
+        _click(app, "Zaufaj polozeniu")
+        _click(app, "Wyzeruj poprawki zer serw")
+        assert rec.calibration["reason"] == "reczne zaufanie cofniete: poprawki zer serw wyzerowane - zrob krok 2 jeszcze raz"
+
+        _click(app, "Zaufaj polozeniu")
+        moved = {"km": False}
+        monkeypatch.setattr(type(app.watch), "refs", property(lambda self: {"km": None}))
+        monkeypatch.setattr(app.watch, "moved", lambda name: moved.get(name, False))
+        monkeypatch.setattr(app.watch, "check", lambda name, img, mask=None: moved.update({name: True}))
+        app.watch.shift["km"] = 5.2
+        app._tick_watch({"km": np.zeros((480, 640, 3), np.uint8)})
+        assert not rec.trusted and rec.calibration["reason"].startswith(
+            "reczne zaufanie cofniete: kamera poruszona (kadr przesunal sie o 5.2 px)")
+        again = Workspace.load(app.ws.path).camera("km")      # a restart does not bring the trust back
+        assert not again.calibration["trusted"] and not again.pose_by_hand
+        assert app.pose_trust.disabled and "kamera poruszona" in app.trust_md.content
+    finally:
+        app.watch.shift.pop("km", None)
+        app.ws.remove_camera("km")
+        app.intr_job.state = jobs.IDLE
+
+
+def test_a_focus_that_does_not_hold_wins_over_a_trust_by_hand(app):
+    """The session's focus mismatch means the lens does not match right now: a person's trust does not change that."""
+    rec = app.ws.add_camera(a_camera_after_a_wave("kf", focus=40))
+    try:
+        app._refresh_cameras(select="kf")
+        _click(app, "Zaufaj obiektywowi")
+        _click(app, "Zaufaj polozeniu")
+        assert rec.trusted and _used_by_the_map(app, rec)
+        rec.focus_problem = "ostrosc 35, a obiektyw zmierzony przy 40"
+        app._refresh_cameras()
+        app._render_calibration()
+        assert rec.intrinsics_problem().startswith("obiektyw niewazny w tej sesji") and not rec.trusted
+        assert not _used_by_the_map(app, rec)
+        assert rec.lens_by_hand and rec.pose_by_hand                   # the decision stays for the next session
+        assert "OBIEKTYW: OSTROSC" in app.calib_html.content and "POLOZENIE: OSTROSC" in app.calib_html.content
+        assert "**niewazny w tej sesji**" in app.trust_md.content and "takze reczne, tego nie zmienia" in app.trust_md.content
+        assert "**niewazne w tej sesji** (ostrosc obiektywu)" in app.trust_md.content
+        assert app.lens_untrust.visible and app.pose_untrust.visible
+        snap = next(c for c in app._guide_snapshot().cameras if c.name == "kf")
+        assert snap.reason.startswith("obiektyw niewazny w tej sesji")
+        rec.focus_problem = ""
+        assert rec.trusted and rec.intrinsics_problem() == ""
+    finally:
+        app.ws.remove_camera("kf")
+
+
 def test_a_camera_that_failed_to_open_or_whose_stream_died_is_reopened_by_itself(app, monkeypatch):
     """Brio i uEye przegrywaly wyscig z resetem USB przy starcie panelu i zostawaly BEZ OBRAZU,
     az ktos wylaczyl i wlaczyl kamere w panelu. Panel probuje sam, co HEAL_S, poki jest blad."""

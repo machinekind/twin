@@ -47,7 +47,7 @@ from ..perception import TableMapper
 from ..runtime import Twin
 from ..paths import REPO_ROOT
 from ..robots import get_spec, robot_config
-from ..workspace import CameraRecord, RobotRecord, Workspace, nominal_K
+from ..workspace import CameraRecord, RobotRecord, Workspace, nominal_K, when_text
 from . import guide as gd
 from . import jobs
 from .bridge import SceneMirror, mat_to_wxyz
@@ -939,7 +939,8 @@ class TwinApp:
             cams.append(gd.CameraSnap(
                 c.name, c.simulated, c.enabled, has_frame=now - seen < GUIDE_FRAME_LOST, intrinsics_ok=not problem,
                 intrinsics_problem=problem, calibrated=c.calibrated, trusted=c.trusted,
-                reason=str(c.calibration.get("reason", "") or ""), moved=self.watch.moved(c.name),
+                reason=c.pose_problem() or str(c.calibration.get("reason", "") or ""),
+                moved=self.watch.moved(c.name),
                 simreal_px=self._simreal_px.get(c.name), on_arm=c.name in on_arm))
         jobs_on = (("kalibracja kamer", self.calib_job.running), ("pomiar obiektywu", self.intr_job.running),
                    ("identyfikacja", self.sysid_job.running))
@@ -1611,6 +1612,26 @@ class TwinApp:
                                            hint="Kamera, ktorej dotyczy podglad i przyciski ponizej.")
             self.cam_preview = g.add_image(np.zeros((240, 320, 3), np.uint8), format="jpeg", jpeg_quality=70)
             self.cam_info = g.add_markdown("")
+            # Trust by hand: a result the thresholds call untrusted, accepted by the person in one click.
+            self.trust_md = g.add_markdown("")
+            self.lens_trust = g.add_button(
+                "Zaufaj obiektywowi", icon=viser.Icon.SHIELD_CHECK, color="gray",
+                hint="Uznaje obiektyw za zaufany bez nowego pomiaru. Zmierzone liczby zostaja, a w powodzie "
+                     "zapisuje sie, ze to Twoja decyzja i kiedy. Obiektyw nominalny tez mozna - blizniak liczy "
+                     "wtedy z nominalnym K. Ostrosc niezgodna w tej sesji i tak go uniewaznia.")
+            self.lens_untrust = g.add_button(
+                "Cofnij zaufanie do obiektywu", icon=viser.Icon.SHIELD_X, color="gray",
+                hint="Obiektyw przestaje byc zaufany, a zaufane polozenie liczone z nim tez. Po recznym zaufaniu "
+                     "wraca wynik pomiaru.")
+            self.pose_trust = g.add_button(
+                "Zaufaj polozeniu", icon=viser.Icon.SHIELD_CHECK, color="gray",
+                hint="Uznaje polozenie kamery za zaufane bez nowej fali: mapa stolu i detektory zaczynaja z niej "
+                     "korzystac. Najpierw obiektyw musi byc zaufany. Zaufanie znika samo, gdy kamera sie poruszy, "
+                     "zmieni sie obiektyw albo poprawki zer serw.")
+            self.pose_untrust = g.add_button(
+                "Cofnij zaufanie do polozenia", icon=viser.Icon.SHIELD_X, color="gray",
+                hint="Polozenie przestaje byc zaufane - mapa stolu i detektory przestaja z tej kamery korzystac. "
+                     "Po recznym zaufaniu wraca wynik pomiaru.")
             en = g.add_button(CAM_ON[0], hint="Wylaczona kamera znika ze sceny, mapy, fali i Sim-Real, ale zostaje "
                                               "w stanowisku razem z kalibracja. Zmiana przebudowuje scene.")
             self.cam_enabled = _Toggle(en, on_look=CAM_ON, off_look=CAM_OFF)
@@ -1681,6 +1702,11 @@ class TwinApp:
             done = self.twin.cameras.apply_controls(rec.name)
             self.cam_ctl_md.content = done.text() if not rec.controls.empty else "bez ustawien - kamera zostaje, jak jest"
             self._notify(event, "Ustawienia kamery", f"{rec.name}: {self.cam_ctl_md.content}", error=bool(done.failed))
+
+        for button, what, trusted in ((self.lens_trust, "lens", True), (self.lens_untrust, "lens", False),
+                                      (self.pose_trust, "pose", True), (self.pose_untrust, "pose", False)):
+            button.on_click(self._safe(lambda event, what=what, trusted=trusted:
+                                       self._change_trust(event, what, trusted)))
 
         @self.cam_pick.on_update
         def _(event):
@@ -2008,14 +2034,16 @@ class TwinApp:
         if not c.calibrated:
             return "DO KALIBRACJI", "tw-sim" if c.simulated else "tw-none"
         if c.trusted:
-            return "SKALIBROWANA", "tw-ok"
+            return ("SKALIBROWANA (RECZNIE)" if c.pose_by_hand else "SKALIBROWANA"), "tw-ok"
         return "KALIBRACJA NIEPEWNA", "tw-warn"
 
     @staticmethod
     def _k_badge(c: CameraRecord) -> tuple[str, str]:
         if c.simulated or not c.intrinsics_problem():
-            return "OBIEKTYW OK", "tw-ok"
-        if c.intrinsics_from != "szachownica" or c.K is None:
+            return ("OBIEKTYW OK (RECZNIE)" if c.lens_by_hand else "OBIEKTYW OK"), "tw-ok"
+        if c.focus_problem:
+            return "OBIEKTYW: OSTROSC", "tw-warn"
+        if not c.lens_measured:
             return "OBIEKTYW: KROK 1", "tw-none"
         return "OBIEKTYW: POWTORZ", "tw-warn"
 
@@ -2027,7 +2055,9 @@ class TwinApp:
         if not c.calibrated:
             return "POLOZENIE: KROK 2", "tw-none"
         if c.trusted and not c.intrinsics_problem():
-            return "POLOZENIE OK", "tw-ok"
+            return ("POLOZENIE OK (RECZNIE)" if c.pose_by_hand else "POLOZENIE OK"), "tw-ok"
+        if c.focus_problem and c.calibration.get("trusted"):
+            return "POLOZENIE: OSTROSC", "tw-warn"
         return "POLOZENIE: POWTORZ", "tw-warn"
 
     def _cams_html(self, calib: bool) -> str:
@@ -2052,6 +2082,7 @@ class TwinApp:
         has = bool(self.ws.cameras)
         set_if(self.cam_box, "visible", has)
         rec = self._cam()
+        self._render_trust(rec)
         if rec is not None and self.cam_ask.pending(("usun", rec.name)):
             set_if(self.cam_remove, "label", f"Na pewno usunac {rec.name}? Kliknij ponownie")
             set_if(self.cam_remove, "icon", viser.Icon.ALERT_TRIANGLE)
@@ -2120,6 +2151,94 @@ class TwinApp:
         elif c.name in self.estimates:
             self.estimates.pop(c.name).remove()
 
+    def _change_trust(self, event, what: str, trusted: bool) -> None:
+        """Trust by hand ("lens" or "pose") of the selected camera, saved at once (workspace and stand)."""
+        rec = self._cam()
+        if rec is None:
+            return
+        if what == "pose" and rec.name in self._arm_cameras():
+            raise RuntimeError(f"{rec.name} jedzie na ramieniu - nie ma polozenia wzgledem podstawy")
+        if what == "pose" and trusted and self.watch.moved(rec.name):
+            raise RuntimeError(f"{rec.name} poruszona od kalibracji - zrob krok 2 jeszcze raz")
+        change = {("lens", True): rec.trust_lens, ("lens", False): rec.distrust_lens,
+                  ("pose", True): rec.trust_pose, ("pose", False): rec.distrust_pose}[(what, trusted)]
+        pose_was = bool(rec.calibration.get("trusted"))
+        try:
+            change()
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+        self._save()
+        if what == "pose" and trusted and rec.name not in self.watch.refs:
+            try:
+                self._remember_reference(rec.name)      # the frame the move watch compares against
+            except RuntimeError:
+                pass
+        done = {("lens", True): "obiektyw zaufany recznie", ("lens", False): "zaufanie do obiektywu cofniete",
+                ("pose", True): "polozenie zaufane recznie", ("pose", False): "zaufanie do polozenia cofniete"}
+        text = done[(what, trusted)]
+        if what == "lens" and pose_was and not rec.calibration.get("trusted"):
+            text += ", polozenie tez przestalo byc zaufane"
+        self._refresh_cameras()
+        self._render_calibration()
+        self._notify(event, "Zaufanie", f"{rec.name}: {text}.")
+
+    def _trust_text(self, rec: CameraRecord, on_arm: bool) -> str:
+        """Lens and pose of one camera in plain words: how good, when, trusted or not, and who decided."""
+        def verdict(info: dict, hand: bool, yes: str, no: str) -> str:
+            why = str(info.get("reason", "") or "")
+            if not info.get("trusted"):
+                return no + (f": {why}" if why else "")
+            if not hand:
+                return yes + (f" ({why})" if why else "")     # e.g. a trust written into the file by hand
+            manual = info.get("manual") or {}
+            was = str(manual.get("was", "") or "")
+            return (f"**{yes} recznie** {when_text(manual.get('time', ''))}"
+                    + (f" (pomiar: {was})" if was else ""))
+
+        lines = []
+        if not rec.simulated:
+            if not rec.lens_measured and not rec.lens_by_hand:
+                state = "niezaufany - zmierz go w kroku 1 albo zaufaj mu recznie"
+            else:
+                state = verdict(rec.intrinsics_info, rec.lens_by_hand, "zaufany", "niezaufany")
+            if rec.focus_problem:
+                # The session's focus wins over any trust, by hand included: the lens does not match now.
+                state += (f", ale **niewazny w tej sesji**: {rec.focus_problem}. Zaufanie, takze reczne, "
+                          "tego nie zmienia")
+            lines.append(f"**Obiektyw:** {rec.lens_quality()} - {state}")
+        if on_arm:
+            lines.append("**Polozenie:** kamera jedzie na ramieniu - nie ma polozenia wzgledem podstawy.")
+        elif not rec.calibrated:
+            lines.append("**Polozenie:** jeszcze nie ustalone - krok 2 w zakladce Kalibracja.")
+        else:
+            state = verdict(rec.calibration, rec.pose_by_hand, "zaufane", "niezaufane")
+            if self.watch.moved(rec.name):
+                state += ", ale **kamera poruszona** od kalibracji - krok 2 jeszcze raz"
+            elif rec.calibration.get("trusted") and rec.focus_problem:
+                state += ", ale **niewazne w tej sesji** (ostrosc obiektywu)"
+            elif rec.calibration.get("trusted"):
+                why = rec.pose_problem() or rec.intrinsics_problem()
+                if why:
+                    state += f", ale {why}"
+            elif rec.pose_trust_problem():
+                state += f". Zaufaj polozeniu niedostepne: {rec.pose_trust_problem()}"
+            lines.append(f"**Polozenie:** {rec.pose_quality()} - {state}")
+        return "  \n".join(lines)
+
+    def _render_trust(self, rec: CameraRecord | None) -> None:
+        """The trust lines and only the trust buttons that fit the camera's state (every tick; set on change)."""
+        on_arm = rec is not None and rec.name in self._arm_cameras()
+        set_if(self.trust_md, "content", "" if rec is None else self._trust_text(rec, on_arm))
+        real = rec is not None and not rec.simulated
+        set_if(self.lens_trust, "visible", real and not rec.lens_trusted)
+        set_if(self.lens_untrust, "visible", real and rec.lens_trusted)
+        pose = rec is not None and rec.calibrated and not on_arm
+        stored = pose and bool(rec.calibration.get("trusted"))
+        set_if(self.pose_trust, "visible", pose and not stored)
+        set_if(self.pose_untrust, "visible", stored)
+        if pose and not stored:
+            set_if(self.pose_trust, "disabled", bool(rec.pose_trust_problem()) or self.watch.moved(rec.name))
+
     def _select_camera(self) -> None:
         rec = self._cam()
         if rec is None:
@@ -2144,7 +2263,7 @@ class TwinApp:
         elif not rec.calibrated:
             info = "jeszcze nieskalibrowana - dalej zakladka **Kalibracja**"
         elif rec.trusted:
-            info = "skalibrowana - gotowa do uzycia"
+            info = "skalibrowana - gotowa do uzycia" + (" (polozenie zaufane recznie)" if rec.pose_by_hand else "")
         elif rec.focus_problem and rec.calibration.get("trusted"):
             info = "kalibracja niepewna w tej sesji: ostrosc inna niz przy pomiarze obiektywu"
         else:
@@ -2164,11 +2283,12 @@ class TwinApp:
         K, dist = rec.intrinsics()
         lines = [f"zrodlo `{rec.source}`, {rec.width}x{rec.height}" + _controls_text(rec.controls),
                  f"K ({rec.intrinsics_from}): fx {K[0, 0]:.0f} fy {K[1, 1]:.0f} cx {K[0, 2]:.0f} cy {K[1, 2]:.0f}"]
-        if rec.intrinsics_info:
+        if rec.intrinsics_info and rec.lens_measured:
             ii = rec.intrinsics_info
-            if str(ii.get("reason", "")).startswith("z pliku "):
+            base = str((ii.get("manual") or {}).get("was", ii.get("reason", "")))
+            if base.startswith("z pliku "):
                 rms = ii.get("rms_px", 0)
-                lines.append(f"intrynsyki {ii['reason']}, {ii.get('n_views', 0)} kadrow"
+                lines.append(f"intrynsyki {base}, {ii.get('n_views', 0)} kadrow"
                              + (f", residuum {rms:.2f} px" if rms else ""))
             else:
                 lines.append(f"intrynsyki: residuum {ii.get('rms_px', 0):.2f} px, {ii.get('n_views', 0)} kadrow"
@@ -2515,8 +2635,7 @@ class TwinApp:
             rec.controls = dataclasses.replace(rec.controls, autofocus=False)
         self._ctl_cam = None                            # the settings fields show the new controls
         if rec.calibrated:
-            rec.calibration["reason"] = "obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz"
-            rec.calibration["trusted"] = False
+            rec.withdraw_pose("obiektyw zmierzony po ustaleniu polozenia - zrob krok 2 jeszcze raz")
         self._save()
         if not rec.simulated:
             self.twin.cameras.apply_controls(rec.name)  # sets the lens's focus and checks it holds
@@ -2853,6 +2972,7 @@ class TwinApp:
             fit = j.result
             explain = j.data.get("explain") or {}
             rows = ["**Wynik** - kliknij Zapisz wynik:", "", "| kamera | wynik |", "|---|---|"]
+            any_bad = False
             for n, c in fit.cameras.items():
                 extra = ""
                 rec = next((r for r in self.ws.cameras if r.name == n), None)
@@ -2868,6 +2988,7 @@ class TwinApp:
                            f"**dobrze** (dokladnosc {c.rms_px:.2f} px){extra}")
                 if bad and n in explain:
                     verdict += f". {explain[n].split(': ', 1)[-1]}"
+                any_bad = any_bad or bool(bad)
                 rows.append(f"| {n} | {verdict} |")
             # A camera that never saw the card has no fit: it says so instead of missing from the table.
             for n in j.data.get("cameras", []):
@@ -2878,6 +2999,10 @@ class TwinApp:
                               f"({fit.offsets_note.split(': ', 1)[-1]}). Zapisz wynik wlaczy je razem z polozeniem kamer.")]
             elif fit.offsets_note:
                 rows += ["", fit.offsets_note]
+            if any_bad:
+                rows += ["", ("Lepszego wyniku na tym stanowisku nie bedzie? Zapisz go, potem w zakladce Kamery "
+                              "**Zaufaj polozeniu** dla tej kamery (przy niepewnym obiektywie najpierw "
+                              "**Zaufaj obiektywowi**).")]
             self.calib_md.content = "\n".join(rows)
             self._calib_pending = True
             j.data["shown"] = fit
@@ -2934,7 +3059,8 @@ class TwinApp:
                 focus += f"  \n**Obiektyw niewazny w tej sesji:** {rec.focus_problem}."
             self.intr_md.content = (f"Obiektyw **{name}** zmierzony - dobrze.{left_out}{focus}{where}" if res.trusted
                                     else f"Obiektyw **{name}**: wynik niepewny ({res.reason}).{left_out} Zmierz "
-                                    f"jeszcze raz - wiecej pochylen i rogow obrazu.{focus}{where}")
+                                    f"jeszcze raz - wiecej pochylen i rogow obrazu - albo w zakladce Kamery "
+                                    f"**Zaufaj obiektywowi**.{focus}{where}")
             todo = self._lens_todo()
             if todo and self.intr_cam.value not in todo:
                 self.intr_cam.value = todo[0]           # nastepna kamera bez obiektywu
@@ -3458,7 +3584,7 @@ class TwinApp:
         self.detectors.tick()
 
     def _tick_watch(self, frames: dict[str, np.ndarray]) -> None:
-        changed = False
+        changed = withdrawn = False
         for c in self.ws.cameras:
             if c.name not in frames or c.name not in self.watch.refs:
                 continue
@@ -3469,10 +3595,17 @@ class TwinApp:
             self.watch.check(c.name, frames[c.name], mask)
             if self.watch.moved(c.name) != was:
                 changed = True
+                if not was and c.pose_by_hand:
+                    # A person vouched for the pose where the camera stood; a restart must not bring it back.
+                    c.withdraw_pose(f"kamera poruszona (kadr przesunal sie o {_px(self.watch.shift[c.name])}) "
+                                    f"- zrob krok 2 jeszcze raz")
+                    withdrawn = True
                 if not was:
                     self._notify(None, "Kamera przestawiona",
                                  f"{c.name}: kadr przesunal sie o {_px(self.watch.shift[c.name])} od kalibracji. "
                                  f"Kalibracja > pomaranczowy przycisk tej kamery.", error=True)
+        if withdrawn:
+            self._save()
         if changed:
             self._refresh_cameras()
 
